@@ -286,8 +286,10 @@ struct TextureImpl {
   // arrayness. `range` overrides the level/layer window of the TexView; nullptr means v's own window. Returns
   // VK_NULL_HANDLE when the texture cannot be viewed as the shader's type (the caller binds a dummy of that type).
   VkImageView View(const TexView* v, bool sampled, int shaderType = 0, const SubRange* range = nullptr);
-  // Attachment view: one level, `layers` layers from the view's base, the texture's own format.
-  VkImageView RenderView(const TexView* v, SubRange* out = nullptr);
+  // Attachment view: one level, `layers` layers from the view's base. Format: the texture's own, or with viewFmt the view's
+  // sRGB/UNORM twin format when the TexView sets one (RtFormat; the pipeline's attachment format must use RtFormat too).
+  VkImageView RenderView(const TexView* v, SubRange* out = nullptr, bool viewFmt = false);
+  const FormatInfo* RtFormat(const TexView* v) const;
 };
 
 // ---- programs (nvn_shader.cpp) ---------------------------------------------------------------------------------
@@ -336,7 +338,7 @@ struct ProgramImpl {
 };
 bool PatchAlphaTest(const std::vector<uint32_t>& in, int func, std::vector<uint32_t>& out);   // nvn_alpha.cpp
 bool GtaoPatchFragment(std::vector<uint32_t>& words, const char* key);   // nvn_gtao.cpp (P8, SNAP_SSAO_GTAO): the HBAO fragment program becomes GTAO
-bool PatchShadowPcf(const std::vector<uint32_t>& in, int taps, float radiusUv, float bias, std::vector<uint32_t>& out);   // nvn_shadowpcf.cpp (P5, SNAP_SHADOW_FILTER)
+bool PatchShadowPcf(const std::vector<uint32_t>& in, int taps, float radiusUv, float bias, float remapK, std::vector<uint32_t>& out);   // nvn_shadowpcf.cpp (P5, SNAP_SHADOW_FILTER)
 bool ShadowFilterApplies(const StageProg& fs);   // nvn_shadowpcf.cpp: the fragment stage has a patchable depth-compare tap (cached per stage key)
 float ShadowFilterBias();   // nvn_shadowpcf.cpp: SNAP_SHADOW_BIAS (n * 1e-4 of reference depth)
 int ShadowFilterTaps();      // nvn_shadowpcf.cpp: SNAP_SHADOW_FILTER 0 (off) / 8 / 16
@@ -402,6 +404,9 @@ struct SyncImpl {
   VkSemaphore sem = VK_NULL_HANDLE;  // timeline semaphore of the queue that signaled it
   uint64_t value = 0;
   bool armed = false;
+  int64_t fenceNs = 0;      // steady-clock ns of the QueueFence submit (SNAP_SYNC_TRACE)
+  int fencePresent = 0;    // g_presentCount at that submit
+  unsigned fenceTid = 0;   // thread that submitted the fence (SNAP_SYNC_TRACE)
 };
 
 struct Retired { uint64_t value; VkCommandBuffer cb; CmdList* list; std::vector<VkDescriptorPool> pools; std::vector<ScratchBuf> scratch; };

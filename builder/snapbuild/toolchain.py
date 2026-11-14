@@ -1,0 +1,151 @@
+"""Finding the tools the build needs and the preflight checks. Download and verify by pinned URL is a later milestone:
+for now every tool is a local path (a flag, an environment variable, or a standard install location)."""
+import ctypes
+import os
+import platform
+import shutil
+import subprocess
+from pathlib import Path
+
+from .util import StepError, cpu_count, total_ram_gb
+
+
+def _first_existing(cands):
+    for c in cands:
+        if c and Path(c).exists():
+            return Path(c)
+    return None
+
+
+def find_llvm(arg, root):
+    """Folder holding clang.exe, clang++.exe, lld-link or ld.lld, llvm-ar.exe (and llvm-rc.exe)."""
+    cands = [arg, os.environ.get('SNAP_LLVM_BIN')]
+    on_path = shutil.which('clang.exe')
+    cands += [Path(on_path).parent if on_path else None, Path(root) / 'tools' / 'llvm' / 'bin']
+    for c in cands:
+        if c and all((Path(c) / n).exists() for n in ('clang.exe', 'clang++.exe', 'llvm-ar.exe')) \
+                and ((Path(c) / 'lld-link.exe').exists() or (Path(c) / 'ld.lld.exe').exists()):
+            return Path(c)
+    raise StepError('clang with lld not found. Install LLVM (clang, clang++, lld, llvm-ar) and pass its bin folder with --llvm, '
+                    'or set SNAP_LLVM_BIN. (Automatic download comes in a later release.)')
+
+
+def clang_version(llvm):
+    out = subprocess.run([str(Path(llvm) / 'clang.exe'), '--version'], capture_output=True, text=True).stdout
+    for tok in out.split():
+        if tok[:1].isdigit() and '.' in tok:
+            return tok
+    return out.splitlines()[0] if out else 'unknown'
+
+
+def find_vcvars():
+    """vcvars64.bat of Visual Studio Build Tools (Windows SDK and MSVC libraries are needed to link)."""
+    pf86 = os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)')
+    vswhere = Path(pf86) / 'Microsoft Visual Studio' / 'Installer' / 'vswhere.exe'
+    if vswhere.exists():
+        r = subprocess.run([str(vswhere), '-latest', '-products', '*', '-requires', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
+                            '-property', 'installationPath'], capture_output=True, text=True)
+        p = r.stdout.strip().splitlines()
+        if p:
+            v = Path(p[0]) / 'VC' / 'Auxiliary' / 'Build' / 'vcvars64.bat'
+            if v.exists():
+                return v
+    v = _first_existing([Path(pf86) / 'Microsoft Visual Studio' / '2022' / 'BuildTools' / 'VC' / 'Auxiliary' / 'Build' / 'vcvars64.bat'])
+    if v:
+        return v
+    raise StepError('Visual Studio Build Tools 2022 (C++ build tools with the Windows SDK) were not found. Install them from Microsoft '
+                    '(free) and run the builder again. They provide the system libraries the final link needs.')
+
+
+def vc_env(vcvars):
+    env = dict(os.environ)
+    out = subprocess.run(f'cmd /c ""{vcvars}" >nul && set"', capture_output=True, text=True, shell=True).stdout
+    for line in out.splitlines():
+        if '=' in line:
+            k, v = line.split('=', 1)
+            env[k] = v
+    return env
+
+
+def find_python(arg, root):
+    """A Python with capstone, pyelftools and numpy (the lifter needs them)."""
+    cands = [arg, Path(root) / 'tools' / 'venv-recomp' / 'Scripts' / 'python.exe', Path(root) / 'tools' / 'venv' / 'Scripts' / 'python.exe']
+    import sys
+    cands.append(sys.executable)
+    for c in cands:
+        if c and Path(c).exists():
+            r = subprocess.run([str(c), '-I', '-c', 'import capstone, elftools, numpy'], capture_output=True)
+            if r.returncode == 0:
+                return Path(c)
+    raise StepError('no Python with capstone, pyelftools and numpy was found. Install them (pip install capstone pyelftools numpy lz4) '
+                    'and pass that Python with --python. (A managed environment comes in a later release.)')
+
+
+def find_vulkan_lib(arg, root):
+    cands = [arg]
+    if os.environ.get('VULKAN_SDK'):
+        cands.append(Path(os.environ['VULKAN_SDK']) / 'Lib' / 'vulkan-1.lib')
+    cands.append(Path(root) / 'tools' / 'vulkan_sdk' / 'Lib' / 'vulkan-1.lib')
+    p = _first_existing(cands)
+    if not p:
+        raise StepError('vulkan-1.lib was not found. Install the Vulkan SDK (it sets VULKAN_SDK) or pass the file with --vulkan-lib.')
+    return p
+
+
+def find_ghidra(arg, root):
+    cands = [arg, os.environ.get('GHIDRA_DIR')]
+    cands += sorted((Path(root) / 'tools').glob('ghidra_*_PUBLIC'))
+    for c in cands:
+        if c and (Path(c) / 'support' / 'analyzeHeadless.bat').exists():
+            return Path(c)
+    return None
+
+
+def find_jdk(arg, root):
+    cands = [arg, os.environ.get('JAVA_HOME')] + sorted((Path(root) / 'tools').glob('jdk-21*'))
+    for c in cands:
+        if c and (Path(c) / 'bin' / 'java.exe').exists():
+            return Path(c)
+    return None
+
+
+# ------------------------------------------------------------------------------------------------ preflight
+
+def free_gb(path):
+    return shutil.disk_usage(path).free / 2**30
+
+
+def has_avx2():
+    try:
+        return bool(ctypes.windll.kernel32.IsProcessorFeaturePresent(40))   # PF_AVX2_INSTRUCTIONS_AVAILABLE
+    except Exception:
+        return True
+
+
+def preflight(work, need_ghidra, log, min_free_gb=6.0):
+    """Returns a list of problems (empty = go). Warnings go to the log."""
+    problems = []
+    if platform.system() != 'Windows' or platform.machine().lower() not in ('amd64', 'x86_64'):
+        problems.append('this builder needs 64-bit Windows 10 or 11 on an x86-64 PC.')
+        return problems
+    if not has_avx2():
+        problems.append('this PC lacks AVX2; the build targets x86-64-v3 (AVX2 and FMA) and the game would not run here.')
+    Path(work).mkdir(parents=True, exist_ok=True)
+    g = free_gb(work)
+    if g < min_free_gb:
+        problems.append(f'only {g:.1f} GB free on the work folder drive; at least {min_free_gb:.0f} GB are needed.')
+    tot, avail = total_ram_gb()
+    log.write(f'preflight: {cpu_count()} logical CPUs, {tot:.1f} GB RAM ({avail:.1f} GB free), {g:.1f} GB free on the work drive')
+    if tot < 8:
+        problems.append(f'{tot:.1f} GB of RAM is too little: code generation peaks at about 3.5 GB and compiling needs about 0.5 GB per job.')
+    if need_ghidra and tot < 16:
+        problems.append(f'{tot:.1f} GB of RAM is too little for the Ghidra step (12 GB heap, 16 GB minimum). '
+                        f'Use --maps with ready-made function lists instead.')
+    if not (Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32' / 'vulkan-1.dll').exists():
+        log.write('preflight: warning: vulkan-1.dll is not in System32; the game needs a Vulkan 1.3 GPU driver to run.')
+    return problems
+
+
+def default_jobs():
+    tot, _ = total_ram_gb()
+    return max(1, min(8, cpu_count(), int(tot // 2)))

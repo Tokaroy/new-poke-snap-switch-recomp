@@ -13,7 +13,7 @@
 //
 // Switches: SNAP_RT=1 (master), SNAP_RT_DEBUG=<1|2|3>, SNAP_RT_LOG=<n> (stats line every n presents, default 120 with SNAP_RT_DEBUG),
 // SNAP_RT_ARENA_MB (default 384), SNAP_RT_BLAS_MB (512), SNAP_RT_SCRATCH_MB (256), SNAP_RT_TTL (frames a stable draw stays in the TLAS
-// after it was last seen, default 900), SNAP_RT_FLIPY=0|1 (clip y to screen y), SNAP_RT_CAPTURE=0 (device features only), SNAP_RT_KEYCB=0|1 (per-object constants in the draw key, default 1).
+// after it was last seen, default 900), SNAP_RT_FLIPY=0|1 (clip y to screen y), SNAP_RT_CAPTURE=0 (device features only), SNAP_RT_KEYCB=0|1 (per-object constants in the draw key, default 1), SNAP_RT_REUSE=0|1|2 (keep the BLAS of draws that did not move, default 1; 2 = A/B per log window), SNAP_RT_STATIC_FRAMES (4).
 #pragma once
 #include <vulkan/vulkan.h>
 #include <cstdint>

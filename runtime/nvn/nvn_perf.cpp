@@ -2,12 +2,27 @@
 // GPU-side half of the SNAP_PERF instrumentation (runtime/os/perf.h): a ring of timestamp pairs around every command buffer the
 // layer submits. Slots are collected at the next present once the queue's timeline has passed them. Only active with SNAP_PERF set.
 // All entry points except PerfFrameMark are called with Host::queueMutex held (SubmitLists / PresentWindow); it takes the lock itself.
-#include <algorithm>
+// The performance overlay's Detailed mode (runtime/ui/ui_fps.cpp) turns the same GPU timing on at run time (snap_perf_overlay_timing)
+// and reads GPU busy ms and the presenting thread's CPU ms per frame (snap_perf_overlay_info); no CSV is written then.
+#include <intrin.h>
 
+#include <algorithm>
+#include <atomic>
+#include <cstdio>
+#include <cstring>
+
+#include "nvn_aa.h"
 #include "nvn_internal.h"
 #include "os/perf.h"
+#include "upscale/upscaler.h"
 
 namespace nvn {
+
+std::atomic<bool> g_overlayTiming{false};
+bool PerfGpuOn() { return snap_perf::on || g_overlayTiming.load(std::memory_order_relaxed); }
+namespace {
+std::atomic<double> g_ovGpuMs{-1.0}, g_ovCpuMs{-1.0};
+}  // namespace
 
 namespace {
 constexpr uint32_t kSlots = 2048;
@@ -19,7 +34,7 @@ bool g_failed = false;
 }  // namespace
 
 bool PerfGpuReady(Host* h) {
-  if (!snap_perf::on || g_failed) return false;
+  if (!PerfGpuOn() || g_failed) return false;
   if (g_pool) return true;
   if (!h->hostQueryReset) { g_failed = true; return false; }
   VkQueryPoolCreateInfo qi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
@@ -49,7 +64,7 @@ void PerfGpuSubmitted(int slot, uint64_t value) {
 }
 
 void PerfFrameMark(QueueImpl* q, uint64_t presentNo) {
-  if (!snap_perf::on) return;
+  if (!PerfGpuOn()) return;
   std::lock_guard<std::mutex> lk(q->host->queueMutex);
   double busy = -1, span = -1; int cbs = 0;
   if (g_pool) {
@@ -69,7 +84,49 @@ void PerfFrameMark(QueueImpl* q, uint64_t presentNo) {
     busy = (double)sum * period / 1e6;
     span = hi > lo ? (double)(hi - lo) * period / 1e6 : 0;
   }
-  snap_perf::frame_mark(presentNo, busy, span, cbs);
+  if (g_overlayTiming.load(std::memory_order_relaxed)) {
+    // CPU: the presenting thread's cycle count per frame (the SNAP_PERF cpu_mcycles source), in ms via the TSC rate measured
+    // against QueryPerformanceCounter (QueryThreadCycleTime counts TSC ticks)
+    // presents can come from different guest worker threads: a delta counts only when the previous present was on this thread too
+    static ULONG64 prevCyc = 0; static DWORD prevTid = 0;
+    const DWORD tid = GetCurrentThreadId();
+    if (tid != prevTid) { prevTid = tid; prevCyc = 0; }
+    static uint64_t tsc0 = 0; static LARGE_INTEGER qpc0{}, qpf{};
+    static double tscPerMs = 0;
+    ULONG64 cyc = 0; QueryThreadCycleTime(GetCurrentThread(), &cyc);
+    const uint64_t tsc = __rdtsc(); LARGE_INTEGER qpc; QueryPerformanceCounter(&qpc);
+    if (!qpf.QuadPart) { QueryPerformanceFrequency(&qpf); tsc0 = tsc; qpc0 = qpc; }
+    const double ms = (double)(qpc.QuadPart - qpc0.QuadPart) * 1000.0 / (double)qpf.QuadPart;
+    if (ms > 200.0) { tscPerMs = (double)(tsc - tsc0) / ms; if (ms > 5000.0) { tsc0 = tsc; qpc0 = qpc; } }
+    if (prevCyc && tscPerMs > 0 && cyc >= prevCyc) g_ovCpuMs.store((double)(cyc - prevCyc) / tscPerMs);
+    prevCyc = cyc;
+    if (busy >= 0 && cbs > 0) g_ovGpuMs.store(busy);
+  }
+  if (snap_perf::on) snap_perf::frame_mark(presentNo, busy, span, cbs);
 }
 
 }  // namespace nvn
+
+extern "C" void snap_perf_overlay_timing(int on) {
+  nvn::g_overlayTiming.store(on != 0);
+  if (!on) { nvn::g_ovGpuMs.store(-1.0); nvn::g_ovCpuMs.store(-1.0); }
+}
+
+// Values for the Detailed overlay: GPU busy and CPU ms of the last collected frame (-1 = none yet), the 3D scene size, the game's
+// pace rate and a one-line upscaler / anti-aliasing description (aa may be null or aa_len 0).
+extern "C" void snap_perf_overlay_info(double* gpu_ms, double* cpu_ms, int* render_w, int* render_h, double* pace_hz, char* aa, int aa_len) {
+  using namespace nvn;
+  if (gpu_ms) *gpu_ms = g_ovGpuMs.load();
+  if (cpu_ms) *cpu_ms = g_ovCpuMs.load();
+  if (render_w) *render_w = (int)(1920.0f * g_scale.scale + 0.5f);
+  if (render_h) *render_h = (int)(1080.0f * g_scale.scale + 0.5f);
+  if (pace_hz) *pace_hz = g_paceHz;
+  if (aa && aa_len > 0) {
+    const char* up = snap_upscale::Name();
+    const char* m = g_aaMode == AA_SMAA ? "SMAA" : g_aaMode == AA_OFF ? "AA off" : "FXAA (original)";
+    char sh[24] = "";
+    if (g_aaSharpen > 0.f) snprintf(sh, sizeof sh, "  CAS %.2f", g_aaSharpen);
+    if (up && strcmp(up, "off")) snprintf(aa, (size_t)aa_len, "%s  %s%s", up, m, sh);
+    else snprintf(aa, (size_t)aa_len, "%s%s", m, sh);
+  }
+}

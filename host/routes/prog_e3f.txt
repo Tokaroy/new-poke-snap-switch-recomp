@@ -1,0 +1,6 @@
+# fixture: story_complete
+# Late-game fixture (flag +0x3e53 set): hub, one Y opens the LenTalk list.
+repeat @f300 @f30000 120 8 A
+wait ui=main_menu:MainMenu timeout=300
+@f600 10 Y
+end @f1500

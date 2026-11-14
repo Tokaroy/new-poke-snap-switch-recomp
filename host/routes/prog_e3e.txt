@@ -1,0 +1,6 @@
+# fixture: prog_e33
+# After event 3 is saved (flag +0x3e53 = 1 in the save): title, hub, Y opens the LenTalk request list.
+repeat @f300 @f30000 120 8 A
+wait ui=main_menu:MainMenu timeout=300
+repeat @f600 @f1400 400 10 Y
+end @f3000

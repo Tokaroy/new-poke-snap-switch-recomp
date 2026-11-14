@@ -1,0 +1,8 @@
+# fixture: prog_e33
+# Second pass on the saved e33 state: title, hub, wait for event 3 (research quota) dialogue and A through it.
+repeat @f300 @f30000 120 8 A
+wait ui=main_menu:MainMenu timeout=300
+wait dialog timeout=250
+repeat @f0 @f30000 100 8 A
+wait ui=main_menu:MainMenu timeout=500
+end @f1500

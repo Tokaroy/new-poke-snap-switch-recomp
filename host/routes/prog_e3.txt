@@ -1,0 +1,9 @@
+# fixture: prog_e33
+# Requests unlock proof (prog worker 2026-11-14): fixture = post_tutorial + story bits 0,1,2 + flag 3e20=1 (story_fix.py recipe e33).
+# Event 33 (Meganium) plays on entry; A taps through its dialogue to the hub; the same save is then run again (route prog_e3b)
+# so event 3 (research quota: SD_10_01_sk, SD_10_03_sk) can play. SNAP_ROUTE_LOG=1 logs "game flag +0x3e53".
+repeat @f300 @f30000 120 8 A
+wait dialog timeout=250
+repeat @f0 @f30000 100 8 A
+wait ui=main_menu:MainMenu timeout=500
+end @f1200

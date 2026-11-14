@@ -689,7 +689,39 @@ SI uint32_t simd_crc(const uint32_t *t, uint32_t acc, uint64_t v, int bytes) {
     for (int i = 0; i < bytes; i++) acc = t[(acc ^ (uint8_t)(v >> (8 * i))) & 0xff] ^ (acc >> 8);
     return acc;
 }
-#define CRC32(acc, v, n) simd_crc(simd_crc32_tab, (uint32_t)(acc), (v), n)
+// CRC32 (not C) 8- and 4-byte steps by slicing tables (pass 10, 2026-11-14): the guest DRP checksum `main+0x15fe90` runs
+// crc32x per 8 bytes and was about half of the ResourceUncompress threads' CPU at course start; the byte loop is a serial
+// 8-lookup chain, slice-by-8 is about 4.5x faster. SNAP_CRC_SLICE=0 restores the byte loop. The tables and mode live in
+// selectany globals filled on first use, so the header needs no runtime file.
+__declspec(selectany) int simd_crc_slice_mode = -1;
+__declspec(selectany) uint32_t simd_crc32_s8[8][256];
+SN int simd_crc_slice_init(void) {
+    const char *e = getenv("SNAP_CRC_SLICE");
+    for (int i = 0; i < 256; i++) simd_crc32_s8[0][i] = simd_crc32_tab[i];
+    for (int k = 1; k < 8; k++)
+        for (int i = 0; i < 256; i++) simd_crc32_s8[k][i] = (simd_crc32_s8[k - 1][i] >> 8) ^ simd_crc32_tab[simd_crc32_s8[k - 1][i] & 0xff];
+    int m = e && e[0] == '0' ? 0 : 1;
+    __atomic_store_n(&simd_crc_slice_mode, m, __ATOMIC_RELEASE);
+    return m;
+}
+SI uint32_t simd_crc32_n(uint32_t acc, uint64_t v, int bytes) {
+    if (bytes >= 4) {
+        int m = __atomic_load_n(&simd_crc_slice_mode, __ATOMIC_ACQUIRE);
+        if (__builtin_expect(m < 0, 0)) m = simd_crc_slice_init();
+        if (m) {
+            const uint32_t (*s)[256] = simd_crc32_s8;
+            if (bytes == 8) {
+                uint64_t x = v ^ acc;
+                return s[7][x & 0xff] ^ s[6][(x >> 8) & 0xff] ^ s[5][(x >> 16) & 0xff] ^ s[4][(x >> 24) & 0xff] ^
+                       s[3][(x >> 32) & 0xff] ^ s[2][(x >> 40) & 0xff] ^ s[1][(x >> 48) & 0xff] ^ s[0][x >> 56];
+            }
+            uint32_t x = (uint32_t)v ^ acc;
+            return s[3][x & 0xff] ^ s[2][(x >> 8) & 0xff] ^ s[1][(x >> 16) & 0xff] ^ s[0][x >> 24];
+        }
+    }
+    return simd_crc(simd_crc32_tab, acc, v, bytes);
+}
+#define CRC32(acc, v, n) simd_crc32_n((uint32_t)(acc), (v), n)
 #define CRC32C(acc, v, n) simd_crc(simd_crc32c_tab, (uint32_t)(acc), (v), n)
 
 // ---- crypto (AES, SHA1, SHA256)

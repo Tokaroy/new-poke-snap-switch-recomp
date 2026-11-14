@@ -1,0 +1,175 @@
+[
+ {
+  "n": 252,
+  "name": "Goodra",
+  "normal": "purple-lilac body, pinkish-lavender belly/arms, dark eyes",
+  "shiny": "body yellow/gold with pink tones (search summary: white-purple becomes yellow-pink)",
+  "desc": "purple body turns yellow",
+  "rules": "310>90:30:1.0:1.05;330>355:25",
+  "source": "Bulbapedia/Serebii 403 or image-only; fandomspot.com best-pokemon-xy-kalos-shinies; touchtapplay; remainder from memory",
+  "confidence": "medium"
+ },
+ {
+  "n": 253,
+  "name": "Trevenant",
+  "normal": "brown bark body, green leaf foliage, yellow glowing eyes",
+  "shiny": "foliage becomes orange afro-like, white face markings, bark stays brown",
+  "desc": "green leaves turn orange",
+  "rules": "145>55:30",
+  "source": "Bulbapedia/Serebii 403 or image-only; fandomspot.com best-pokemon-xy-kalos-shinies; touchtapplay; remainder from memory",
+  "confidence": "medium"
+ },
+ {
+  "n": 254,
+  "name": "Diancie",
+  "normal": "pink crystal body with lavender-grey and white facets",
+  "shiny": "pink diamonds kept, lavender facets turn neutral grey and darker, white facets turn hot pink",
+  "desc": "lavender facets desaturate to dark grey, white facets turn pink",
+  "rules": "290>290:15:0.0:0.82;grey:0.9-1.0>349:0.06",
+  "source": "pokemondb.net HOME sprites (base form), normal vs shiny, measured in OKLCh",
+  "confidence": "medium",
+  "note": "Re-measured, unchanged. Pink hue 315-360 unchanged; lavender hue 285-300 (26% of pixels, C0.05, L0.73) -> neutral grey (C0.00, L0.60); near-white (21%) -> hot pink hue 349 C0.17 L0.76. White-to-pink needs a lightness drop the grey rule cannot do, so chroma is held to 0.06 (higher chroma raised collateral). Error 0.103 -> 0.062."
+ },
+ {
+  "n": 256,
+  "name": "Salandit",
+  "normal": "dark grey body, orange belly/spots, small violet accent",
+  "shiny": "body turns light grey (L ~0.39 to 0.67, near-neutral); orange belly keeps its hue but gets lighter and less saturated; violet accent loses chroma",
+  "desc": "dark grey body becomes light grey; orange belly lighter, violet accent paler",
+  "rules": "36>33:20:0.83:1.27;297>294:15:0.6",
+  "source": "pokemondb HOME normal+shiny sprites, re-measured pixel-by-pixel in OKLCh; rules simulated with the make_shiny_pack recolor",
+  "confidence": "high",
+  "note": "Re-measured. Orange hue 36>33, C 0.162>0.133, L 0.59>0.75 (sim lands at C 0.118, L 0.74). Violet accent (1.4% px) C 0.081>0.048. The 77% grey body lightens a lot (L 0.39>0.67) but grey rules only set hue/chroma, so that lightening is not expressible; only the orange and violet are handled."
+ },
+ {
+  "n": 257,
+  "name": "Bewear",
+  "normal": "pink fur (hue ~5, C 0.09), dark grey limbs, white/cream",
+  "shiny": "pink fur turns yellow-gold (hue ~78, C 0.143); dark grey limbs a bit lighter; white unchanged",
+  "desc": "pink fur turns golden yellow",
+  "rules": "8>85:25:1.7",
+  "source": "pokemondb HOME normal+shiny sprites, re-measured pixel-by-pixel in OKLCh; rules simulated with the make_shiny_pack recolor",
+  "confidence": "high",
+  "note": "Re-measured; original rule confirmed. Fur hue 5>78 with C 0.091>0.143 (sim hue 78, C 0.142, mean error 0.016). Pale pink pixels at hue ~358 also move to ~74 (shiny ~86). White (C<0.01) untouched. Dark grey lightening (L 0.33>0.42) not expressible."
+ },
+ {
+  "n": 258,
+  "name": "Golisopod",
+  "normal": "pale shell with faint green-teal tint, magenta/purple accents (hue ~319), teal-grey accents (hue ~171)",
+  "shiny": "shell becomes neutral white/grey; purple accents turn red-orange (hue ~27); teal-grey accents turn blue (hue ~241) and lighter",
+  "desc": "purple accents turn red-orange, teal-grey accents blue, shell tint neutral",
+  "rules": "319>27:20:1.1;171>241:18:2.5:1.12;grey:0.7-1.0>100:0.004",
+  "source": "pokemondb HOME normal+shiny sprites, re-measured pixel-by-pixel in OKLCh; rules simulated with the make_shiny_pack recolor",
+  "confidence": "high",
+  "note": "Re-measured. Magenta hue 319>27 (C 0.120>0.135): sim hue 27, C 0.131. Teal accent hue 171>241 (C 0.044>0.104, L 0.58>0.63): sim hue 238, C 0.101. Shell greys C ~0.02>~0. Source windows centered on measured means (was 310 and 170) so the hue lands exactly."
+ },
+ {
+  "n": 260,
+  "name": "Drampa",
+  "normal": "cream-white fur, teal-green mane/tail/underside (hue ~177)",
+  "shiny": "teal parts turn tan-gold/orange-brown (hue ~75), lighter and more saturated; cream fur slightly more yellow",
+  "desc": "teal mane and tail turn tan-orange; cream fur a touch warmer",
+  "rules": "177>74:25:1.2:1.13;113>105:8:1.35:1.06",
+  "source": "pokemondb HOME normal+shiny sprites, re-measured pixel-by-pixel in OKLCh; rules simulated with the make_shiny_pack recolor",
+  "confidence": "high",
+  "note": "Re-measured. Teal bins (hue 160-190, 24% px) 100% moved to hue ~75, C 0.077>0.093, L 0.62>0.71; sim hue 74, C 0.092. Added a narrow rule for the pale yellow-green cream band (hue 113, C 0.052, 12% px) which goes to hue ~103, C 0.072, L +0.06. Near-white cream (C<0.03) is left alone. Tiny yellow patch (hue 90-100, 2%) goes dark violet: ignored."
+ },
+ {
+  "n": 262,
+  "name": "Absol",
+  "normal": "white fur with faint cool tint, blue face/legs (hue ~250, C 0.11), red eyes",
+  "shiny": "blue face/legs turn salmon-pink/red (hue ~30, lighter); white fur gets a faint lavender tint (hue ~305-314, C ~0.025)",
+  "desc": "blue face and legs turn salmon pink; fur faintly lavender",
+  "rules": "250>31:18:1.0:1.3;grey:0.7-1.0>305:0.026",
+  "source": "pokemondb HOME normal+shiny sprites, re-measured pixel-by-pixel in OKLCh; rules simulated with the make_shiny_pack recolor",
+  "confidence": "high",
+  "note": "Re-measured; original rule confirmed. Blue hue 250>30, L 0.55>0.72, C ~0.115 (sim hue 31, L 0.72, error 0.024). Fur C 0.013-0.018 hue ~230>~310 C ~0.025 (sim hue 295-304). Red eyes (hue ~29) are outside the blue window."
+ },
+ {
+  "n": 264,
+  "name": "Golurk",
+  "normal": "teal-cyan body (hue ~206, C 0.056), brown-gold bands (hue ~64), bright blue seals (hue ~226, C 0.10), yellow glow (hue ~97)",
+  "shiny": "body turns grey-teal (hue ~192, C 0.032); bands desaturate to dull brown-olive (hue ~76, C 0.06, darker); seals turn dark slate (hue ~250-265, C ~0.04, darker); yellow glow turns vivid green (hue ~130, C ~0.2)",
+  "desc": "teal body greys out, blue seals go slate, yellow glow turns green, gold bands dull",
+  "rules": "203>193:12:0.55;233>264:10:0.35:0.8;97>130:10:2.4;64>76:12:0.63:0.9",
+  "source": "pokemondb HOME normal+shiny sprites, re-measured pixel-by-pixel in OKLCh; rules simulated with the make_shiny_pack recolor",
+  "confidence": "high",
+  "note": "Re-measured. Body 206>192 C 0.056>0.032; seals hue 226>249 C 0.10>0.04 L 0.59>0.50; bands hue 64>76 C 0.097>0.061 L 0.64>0.58; glow hue 97>130 C 0.086>0.195. Windows re-centered on measured source hues (old 207/232/90/70 windows overlapped; seal and body windows now 191-215 vs 223-243). Overall sim error 0.053>0.011."
+ },
+ {
+  "n": 265,
+  "name": "Noivern",
+  "normal": "violet-purple body and wings, yellow-orange ear tips",
+  "shiny": "purple becomes pale green with blood-red contrast (fandomspot)",
+  "desc": "purple body turns green",
+  "rules": "292>145:40;285>145:35",
+  "source": "Bulbapedia/Serebii 403 or image-only; fandomspot.com best-pokemon-xy-kalos-shinies; touchtapplay; remainder from memory",
+  "confidence": "medium"
+ },
+ {
+  "n": 266,
+  "name": "Eldegoss",
+  "normal": "yellow-green leaves (hue ~90-115, C 0.14-0.15), white cotton, brown stem (hue ~65)",
+  "shiny": "leaves turn salmon/rose-pink (hue ~23-60 depending on shading, C ~0.07, slightly darker); white cotton and stem unchanged",
+  "desc": "yellow-green leaves turn salmon pink",
+  "rules": "100>35:25:0.55:0.93",
+  "source": "pokemondb HOME normal+shiny sprites, re-measured pixel-by-pixel in OKLCh; rules simulated with the make_shiny_pack recolor",
+  "confidence": "high",
+  "note": "Re-measured; original rule kept (a grid scan of center/target/width/scales found nothing meaningfully better, error 0.056>0.038). Shiny leaf hue varies 23-60 with lightness (lighter leaves go orange-salmon ~50, darker ones rose ~23), so a single hue shift is an approximation. Stem (hue ~65) and white cotton are unchanged and stay outside the window."
+ },
+ {
+  "n": 267,
+  "name": "Applin",
+  "normal": "red apple shell (hue ~17, C 0.15), lime-green body and brown worm parts",
+  "shiny": "red apple turns green (hue ~137, C ~0.123); lime-green and brown parts unchanged",
+  "desc": "red apple shell turns green",
+  "rules": "17>137:28:0.83:1.05",
+  "source": "pokemondb HOME normal+shiny sprites, re-measured pixel-by-pixel in OKLCh; rules simulated with the make_shiny_pack recolor",
+  "confidence": "high",
+  "note": "Re-measured. Apple hue 17>137 C 0.149>0.123 (sim hue 137, C 0.123). Brown (hue ~70) and lime (hue ~128) bins are 0-1% changed and sit outside the window (-11..45). Source recentered on 17 (was 12)."
+ },
+ {
+  "n": 268,
+  "name": "Silicobra",
+  "normal": "sand body (hue ~90-100, C 0.067), yellow-green hood accents (hue ~128, C 0.19), cream underside (C 0.03-0.04)",
+  "shiny": "sand body desaturates to pale olive (C ~0.045) with a slight shift toward yellow-green on darker shading; green accents shift to yellow-lime (hue ~102, C 0.15); cream unchanged",
+  "desc": "sandy body goes pale olive, green accents go yellow",
+  "rules": "90>105:12:0.7;130>102:10:0.8",
+  "source": "pokemondb HOME normal+shiny sprites, re-measured pixel-by-pixel in OKLCh; rules simulated with the make_shiny_pack recolor",
+  "confidence": "high",
+  "note": "Re-measured. Body (87% px) C 0.067>0.045, shiny hue 112 at L 0.5-0.6 but ~70-85 on the lightest sand, so the hue move is a compromise (grid-scan best; error 0.032>0.026). Accent hue 128>102 C 0.19>0.15 matches exactly. Cream underside (C ~0.035, L>0.85) stays near the chroma gate and is only lightly touched."
+ },
+ {
+  "n": 269,
+  "name": "Snom",
+  "normal": "white/pale body with faint blue tint (C ~0.014), blue-lavender underside (hue ~262-273, C 0.04-0.06)",
+  "shiny": "white/pale body gets a mint/lime-green tint (hue ~130-160, C ~0.03); blue-lavender parts stay blue (hue ~245-250)",
+  "desc": "white body gets a pale mint-green tint",
+  "rules": "grey:0.88-1.0>140:0.032",
+  "source": "pokemondb HOME normal+shiny sprites, re-measured pixel-by-pixel in OKLCh; rules simulated with the make_shiny_pack recolor",
+  "confidence": "high",
+  "note": "Re-measured. White body (61% px, L ~0.94) C 0.014>0.031 hue 251>151. The original grey range 0.8-1.0 also caught the pale-blue underside (L 0.8-0.88, C 0.03-0.045) and turned it green (hue 262>210) while the shiny keeps it blue; raising Lmin to 0.88 fixes that (error 0.029>0.021)."
+ },
+ {
+  "n": 270,
+  "name": "Frosmoth",
+  "normal": "white fuzz, pale blue-lavender wings (hue ~273, C ~0.04), some deeper blue accents",
+  "shiny": "about half of the pale wings turn mint/teal (hue ~180-210, C ~0.045); the other half and the white fuzz stay lavender/white; a few strong blue pixels turn teal (hue ~198)",
+  "desc": "pale icy wings turn mint-teal (partly)",
+  "rules": "grey:0.7-0.85>180:0.042",
+  "source": "pokemondb HOME normal+shiny sprites, re-measured pixel-by-pixel in OKLCh; rules simulated with the make_shiny_pack recolor",
+  "confidence": "high",
+  "note": "Re-measured. Of the pale-wing pixels (C 0.03-0.07, L 0.7-0.88), 43% go to hue 150-210 and 43% stay at 270-300; changed ones sit at L 0.79-0.82, but the unchanged overlap that band so they cannot be separated. Upper L limit lowered from 0.88 to 0.85 and hue set to 180 (scan best, error 0.0255>0.0212). White fuzz (L>0.88) untouched. A hue rule for the strong blue pixels was skipped because it would also catch the unchanged lavender wings."
+ },
+ {
+  "n": 271,
+  "name": "Pumpkaboo",
+  "normal": "brown body (hue ~66, C 0.05), pink-red parts (hue ~34, C 0.11), yellow-orange glow (hue 75-105)",
+  "shiny": "brown body turns neutral dark grey (C ~0, L 0.54>0.40); pink-red parts turn purple-magenta (hue ~329, L 0.68>0.51); yellow glow stays yellow, slightly lighter and greener",
+  "desc": "brown body turns grey, pink-red parts turn purple",
+  "rules": "28>329:12:0.8:0.75;47>350:8:0.6:0.8;62>62:9:0.04:0.73;grey:0.3-0.5>84:0.002",
+  "source": "pokemondb HOME normal+shiny sprites, re-measured pixel-by-pixel in OKLCh; rules simulated with the make_shiny_pack recolor",
+  "confidence": "high",
+  "note": "Re-measured. Body hue 66, C 0.05>0.00, L ~0.55>0.40; pink hue 34>329, L 0.67>0.50. The old brown rule 70>70:15 reached the orange glow (hue 75-90, C 0.15) and drained its chroma; narrowed to 62>62:9 (error 0.018>0.015). Glow hue 75-90 actually goes to ~111 and lighter, not expressible without hitting the brown."
+ }
+]

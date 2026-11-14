@@ -1,0 +1,230 @@
+{
+ "format": 1,
+ "game_version": "2.0.1 (v262144)",
+ "note": "Hashes of the published game files only. Sentinel paths are stored hashed (lowercase, forward slashes), never as names.",
+ "image_hash": "SHA-256 over the decompressed text, rodata and data segments in order",
+ "nso": {
+  "main": {
+   "build_id": "DDB900FF04A912ED42430508389853CFAF1ACCCE",
+   "image_sha256": "98a8aec5b031b07211e06c675201021ba6019a87c2dab05505a586716e5c3be5"
+  },
+  "sdk": {
+   "build_id": "0617F669301F922A811886048DD7B41A249CC1B3",
+   "image_sha256": "5cb178e1c25699023db11f4a8e2ee3a63c86a7cfe9411b715d038f910f50e90c"
+  }
+ },
+ "known_versions": [
+  {
+   "name": "1.0.0 (v0)",
+   "main_build_id": "7B30946B60D3C9BBA659466497377C5A7659A783",
+   "sdk_build_id": "0617F669301F922A811886048DD7B41A249CC1B3"
+  },
+  {
+   "name": "1.1.0 (v65536)",
+   "main_build_id": "B8301424493B656B5CC76ADFACB0B68EA812C7AF",
+   "sdk_build_id": "0617F669301F922A811886048DD7B41A249CC1B3"
+  },
+  {
+   "name": "1.2.0 (v131072)",
+   "main_build_id": "3147ADD387266F362EA788979086AEECF2707F8E",
+   "sdk_build_id": "0617F669301F922A811886048DD7B41A249CC1B3"
+  },
+  {
+   "name": "2.0.0 (v196608)",
+   "main_build_id": "DDB900FF04A912ED42430508389853CFAF1ACCCE",
+   "sdk_build_id": "0617F669301F922A811886048DD7B41A249CC1B3"
+  },
+  {
+   "name": "2.0.1 (v262144)",
+   "main_build_id": "DDB900FF04A912ED42430508389853CFAF1ACCCE",
+   "sdk_build_id": "0617F669301F922A811886048DD7B41A249CC1B3"
+  }
+ ],
+ "romfs": {
+  "file_count": 3310,
+  "total_bytes": 7316024056,
+  "listing_sha256": "e7b427e9a4c32a30c7fec676583fb29d12d632f53093ca1fab76c29e5d456e0f",
+  "sentinels": [
+   {
+    "path_sha256": "b1b7d89861989ea656419a322bb14a286c6b7e34774af021656fb541b16299b5",
+    "size": 203932
+   },
+   {
+    "path_sha256": "df193a71046b9e20e7b89d013ad2e60493c19e0db7c4873e93113104b36c83ad",
+    "size": 124440
+   },
+   {
+    "path_sha256": "63f79d2500dff0d9244cf8c19e37e8883db9563181f6a55c467f21b9c45e2956",
+    "size": 54916
+   },
+   {
+    "path_sha256": "988f7d247ed4f00d9964d22dba6a7e0339bfa400b9017e408b7d9cdbf5bcd296",
+    "size": 2931116
+   },
+   {
+    "path_sha256": "5fe3b529f0f369d5287c3b8b3cd5ca867d4a58e102d3919929b21e336f58c925",
+    "size": 3512788
+   },
+   {
+    "path_sha256": "ae7ed5124170296755357ad634af038480259b40e640bacbdb31b8704ad551f6",
+    "size": 2695640
+   },
+   {
+    "path_sha256": "12f8da1a435fcc955f38fa37ca9d04af09d8fd0c69f43d814f9c9a9086ebacf6",
+    "size": 1620
+   },
+   {
+    "path_sha256": "1e0ff7d90d0f7c194a74a8bf1c39b212421a6f28833ef291f5bb9f0bd368c6c1",
+    "size": 1772
+   },
+   {
+    "path_sha256": "4b45c36ef5f08409c80e4e44bd910649ba0033a99532ddf520c806e379a39d78",
+    "size": 55216
+   },
+   {
+    "path_sha256": "6f97c3462f6a0f586d20d9403374176476958e3bfc83e8870b55a02e14726b83",
+    "size": 10324
+   },
+   {
+    "path_sha256": "4d58ca579fed551af2325a6ddaf54c114d51c4c0728c0862928cd6682ade8cb2",
+    "size": 32716
+   },
+   {
+    "path_sha256": "6bb89512618d55a4d5862cb564e27f2eac04ea0bb204e7d5673ad41b2cf8d4d8",
+    "size": 24580
+   },
+   {
+    "path_sha256": "84c4ddd9a8b5f2d7cc52c7b2d3cb768e8e9e3580a649108936b04ef8e90757f6",
+    "size": 36498
+   },
+   {
+    "path_sha256": "09c44e14b22358b681d997a74c447e8a25a4772e28120931b4826db9664dd2ef",
+    "size": 178960
+   },
+   {
+    "path_sha256": "c750fb94366f5c2b24336194bc85b5aeaff9220fe0157092b70a34feb42c5b3d",
+    "size": 304048
+   },
+   {
+    "path_sha256": "80aa228daeb8144af2b72de8756f83c3223760a801d70fcd9977b716546738e0",
+    "size": 16087828
+   },
+   {
+    "path_sha256": "c07a97303b1496d4ffe6a9e1baacf99c0f3bfa3debaa0bc26d7037e2bf2d0591",
+    "size": 22240
+   },
+   {
+    "path_sha256": "5c6b95ad5f4f6ff1d5ec32757249c3200806ddbade5fd4646a27ca54174f0001",
+    "size": 38764
+   },
+   {
+    "path_sha256": "69488526d2372253d9dcbfeae39dfaf15df5450d501f0c452b996ab3e34f8a53",
+    "size": 42400
+   },
+   {
+    "path_sha256": "9ec8217f169565b7b5a7084d2ff761422126904d53356e0543468de2d51a65cd",
+    "size": 22276
+   },
+   {
+    "path_sha256": "7bc5770afdd3eaa31e5e090be8a4570f723ec24edcb9be23cff63ead88b4251c",
+    "size": 24904
+   },
+   {
+    "path_sha256": "dd7c07214bf53296f22d2ec985448dc1601f413067395045c1a64673fb4349ce",
+    "size": 12340
+   },
+   {
+    "path_sha256": "606b8c5e1f6a95cdb494d5764c5c852e4d46cf835ed7d285d8fef5cf64e20ff9",
+    "size": 22708
+   },
+   {
+    "path_sha256": "3e4495075ecd18ae8523384fdb743ab6ad2a73492491df5b6763047d6a8d04e0",
+    "size": 19252
+   },
+   {
+    "path_sha256": "232d1c1c12b02e539968407e842236dc8e41266af43b3e560d056e46fc3f3708",
+    "size": 106876
+   },
+   {
+    "path_sha256": "f624375dbdf7609a6e2ea2e7e93dc60f2438bf80a9844659f3e0cc33c3910a21",
+    "size": 21628
+   },
+   {
+    "path_sha256": "9bfaa7194791509f3da89122fa74d466a6005233ede049cf3079fb7b17b9007c",
+    "size": 9784
+   },
+   {
+    "path_sha256": "fc42ee3ed30022cccc705e8e262c218bf3b6293206af6f83aed745122ff024fc",
+    "size": 127072
+   },
+   {
+    "path_sha256": "ba4fcfc1b3bc86ffdc524ad8e54f1bfb0e6fc22aef51394b935fe2109f3e27e0",
+    "size": 11044
+   },
+   {
+    "path_sha256": "7fef75e8b6110720a615c841751e7a6940a5167d90835924bbe8cf1651ac934d",
+    "size": 106480
+   },
+   {
+    "path_sha256": "2f036a87da3f2e800bc83571d25b9934b122d4f3c5a4faeb69e9f231ebde24f6",
+    "size": 102808
+   },
+   {
+    "path_sha256": "6940f299225b6d7f12b4fb7fc9f53af7a919a7d08bdf4dc56a80eb7468305999",
+    "size": 119908
+   }
+  ]
+ },
+ "tools": {
+  "llvm": {
+   "version_major": 23,
+   "tested": "23.1.5",
+   "url": "TODO",
+   "sha256": "TODO",
+   "note": "archive hash of the copy used so far: 62fdada7f6fa2b73856486dfbbdba3d2c1882991621615bcb55c60207611c6d4 (llvm.tar.xz)"
+  },
+  "ghidra": {
+   "version": "12.1.2 PUBLIC 20260605",
+   "url": "TODO",
+   "sha256": "b62e81a0390618466c019c60d8c2f796ced2509c4c1aea4a37644a77272cf99d",
+   "note": "hash of the local zip; URL still to pin"
+  },
+  "switch_loader": {
+   "version": "1.6.1-0f38957 for Ghidra 12.1.2",
+   "url": "TODO",
+   "sha256": "TODO"
+  },
+  "jdk": {
+   "version": "temurin 21.0.9+10",
+   "url": "TODO",
+   "sha256": "1c67df516e9795c0b09f5714bfe151da2e3cc988082042f5bbb60d75e4e63fb5",
+   "note": "hash of the local zip; URL still to pin"
+  },
+  "vulkan_sdk": {
+   "version": "TODO",
+   "url": "TODO",
+   "sha256": "TODO",
+   "note": "vulkan-1.lib; headers are shipped in the prebuilt folder later"
+  },
+  "python_packages": {
+   "capstone": "5.0.7",
+   "pyelftools": "0.33",
+   "numpy": "2.5.4",
+   "lz4": "4.4.5",
+   "hashes": "TODO"
+  }
+ },
+ "prebuilt": {},
+ "maps": {
+  "functions_final_rows": 45897,
+  "jump_tables_rows": 2328
+ },
+ "smoke": {
+  "title_marker_sha256": "b0a712c0ac10038e87683d7affad55178097d7d3f14f99ab79f34859900da8f0",
+  "min_presents": 60
+ },
+ "generated_c_sha256": {
+  "main": null,
+  "sdk": null
+ }
+}

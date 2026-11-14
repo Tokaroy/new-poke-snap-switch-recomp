@@ -9,13 +9,17 @@
 #include "nvn_internal.h"
 #include "nvn_shiny.h"
 #include <windows.h>
+#include <algorithm>
 #include <cinttypes>
+#include <cmath>
+#include <vector>
 #include <fstream>
 #include <map>
 #include <set>
 #include <sstream>
 #include <tuple>
 
+extern "C" void snap_shiny_fx_trigger(const char* species);   // runtime/ui/ui_shiny.cpp
 namespace nvn {
 namespace {
 struct TwinFile { uint32_t w = 0, h = 0, mips = 0; std::string file, species; const uint8_t* data = nullptr; bool tried = false; };
@@ -59,6 +63,65 @@ std::atomic<int> g_lastFrame{-1};
 std::atomic<uint64_t> g_lastKey{0};
 std::string g_lastSpecies;
 std::mutex g_spMu;   // guards g_lastSpecies only (NoteShiny can run under g_mu)
+// ---- M3 photo marks ----
+std::mutex g_pm;
+std::set<const void*> g_thumbs;                 // 360x240 thumbnails shot while a shiny was on screen
+std::map<const void*, int> g_rtShiny;           // render target -> present of the last shiny draw since its last clear
+std::atomic<int> g_copyFrame{-1};               // present of the last photo-sized copy from a flagged texture
+struct BadgeRect { float r[4]; int frame; };
+std::vector<BadgeRect> g_badges;
+void NoteRt(const void* rt, int w = 0, int h = 0) {
+  if (!rt) return;
+  std::lock_guard<std::mutex> g(g_pm);
+
+  g_rtShiny[rt] = g_presentCount;
+  static std::set<std::pair<const void*, int>> logged; static int n = 0;
+  if (w && w != 1920 && logged.insert({rt, w}).second && n++ < 60) fprintf(stderr, "[shiny] shiny drawn into %p %dx%d at present %d\n", rt, w, h, g_presentCount);
+}
+
+// ---- subject-accurate flag: samples-passed per shiny draw ----
+// A draw that used a twin is wrapped in its own occlusion query (nvn_draw.cpp DoDraw). Samples are summed per (present, species)
+// and scaled to 1080x720 pixels. A shutter thumbnail is flagged only when a species covers >= kMinPx of the frame it copies.
+thread_local std::string tl_twinSp; thread_local int tl_twinArea = 0;
+void TagTwin(const std::string& sp, const ShinyDraw& d) { if (d.rtW >= 640) { tl_twinSp = sp; tl_twinArea = d.rtW * d.rtH; } }
+struct PendQ { uint32_t qi; int frame; std::string sp; int area; };
+std::vector<PendQ> g_pendQ;
+std::map<int, std::map<std::string, double>> g_cov;   // present -> species -> 1080x720-equivalent pixels
+VkQueryPool g_sqPool = VK_NULL_HANDLE; uint32_t g_sqNext = 0; const uint32_t kSq = 1024;
+struct PendThumb { const void* dst; int shot; };
+std::vector<PendThumb> g_pendThumb;
+std::map<const void*, std::string> g_thumbSp;
+bool g_selFlag = false; int g_selFrame = -100000;   // the photo last shown large in photo select: flagged?
+const double kMinPx = 300.0;
+void FxOnce(const std::string& sp) {
+  static std::atomic<int> lastFx{-100000};
+  if (g_presentCount - lastFx.load() > 150) { lastFx.store(g_presentCount); snap_shiny_fx_trigger(sp.c_str()); }
+}
+void PollLocked() {   // g_pm held
+  Host* h = g_host;
+  if (h && g_sqPool && !g_pendQ.empty()) {
+    for (size_t i = 0; i < g_pendQ.size();) {
+      uint64_t r[2] = {0, 0};
+      const VkResult vr = vkGetQueryPoolResults(h->device, g_sqPool, g_pendQ[i].qi, 1, sizeof r, r, sizeof r, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+      if ((vr == VK_SUCCESS || vr == VK_NOT_READY) && r[1]) {
+        g_cov[g_pendQ[i].frame][g_pendQ[i].sp] += (double)r[0] * (1080.0 * 720.0) / (double)std::max(g_pendQ[i].area, 1);
+        g_pendQ.erase(g_pendQ.begin() + i);
+      } else i++;
+    }
+  }
+  while (g_cov.size() > 12) g_cov.erase(g_cov.begin());
+  for (size_t i = 0; i < g_pendThumb.size();) {
+    PendThumb pt = g_pendThumb[i];
+    if (g_presentCount < pt.shot + 3) { i++; continue; }
+    std::string best; double bestPx = 0;
+    for (int f = pt.shot - 1; f <= pt.shot + 1; f++) { auto it = g_cov.find(f); if (it == g_cov.end()) continue; for (auto& kv : it->second) if (kv.second > bestPx) { bestPx = kv.second; best = kv.first; } }
+    g_pendThumb.erase(g_pendThumb.begin() + i);
+    const bool shiny = bestPx >= kMinPx;
+    if (shiny) { g_thumbs.insert(pt.dst); g_thumbSp[pt.dst] = best; FxOnce(best); } else { g_thumbs.erase(pt.dst); g_thumbSp.erase(pt.dst); }
+    static int n = 0; if (n++ < 400) fprintf(stderr, "[shiny] thumbnail %p shot at present %d: %s (%s %.0f px at 1080x720)\n", pt.dst, pt.shot, shiny ? "SHINY subject" : "no shiny subject", best.empty() ? "-" : best.c_str(), bestPx);
+  }
+}
+bool Flagged(const void* t) { std::lock_guard<std::mutex> g(g_pm); return g_thumbs.count(t) || g_rtShiny.count(t); }
 void NoteShiny(uint64_t key, const std::string& sp) {
   g_lastFrame.store(g_presentCount, std::memory_order_relaxed);
   if (g_lastKey.exchange(key) != key) { std::lock_guard<std::mutex> g(g_spMu); g_lastSpecies = sp; }
@@ -140,6 +203,40 @@ void ShinyBufferFinalize(uint64_t va, uint64_t size) {
 
 TextureImpl* ShinySubstitute(TextureImpl* t, const ShinyDraw& d) {
   const Cfg& c = C();
+  bool selBig = false;   // photo select's large preview (a 360x240 thumbnail drawn wide) names the selected photo; the Score polaroid shows it
+  if (d.rtW == 1920 && d.vbf && t->b.width == 360 && t->b.height == 240) {
+    const float w = std::fabs(d.vbf[14 * 2] - d.vbf[0]), w2 = std::fabs(d.vbf[14 * 1] - d.vbf[0]), ww = std::max(w, w2);
+    if (ww > 600) { std::lock_guard<std::mutex> g(g_pm); g_selFlag = g_thumbs.count(t) != 0; g_selFrame = g_presentCount; selBig = true; }
+  }
+  bool flaggedDraw = Flagged(t);
+  if (d.rtW == 1920 && t->b.width == 1080 && t->b.height == 720) { std::lock_guard<std::mutex> g(g_pm); flaggedDraw = g_selFlag && g_presentCount - g_selFrame < 6000; }
+  (void)selBig;
+  if (d.rtW == 1920 && d.vbf && (t->b.width == 360 || t->b.width == 1080) && flaggedDraw) {   // a flagged photo is being drawn as a sprite
+    float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
+    for (int i = 0; i < 4; i++) { const float x = d.vbf[14 * i], y = d.vbf[14 * i + 1]; x0 = std::min(x0, x); x1 = std::max(x1, x); y0 = std::min(y0, y); y1 = std::max(y1, y); }
+    if (x1 - x0 > 40 && y1 - y0 > 24 && x1 - x0 < 1900 && y1 - y0 < 1060) {
+      std::lock_guard<std::mutex> g(g_pm);
+      for (auto& b : g_badges) if (b.frame >= g_presentCount - 1 && std::fabs(b.r[0] - x0) < 1 && std::fabs(b.r[1] - y0) < 1 && std::fabs(b.r[2] - x1) < 1) { b.frame = g_presentCount; goto have; }
+      if (g_badges.size() > 256) g_badges.erase(g_badges.begin(), g_badges.begin() + 128);
+      g_badges.push_back({{x0, y0, x1, y1}, g_presentCount});
+      static int nb = 0; if (nb++ < 300) fprintf(stderr, "[shiny] badge rect %.0f,%.0f-%.0f,%.0f on %p %dx%d at present %d\n", x0, y0, x1, y1, (const void*)t, t->b.width, t->b.height, g_presentCount);
+      have:;
+    }
+  }
+  { static const bool uiTrace = getenv("SNAP_SHINY_UITRACE") != nullptr;   // debug: which textures UI draws sample (photo thumbnails)
+    if (uiTrace && ((t->b.width == 360 && t->b.height == 240) || (t->b.width == 1080 && t->b.height == 720))) {
+      static std::set<std::tuple<void*, int, int, int>> seen; static int n = 0;
+      std::lock_guard<std::mutex> g(g_mu);
+      if (seen.insert({(void*)t, d.prog, d.rtW, g_presentCount / 300}).second && n++ < 700) {
+        fprintf(stderr, "[shuitrace] p%d tex=%p %dx%d f%x flags=%x pool=%p off=%llx up=%d rt=%dx%d prog=%d", g_presentCount, (void*)t, t->b.width, t->b.height, t->b.format, t->b.flags, t->b.pool, (long long)t->b.poolOffset, (int)t->uploaded, d.rtW, d.rtH, d.prog);
+        if (d.vbf) { fprintf(stderr, " | vb:"); for (int k = 0; k < 24; k++) fprintf(stderr, " %g", d.vbf[k]); }
+        for (int i = 0; i < 4; i++) if (auto* p = static_cast<const PoolImpl*>(d.uboPool[i])) if (p->storage && d.uboRange[i] >= 16) {
+          const float* f = reinterpret_cast<const float*>(static_cast<const uint8_t*>(p->storage) + d.uboOff[i]);
+          fprintf(stderr, " | u%d(%llu):", i, (unsigned long long)d.uboRange[i]); for (int k = 0; k < 40 && (uint64_t)k * 4 < d.uboRange[i]; k++) fprintf(stderr, " %g", f[k]);
+        }
+        fprintf(stderr, "\n");
+      }
+    } }
   if (!t->shTried && !t->uploaded) {
     t->shTried = true;
     const TextureBuilder& b = t->b;
@@ -170,7 +267,7 @@ TextureImpl* ShinySubstitute(TextureImpl* t, const ShinyDraw& d) {
   if (it == c.table.end()) return t;
   const bool shiny = c.forceAll || (c.force && key == c.force) || c.odds == 1 || RollInstance(key, d, it->second.species);
   if (!shiny) return t;
-  if (t->shAlt) { NoteShiny(key, it->second.species); return t->shAlt; }
+  if (t->shAlt) { NoteShiny(key, it->second.species); NoteRt(d.rt0, d.rtW, d.rtH); TagTwin(it->second.species, d); return t->shAlt; }
   std::lock_guard<std::mutex> g(g_mu);
   if (t->shAlt) return t->shAlt;
   TwinFile& tw = const_cast<TwinFile&>(it->second);
@@ -191,7 +288,7 @@ TextureImpl* ShinySubstitute(TextureImpl* t, const ShinyDraw& d) {
   s->b.pool = nullptr; s->b.poolOffset = 0; s->b.packaged = tw.data;
   s->shTried = true;
   t->shAlt = s;
-  NoteShiny(key, tw.species);
+  NoteShiny(key, tw.species); NoteRt(d.rt0, d.rtW, d.rtH); TagTwin(tw.species, d);
   return s;
 }
 }  // namespace nvn
@@ -206,6 +303,57 @@ extern "C" int snap_shiny_last(char* out, int n) {
 extern "C" int snap_shiny_recent(int frames, char* out, int n) {
   const int last = nvn::g_lastFrame.load(std::memory_order_relaxed);
   if (last < 0 || nvn::g_presentCount - last > frames) return 0;
+  if (out && n > 0) { std::lock_guard<std::mutex> g(nvn::g_spMu); snprintf(out, (size_t)n, "%s", nvn::g_lastSpecies.c_str()); }
+  return 1;
+}
+
+namespace nvn {
+void ShinyThumbCapture(TextureImpl* dst) {   // the 360x240 thumbnail pass of a shutter: decide from the shiny draws' pixel coverage
+  std::lock_guard<std::mutex> g(g_pm);
+  g_pendThumb.push_back({dst, g_presentCount});
+  PollLocked();
+}
+uint32_t ShinyQueryBegin(Host* h, VkCommandBuffer cb) {
+  if (tl_twinSp.empty() || !h->hostQueryReset) { tl_twinSp.clear(); return UINT32_MAX; }
+  if (!g_sqPool) { VkQueryPoolCreateInfo qi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO}; qi.queryType = VK_QUERY_TYPE_OCCLUSION; qi.queryCount = kSq; if (vkCreateQueryPool(h->device, &qi, nullptr, &g_sqPool) != VK_SUCCESS) { g_sqPool = VK_NULL_HANDLE; tl_twinSp.clear(); return UINT32_MAX; } }
+  std::lock_guard<std::mutex> g(g_pm);
+  g_host = h;
+  if (g_pendQ.size() > kSq - 64) g_pendQ.erase(g_pendQ.begin(), g_pendQ.begin() + 256);
+  const uint32_t qi = g_sqNext++ % kSq;
+  vkResetQueryPool(h->device, g_sqPool, qi, 1);
+  vkCmdBeginQuery(cb, g_sqPool, qi, h->features.occlusionQueryPrecise ? VK_QUERY_CONTROL_PRECISE_BIT : 0);
+  g_pendQ.push_back({qi, g_presentCount, tl_twinSp, tl_twinArea});
+  tl_twinSp.clear();
+  return qi;
+}
+void ShinyQueryDiscard() { tl_twinSp.clear(); }
+void ShinyQueryEnd(VkCommandBuffer cb, uint32_t qi) { if (qi != UINT32_MAX) vkCmdEndQuery(cb, g_sqPool, qi); }
+void ShinyCopyTex(const TextureImpl* s, const TextureImpl* d) {
+  const bool f = Flagged(s);
+  std::lock_guard<std::mutex> g(g_pm);
+  if (f) g_rtShiny[d] = g_presentCount; else g_rtShiny.erase(d);
+  static int n = 0; if (f && n++ < 20) fprintf(stderr, "[shiny] flagged copy %p %dx%d -> %p %dx%d at present %d\n", (const void*)s, s->b.width, s->b.height, (const void*)d, d->b.width, d->b.height, g_presentCount);
+}
+void ShinyRtClear(const TextureImpl* rt) { std::lock_guard<std::mutex> g(g_pm); g_rtShiny.erase(rt); }
+void ShinyTexGone(const TextureImpl* t) { std::lock_guard<std::mutex> g(g_pm); g_thumbs.erase(t); g_rtShiny.erase(t); }
+void ShinyCopySrc(const TextureImpl* t) {   // a GPU->guest copy of a photo-sized image (the album photo before JpegEncoder)
+  if (t->b.width < 640) return;
+  const bool f = Flagged(t);
+  static int n = 0; if (n++ < 40) fprintf(stderr, "[shiny] photo copy from %p %dx%d at present %d: %s\n", (const void*)t, t->b.width, t->b.height, g_presentCount, f ? "flagged SHINY" : "not flagged");
+  g_copyFrame.store(f ? g_presentCount : -1, std::memory_order_relaxed);
+}
+}  // namespace nvn
+
+extern "C" int snap_shiny_badge_rects(float* out, int max) {
+  std::lock_guard<std::mutex> g(nvn::g_pm);
+  nvn::PollLocked();
+  int k = 0;
+  for (auto& b : nvn::g_badges) if (b.frame >= nvn::g_presentCount - 2 && k < max) { for (int i = 0; i < 4; i++) out[k * 4 + i] = b.r[i]; k++; }
+  return k;
+}
+extern "C" int snap_shiny_copy_flag(int frames, char* out, int n) {
+  const int f = nvn::g_copyFrame.load(std::memory_order_relaxed);
+  if (f < 0 || nvn::g_presentCount - f > frames) return 0;
   if (out && n > 0) { std::lock_guard<std::mutex> g(nvn::g_spMu); snprintf(out, (size_t)n, "%s", nvn::g_lastSpecies.c_str()); }
   return 1;
 }

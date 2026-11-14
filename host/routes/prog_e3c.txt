@@ -1,0 +1,10 @@
+# fixture: prog_e33
+# Third pass on the saved e33 state (bits 0,1,2,32,33): hub, enter the Laboratory, see whether event 3 plays.
+repeat @f300 @f30000 120 8 A
+wait ui=main_menu:MainMenu timeout=300
+@f200 8 Down
+@f400 8 A
+wait dialog timeout=120
+repeat @f0 @f30000 100 8 A
+wait ui=main_menu:MainMenu timeout=300
+end @f600

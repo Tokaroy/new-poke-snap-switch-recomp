@@ -80,10 +80,15 @@ LRESULT ui_wndproc_impl(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (!(l & (1 << 30)) && !g.modal.load()) overlay_set_open(!g.open.load());   // key-down edge only, not the auto-repeat
         return 0;
       }
+      if (w == VK_F3 && fps_overlay_hotkey_free()) {   // performance overlay Off -> FPS -> Detailed (ui_fps.cpp); a bound F3 stays the game's
+        if (!(l & (1 << 30))) fps_overlay_cycle();
+        return 0;
+      }
       break;
     case WM_KEYUP:
     case WM_SYSKEYUP:
       if (w == VK_F1) return 0;
+      if (w == VK_F3 && fps_overlay_hotkey_free()) return 0;
       break;
     case WM_MOUSEWHEEL:
       hle::input::post_wheel(GET_WHEEL_DELTA_WPARAM(w));
@@ -349,6 +354,21 @@ static void ui_present_impl(const SnapUiFrame* f);
 extern "C" void snap_ui_present(const SnapUiFrame* f) {
   static int errors = 0;
   try {
+    // performance overlay cost (ui_fps.cpp): CPU time of the whole host-overlay frame while it is on, logged every 1200 presents
+    if (snap::ui::fps_overlay_mode() != 0) {
+      LARGE_INTEGER a, b, fq; QueryPerformanceCounter(&a);
+      ui_present_impl(f);
+      QueryPerformanceCounter(&b); QueryPerformanceFrequency(&fq);
+      static float samp[1200]; static int n = 0;
+      samp[n] = (float)((double)(b.QuadPart - a.QuadPart) * 1e6 / (double)fq.QuadPart);
+      if (++n == 1200) {   // median and p99 (the mean is dominated by the present thread being preempted on a busy PC)
+        double sum = 0; for (float s : samp) sum += s;
+        std::sort(samp, samp + n);
+        hle::log("ui: performance overlay %d: host overlay CPU per present: median %.1f us, p99 %.1f us, mean %.1f us", snap::ui::fps_overlay_mode(), samp[n / 2], samp[n * 99 / 100], sum / n);
+        n = 0;
+      }
+      return;
+    }
     ui_present_impl(f);
   } catch (const std::exception& e) {
     if (errors++ < 20) hle::log("ui: exception in the overlay frame: %s", e.what());
@@ -378,10 +398,11 @@ static void ui_present_impl(const SnapUiFrame* f) {
   const uint64_t serial = hubr.message_serial();
   if (serial != g.seen_serial) {
     g.seen_serial = serial;
-    if (!hubr.message().empty()) g.toast_until = now + 12.0;
+    if (!hubr.message().empty()) g.toast_until = now + 8.0;   // once per message: shown 8 s, the last 1.5 s fading
   }
   const bool toast = !open && now < g.toast_until;
-  if (!open && !shader && !toast && !shiny_fx_active()) return;
+  const bool perf = fps_overlay_tick();   // performance overlay (ui_fps.cpp); one atomic load when Off
+  if (!open && !shader && !toast && !perf && !shiny_fx_active() && !shiny_badges_active()) return;
   if (!init_imgui(f)) return;
   if (open || shader) hubr.poll(8);   // keeps rebinding and the live readout fresh even when the game is not polling
 
@@ -403,10 +424,13 @@ static void ui_present_impl(const SnapUiFrame* f) {
       bool close = false;
       draw_menu(size, &close);
       if (close) overlay_set_open(false);
-    } else if (!draw_toast(size, now)) {
-      g.toast_until = 0;
+    } else if (toast) {   // only inside its window: other host layers (performance overlay, shiny badges) also draw frames
+      ImGui::PushStyleVar(ImGuiStyleVar_Alpha, (float)std::clamp((g.toast_until - now) / 1.5, 0.0, 1.0));   // fades out over the last 1.5 s
+      if (!draw_toast(size, now)) g.toast_until = 0;
+      ImGui::PopStyleVar();
     }
-    if (!open && !shader) draw_shiny_fx(size);   // shiny capture effect (ui_shiny.cpp)
+    if (!open && !shader) { draw_shiny_fx(size); draw_shiny_badges(size); }   // shiny capture effect (ui_shiny.cpp)
+    if (perf && !shader) draw_fps_overlay(size);   // over the game and the F1 menu; never in the game's own photos (host overlay)
     ImGui::Render();
     dd = ImGui::GetDrawData();
   }

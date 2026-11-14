@@ -100,3 +100,32 @@ void draw_shiny_fx(ImVec2 size) {
   }
 }
 }  // namespace snap::ui
+
+extern "C" int snap_shiny_badge_rects(float* out4, int max);   // runtime/nvn/nvn_shiny.cpp
+
+namespace snap::ui {
+bool shiny_badges_active() { float r[4]; return snap_shiny_badge_rects(r, 1) > 0; }
+
+// Gold star badge on every sampled shiny photo (photo select list, pop-up, score screen, album save). The rects are the sprite quads of
+// the game's own UI in 1920x1080 space, scaled to the window. Looks like the game's yellow selection tags: white ring, gold disc, star.
+void draw_shiny_badges(ImVec2 size) {
+  float r[64 * 4];
+  const int n = snap_shiny_badge_rects(r, 64);
+  if (!n) return;
+  ImDrawList* dl = ImGui::GetBackgroundDrawList();
+  const float sx = size.x / 1920.0f, sy = size.y / 1080.0f;
+  const double now = now_secs();
+  for (int i = 0; i < n; i++) {
+    const float x0 = r[i * 4] * sx, y0 = r[i * 4 + 1] * sy, x1 = r[i * 4 + 2] * sx, y1 = r[i * 4 + 3] * sy;
+    const float rad = std::clamp((y1 - y0) * 0.13f, 9.0f * sy, 34.0f * sy);
+    const ImVec2 c(x1 - rad * 1.25f, y0 + rad * 1.25f);
+    const float pulse = 1.0f + 0.06f * (float)std::sin(now * 4.0);
+    dl->AddCircleFilled(ImVec2(c.x + 1.5f, c.y + 2.0f), rad * 1.12f, IM_COL32(0, 0, 0, 70), 28);               // soft shadow
+    dl->AddCircleFilled(c, rad * 1.1f, IM_COL32(255, 250, 238, 255), 28);                                         // white ring
+    dl->AddCircleFilled(c, rad * 0.9f, IM_COL32(248, 213, 71, 255), 28);                                          // gold disc
+    star(dl, c, rad * 0.68f * pulse, 0.45f, IM_COL32(255, 255, 255, 255), 5);                                      // star
+    star(dl, ImVec2(c.x - rad * 1.05f, c.y + rad * 0.15f), rad * 0.32f, 0.2f, IM_COL32(255, 232, 120, 235), 4);    // sparkles
+    star(dl, ImVec2(c.x + rad * 0.2f, c.y + rad * 1.05f), rad * 0.24f, 0.2f, IM_COL32(255, 232, 120, 200), 4);
+  }
+}
+}  // namespace snap::ui

@@ -1,0 +1,211 @@
+[
+ {
+  "n": 216,
+  "name": "Jirachi",
+  "normal": "white body, yellow head points, teal-blue wish tags",
+  "shiny": "white body with a faint pink tint, wish tags turn red",
+  "desc": "blue tags turn red, body faintly pink",
+  "rules": "235>29:40;grey:0.85-1.0>10:0.015",
+  "source": "https://bulbapedia.bulbagarden.net/wiki/Jirachi_(Pok%C3%A9mon)",
+  "confidence": "medium",
+  "note": "Red tags and pinker body from web search summaries citing Fandom and Pokemon GO coverage; Bulbapedia returned 403. Original draft had the body going gold, which was wrong."
+ },
+ {
+  "n": 217,
+  "name": "Monferno",
+  "normal": "orange-brown fur, cream face/belly, yellow flame parts, blue accents",
+  "shiny": "orange fur turns red, blue accents turn violet-magenta, cream turns yellow-cream",
+  "desc": "orange fur to red, blue accents to violet",
+  "rules": "68>12:14:0.93:0.93;235>315:25:0.85;grey:0.70-1.0>104:0.085",
+  "source": "https://pokemondb.net/sprites/monferno (HOME normal+shiny)",
+  "confidence": "medium",
+  "note": "Re-measured; rules changed. Orange fur 55-80 with chroma>0.12 (about 45%) to ~12 (single rule covering 54-82). The old 50>20 rule wrongly caught low-chroma cream at hue 50-60 (shiny cream goes to hue ~104, not red); the cream is only partly caught by the grey tint because its chroma 0.04-0.08 overlaps the hue rule, so medium confidence. Blue 220-260 (7%) to 308-323 via one rule 235>315 width 25. Light greys to hue ~104 at chroma ~0.085. Pixel error 0.113 to 0.065."
+ },
+ {
+  "n": 218,
+  "name": "Luxray",
+  "normal": "dark charcoal body, light blue underfur and ears, yellow eyes",
+  "shiny": "blue parts turn gold-yellow-green, yellow eyes turn orange, dark body stays neutral",
+  "desc": "blue underfur to gold, yellow eyes to orange",
+  "rules": "90>58:10:0.92:0.86;230>93:18:1.8:1.04",
+  "source": "https://pokemondb.net/sprites/luxray (HOME normal+shiny)",
+  "confidence": "high",
+  "note": "Re-measured. Blue (200-240, 19%) to ~93-100 with chroma x1.8-2.3. Yellow eyes (80-100, 6%) to ~59-72. Dark grey body (72%) stays neutral (about +0.06 L, no tint). Widening the blue window to 215+-35 or changing the eye rule made pixel error worse, so the original is kept. Pixel error 0.095 to 0.053."
+ },
+ {
+  "n": 219,
+  "name": "Rampardos",
+  "normal": "blue-grey body, tan skull plate, red-orange markings",
+  "shiny": "blue parts turn red",
+  "desc": "blue-grey body turns red",
+  "rules": "262>29:35;245>29:35",
+  "source": "https://bulbapedia.bulbagarden.net/wiki/Rampardos_(Pok%C3%A9mon)",
+  "confidence": "medium",
+  "note": "Fandom wiki says blue parts turn red; fandomspot calls it red. Draft was red-brown via 40; retargeted to red with tighter windows."
+ },
+ {
+  "n": 220,
+  "name": "Drifloon",
+  "normal": "purple balloon body, yellow patches, white",
+  "shiny": "yellow body with light blue patches, white kept",
+  "desc": "purple body turns yellow, yellow patches turn light blue",
+  "rules": "309>100:25:1.35:1.14;96>208:20:0.6:0.93",
+  "source": "pokemondb.net HOME sprites, normal vs shiny, measured in OKLCh",
+  "confidence": "high",
+  "note": "Re-measured, unchanged. Body hue 309 (C0.09) -> 101 (C0.13, L x1.14); yellow patches 96 (C0.16) -> 208 (C0.10, L x0.93); whites unchanged. Rules cut color error from 0.186 to 0.037, no collateral."
+ },
+ {
+  "n": 222,
+  "name": "Croagunk",
+  "normal": "blue body, cream belly, orange cheek sacs",
+  "shiny": "light teal-cyan body, pink-red cheek sacs, cream kept",
+  "desc": "blue body lightens to teal-cyan, orange sacs turn pink-red",
+  "rules": "254>180:22:0.6:1.2;55>358:20:0.9:0.93",
+  "source": "pokemondb.net HOME sprites, normal vs shiny, measured in OKLCh",
+  "confidence": "high",
+  "note": "Body hue 254 (C0.11, L0.54) -> 179 (C0.07, L0.66); orange 45-75 -> 358 (C x0.89, L x0.93); yellow 75-105 and cream greys unchanged, so the orange window was tightened from 22 to 20 to stay off yellow. Error 0.110 -> 0.021."
+ },
+ {
+  "n": 223,
+  "name": "Lumineon",
+  "normal": "blue-teal body, pale blue and pink fins",
+  "shiny": "yellow-brown body and fins (eyes turn red)",
+  "desc": "blue body turns yellow-brown",
+  "rules": "250>75:35;215>85:30",
+  "source": "https://bulbapedia.bulbagarden.net/wiki/Lumineon_(Pok%C3%A9mon)",
+  "confidence": "medium",
+  "note": "Dotesports says yellow-brown with red eyes. Draft had green. Eyes are skipped textures."
+ },
+ {
+  "n": 228,
+  "name": "Serperior",
+  "normal": "green body, cream-yellow belly and markings",
+  "shiny": "blue body, lime-green belly and markings",
+  "desc": "dark green body turns blue, yellow turns lime",
+  "rules": "100>122:25;148>133:7:1.7;160>235:4.5:0.75:0.95",
+  "source": "pokemondb.net HOME sprites, normal vs shiny, measured in OKLCh",
+  "confidence": "medium",
+  "note": "Yellow 80-120 -> 121 lime. Body splits by lightness: dark green (L<0.6, hue 155-160, 74% of pixels) -> azure 235 (C x0.72); lighter green (L>0.65, hue 150-155) -> green 132 (C x1.9). Hue windows only separate them near 155, so dark window is 160+-4.5 and light is 148+-7 (sprite-based; texture hues may differ, hence medium). Error 0.103 -> 0.061 (previous rule 0.080)."
+ },
+ {
+  "n": 230,
+  "name": "Unfezant",
+  "normal": "grey-brown feathers, red wattle, teal-green wing accents",
+  "shiny": "browner feathers, purple-magenta wattle/face, teal accents slightly bluer",
+  "desc": "red wattle turns magenta-purple, greys get a brown tint",
+  "rules": "10>325:22;158>177:15:0.72;grey:0.38-0.6>58:0.038;grey:0.6-1.0>100:0.03",
+  "source": "pokemondb.net HOME sprites (male sprite), normal vs shiny, measured in OKLCh",
+  "confidence": "high",
+  "note": "Red hue ~10 (C0.19) -> 325 (same chroma); green accents sit at hue 155-160 (not 150) -> 177 (C x0.72), window recentered to 158+-15; grey L0.4-0.6 -> hue 58 C0.038; grey L0.6-1.0 -> hue 100 C0.03. Lightness shifts (mid grey darker, light grey lighter) not expressible. Error 0.110 -> 0.078."
+ },
+ {
+  "n": 231,
+  "name": "Woobat",
+  "normal": "light blue body, dark blue-grey wings, pink nose",
+  "shiny": "light green body, blue wings, pink kept",
+  "desc": "light blue body turns light green, grey wings turn blue",
+  "rules": "212>133:25:1.6:1.07;grey:0.4-0.6>265:0.088",
+  "source": "pokemondb.net HOME sprites, normal vs shiny, measured in OKLCh",
+  "confidence": "high",
+  "note": "Re-measured, unchanged. Body 213 (C0.06, L0.82) -> 133 (C0.10, L0.88); neutral mid-grey wing/ear texels (L0.4-0.6) -> hue 265 C0.088; pinks (hue 345-30) not caught. Error 0.106 -> 0.027."
+ },
+ {
+  "n": 234,
+  "name": "Sigilyph",
+  "normal": "yellow, blue, red and green body parts on black",
+  "shiny": "lime-green where yellow, orange-yellow where blue, green parts turn pale yellow, red kept",
+  "desc": "yellow to lime green, blue to orange, green to pale yellow",
+  "rules": "90>121:18;230>61:20;138>84:12:0.5",
+  "source": "pokemondb.net HOME sprites, normal vs shiny, measured in OKLCh",
+  "confidence": "high",
+  "note": "Re-measured, unchanged. Yellow 75-105 -> 121 (29% of pixels); blue 225-240 -> 61 (C0.11 -> 0.12); green 135-150 -> 84 (C x0.5); red 25 and black unchanged (red C slightly lower, skipped). Error 0.112 -> 0.052."
+ },
+ {
+  "n": 235,
+  "name": "Archeops",
+  "normal": "blue body, yellow crest/belly, red wing feathers, teal accents",
+  "shiny": "teal-cyan body, paler yellow-green crest, orange-brown wing feathers, blue accents",
+  "desc": "blue body turns teal-cyan, red feathers turn orange, teal accents turn blue",
+  "rules": "250>190:20:0.7:1.18;207>232:12:1.25:1.1;85>69:18:0.65;24>45:20:0.7",
+  "source": "pokemondb.net HOME sprites, normal vs shiny, measured in OKLCh",
+  "confidence": "high",
+  "note": "Blue 250 (C0.16) -> 190 (C0.11, L0.56 -> 0.66); teal 207 -> 232; yellow hue 75-105 -> 68-75 (C x0.65), window recentered to 85+-18; red 24 -> 45 (C x0.71). Error 0.112 -> 0.017."
+ },
+ {
+  "n": 239,
+  "name": "Joltik",
+  "normal": "yellow body, blue legs and markings, black",
+  "shiny": "neon green body, darker blue eyes and feet",
+  "desc": "yellow body turns green",
+  "rules": "100>135:35",
+  "source": "https://bulbapedia.bulbagarden.net/wiki/Joltik_(Pok%C3%A9mon)",
+  "confidence": "medium",
+  "note": "Bulbapedia (via search summary) says neon green vs yellow. Draft said orange."
+ },
+ {
+  "n": 242,
+  "name": "Beheeyem",
+  "normal": "orange-brown body, tan head, green eyes and markings",
+  "shiny": "slightly redder brown body, blue eyes and markings",
+  "desc": "green markings turn blue, body shifts slightly redder",
+  "rules": "157>229:15:0.65:1.07;51>36:20:0.85",
+  "source": "pokemondb.net HOME sprites, normal vs shiny, measured in OKLCh",
+  "confidence": "high",
+  "note": "Green markings hue ~157 (C0.12) -> 228 blue (C0.08), about 4% of pixels, window recentered to 157+-15; body hue 45-60 -> 37 at C0.06 -> 0.05 (subtle). Error 0.026 -> 0.013."
+ },
+ {
+  "n": 244,
+  "name": "Hydreigon",
+  "normal": "dark blue-grey body, crimson red parts, blue head and wings",
+  "shiny": "green head/wings, magenta-purple where red",
+  "desc": "blue parts turn green, red parts turn magenta",
+  "rules": "358>320:14:0.65:1.2;248>133:22:1.35:1.06",
+  "source": "pokemondb.net HOME sprites, normal vs shiny, measured in OKLCh",
+  "confidence": "high",
+  "note": "Blue 245-250 (C0.08) -> 131 green (C0.11); red hue 345-5 (C0.18, 21% of pixels) -> 320 magenta (C0.12, L x1.2). A separate hue 15-30 group (3%) stays unchanged, so the red window was tightened from 3+-18 to 358+-14 to avoid catching it. Neutral dark greys unchanged. Error 0.098 -> 0.029."
+ },
+ {
+  "n": 246,
+  "name": "Pancham",
+  "normal": "white/cream face and belly, neutral grey-black fur",
+  "shiny": "brown fur, cream-white face and belly",
+  "desc": "grey fur turns brown, white turns cream",
+  "rules": "grey:0.05-0.6>40:0.05;grey:0.6-0.75>68:0.036;grey:0.75-1.0>93:0.04",
+  "source": "pokemondb.net HOME sprites, normal vs shiny, measured in OKLCh",
+  "confidence": "high",
+  "note": "Re-measured, unchanged. 98% of normal pixels are neutral. Mid grey (L0.35-0.6) -> hue 39-51 C0.055; L0.6-0.8 -> hue 68; white (L0.8-1.0) -> hue 93 C0.04 (cream); black below L0.05 stays black. Shiny near-black pixels are lighter (L0.34), which grey rules cannot do. Error 0.069 -> 0.049."
+ },
+ {
+  "n": 247,
+  "name": "Talonflame",
+  "normal": "red-orange body, dark grey wings, beige underside",
+  "shiny": "red body, deep red wings, beige underside",
+  "desc": "dark grey wings turn red, body deepens to red",
+  "rules": "grey:0.22-0.45>25:0.15;grey:0.45-0.9>58:0.07",
+  "source": "pokemondb.net HOME sprites, normal vs shiny, measured in OKLCh",
+  "confidence": "high",
+  "note": "Body hue 31 -> 28 (C0.187 -> 0.18), too small to rule; dark neutral grey (L0.2-0.45, 42% of pixels) -> red hue 26 C0.17, L0.34 -> 0.48 (chroma 0.15 because the grey rule cannot lighten; scored better than 0.12); light greys -> beige hue 60 C0.07. Error 0.112 -> 0.078."
+ },
+ {
+  "n": 249,
+  "name": "Espurr",
+  "normal": "lavender-grey fur, cream face, yellow eyes, purple ear insides",
+  "shiny": "pale pink-white fur, eyes and ear insides unchanged",
+  "desc": "lavender-grey fur turns pale pink-white",
+  "rules": "grey:0.6-0.95>340:0.04;291>331:9:1.05:1.1",
+  "source": "pokemondb.net HOME sprites, normal vs shiny, measured in OKLCh",
+  "confidence": "high",
+  "note": "Fur (grey, 90% of pixels) hue 288, C0.035, L0.83 -> hue 340, C0.04, L0.91 (lighter, not fully expressible); a colored lavender fringe at hue 285-300 (5%) -> 330 added as 291>331:9; ear insides (hue ~315) and eyes (hue ~250) unchanged. Change is subtle. Error 0.078 -> 0.069."
+ },
+ {
+  "n": 251,
+  "name": "Clawitzer",
+  "normal": "blue body, large blue claw, yellow-white accents",
+  "shiny": "red body with white, some blue accents kept",
+  "desc": "blue body turns red",
+  "rules": "255>29:35",
+  "source": "https://bulbapedia.bulbagarden.net/wiki/Clawitzer_(Pok%C3%A9mon)",
+  "confidence": "medium",
+  "note": "Two sources describe red and white with blue accents. Draft green-teal was wrong."
+ }
+]

@@ -607,7 +607,8 @@ bool Hub::load_config(const std::string& path, const std::string& legacy) {
   Mapping m;
   std::string e;
   bool ok = true;
-  std::string note;
+  std::string note, detail;   // note: the on-screen notice (file names only, never a user path); detail: the log line (full paths)
+  auto name = [](const std::string& p) { return fs::path(p).filename().string(); };
   if (fs::exists(path, ec)) {
     if (!read_mapping_file(path, &m, &e)) {
       ok = false;
@@ -615,13 +616,16 @@ bool Hub::load_config(const std::string& path, const std::string& legacy) {
       fs::path bad = path;
       bad += ".invalid";
       fs::copy_file(path, bad, fs::copy_options::overwrite_existing, ec);
-      note = "Controls file is invalid, using default controls. " + e + " (kept as " + bad.string() + "; saving a change overwrites input.json)";
+      note = "Controls file is invalid, using default controls. " + e + " (kept as " + name(bad.string()) + "; saving a change overwrites " + name(path) + ")";
+      detail = "invalid " + path + ", kept as " + bad.string();
     }
   } else if (!legacy.empty() && fs::exists(legacy, ec)) {
     if (read_mapping_file(legacy, &m, &e)) {
       std::string werr;
       write_mapping_file(m, path, &werr);
-      note = "Migrated the old controls file " + legacy + " to " + path;
+      // once: input.json now exists, so the next start loads it and says nothing
+      note = "Moved your controls from " + name(legacy) + " to " + name(path) + ".";
+      detail = "migrated " + legacy + " to " + path + (werr.empty() ? "" : " (write failed: " + werr + ")");
     } else {
       ok = false;
       m = Mapping::defaults();
@@ -635,7 +639,7 @@ bool Hub::load_config(const std::string& path, const std::string& legacy) {
   std::lock_guard<std::mutex> g(mu_);
   map_ = m;
   path_ = path;
-  if (!note.empty()) { set_message_locked(note); log("input: %s", note.c_str()); }
+  if (!note.empty()) { set_message_locked(note); log("input: %s%s%s", note.c_str(), detail.empty() ? "" : " | ", detail.c_str()); }
   return ok;
 }
 

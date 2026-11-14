@@ -3,6 +3,7 @@
 //   commands: info | shared | init [--probe N] [--libc] | run [--trace file] [--timeout s] [--stop-after-init] | eh | lua | bench | all
 // Run from the project root (the default ELF paths are relative to it). Output goes to stderr.
 #include <windows.h>
+#include "launcher.h"
 #include <tlhelp32.h>
 #include <shobjidl.h>
 #include <dbghelp.h>
@@ -930,6 +931,14 @@ int main(int argc, char **argv) {
     if (!cpu_has_v3()) { fprintf(stderr, "boot: this build needs an x86-64-v3 CPU (AVX2, BMI2, FMA); this CPU lacks it\n"); return 2; }
     static char errbuf[1 << 16];
     setvbuf(stderr, errbuf, _IOLBF, sizeof errbuf);   // MSVC stderr is unbuffered (one write per character when redirected): a log burst stalls the game threads
+    {   // launcher mode (builder release): no arguments and a config.json next to the exe (host/launcher.cpp)
+        snap_launcher::Result lr;
+        if (argc == 1 && snap_launcher::prepare(lr)) {
+            if (!lr.proceed) return 0;
+            g_o.main_elf = lr.main_elf; g_o.sdk_elf = lr.sdk_elf; g_o.cmd = "run"; g_o.trace_file = lr.trace_file;
+            if (!getenv("SNAP_HLE_CONFIG")) _putenv_s("SNAP_HLE_CONFIG", lr.config_path.c_str());
+        }
+    }
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         if (a == "--main" && i + 1 < argc) g_o.main_elf = argv[++i];

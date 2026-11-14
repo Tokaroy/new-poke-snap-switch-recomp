@@ -594,7 +594,7 @@ static void snap_core_holders(Thread *t) {   // under G
     }
 }
 void acquire_core(Thread *t, Lock &lk) {
-    if (t->is_host || ncores() < 0 || t->core >= 0 || t->block_depth > 0) return;
+    if (t->is_host || t->free_core || ncores() < 0 || t->core >= 0 || t->block_depth > 0) return;
     if (!snap_perf::on) return acquire_core_raw(t, lk);
     t_core_snap[0] = 0;
     const uint64_t t0 = snap_perf::now_ns();
@@ -883,10 +883,35 @@ static void set_host_name(uint64_t tt) {
     fn(GetCurrentThread(), w);
 }
 
+// Perf pass 11 (2026-11-14): SNAP_OS_FREE_THREADS=<name>[,<name>...] lets guest threads whose name starts with one of the names
+// (for example ResourceUncompress,ResourceDecrypt) run without taking one of the 3 virtual cores, like a host helper thread.
+// Off by default: it gives the game more parallelism than the Switch has. guest_core_number still reports the thread's own core.
+static bool free_core_name(uint64_t tt) {
+    static const std::vector<std::string> names = [] {
+        std::vector<std::string> v;
+        if (const char *e = getenv("SNAP_OS_FREE_THREADS"))
+            for (const char *p = e; *p;) {
+                const char *q = p;
+                while (*q && *q != ',') q++;
+                if (q > p) v.emplace_back(p, q);
+                p = *q ? q + 1 : q;
+            }
+        return v;
+    }();
+    if (names.empty()) return false;
+    const uint64_t p = gld<uint64_t>(tt + TT_NAME_POINTER);
+    if (!p) return false;
+    const char *s = (const char *)(uintptr_t)p;
+    for (const std::string &n : names)
+        if (!strncmp(s, n.c_str(), n.size())) return true;
+    return false;
+}
+
 static unsigned __stdcall host_entry(void *arg) {
     Thread *t = (Thread *)arg;
     t_self = t;
     set_host_name(t->tt);
+    t->free_core = free_core_name(t->tt);
     Cpu *c = t->cpu;
     uint64_t tlr = (uint64_t)(uintptr_t)t->tlr;
     c->thread = t;

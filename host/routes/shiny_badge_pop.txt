@@ -1,0 +1,13 @@
+# fixture: unlock_all
+# shiny mod: quick pop-up badge check (ride shutter taps, thumbnails flagged at the shutter)
+wait ui=title timeout=150
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=200
+@f90 6 A
+wait ui=map_select:CourseSelect timeout=30
+@f180 6 A
+wait ride timeout=240
+repeat @f0 @f60000 60 4 A
+repeat @f0 @f60000 400 60 rx=0.25
+repeat @f200 @f60000 400 60 rx=-0.25
+end 900

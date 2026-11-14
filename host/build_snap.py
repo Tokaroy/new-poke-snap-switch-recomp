@@ -47,8 +47,17 @@ def main():
     ap.add_argument('--pgo-use', default='auto', help="optimize with this .profdata; 'auto' (default) = build/pgo/snap.profdata if it exists, 'off' = none")
     ap.add_argument('--lto', choices=('', 'thin'), default='', help='ThinLTO for the host objects and the final link')
     ap.add_argument('--cflags-extra', default='', help='extra flags for the host compile (e.g. -O3)')
+    ap.add_argument('--release-objs', default='', metavar='DIR',
+                    help='release mode (builder/release_prebuilt.py): compile only, to DIR/obj, as plain non-LTO non-PGO COFF without debug info, '
+                         'no baked harness path, nvn_cache under %%LOCALAPPDATA%%; no link')
     args = ap.parse_args()
     jobs = min(args.jobs, 8)
+    release = bool(args.release_objs)
+    if release and (args.pgo_gen or args.lto or args.pgo_use not in ('auto', 'off')):
+        ap.error('--release-objs takes no PGO or LTO switches')
+    if release:
+        args.pgo_use = 'off'
+        args.out = args.release_objs
     out = Path(args.out)
     obj = out / 'obj'
     obj.mkdir(parents=True, exist_ok=True)
@@ -63,7 +72,7 @@ def main():
         cov.write_bytes(bak)   # the coverage table is the HLE owner's; only the stub file is ours
     shutil.copyfile(ROOT / 'generated' / 'hle_unimplemented.cpp', ROOT / 'generated' / 'unimplemented.cpp')
 
-    srcs = [(ROOT / 'host' / f, 17) for f in ('loader.cpp', 'hooks.cpp', 'boot.cpp', 'abi_audio.cpp', 'window_opts.cpp', 'pgo.cpp')]
+    srcs = [(ROOT / 'host' / f, 17) for f in ('loader.cpp', 'hooks.cpp', 'boot.cpp', 'abi_audio.cpp', 'window_opts.cpp', 'pgo.cpp', 'launcher.cpp')]
     srcs += [(p, 20) for p in sorted((ROOT / 'runtime' / 'os').glob('*.cpp'))]
     srcs += [(p, 20) for p in sorted((ROOT / 'host' / 'mods').glob('*.cpp'))]   # draw-distance mods 26 and 27 (host/mods/lodanim.cpp)
     for d in ('hle', 'audio', 'nvn', 'mods'):
@@ -79,6 +88,9 @@ def main():
               '-I', str(ROOT / 'runtime'), '-I', str(ROOT / 'host'), '-I', str(ROOT / 'runtime' / 'nvn'), '-I', str(VK / 'Include'),
               '-I', str(ROOT / 'runtime' / 'ui'), '-I', str(ROOT / 'runtime' / 'ui' / 'third_party' / 'imgui'),
               '-DNVN_HARNESS_DLL="' + (ROOT / 'tools' / 'shader_harness' / 'bin' / 'Release' / 'net10.0' / 'ShaderHarness.dll').as_posix() + '"']
+    if release:   # no debug info (no source paths in the objects), no baked dev harness path (it resolves next to the exe)
+        cflags = [c for c in cflags if c != '-g' and not c.startswith('-DNVN_HARNESS_DLL')]
+        cflags += ['-DSNAP_RELEASE_BUILD', '-ffile-prefix-map=' + str(ROOT) + '=.']
     # Gamepads through SDL3 when the SDK is unpacked under tools/dl_sdl3 (the DLL is copied next to the exe); XInput otherwise.
     sdl = ROOT / 'tools' / 'dl_sdl3' / 'x' / 'SDL3-3.4.20'
     sdl_ok = (sdl / 'include' / 'SDL3' / 'SDL.h').exists() and (sdl / 'lib' / 'x64' / 'SDL3.lib').exists()
@@ -141,6 +153,9 @@ def main():
     if fail:
         print(f'{fail} compile failures')
         return 1
+    if release:
+        print(f'release objects in {obj} ({len(objs)} files) in {time.time() - t0:.1f}s')
+        return 0
     exe = out / f'{args.name}.exe'
     # exe icon (resource ID 1): game icon from local extracted data, else the original fallback; generated, never committed
     res = []

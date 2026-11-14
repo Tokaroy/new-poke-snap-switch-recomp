@@ -20,6 +20,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
@@ -243,6 +244,8 @@ struct State {
   bool frameHold = false;     // photo frame: no jitter, no upscale
   bool submitPhoto = false;   // the current submit holds a photo / Evaluation pass
   int hold = 0;               // presents left without jitter after a photo frame
+  double dtEma = 1.0 / 60.0;  // smoothed present interval (s); the hold counts below are 60 fps presents, scaled by HoldScale()
+  int64_t lastPresentNs = 0;
   bool evaluated = false;     // this present
   bool jitUsed = false;
   float jx = 0, jy = 0;
@@ -620,6 +623,16 @@ static void CurJitter(const ReplayCtx& cx, float* jx, float* jy) {
   *jx = U.jx; *jy = U.jy;
 }
 
+// Shutter and photo holds were tuned in 60 fps presents (6 after the press, 2 after the photo pass; the game takes about 3 presents
+// from press to photo pass at 60). They are a time window, so at a higher present rate the counts scale with it: ceil(n * rate / 60).
+// At 60 fps and below (and with SNAP_UPSCALE_HOLD_SCALE=0) the counts are unchanged.
+static int HoldScale(int n) {
+  static const bool off = [] { const char* e = getenv("SNAP_UPSCALE_HOLD_SCALE"); return e && e[0] == '0'; }();
+  const double rate = 1.0 / U.dtEma;
+  if (off || rate <= 62.0) return n;
+  return (int)std::ceil((double)n * std::min(rate, 480.0) / 60.0);
+}
+
 bool UpscaleOnSetRenderTargets(ReplayCtx& cx) {
   if (!U.on) return false;
   TextureImpl* d = cx.rt[8]; TextureImpl* c0 = cx.rt[0];
@@ -684,7 +697,7 @@ void UpscaleBeforeSubmit(int n, CmdList* const* lists) {
   U.submitPhoto = photo;
   if (!photo) return;
   U.photoSubmits++;
-  U.hold = std::max(U.hold, 2);
+  U.hold = std::max(U.hold, HoldScale(2));
   if (U.phase == 1 && !U.frameHold) {
     // the scene of this frame started in an earlier submit: stop its jitter and do not upscale it
     if (U.jitUsed) { U.lateHold++; Logf("p%d photo pass found after jittered scene draws of the same frame", g_presentCount); }
@@ -720,6 +733,11 @@ void UpscaleOnDraw(ReplayCtx& cx, const uint8_t* const* vsUbo, const uint64_t* v
 }
 
 void UpscaleOnPresent() {
+  {  // present-rate estimate for HoldScale (always cheap; the hold itself only matters while the upscaler is on)
+    const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (U.lastPresentNs) { const double d = (double)(nowNs - U.lastPresentNs) * 1e-9; if (d > 0 && d < 0.25) U.dtEma += (d - U.dtEma) * 0.05; }
+    U.lastPresentNs = nowNs;
+  }
   if (!U.on && !U.evaluated) return;
   if (U.phase == 1) U.missed++;
   if (U.evaluated) U.lastEvalPresent = g_presentCount;
@@ -734,7 +752,7 @@ void UpscaleOnPresent() {
   static uint64_t lastBtn = 0;
   const uint64_t btn = hle::input::hub().pad().buttons;
   const uint64_t shoot = (1ull << hle::input::kA) | (1ull << hle::input::kZR) | (1ull << hle::input::kR);
-  if ((btn & ~lastBtn) & shoot) { U.hold = std::max(U.hold, 6); U.shutterHolds++; }
+  if ((btn & ~lastBtn) & shoot) { U.hold = std::max(U.hold, HoldScale(6)); U.shutterHolds++; }
   lastBtn = btn;
 }
 }  // namespace nvn

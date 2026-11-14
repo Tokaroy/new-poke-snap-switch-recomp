@@ -132,6 +132,10 @@ void run(const std::string& line, double t) {
       PostMessageW(h, WM_KEYDOWN, VK_F1, 0x003b0001);
       PostMessageW(h, WM_KEYUP, VK_F1, (LPARAM)0xC03b0001);
       out("t=%.1f posted F1 to the game window", t);
+    } else if (k == "F3" && h) {   // performance overlay hotkey (ui_fps.cpp)
+      PostMessageW(h, WM_KEYDOWN, VK_F3, 0x003d0001);
+      PostMessageW(h, WM_KEYUP, VK_F3, (LPARAM)0xC03d0001);
+      out("t=%.1f posted F3 to the game window", t);
     }
   } else if (cmd == "tab") {
     static std::string name;

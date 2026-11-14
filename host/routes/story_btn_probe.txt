@@ -1,0 +1,21 @@
+# fixture: story_complete
+# Button probe (story worker): Florio Day ride, one candidate button every 2.5 s of game time, dense frames, to see which one throws fluffruit, an orb, scans or plays the melody.
+repeat @f3100 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=700
+@f150 6 A
+@f510 6 A
+repeat @f710 @f3710 90 6 A
+wait ride timeout=900
+wait rail>=20
+@f0 1200 shot=6
+1.0 0.2 X
+3.5 0.2 X
+6.0 0.2 Y
+8.5 0.2 B
+11.0 0.2 L
+13.5 0.2 R
+16.0 0.2 ZL
+18.5 0.2 ZR
+21.0 0.2 A
+23.5 0.2 Up
+26.0 0.2 Plus

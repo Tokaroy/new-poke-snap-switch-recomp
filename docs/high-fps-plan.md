@@ -12,7 +12,9 @@ Target hardware: RTX 4090, monitors at 60, 144 (primary) and 120 Hz.
 
 Corrections folded in (critique, 2026-11-14): (1) the pace target already has a public setter,
 `nvnHostSetFramePacing(hz)` (runtime\nvn\nvn_entry.cpp, nvn_host.h); no change to nvn_pace.* or nvn_vk.cpp is needed.
-(2) The 14 ms sleep floor is clamped at runtime from the OS layer (caller LR 0x71004e1010), no main regenerate.
+(2) The 14 ms sleep floor turned out to be dead code in play: the loop that holds it (main+0x4e0f64) never ran in a full
+title-to-evaluation Florio run (0 hits of the SleepThread call at 0x71004e1010, all 17,920 clock updates came from the
+floor-less loop at main+0x4e09b4). Nothing to clamp: no OS-layer change, no main regenerate.
 (3) M0 reuses SNAP_PERF (no new probe). (4) Timing at 120/144 is a hypothesis until measured in seconds. (5) The integer
 ms channels are not "fixed" until their readers are known. (6) Photo acceptance is tolerance based. (7) Hidden runs cannot
 show display cadence.
@@ -28,9 +30,9 @@ show display cadence.
   big hitch plays as slow motion). The clock has three identical channels (float dt at +0x1c/+0x34/+0x4c plus an
   integer millisecond value at +0x10/+0x28/+0x40, each floor(delta_us/1000)). A fixed-step mode exists in the clock
   structure but nothing selects it; a runtime dump of 400 boot updates showed mode 0 and dt between 7 and 43 ms.
-  That looks like a contradiction with the 14 ms floor; it is explained in `analysis\perf\high-fps.md` ("Clock callers
-  and the dt 7-43 ms dump"): the dump was boot/load frames, and the floor only sleeps when the iteration was shorter than
-  14 ms. Do not read the floor as a guarantee of dt >= 14 ms.
+  That contradicted the 14 ms floor; resolved in `analysis\perf\high-fps.md` ("Clock callers and the dt 7-43 ms dump"):
+  the clock is updated from two call sites in main+0x4df460. The loop at 0x4e0f64 has the 14 ms floor, but every update
+  in play comes from the other loop (lr main+0x4e09c0), which has none. The floor never applies.
 - Rail speed, camera tween, camera velocity, event timers and VFX stepping all consume dt.
   Photo scoring reads positions and poses, not time. Earlier florio_eval runs took the same
   47 s for leg 1 at 39, 47 and 51 presents per second, and a hidden run with guest vsync at
@@ -68,7 +70,7 @@ fix the integer-millisecond rounding, leave dt measured. This is AGENTS.md's sta
   so make it 1/target); (d) frame-count logic anywhere else in the 600+ lifted dt consumers;
   (e) scoring is pose based, so it should match, but poses at shutter time differ slightly
   between rates, so "identical" must be defined as a tolerance, see section 3;
-  (f) the sleep floor is clamped at runtime (OS layer, caller-LR check), so no main regenerate is needed;
+  (f) the sleep floor is never reached in play, so there is no main regenerate and no sleep patch;
   (g) routes and the upscaler count presents (route `@f` times, shutter hold 6 and 2 presents), so presents-based
   timing runs 2x faster in seconds at 120.
 
@@ -117,7 +119,7 @@ frame generation as an independent add-on.
 ### Milestone 0: measure (1 to 2 days)
 
 - No new probe. SNAP_PERF (or SNAP_PERF_SHARED on a shared PC) already writes per-frame CSVs under analysis\perf
-  (dt_ms, pace_ms, cpu_mcycles, replay_ms, poolsync_ms, gpu_busy_ms). Run with the sleep clamp on and pacing off
+  (dt_ms, pace_ms, cpu_mcycles, replay_ms, poolsync_ms, gpu_busy_ms). Run with pacing off
   (SNAP_FPS=120 SNAP_FPS_UNCAPPED=1) at 1440p and 4K and read the real uncapped fps and CPU ms per frame. Replay alone is
   3.6 to 6.8 ms mean and 144 fps has a 6.9 ms budget, so the report must say whether real 120/144 simulation is reachable or
   whether replay and pool sync must first move off the game thread.
@@ -134,9 +136,9 @@ frame generation as an independent add-on.
 - SNAP_FPS=60|120|144 (default 60; 60 is inert). `host\mods\highfps.cpp` calls the existing
   `nvnHostSetFramePacing(hz)` from the present hook, and re-applies it right after the SNAP_FAST_BOOT window (window_opts.cpp
   fast_boot_step hard-codes 60 there; window_opts.cpp is not edited). Do not edit nvn_pace.* or nvn_vk.cpp (pacing worker).
-- Sleep floor: clamp at runtime, no main regenerate. The loop's sleep call (main_0060.c ~19439, x30 = 0x71004e1010, through PLT
-  stub f_7100a36ad0 into ov_SleepThread, runtime\os\os_thread.cpp) goes through `snap_highfps_sleep_ns(lr, ns)`, which shortens it
-  only for that caller and only when SNAP_FPS is set (default floor 0, SNAP_FPS_FLOOR_MS to change). OS-layer change: 3 lines.
+- Sleep floor: nothing to do. The loop's sleep call (main_0060.c ~19439, x30 = 0x71004e1010, PLT stub f_7100a36ad0 into
+  ov_SleepThread) is never executed in play (measured). A first version of the spike clamped it from os_thread.cpp; that hunk
+  was removed again, so runtime\os is unchanged.
 - Integer ms channels (clock+0x10, +0x28, +0x40, floor(us/1000), already about 4% slow at 60): do NOT carry the sub-ms remainder
   until the readers are known (rail, spawn and event timers may or may not read them). The reader enumeration and the decision
   are recorded in `analysis\perf\high-fps.md`. The shared 1/60 rodata constant at 0x7100ae7e4c must not be patched (many users).
@@ -155,7 +157,7 @@ frame generation as an independent add-on.
      points, pose fields, size and position share) under a stated bound (start: score within 5%, other fields within one
      bucket; tighten after the 60 fps repeat spread is measured). Any outside the bound is investigated, not tolerated.
      Also report the upscaler's `lateHold` and `shutterHolds` counters (upscale.cpp counts presents: hold 6 on shutter, 2
-     after the photo pass) at 120 vs 60; do not edit upscale.cpp.
+     after the photo pass) at 120 vs 60 (round 2 scaled the hold by time in upscale.cpp).
   4. Photos from real frames: each saved photo's source frame number appears in the sim frame log
      and is a real sim frame; with SNAP_FPS_MODE=sim there are no generated frames at all.
   5. (Needs a visible run: hidden runs never block on acquire, so display cadence, vsync lock and judder cannot be seen.)
@@ -197,7 +199,7 @@ services_sys vsync (HLE worker). Anyone touching those must coordinate through t
 | Id | Title | Files (owner) | Existing workers' files touched | Days | Depends on |
 |----|-------|---------------|----------------------------------|------|------------|
 | WP0 | Probe and baseline harness | host\run_boot.ps1 routes option (no change to default), tools\hifps_check.py (new), analysis\perf\high-fps.md (new, results) | none | 2 | none |
-| WP1 | Pace target and sleep floor | host\mods\highfps.cpp (done: SNAP_FPS, setter call, sleep clamp, diagnostics), one-line hooks in host\boot.cpp (present), host\loader.cpp (fn observe), runtime\os\os_thread.cpp (ov_SleepThread). No change to nvn_pace.* / nvn_vk.cpp / window_opts.cpp. Later half: ms remainder (only after readers known), hitch fallback | os_thread.cpp (OS worker, 3 lines) | 3 | WP0 |
+| WP1 | Pace target (sleep floor is dead code) | host\mods\highfps.cpp (done: SNAP_FPS, setter call, diagnostics), one-line hooks in host\boot.cpp (present hook) and host\loader.cpp (fn observe). No change to nvn_pace.* / nvn_vk.cpp / window_opts.cpp / runtime\os. Later half: the nvnSyncWait hitch (section 6), hitch fallback | none | 3 | WP0 |
 | WP2 | Options rows and settings | host\window_opts.cpp, native options UI source (the file that holds the current rows), settings key table | none | 1 | WP1 (key names) |
 | WP3 | Frame-count consumers | host\mods\lodanim.cpp (SNAP_FULL_RATE_ANIM tied to rate, optional time-based rebuild), audit list of dt and frame-count readers in analysis\perf\high-fps.md | none | 2 | WP0 |
 | WP4 | Camera-only interpolation | runtime\nvn\nvn_interp.cpp and .h (new), BindUbo hook in runtime\nvn\nvn_draw.cpp, spare-image retarget in runtime\nvn\nvn_entry.cpp, present decoupling API in nvn_pace (small, coordinated with WP1) | nvn_draw, nvn_entry, nvn_pace | 7 | WP1, WP2 |
@@ -219,8 +221,8 @@ setting; the environment variable wins when set.
    The options UI already has "Frame rate limit" (`frame_cap`, SNAP_WINDOW_FRAME_CAP; runtime\ui\ui_options.cpp, owned by the
    options worker). The new row sits beside it: effective rate = min(target, cap) (nvn_vk.cpp already takes max(period,
    1/cap), so a lower cap wins without extra code). Row spec: id `frame_target`, label "Frame rate target", values 60/120/144,
-   default 60, env SNAP_FPS wins, saved key `fps_target`, restart not needed once the pace setter is called live (the sleep
-   clamp reads the value at start, so the first version needs a restart), help "Higher rates run the game itself faster;
+   default 60, env SNAP_FPS wins, saved key `fps_target`, restart needed in the first version (highfps.cpp reads SNAP_FPS once
+   at start; a live setter is a small follow-up since nvnHostSetFramePacing is callable any time), help "Higher rates run the game itself faster;
    needs a fast CPU. The frame rate limit below still applies."
 2. Frame rate mode: Real simulation (default when target is above 60), Interpolated (60 sim,
    smooth display; after Milestone 2). Key SNAP_FPS_MODE=sim|interp. Greyed when target is 60.
@@ -229,6 +231,9 @@ setting; the environment variable wins when set.
 4. Smooth distant animation: Off (default), On. Key SNAP_FULL_RATE_ANIM. Help text mentions GPU cost.
 5. Show rates overlay: Off (default), On. Shows simulation fps and output fps separately, labels
    generated output. Key SNAP_FPS_OVERLAY.
+   (2026-11-14: the performance overlay exists with modes Off / FPS / Detailed under this key, see host/README.md
+   "Performance overlay". It shows output fps only; a simulation-fps line and a "generated" label are still to add when
+   simulation above 60 or frame generation lands.)
 
 Menu notes: show a warning under the target row when the display refresh is not a multiple of the
 target (for example 120 on the 144 Hz monitor without VRR), and remember the last target per
@@ -236,8 +241,24 @@ monitor.
 
 ## 6. Spike results (2026-11-14)
 
-See `analysis\perf\high-fps.md` for numbers, run ids and the go/no-go. Hidden-run limits: acquire never blocks, so display
-cadence, k-lock, and judder need a visible run (none were done); presents/s hidden is the limiter or the uncapped CPU rate.
+Numbers, run ids and the go/no-go are in `analysis\perf\high-fps.md`. Summary:
+
+- The 14 ms sleep floor is dead code in play (the loop that holds it never runs); no patch, no regenerate, no OS-layer change.
+- Ride length in seconds is the same (144.1 to 144.9 s for rail 0 to 115.7) at 59, 75, 83, 99, 110, 116 and 118 fps: the dt-based
+  sim already scales. Spawn timing was not measured separately (no timestamped log).
+- Quiet PC, 1440p, target 144: 115.7 fps average, only 32% of frames within 6.94 ms; 4.5% of frames carry a ~16 ms guest
+  `nvnSyncWait`. 4K: 99 fps. Target 120 reached 117.5 fps. Real 120: conditional go (about 3 to 5 days of fixes); real 144: no-go
+  for now; interpolation (WP4/WP5) remains the route to smooth 144.
+- The upscaler shutter hold counted presents: 71 of 72 photo binds were held at 60 fps, 28 of 72 at 120. Round 2 made it time-based
+  (`HoldScale` in `upscale.cpp`, `SNAP_UPSCALE_HOLD_SCALE=0` = old): 71 of 72 held at 120 and at 60.
+- The recurring ~16 ms `nvnSyncWait` (round 2): the present blit submit waited on the acquire semaphore on the GPU, which the display
+  signals late under FIFO, and the guest's later fence submits sat behind it in the queue. `vkAcquireNextImageKHR` now takes a fence
+  that is waited on the CPU (queue lock dropped) before the blit is submitted (`SNAP_ACQ_FENCE=0` = old). Exclusive 1440p, target 144:
+  waits of 10 ms or more on 3.92% of frames drop to 0.06%, p99 22.2 to 17.9 ms, 1% low 24.4 to 26.6 fps, but the average fell
+  113.0 to 107.8 fps (the acquire wait is now serial). At 120 the hitch was already rare in a quiet run (7 vs 10 frames). At 60: 4 vs 9 frames,
+  same frame count, no hidden cost.
+- ms channels: readers are copied by value and cannot be enumerated by address; no remainder carry is implemented.
+- Hidden-run limits: acquire never blocks, so display cadence, k-lock, and judder need a visible run (none were done).
 
 ## Hidden-run note
 

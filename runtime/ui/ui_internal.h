@@ -23,6 +23,18 @@ bool draw_toast(ImVec2 size, double now);
 // Shiny capture effect (runtime/ui/ui_shiny.cpp): badge, sparkles; active for ~2.6 s after snap_shiny_fx_trigger.
 bool shiny_fx_active();
 void draw_shiny_fx(ImVec2 size);
+bool shiny_badges_active();             // a flagged photo thumbnail is on screen (nvn_shiny.cpp)
+void draw_shiny_badges(ImVec2 size);
+// Performance overlay (runtime/ui/ui_fps.cpp): settings key fps_overlay (default Off, "fps", "detailed"), corner fps_overlay_corner.
+int fps_overlay_mode();                          // 0 off, 1 fps, 2 detailed
+std::string fps_overlay_value();                 // "default" (off), "fps", "detailed"
+std::string fps_overlay_corner_value();          // "tl", "tr", "bl", "br"
+void fps_overlay_set(const std::string& v);      // live, stores the key
+void fps_overlay_set_corner(const std::string& v);
+void fps_overlay_cycle();                        // F3: Off -> FPS -> Detailed -> Off
+bool fps_overlay_hotkey_free();                  // F3 is not bound to a game button
+bool fps_overlay_tick();                         // once per present; true when the overlay draws this frame
+void draw_fps_overlay(ImVec2 size);
 void menu_select_tab(const char* name);   // scripted test: Bindings, Mouse, Controller, Accessibility, Test
 // Rebinding as the UI performs it (a click on a slot); used by the scripted test.
 bool menu_begin_rebind(int action, hle::input::Device dev, int slot);

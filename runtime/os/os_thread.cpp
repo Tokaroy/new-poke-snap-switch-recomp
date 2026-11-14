@@ -94,11 +94,8 @@ void ov_GetCurrentCoreNumber(Cpu *c) {
     c->x[0] = (uint64_t)guest_core_number(t);
 }
 void ov_YieldThread(Cpu *) { yield_thread(self()); }
-extern "C" int64_t snap_highfps_sleep_ns(uint64_t lr, int64_t ns);   // host/mods/highfps.cpp: identity unless SNAP_FPS=120|144
-extern "C" int64_t snap_highfps_sleep_none(uint64_t, int64_t ns) { return ns; }   // for targets that do not link host/mods
-#pragma comment(linker, "/alternatename:snap_highfps_sleep_ns=snap_highfps_sleep_none")
 void ov_SleepThread(Cpu *c) {   // TimeoutHelperImplByHorizon::Sleep sdk+0x34a020: 0 returns at once
-    int64_t ns = snap_highfps_sleep_ns(c->x[30], (int64_t)c->x[0]);
+    int64_t ns = (int64_t)c->x[0];
     Thread *t = self();
     if (ns > 0) sleep_ns(t, ns);
     else poll_preempt(t);

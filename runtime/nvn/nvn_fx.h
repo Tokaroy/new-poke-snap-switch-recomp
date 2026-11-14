@@ -43,11 +43,14 @@ struct FxEffect {
   bool (*enabled)();                                   // the effect's own SNAP_* switch (cheap, called per frame)
   void (*preTonemap)(ReplayCtx& cx);                   // may be null
   void (*postTonemap)(ReplayCtx& cx, const char* fragKey12);   // may be null
+  bool opaqueOnly;   // run preTonemap at the first blended (depth-write-off) scene draw instead, so glass, particles and water are not shaded; falls back to the tonemap point
 };
 void FxRegister(const FxEffect* e);
 
 // ---- called by the layer (one line each) -----------------------------------------------------------------------------
 bool FxOnSetRenderTargets(ReplayCtx& cx);   // nvn_vk.cpp Replay, SetRenderTargets, before UpscaleOnSetRenderTargets. true: commands were recorded (re-emit viewports / scissors)
+bool FxMidPass(ReplayCtx& cx, bool blend, bool depthWrite);   // nvn_draw.cpp DoDraw, before BeginRendering: ends the scene pass and runs opaqueOnly effects at the first blended draw; true = viewports must be re-emitted
+void FxReemitViewState(ReplayCtx& cx);   // nvn_vk.cpp
 void FxOnDraw(ReplayCtx& cx, const uint8_t* const* vsUbo, const uint64_t* vsRange, const uint8_t* slot9, uint64_t slot9Range);   // nvn_draw.cpp DoDraw: camera + caster capture only
 void FxAfterDraw(ReplayCtx& cx, const char* fragKey12);   // nvn_draw.cpp DoDraw, next to AaAfterDraw
 void FxBeforeSubmit(int n, CmdList* const* lists);        // nvn_vk.cpp SubmitLists: photo frames by look-ahead
@@ -79,5 +82,6 @@ void FxDrawFullscreen(ReplayCtx& cx, TextureImpl* target, VkPipeline pipe, VkPip
 // Scene depth for sampling in a later pass: switches to DEPTH_STENCIL_READ_ONLY and returns the sampled view; FxDepthDone restores the previous layout
 // (the next CopyDepth and the upscaler rely on the tracked layout). Never write scene depth.
 VkImageView FxDepthRead(ReplayCtx& cx, TextureImpl* z, VkImageLayout* prev);
+void FxDepthCopyRows(ReplayCtx& cx, TextureImpl* z, VkBuffer dst, uint32_t rowStep, uint32_t rows);   // copies every rowStep-th row (rows of them, packed) of the scene depth into dst, layout restored
 void FxDepthDone(ReplayCtx& cx, TextureImpl* z, VkImageLayout prev);
 }  // namespace nvn

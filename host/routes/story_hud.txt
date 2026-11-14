@@ -1,0 +1,9 @@
+# fixture: post_tutorial
+# HUD probe (story worker): Florio Day ride start, a few frames of the course HUD, then end. The caller sets SNAP_SAVE_DIR (story_run.sh).
+repeat @f300 @f30000 120 8 A
+wait ui=map_select timeout=240
+repeat @f60 @f30000 120 8 A
+wait ride timeout=240
+wait rail>=3
+@f0 120 shot=20
+end @f130

@@ -6,6 +6,7 @@
 // are, so the game's NaN guard stays and a 1x1 "no shadow map" stand-in view (always lit) still returns 1 for every tap.
 // SNAP_SHADOW_FILTER=0|8|16 (0 = off: this function is not called and every pipeline key is the original one).
 #include <cmath>
+#include <string>
 #include <cstring>
 #include <map>
 #include <mutex>
@@ -67,7 +68,7 @@ bool ShadowFilterApplies(const StageProg& fs) {
 }
 
 // taps: 1 (bias only) or 4..32. radiusUv: kernel radius in texture-coordinate units. Returns false (out untouched) when the module has no patchable tap.
-bool PatchShadowPcf(const std::vector<uint32_t>& in, int taps, float radiusUv, float bias, std::vector<uint32_t>& out) {
+bool PatchShadowPcf(const std::vector<uint32_t>& in, int taps, float radiusUv, float bias, float remapK, std::vector<uint32_t>& out) {
   if (in.size() < 6 || in[0] != 0x07230203 || taps < 1 || taps > 64) return false;
   // pass 1: float32 types, vec2-of-float32 types, result types of the instructions that define the taps' coordinates, first function, taps
   std::map<uint32_t, bool> isF32;
@@ -75,9 +76,14 @@ bool PatchShadowPcf(const std::vector<uint32_t>& in, int taps, float radiusUv, f
   std::map<uint32_t, uint32_t> resType;          // result id -> result type id (only instructions with word1 = type, word2 = result)
   size_t firstFn = 0;
   std::vector<size_t> tapAt;
+  std::map<uint32_t, std::string> nameOf;        // OpName
+  std::map<uint32_t, uint32_t> loadPtr, sampImgOf;   // OpLoad result -> pointer; OpSampledImage result -> image
   for (size_t i = 5; i < in.size();) {
     const uint32_t wc = in[i] >> 16, op = in[i] & 0xFFFF;
     if (!wc || i + wc > in.size()) return false;
+    if (op == 5 && wc >= 3) nameOf[in[i + 1]] = std::string((const char*)&in[i + 2], strnlen((const char*)&in[i + 2], (wc - 2) * 4));
+    else if (op == 61 && wc >= 4) loadPtr[in[i + 2]] = in[i + 3];
+    else if (op == 86 && wc >= 5) sampImgOf[in[i + 2]] = in[i + 3];
     if (op == kOpTypeFloat && wc >= 3 && in[i + 2] == 32) isF32[in[i + 1]] = true;
     else if (op == kOpTypeVector && wc >= 4 && in[i + 3] == 2) vec2Of[in[i + 1]] = in[i + 2];
     else if (op == kOpFunction) { if (!firstFn) firstFn = i; }
@@ -87,6 +93,15 @@ bool PatchShadowPcf(const std::vector<uint32_t>& in, int taps, float radiusUv, f
   }
   if (!firstFn || tapAt.empty()) return false;
   // vec2 float32 type
+  // the dynamic shadow map is texture control block slot C (fp_t_tcb_C); only its taps are remapped when remapK > 1
+  auto isDyn = [&](uint32_t img) {
+    uint32_t id = img;
+    auto si = sampImgOf.find(id); if (si != sampImgOf.end()) id = si->second;
+    auto lp = loadPtr.find(id); if (lp != loadPtr.end()) id = lp->second;
+    auto n = nameOf.find(id);
+    return n != nameOf.end() && n->second.size() > 2 && n->second.compare(n->second.size() - 2, 2, "_C") == 0;
+  };
+  std::vector<bool> dynTap;
   std::vector<std::pair<uint32_t, uint32_t>> usable;   // (tap index into tapAt, vec2 type)
   for (size_t t = 0; t < tapAt.size(); t++) {
     const size_t i = tapAt[t];
@@ -94,7 +109,7 @@ bool PatchShadowPcf(const std::vector<uint32_t>& in, int taps, float radiusUv, f
     auto ct = resType.find(coord);
     if (!isF32.count(resT) || ct == resType.end() || !vec2Of.count(ct->second) || vec2Of[ct->second] != resT) continue;
     if (in[i + 6] != 2) continue;   // operands: only "Lod" (mask 2) is understood
-    usable.push_back({(uint32_t)t, ct->second});
+    usable.push_back({(uint32_t)t, ct->second}); dynTap.push_back(remapK > 1.0f && isDyn(in[i + 3]));
   }
   if (usable.empty()) return false;
 
@@ -111,6 +126,7 @@ bool PatchShadowPcf(const std::vector<uint32_t>& in, int taps, float radiusUv, f
   std::vector<uint32_t> constBlock, body;
   std::map<std::pair<uint32_t, uint32_t>, std::vector<uint32_t>> offIds;   // (float, vec2) -> composite ids per offset
   std::map<uint32_t, uint32_t> invN, biasId;
+  std::map<std::pair<uint32_t, uint32_t>, std::pair<uint32_t, uint32_t>> remapIds;   // (float, vec2) -> (half2, invK2) constants
   auto fbits = [](float f) { uint32_t u; memcpy(&u, &f, 4); return u; };
   for (auto& u : usable) {
     const uint32_t fT = in[tapAt[u.first] + 1], v2T = u.second;
@@ -133,6 +149,13 @@ bool PatchShadowPcf(const std::vector<uint32_t>& in, int taps, float radiusUv, f
       }
       offIds[{fT, v2T}] = ids;
     }
+    if (remapK > 1.0f && !remapIds.count({fT, v2T})) {
+      auto sc = [&](float f) { const uint32_t id = next++; Emit(constBlock, kOpConstant, {fT, id, fbits(f)}); return id; };
+      const uint32_t h = sc(0.5f), ik = sc(1.0f / remapK), h2 = next++, k2 = next++;
+      Emit(constBlock, kOpConstantComposite, {v2T, h2, h, h});
+      Emit(constBlock, kOpConstantComposite, {v2T, k2, ik, ik});
+      remapIds[{fT, v2T}] = {h2, k2};
+    }
     if (!invN.count(fT)) { const uint32_t id = next++; Emit(constBlock, kOpConstant, {fT, id, fbits(1.0f / (float)taps)}); invN[fT] = id; }
     if (bias > 0.0f && !biasId.count(fT)) { const uint32_t id = next++; Emit(constBlock, kOpConstant, {fT, id, fbits(bias)}); biasId[fT] = id; }
   }
@@ -146,11 +169,18 @@ bool PatchShadowPcf(const std::vector<uint32_t>& in, int taps, float radiusUv, f
       const uint32_t fT = in[i + 1], res = in[i + 2], img = in[i + 3], coord = in[i + 4], dref = in[i + 5], lod = in[i + 7];
       const uint32_t v2T = usable[ui].second;
       const std::vector<uint32_t>& ids = offIds[{fT, v2T}];
-      uint32_t acc = 0, drefUse = dref;
+      uint32_t acc = 0, drefUse = dref, coordUse = coord;
+      if (dynTap[ui]) {   // (uv - 0.5) / k + 0.5: the caster covers k times more ground, so the receiver looks up the matching sub-rectangle
+        auto& r = remapIds[{fT, v2T}];
+        const uint32_t a = next++, b = next++; coordUse = next++;
+        Emit(out, kOpFSub, {v2T, a, coord, r.first});
+        Emit(out, kOpFMul, {v2T, b, a, r.second});
+        Emit(out, kOpFAdd, {v2T, coordUse, b, r.first});
+      }
       if (bias > 0.0f) { drefUse = next++; Emit(out, kOpFSub, {fT, drefUse, dref, biasId[fT]}); }
       for (int k = 0; k < taps; k++) {
         const uint32_t c = next++, s = next++;
-        Emit(out, kOpFAdd, {v2T, c, coord, ids[k]});
+        Emit(out, kOpFAdd, {v2T, c, coordUse, ids[k]});
         Emit(out, kOpImageSampleDrefExplicitLod, {fT, s, img, c, drefUse, 2, lod});
         if (!acc) acc = s;
         else { const uint32_t a = next++; Emit(out, kOpFAdd, {fT, a, acc, s}); acc = a; }

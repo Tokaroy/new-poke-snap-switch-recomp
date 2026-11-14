@@ -11,6 +11,6 @@ wait ui=main_menu:Laboratory timeout=300
 wait ui=myphoto:ModeSelect timeout=60
 @f200 8 A
 wait ui=myphoto:Album timeout=60
-@f200 8 A
-wait ui=photo_detail:PhotoDetail timeout=60
-end 500
+@f450 8 A
+@f750 8 A
+end 1300

@@ -70,12 +70,12 @@ AA_CHOICES = ((('default', 'Original'), ('smaa', 'SMAA'), ('ssaa2,smaa', 'SMAA +
 TABS = [
     ('Quality', 'Picture quality for this PC version.', [
         row('Quality preset', 'p', 'opt', 'gfx_preset', 'normal',
-            (('verylow', 'Very Low'), ('low', 'Low'), ('normal', 'Normal'), ('high', 'High'), ('ultra', 'Ultra'),
+            (('verylow', 'Very Low'), ('low', 'Low'), ('normal', 'Original'), ('high', 'High'), ('ultra', 'Ultra'),
              ('maximum', 'Maximum'), ('custom', 'Custom')),
             'Sets this tab and the next together. Very Low suits weak PCs, Maximum a very fast GPU.' + R),
         row('Render scale', 'p', 'opt', 'gfx_render_scale', '1.00',
             (('0.50', '0.5x'), ('0.75', '0.75x'), ('1.00', '1x (1080p)'), ('1.25', '1.25x'), ('1.50', '1.5x'), ('1.75', '1.75x'),
-             ('2.00', '2x (4K)'), ('2.50', '2.5x'), ('3.00', '3x'), ('4.00', '4x (8K)')),
+             ('2.00', '2x (4K)'), ('2.50', '2.5x'), ('3.00', '3x'), ('4.00', '4x (8K, heavy VRAM)')),
             'Scene size as a multiple of 1080p. 4x needs a lot of video memory.' + R),
         # Visual extras (owner 2026-11-13): original look by default, every extra off. The AA values are the F1 table's
         # (ui_options.cpp gfx_aa, kPresets): "default" = the visual_defaults.h AA, "off" = the game's FXAA; choices set below.
@@ -222,6 +222,9 @@ TABS = [
     ('Photos', 'Photo files and expeditions.', [
         row('Save PNG copies', 'c', 'opt', 'photo_export', '0', TOGGLE,
             'Each photo you keep is also saved as a full-quality PNG file.' + R),
+        # runtime/nvn/nvn_hdphoto.cpp (SNAP_HD_PHOTOS); needs a 4K-class render scale or upscaler
+        row('HD photos', 'c', 'opt', 'hd_photos', '0', TOGGLE,
+            'Shows photos at 2160x1440 in photo select and the album. Uses more disk and GPU memory.' + R),
         row('NEO-ONE speed', 'p', 'opt', 'neo_speed', '1',
             (('0.5', '0.5x'), ('0.75', '0.75x'), ('1', '1x (original)'), ('1.25', '1.25x'), ('1.5', '1.5x'), ('2', '2x'),
              ('2.5', '2.5x'), ('3', '3x')),
@@ -239,11 +242,22 @@ TABS = [
     ]),
     # Tab 11, the first of a third tab set (docs/advanced-graphics-options.md). Reserved slots, in order: AO radius and AO strength
     # (SNAP_SSAO_RADIUS / SNAP_SSAO_STRENGTH are parsed in host/mods/gamemods.cpp but not applied yet), then the lighting stream's
-    # Lighting preset, shadow softness and ray-traced effects. Not in the quality presets (open question for the owner).
+    # Lighting preset, shadow softness and ray-traced effects. Shadow distance is in the quality presets (High 2x, Ultra 4x, Maximum 8x).
     ('Shadows & AO', 'Shadow and ambient occlusion detail.', [
         row('Shadow distance', 'p', 'opt', 'gfx_shadow_dist', 'default',
             (('default', '1x (original)'),) + nums('1.5', '2', '3', '4', '6', '8', '12', '16', suffix='x'),
             'How far moving shadows reach. Pair with shadow resolution: farther is blurrier.' + R),
+        # live (runtime/nvn/nvn_contact.cpp snap_contact_shadows_set); stored as "1" or erased
+        row('Contact shadows', 'p', 'opt', 'contact_shadows', 'default', (('default', 'Off'), ('1', 'On')),
+            'Thin shadows where Pokémon and objects touch the ground. Needs the sun.'),
+    ]),
+    # Tab 12 (third set): performance overlay, live (runtime/ui/ui_fps.cpp); F3 cycles the mode too
+    ('Performance', 'On-screen frame rate and timing.', [
+        row('Performance overlay', 'p', 'opt', 'fps_overlay', 'default', (('default', 'Off'), ('fps', 'FPS'), ('detailed', 'Detailed')),
+            'FPS: the frame rate. Detailed adds timing, sizes and modes. F3 cycles it. Never in photos.'),
+        row('Overlay corner', 'p', 'opt', 'fps_overlay_corner', 'tr',
+            (('tl', 'Top left'), ('tr', 'Top right'), ('bl', 'Bottom left'), ('br', 'Bottom right')),
+            'Where the performance overlay sits on the screen.'),
     ]),
 ]
 VISUAL_KEYS = {'gfx_sharpen': 'SNAP_SHARPEN', 'gfx_aniso': 'SNAP_ANISO', 'gfx_ui_font': 'SNAP_UI_FONT_SCALE',

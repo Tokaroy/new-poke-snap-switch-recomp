@@ -1,0 +1,3 @@
+# Game file names our runtime must open by name; allowed as text inside the prebuilt objects only.
+option.drp   # settings-menu archive (host/mods/nativeopt.cpp)
+resident.drp # font archive (runtime/ui/ui_font.cpp)

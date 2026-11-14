@@ -127,21 +127,26 @@ bool Invert(const Mat& a, Mat& r) {
 
 // ---- state -----------------------------------------------------------------------------------------------------------------
 constexpr uint32_t kMaxInstances = 8192;
-constexpr uint32_t kSlots = 8;   // stats / timestamp / descriptor ring (frames in flight stay below this)
+constexpr uint32_t kMaxDraws = 4096;   // motion flag words per frame
+constexpr uint32_t kQ = 8;             // timestamp queries per slot (5 used)
+constexpr uint32_t kSlots = 8;  // stats / timestamp / descriptor ring (frames in flight stay below this)
 
 struct Entry {
   uint32_t vcount = 0;
   uint64_t arenaOff = 0, arenaBytes = 0;
   VkAccelerationStructureKHR as = VK_NULL_HANDLE; uint64_t blasOff = 0, blasBytes = 0, scratchNeed = 0; VkDeviceAddress blasAddr = 0;
   int64_t lastSeen = 0; uint32_t seen = 0; bool built = false;
+  int64_t procFrame = 0;          // last frame this draw was processed at the tonemap draw (a gap means it was off screen: its BLAS is rebuilt)
+  uint32_t calm = 0; bool isStatic = false;   // consecutive frames the converted vertices stayed within tolerance of the copy taken at the last BLAS build
 };
 struct FrameDraw { uint64_t key; uint32_t vcount; uint64_t arenaOff; float inv[16]; float eye[3]; };
 struct Dead { VkAccelerationStructureKHR as; uint64_t frame; };
 
 struct Stats {   // per-window aggregates for the log line
-  uint32_t frames = 0; uint64_t draws = 0, tris = 0, xfbBytes = 0, blasBuilt = 0, blasTris = 0, instances = 0, skipped = 0;
-  double cpuCapMs = 0, cpuBuildMs = 0, gpuBuildMs = 0, gpuBlasMs = 0, gpuOvlMs = 0; uint32_t gpuN = 0, ovlN = 0;
+  uint32_t frames = 0; uint64_t draws = 0, tris = 0, xfbBytes = 0, blasBuilt = 0, blasTris = 0, blasReused = 0, instances = 0, skipped = 0;
+  double cpuCapMs = 0, cpuBuildMs = 0, gpuBuildMs = 0, gpuBlasMs = 0, gpuConvMs = 0, gpuOvlMs = 0; uint32_t gpuN = 0, ovlN = 0;
   uint64_t cls[8] = {}; uint32_t clsN = 0;
+  uint64_t rdDraws = 0, rdFlag = 0, rdStatic = 0; double rdRatio = 0;   // motion flags read back: draws, flagged draws, entries static at read time, summed ratio of flagged ones
 };
 
 struct G {
@@ -149,6 +154,9 @@ struct G {
   bool ready = false;
   Host* h = nullptr;
   Buf arena, blasStore, scratch, instStore, tlasStore, stats;
+  Buf shadow, flags;           // shadow: copy of the arena taken at each BLAS build (same offsets); flags: kSlots x kMaxDraws motion words written by the convert pass
+  std::vector<uint64_t> slotKeys[kSlots];   // draw keys of each slot's flag words
+  int reuse = 1; bool winReuse = true; uint32_t staticFrames = 4;   // SNAP_RT_REUSE (0 off, 1 on, 2 alternate per log window for A/B timing), SNAP_RT_STATIC_FRAMES
   Ranges arenaR, blasR;
   VkAccelerationStructureKHR tlas = VK_NULL_HANDLE; VkDeviceAddress tlasAddr = 0; uint64_t tlasScratch = 0;
   VkQueryPool qp = VK_NULL_HANDLE; float tsPeriod = 1.0f;
@@ -199,15 +207,18 @@ bool Setup(Host* h) {
   const uint64_t arenaB = (uint64_t)EnvInt("SNAP_RT_ARENA_MB", 384) << 20, blasB = (uint64_t)EnvInt("SNAP_RT_BLAS_MB", 512) << 20, scrB = (uint64_t)EnvInt("SNAP_RT_SCRATCH_MB", 256) << 20;
   const VkMemoryPropertyFlags dl = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
   const VkBufferUsageFlags asIn = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
-  if (!MakeBuf(h, arenaB, VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | asIn | VK_BUFFER_USAGE_TRANSFER_DST_BIT, dl, &g.arena, true) ||
+  if (!MakeBuf(h, arenaB, VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | asIn | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, dl, &g.arena, true) ||
       !MakeBuf(h, blasB, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR, dl, &g.blasStore, true) ||
       !MakeBuf(h, scrB, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, dl, &g.scratch, true) ||
+      !MakeBuf(h, arenaB, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, dl, &g.shadow, true) ||
+      !MakeBuf(h, (uint64_t)kSlots * kMaxDraws * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &g.flags, true) ||
       !MakeBuf(h, (uint64_t)kMaxInstances * sizeof(VkAccelerationStructureInstanceKHR), asIn | VK_BUFFER_USAGE_TRANSFER_DST_BIT, dl, &g.instStore, true) ||
       !MakeBuf(h, kSlots * 8 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &g.stats, false)) {
     Fail("buffer allocation failed"); return false;
   }
   g.arenaR.Init(arenaB); g.blasR.Init(blasB);
-  memset(g.stats.map, 0, g.stats.size);
+  memset(g.stats.map, 0, g.stats.size); memset(g.flags.map, 0, g.flags.size);
+  g.reuse = EnvInt("SNAP_RT_REUSE", 1); g.staticFrames = (uint32_t)std::max(1, EnvInt("SNAP_RT_STATIC_FRAMES", 4));
   // TLAS (rebuilt in place every frame; sized for kMaxInstances)
   {
     VkAccelerationStructureGeometryKHR geo{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
@@ -227,12 +238,12 @@ bool Setup(Host* h) {
     g.tlasAddr = pAsAddr(h->device, &ai);
   }
   VkPhysicalDeviceProperties pp; vkGetPhysicalDeviceProperties(h->phys, &pp); g.tsPeriod = pp.limits.timestampPeriod;
-  VkQueryPoolCreateInfo qi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO}; qi.queryType = VK_QUERY_TYPE_TIMESTAMP; qi.queryCount = kSlots * 4;
+  VkQueryPoolCreateInfo qi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO}; qi.queryType = VK_QUERY_TYPE_TIMESTAMP; qi.queryCount = kSlots * kQ;
   if (vkCreateQueryPool(h->device, &qi, nullptr, &g.qp) != VK_SUCCESS) g.qp = VK_NULL_HANDLE;
   // convert pipeline
   {
     VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO}; mi.codeSize = sizeof kRtConvSpv; mi.pCode = kRtConvSpv;
-    VkPushConstantRange pr{VK_SHADER_STAGE_COMPUTE_BIT, 0, 80};
+    VkPushConstantRange pr{VK_SHADER_STAGE_COMPUTE_BIT, 0, 112};
     VkPipelineLayoutCreateInfo pl{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO}; pl.pushConstantRangeCount = 1; pl.pPushConstantRanges = &pr;
     VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
     if (vkCreateShaderModule(h->device, &mi, nullptr, &g.convMod) != VK_SUCCESS || vkCreatePipelineLayout(h->device, &pl, nullptr, &g.convPl) != VK_SUCCESS) { Fail("convert pipeline layout"); return false; }
@@ -375,7 +386,7 @@ void DeviceShutdown(Host* h) {
   for (auto& x : g.dead) pDestroyAs(d, x.as, nullptr);
   g.dead.clear();
   if (g.tlas) pDestroyAs(d, g.tlas, nullptr);
-  for (Buf* b : {&g.arena, &g.blasStore, &g.scratch, &g.instStore, &g.tlasStore, &g.stats}) FreeBuf(h, *b);
+  for (Buf* b : {&g.arena, &g.shadow, &g.flags, &g.blasStore, &g.scratch, &g.instStore, &g.tlasStore, &g.stats}) FreeBuf(h, *b);
   if (g.qp) vkDestroyQueryPool(d, g.qp, nullptr);
   if (g.convPipe) vkDestroyPipeline(d, g.convPipe, nullptr);
   if (g.convPl) vkDestroyPipelineLayout(d, g.convPl, nullptr);
@@ -489,25 +500,34 @@ void OnTonemap(ReplayCtx& cx, const char*) {   // called by FxAfterDraw: tonemap
   g.capFrame++;
   const uint32_t slot = g.slot++ % kSlots;
   const bool timed = g.qp != VK_NULL_HANDLE;
-  if (timed) { vkCmdResetQueryPool(cb, g.qp, slot * 4, 4); g.slotTs[slot] = false; }
+  if (timed) { vkCmdResetQueryPool(cb, g.qp, slot * kQ, 5); g.slotTs[slot] = false; }
   Bar(cb);   // transform feedback writes -> convert; previous frame's trace/build reads -> this frame's writes
-  if (timed) vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, g.qp, slot * 4 + 0);
-  // 1. clip -> world, in place
+  if (timed) vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, g.qp, slot * kQ + 0);
+  // 1. clip -> world, in place; the same pass compares each vertex with the copy taken at the draw's last BLAS build (motion flag word per draw)
+  uint32_t* flagWords = static_cast<uint32_t*>(g.flags.map) + (size_t)slot * kMaxDraws;   // this slot was read back 4 frames ago: free to rewrite
+  memset(flagWords, 0, kMaxDraws * 4);
+  g.slotKeys[slot].clear();
   vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g.convPipe);
-  for (auto& d : draws) {
-    struct { float m[16]; uint64_t addr; uint32_t count, pad; } pc;
-    memcpy(pc.m, d.inv, 64); pc.addr = g.arena.addr + d.arenaOff; pc.count = d.vcount; pc.pad = 0;
+  for (size_t di = 0; di < draws.size(); di++) {
+    const FrameDraw& d = draws[di];
+    struct { float m[16]; uint64_t addr, shadow, flags; uint32_t count, idx; float eye[4]; } pc;
+    memcpy(pc.m, d.inv, 64); pc.addr = g.arena.addr + d.arenaOff; pc.shadow = g.shadow.addr + d.arenaOff;
+    pc.idx = (uint32_t)std::min<size_t>(di, kMaxDraws - 1); pc.flags = g.flags.addr + ((uint64_t)slot * kMaxDraws) * 4; pc.count = d.vcount;
+    pc.eye[0] = d.eye[0]; pc.eye[1] = d.eye[1]; pc.eye[2] = d.eye[2]; pc.eye[3] = 0;
     vkCmdPushConstants(cb, g.convPl, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, &pc);
     vkCmdDispatch(cb, (d.vcount + 63) / 64, 1, 1);
+    if (di < kMaxDraws) g.slotKeys[slot].push_back(d.key);
   }
   Bar(cb);
+  if (timed) vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, g.qp, slot * kQ + 4);   // end of the convert phase
   // 2. BLAS for every draw captured this frame (rebuilt in place when the size is unchanged)
   std::vector<VkAccelerationStructureGeometryKHR> geos(draws.size());
   std::vector<VkAccelerationStructureBuildGeometryInfoKHR> infos;
   std::vector<VkAccelerationStructureBuildRangeInfoKHR> ranges;
   std::vector<uint64_t> keys;
   infos.reserve(draws.size()); ranges.reserve(draws.size()); keys.reserve(draws.size());
-  uint64_t scratchUsed = 0, blasBuilt = 0, blasTris = 0;
+  uint64_t scratchUsed = 0, blasBuilt = 0, blasTris = 0, blasReused = 0;
+  std::vector<VkBufferCopy> shadowCopies;   // arena -> shadow for every BLAS built this frame (the reference for the motion test)
   auto flush = [&]() {
     if (infos.empty()) return;
     std::vector<const VkAccelerationStructureBuildRangeInfoKHR*> rp(infos.size());
@@ -520,8 +540,12 @@ void OnTonemap(ReplayCtx& cx, const char*) {   // called by FxAfterDraw: tonemap
     auto it = g.entries.find(draws[di].key);
     if (it == g.entries.end()) continue;
     Entry& e = it->second;
+    const bool contiguous = e.procFrame == (int64_t)g.capFrame - 1;   // a draw that was off screen in between may have moved: no reuse
+    e.procFrame = (int64_t)g.capFrame;
+    if (!contiguous) { e.calm = 0; e.isStatic = false; }
     e.lastSeen = (int64_t)g.capFrame;
     e.seen++;   // frames this draw was captured (stable = 3 or more)
+    if ((g.reuse == 2 ? g.winReuse : g.reuse != 0) && e.isStatic && e.built && e.as) { blasReused++; continue; }   // unchanged since its BLAS was built: keep that BLAS
     VkAccelerationStructureGeometryKHR& geo = geos[di];
     geo = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
     geo.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR; geo.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
@@ -551,10 +575,12 @@ void OnTonemap(ReplayCtx& cx, const char*) {   // called by FxAfterDraw: tonemap
     scratchUsed += need;
     infos.push_back(bi); ranges.push_back({prims, 0, 0, 0}); keys.push_back(draws[di].key);
     e.built = true; blasBuilt++; blasTris += prims;
+    shadowCopies.push_back({e.arenaOff, e.arenaOff, e.arenaBytes});
   }
   // infos hold pointers into geos (stable: sized up front); build the rest
   flush();
-  if (timed) vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, g.qp, slot * 4 + 1);
+  if (!shadowCopies.empty()) vkCmdCopyBuffer(cb, g.arena.buf, g.shadow.buf, (uint32_t)shadowCopies.size(), shadowCopies.data());   // builds read the arena, not the shadow: no ordering needed here
+  if (timed) vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, g.qp, slot * kQ + 1);
   // 3. TLAS over everything alive
   Evict(h);
   ReapDead(h);
@@ -590,8 +616,8 @@ void OnTonemap(ReplayCtx& cx, const char*) {   // called by FxAfterDraw: tonemap
     pCmdBuild(cb, 1, &bi, &rgp);
     Bar(cb);
   }
-  if (timed) vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, g.qp, slot * 4 + 2);   // end of the build phase
-  g.st.blasBuilt += blasBuilt; g.st.blasTris += blasTris; g.st.instances += ninst; g.st.frames++;
+  if (timed) vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, g.qp, slot * kQ + 2);   // end of the build phase
+  g.st.blasReused += blasReused; g.st.blasBuilt += blasBuilt; g.st.blasTris += blasTris; g.st.instances += ninst; g.st.frames++;
   // 4. debug overlay (and its statistics)
   bool ovl = false;
   TextureImpl* z = FxSceneDepth();
@@ -661,7 +687,7 @@ void OnTonemap(ReplayCtx& cx, const char*) {   // called by FxAfterDraw: tonemap
       g.slotUsed[slot] = true;
     }
   }
-  if (timed) vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, g.qp, slot * 4 + 3);
+  if (timed) vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, g.qp, slot * kQ + 3);
   Bar(cb);   // the capture of the next frame writes the arena again
   if (ovl) {   // put back the viewport and scissor the game had set (nvn_aa.cpp does the same after its passes)
     if (cx.vpHave & 1) { const float* v = cx.vpGuest[0]; VkViewport vp = MakeNvnViewport(h->originMode, v[0], v[1], v[2], v[3], t->scale); vkCmdSetViewport(cb, 0, 1, &vp); }
@@ -680,18 +706,33 @@ void OnTonemap(ReplayCtx& cx, const char*) {   // called by FxAfterDraw: tonemap
   // read back an older slot (the GPU has long finished it)
   if (g.qp) {
     const uint32_t old = (slot + kSlots - 4) % kSlots;
-    uint64_t r[8] = {};
-    g.slotTs[slot] = true;   // all four stamps of this slot are recorded by now
-    if (g.slotTs[old] && vkGetQueryPoolResults(h->device, g.qp, old * 4, 4, sizeof r, r, 16, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) == VK_SUCCESS && r[1] && r[3] && r[5] && r[7]) {
+    uint64_t r[10] = {};
+    g.slotTs[slot] = true;   // all stamps of this slot are recorded by now
+    if (g.slotTs[old] && vkGetQueryPoolResults(h->device, g.qp, old * kQ, 5, sizeof r, r, 16, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) == VK_SUCCESS && r[1] && r[3] && r[5] && r[7] && r[9]) {
+      // stamps: r[0] start, r[8] end of convert, r[2] end of BLAS builds, r[4] end of TLAS, r[6] end of overlay
       const double ms = (double)g.tsPeriod * 1e-6;
-      g.st.gpuBuildMs += (double)(r[4] - r[0]) * ms; g.st.gpuBlasMs += (double)(r[2] - r[0]) * ms; g.st.gpuN++;
+      g.st.gpuBuildMs += (double)(r[4] - r[0]) * ms; g.st.gpuBlasMs += (double)(r[2] - r[8]) * ms; g.st.gpuConvMs += (double)(r[8] - r[0]) * ms; g.st.gpuN++;
       if (g.slotUsed[old]) { g.st.gpuOvlMs += (double)(r[6] - r[4]) * ms; g.st.ovlN++; }
-      (void)r;
     }
     if (g.slotUsed[old]) {
       const uint32_t* s = static_cast<const uint32_t*>(g.stats.map) + old * 8;
       if (s[0]) { for (int i = 0; i < 8; i++) g.st.cls[i] += s[i]; g.st.clsN++; }
     }
+  }
+  // motion flags of the frame 4 slots back: a draw whose vertices stayed within tolerance of its BLAS copy for staticFrames frames keeps its BLAS
+  {
+    const uint32_t old = (slot + kSlots - 4) % kSlots;
+    const uint32_t* fw = static_cast<const uint32_t*>(g.flags.map) + (size_t)old * kMaxDraws;
+    const std::vector<uint64_t>& ks = g.slotKeys[old];
+    for (size_t i = 0; i < ks.size(); i++) {
+      auto it = g.entries.find(ks[i]);
+      if (it == g.entries.end()) continue;
+      Entry& e = it->second;
+      g.st.rdDraws++; if (e.isStatic) g.st.rdStatic++;
+      if (fw[i]) { float rv; memcpy(&rv, &fw[i], 4); g.st.rdFlag++; g.st.rdRatio += std::min(rv, 1000.0f); e.calm = 0; e.isStatic = false; }
+      else if (++e.calm >= g.staticFrames) e.isStatic = true;
+    }
+    g.slotKeys[old].clear();
   }
 }
 
@@ -702,13 +743,16 @@ void OnPresent() {
   Stats& s = g.st;
   if (!s.frames) return;
   const double f = (double)s.frames;
-  fprintf(stderr, "[rt] p%d: %u frames: %.0f draws, %.0f tris captured (%.1f MB xfb) per frame; BLAS built %.0f (%.0f tris) per frame; %.0f instances; live entries %zu, arena %.1f/%llu MB (hwm %.1f), BLAS %.1f/%llu MB (hwm %.1f)%s\n",
-          g_presentCount, s.frames, (double)s.draws / f, (double)s.tris / f, (double)s.xfbBytes / f / 1048576.0, (double)s.blasBuilt / f, (double)s.blasTris / f, (double)s.instances / f, g.entries.size(),
+  fprintf(stderr, "[rt] p%d: %u frames: %.0f draws, %.0f tris captured (%.1f MB xfb) per frame; BLAS built %.0f (%.0f tris), reused %.0f per frame; %.0f instances; live entries %zu, arena %.1f/%llu MB (hwm %.1f), BLAS %.1f/%llu MB (hwm %.1f)%s\n",
+          g_presentCount, s.frames, (double)s.draws / f, (double)s.tris / f, (double)s.xfbBytes / f / 1048576.0, (double)s.blasBuilt / f, (double)s.blasTris / f, (double)s.blasReused / f, (double)s.instances / f, g.entries.size(),
           (double)g.arenaR.used / 1048576.0, (unsigned long long)(g.arenaR.cap >> 20), (double)g.arenaR.hwm / 1048576.0, (double)g.blasR.used / 1048576.0, (unsigned long long)(g.blasR.cap >> 20), (double)g.blasR.hwm / 1048576.0,
           s.skipped ? " (some draws skipped: raise SNAP_RT_ARENA_MB/BLAS_MB/SCRATCH_MB)" : "");
-  fprintf(stderr, "[rt]   cost: CPU capture %.3f ms + build record %.3f ms per frame; GPU convert+BLAS+TLAS %.3f ms (convert+BLAS %.3f, %u samples)", s.cpuCapMs / f, s.cpuBuildMs / f, s.gpuN ? s.gpuBuildMs / s.gpuN : 0.0, s.gpuN ? s.gpuBlasMs / s.gpuN : 0.0, s.gpuN);
+  fprintf(stderr, "[rt]   cost: CPU capture %.3f ms + build record %.3f ms per frame; GPU convert+BLAS+TLAS %.3f ms (convert %.3f, BLAS %.3f, %u samples)", s.cpuCapMs / f, s.cpuBuildMs / f, s.gpuN ? s.gpuBuildMs / s.gpuN : 0.0, s.gpuN ? s.gpuConvMs / s.gpuN : 0.0, s.gpuN ? s.gpuBlasMs / s.gpuN : 0.0, s.gpuN);
+  if (g.reuse == 2) fprintf(stderr, "; BLAS reuse %s", g.winReuse ? "ON" : "off");
+  if (s.rdDraws) fprintf(stderr, "; motion test: %.1f%% of draws moved (mean ratio %.1f), %.1f%% were static", 100.0 * s.rdFlag / s.rdDraws, s.rdFlag ? s.rdRatio / s.rdFlag : 0.0, 100.0 * s.rdStatic / s.rdDraws);
   if (s.ovlN) fprintf(stderr, "; GPU overlay %.3f ms (%u samples)", s.gpuOvlMs / s.ovlN, s.ovlN);
   fprintf(stderr, "\n");
+  if (g.reuse == 2) g.winReuse = !g.winReuse;   // A/B: the next window runs the other way
   if (g.kFrames) { const double kf = (double)g.kFrames; fprintf(stderr, "[rt]   draw keys per frame: %.1f draws; %.1f distinct by mesh identity (%.0f%% also in the previous frame), %.1f distinct with per-object constants (%.0f%% also in the previous frame); key in use: %s\n", (double)s.draws / f, (double)g.kA / kf, g.kA ? 100.0 * g.kStA / g.kA : 0.0, (double)g.kB / kf, g.kB ? 100.0 * g.kStB / g.kB : 0.0, g.keyCb ? "with constants" : "identity"); g.kA = g.kB = g.kStA = g.kStB = g.kFrames = 0; }
   if (s.clsN && s.cls[0]) {
     const double n = (double)s.cls[0];

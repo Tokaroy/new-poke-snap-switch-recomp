@@ -1,0 +1,13 @@
+# fixture: post_tutorial
+# Like story_help, but with the post_tutorial save and the florio_eval navigation: does the Florio ride teach/unlock the item buttons (tutorial_info popups, HUD icons, How to Play page 1)?
+repeat @f300 @f30000 120 8 A
+wait ui=map_select timeout=240
+repeat @f60 @f30000 120 8 A
+wait ride timeout=240
+@f0 1500 shot=40
+3.0 0.2 Plus
+wait ui=pause_menu timeout=60
+1.5 0.2 Down
+2.5 0.2 Down
+3.5 0.2 Down
+4.5 0.2 A

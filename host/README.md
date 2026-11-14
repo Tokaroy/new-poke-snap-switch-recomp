@@ -161,7 +161,8 @@ it through ImGui gamepad navigation (D-pad or left stick moves, south button act
   `gyro_on`, `gyro_sens`, `gyro_invert_x/y`, `rumble_on`, `rumble_strength`. Loaded in `hle::activate_profiles()`; test runs with `SNAP_SAVE_DIR` do not load them.
 - **Accessibility tab:** toggle-or-hold for ZL and ZR, UI scale.  **Test input tab:** live readout of what npad 0 would report.
 - Settings apply live and are saved atomically to `%APPDATA%\SnapRecomp\input.json` (`SNAP_CONFIG_DIR` overrides the folder). An invalid file is kept as
-  `input.json.invalid`, defaults are used and a notice shows on screen. The old `config\input_map.json` is migrated once.
+  `input.json.invalid`, defaults are used and a notice shows on screen. The old `config\input_map.json` is migrated once. Notices show
+  once per event for 8 s (fading over the last 1.5 s) and name files only, never a full path (the log line keeps the paths).
 - Test: `tests\hle
 un_tests.ps1` (binding resolution, JSON round trip, migration, capture) and `tests\hle
 un_ui_test.ps1` (boots the game, posts F1,
@@ -275,9 +276,10 @@ wall time from the first input poll, so a loaded PC shifts the game but not the 
 ## PC tabs in the game's own Settings screen (2026-11-13, `host/mods/nativeopt.cpp`)
 
 The game's Settings screen (lab hub gear) is data driven: `option.lmb` in `common/UI/master/Scenes/option.drp` lists states
-(tabs), elements and focus groups (format and dumper: `scripts/ui/lmb.py dump <option.lmb> [state]`). The PC settings are eleven
+(tabs), elements and focus groups (format and dumper: `scripts/ui/lmb.py dump <option.lmb> [state]`). The PC settings are twelve
 extra tabs in sets of five after the game's "Other" tab (R past Other; L on Game goes to the last one): Quality, Textures,
-Effects, Output, View | Display, Controller, Mouse, Audio, Photos | Shadows & AO. They use the game's own row widgets (two-choice rows,
+Effects, Output, View | Display, Controller, Mouse, Audio, Photos | Shadows & AO, Performance (overlay mode and corner, see
+"Performance overlay"). They use the game's own row widgets (two-choice rows,
 pulldowns with their popup), tab bar, help line, sounds and Restore Default Settings button.
 
 - Pack: `python -I scripts/ui/make_native_options.py [--src <option.lmb>] [--out <mods root>] [--if-stale]` writes the local
@@ -323,8 +325,12 @@ pulldowns with their popup), tab bar, help line, sounds and Restore Default Sett
   1.75x (10 steps, 0.5x to 4x), Texture sharpness -2 to +2 (10 steps), Frame rate limit adds 75, 165 and 240; Output: HDR
   output Off / HDR10 (`1`, what the old on/off row stored) / scRGB (`scrgb`), HDR peak Auto (the key erased: the
   monitor's reported peak, else 1000) or 400 to 4000 nits, HDR highlights (`gfx_hdr_expand` -> `SNAP_HDR_EXPAND`, 0 to 1,
-  default 0.3); tab Shadows & AO: Shadow distance (`gfx_shadow_dist` -> `SNAP_SHADOW_DISTANCE`, 1x to 16x, not in the
-  quality presets). Reserved, not drawn yet: AO radius and strength on Shadows & AO (`SNAP_SSAO_RADIUS` /
+  default 0.3); tab Shadows & AO: Shadow distance (`gfx_shadow_dist` -> `SNAP_SHADOW_DISTANCE`, 1x to 16x; the quality
+  presets set it with the shadow resolution: Original 1x, High 2x, Ultra 4x, Maximum 8x, so shadow texels per meter stay
+  the game's), Contact shadows (`contact_shadows` -> `SNAP_CONTACT_SHADOWS`, Off / On, default Off, live through
+  `snap_contact_shadows_set` in `runtime/nvn/nvn_contact.cpp`). The quality preset that is all defaults (id `normal`) is
+  labeled Original; Render scale 4x reads "4x (8K, heavy VRAM)". Sharpening and Master volume stay the game's own
+  pulldown popup (no slider knob on PC pages). Reserved, not drawn yet: AO radius and strength on Shadows & AO (`SNAP_SSAO_RADIUS` /
   `SNAP_SSAO_STRENGTH` are parsed in `host/mods/gamemods.cpp` but never written to the pass), the lighting stream's rows
   after them. Vsync (Output row 6 and F1 Graphics "Frame rate"): On / Adaptive / Fast / Off, live through
   `snap_vsync_set`, remembered as settings key `vsync` (exported as `SNAP_VSYNC` at the next start; On erases it).
@@ -342,7 +348,7 @@ pulldowns with their popup), tab bar, help line, sounds and Restore Default Sett
   `%APPDATA%` input/window/audio files.
 - Route `host\routes\native_options_tabs.txt` (`post_tutorial`): opens Settings, R to PC tab 1, then visits every PC tab with
   one change each (pulldown picks with Down or Up from the current value inside the popup, choices), Minus on Photos, B
-  (leaves the Reset button), R to Shadows & AO and a pick there, R (wraps to Game), L (back to Shadows & AO), B closes. Run it with
+  (leaves the Reset button), R to Shadows & AO, Shadow distance 1.5x and Contact shadows On, R to Performance, overlay FPS then Detailed, R (wraps to Game), L (back to Performance), B closes (Detailed stays on over the hub; run with `NVN_FRAME_DUMP_POST=1` to see it in the shots). Run it with
   `SNAP_MODS_DIR=build\w\<owner>_mods` (pack built with `--out` there) plus the three switches above.
 
 ## Visual defaults and SNAP_VISUALS (2026-11-13, `runtime/hle/visual_defaults.h`)
@@ -396,9 +402,20 @@ All off by default; developer switches only (no options rows yet; rows wanted ar
 | `SNAP_FX_SPLIT=1` | The left half of the frame keeps the game's own picture, the right half gets the effects (one-frame A/B). |
 | `SNAP_FX_LOG=1` | Logs frame phases, camera, shadow caster capture, photo holds and effect runs (`fx:` lines on stderr). |
 | `SNAP_FX_TIME=1` | GPU time of the whole pre-tonemap Fx block (timestamps; avg/max logged every 300 blocks). |
-| `SNAP_CONTACT_SHADOWS=1` | Screen-space contact shadows (`nvn_contact.cpp`, `shaders/contact.frag`). Tuning (test aids): `SNAP_CONTACT_STRENGTH` (0.6), `SNAP_CONTACT_LEN` (0.6 world units), `SNAP_CONTACT_THICK` (0.25), `SNAP_CONTACT_FADE` (45 view units), `SNAP_CONTACT_LSIGN` (+1/-1 forces the light direction sign), `SNAP_CONTACT_DEBUG` (2 tints, 3 view distance, 4 normal, 5 sun facing, 6 depth, 7 the factor itself, 100 cycles). |
+| `SNAP_CONTACT_SHADOWS=1` | Screen-space contact shadows (`nvn_contact.cpp`, `shaders/contact.frag`). Tuning (test aids): `SNAP_CONTACT_STRENGTH` (0.5), `SNAP_CONTACT_LEN` (0.4 world units), `SNAP_CONTACT_THICK` (0.15), `SNAP_CONTACT_FADE` (45 view units), `SNAP_CONTACT_LSIGN` (+1/-1 forces the light direction sign), `SNAP_CONTACT_DEBUG` (2 tints, 3 view distance, 4 normal, 5 sun facing, 6 depth, 7 the factor itself, 100 cycles). |
 
 Regenerate the host SPIR-V headers (`nvn_fx_spv.h`, `nvn_contact_spv.h`) after editing a shader: `tools\venv-recomp\Scripts\python -I runtime\nvn\shaders\make_fx_spv.py`.
+
+## Lighting switches (env, or the options rows that set them)
+
+| Switch | Effect |
+| --- | --- |
+| `SNAP_LIGHTING=high\|ultra` | Preset: 2048/4096 shadow maps, 2x/4x shadow distance, SSAO high/ultra. Explicit switches below win. |
+| `SNAP_SHADOW_DISTANCE=<1..16>`, `SNAP_SHADOW_FADE=<scale>` | Widen the dynamic shadow map k times (casters scaled, receivers remapped in shader); fade length and far clip scaled by the same k. |
+| `SNAP_SHADOW_FILTER=4\|8\|16\|32`, `SNAP_SHADOW_SOFTNESS`, `SNAP_SHADOW_BIAS` | Soft shadow taps (PCF), kernel radius in 1024-map texels, reference-depth bias in 1e-4 units. |
+| `SNAP_SSAO_FORCE=1\|2` | Turn the SSAO passes on in the course (1 strict, 2 relaxed). Experimental: draws nothing yet. |
+| `SNAP_SSAO_GTAO=1`, `SNAP_GTAO_KEY=<hex>` | Replace the HBAO fragment shader with GTAO. Experimental, needs the HBAO key. |
+| `SNAP_LIGHT_AB=<P>`, `NVN_P1_LOG=1` | Test aids: toggle the features every P presents; log PerViewCBuffer binds. |
 
 ## Layers and registration order (`bind_host_layers` in `boot.cpp`)
 
@@ -452,11 +469,14 @@ All on by default; each env var restores the old path.
 
 ## Shiny Pokemon (2026-11-14, `runtime/nvn/nvn_shiny.cpp`, off by default, cosmetic only)
 
-Build the pack once from your own extracted textures: `python -E -P scripts\hd\make_shiny_pack.py` (output `%APPDATA%\SnapRecomp\mods\shiny-pokemon\`, outside git; palettes in `scripts\hd\shiny\palettes.json`).
+Build the pack once from your own extracted textures: `python -E -P scripts\hd\make_shiny_pack.py [--species 7,16] [--sheet DIR]` (system Python; output `%APPDATA%\SnapRecomp\mods\shiny-pokemon\`, outside git, about 217 MB; colors in `scripts\hd\shiny\shiny_colors.txt`, explicit overrides in `palettes.json`). Every body texture of a species is recolored, so multi-texture models match. Most species use an approximate hue rotation, not the official shiny colors; Chandelure, Vivillon, Sawsbuck, Florges, Minior, Frillish and Deerling have no shiny yet.
 
 - `SNAP_SHINY=1`: enable (default 0). Menu row "Shiny Pokémon" (native Photos tab row 5, F1 Photos; 2026-11-14): Off (default, key `shiny` erased) / Rare 1/4096 / Common 1/512; `settings.cpp` turns the key into `SNAP_SHINY=1` + `SNAP_SHINY_ODDS=<n>` at start, so it applies after a restart (`nvn_shiny.cpp` reads the switches once). No forced/test choice in the menu.
 - `SNAP_SHINY_ODDS=<n>`: 1 in n per spawned instance (default 4096; 1 = every instance of a pack species).
 - `SNAP_SHINY_SEED=<n>`: fixed seed for repeatable rolls (default: random profile seed in the pack folder, a new roll each launch).
+- Subject-accurate photo badge (round 4): a shutter thumbnail is flagged only when a shiny twin's draws cover at least 300 px (1080x720 equivalent) of the frame it copies, measured with one occlusion query per twin draw; the log line is `[shiny] thumbnail ... SHINY subject (<species> <px> px)` or `no shiny subject`. The Score polaroid is badged from the photo last shown large in photo select. The lab album badge and a sidecar that survives a restart are not implemented yet.
+- `SNAP_SHINY_WINDOW=<presents>`: debug only, presents between the flagged photo copy and the JPEG encode (default 60).
+- Shiny photos: a photo shot while a shiny is on screen shows a gold star badge on its thumbnail (ride pop-up, photo select list and preview, album save grid) and the capture shows a "Shiny <name>!" pill with sparkles and a chime. Not yet on the score screen photo, the album save detail or the lab album. Research colors: `python -E -P scripts\hd\shiny\merge_research.py`, then rebuild the pack. For screenshots of the badge set `NVN_FRAME_DUMP_POST=1`.
 - `SNAP_SHINY_FORCE=<hex key>`: that body texture is always shiny. `SNAP_SHINY_TRACE=<hex key|all>`: log draw state or all texture keys. `SNAP_SHINY_DIR=<dir>`: pack folder.
 
 ## Scheduler switches (nn::os review fixes, 2026-11-13; `analysis\core\review_os.md`, `runtime\os\os_kernel.cpp`)
@@ -481,6 +501,9 @@ On by default unless noted; each env var restores the old path.
 - `SNAP_FNPROF_KEEP=1`: keep the per-function `FN_ENTER` hook on for the whole run, as before. Default: `run_initializers` (`host\loader.cpp`) turns it off after the init log unless a tracer (`SNAP_FNTRACE`, `SNAP_TRACE_LOD`, `SNAP_SKIPS_REC`, `SNAP_NEO_CAMFN`) had it on. It cost a hash lookup and three observer calls on every lifted function entry, about a fifth of the guest CPU samples in a boot profile.
 - `SNAP_PACE_RELEASE_CORE=0`: the presenting JobWorker keeps its virtual core while the frame limiter sleeps, as before. Default: `Pace` (`runtime\nvn\nvn_vk.cpp`) runs inside `os_host_block_begin/end`, like vsync on the Switch, so pinned loader threads (`ResourceUncompress` p31) run during the sleep. `SNAP_NVN_RELEASE_CORE=1` (pass 3, still opt-in) releases the core for the whole submit/present/wait; it added nothing measurable on top.
 - `SNAP_SHADER_FASTIO=0`: shader cache files (`.spv`, `.json`, `.efz`) read with `std::ifstream` byte iterators and one BCrypt provider open per hash, as before. Default: one sized Win32 read and one shared provider (`runtime\nvn\nvn_shader.cpp`). Boot creates about 6,200 programs.
+- `SNAP_CRC_SLICE=0` (perf pass 10): the lifted CRC32 instructions run the byte-wise table loop, as before. Default: 8- and 4-byte `crc32x`/`crc32w` use slice-by-8 tables (`runtime\simd.h`, filled on first use, about 4.5x faster per step). The guest DRP checksum `main+0x15fe90` was about half the `ResourceUncompress` CPU at course start; cave start window 2.8 s to 1.7 s of that CPU. Takes effect only in a main library built after the change (`recomp\snap_build.py`; only `main_0015.c` uses CRC32).
+- `SNAP_DRP_FASTDEC=0` (perf pass 11): the DRP chunk decrypt runs the guest loop, one call of the generator `0x5ec660` per 32-bit word. Default: the inline hook `rt_drp_decrypt` (`host\mods\drpfast.cpp`, `MAIN_INLINE_HOOKS` at `main+0x5ec9f0`) does the whole loop on the host and leaves the same data and generator state (about 20x faster; exact on 20,000 random chunks against the generated guest function, and on 16,000 real chunks in game). `SNAP_DRP_FASTDEC=check` runs both and logs `[drpfast]` mismatches. Needs main regenerated after 2026-11-14.
+- `SNAP_OS_FREE_THREADS=<name>[,<name>...]` (perf pass 11, OFF by default): guest threads whose name starts with one of the names run without one of the 3 virtual cores (`runtime\os\os_kernel.cpp`). Tried with `ResourceUncompress,ResourceDecrypt`: their core waits went to 0, but slow start frames did not drop and in-course frames over 33 ms rose slightly (4 runs). Not recommended.
 - `SNAP_OS_SPARE_CORES=<n>` (OFF by default): n extra virtual cores any thread may take whatever its mask; guests still see cores 0..2 (`GetCurrentCoreNumber`, core masks). One run: boot to title 20 s, but the lab hub then ran at about 9 fps with JobWorkers blocked on locks (the job system at `0x54c2ec` reads the core number, and two threads now "share" a core). Do not use for play.
 - Not switchable: `NVN_DRAW_SIG`, `NVN_RT_DUMP` and `NVN_TEX_DUMP` are read once instead of by `getenv` per draw (`runtime\nvn\nvn_draw.cpp`; `getenv` was 4% of the exe samples).
 - Tools: `SNAP_HLE_TRACE=open` logs only fs opens (load-phase markers: `title.drp` = title screen, `LC_101_A.drp` = lab, `LC_001_A.drp` = Florio). `SNAP_HOST_PROF=<file>` (`runtime\os\hostprof.cpp`, debug) samples the RIP of every thread that ran in the last 2 ms between `SNAP_HOST_PROF_FROM` and `_TO` seconds and writes `<exe offset> <count>` lines; map them with `snap_boot.map` (most samples land in ntdll waits; compare exe functions with each other).
@@ -491,6 +514,39 @@ On by default unless noted; each env var restores the old path.
 - `SNAP_PACE_LOG=<file.csv>`: one row per present (release interval, guest work, limiter wait, present wait, acquire, `vkQueuePresentKHR`, vsync ticks and phase, mode). Test overrides: `SNAP_PACE_MONITOR=<n>` (follow `\\.\DISPLAY<n>`), `SNAP_PACE_REFRESH=<hz>` (a value below the real refresh is flagged within 3 vblanks and paced on the steady clock at the target rate), `SNAP_PACE_WAIT=0` (no `VK_KHR_present_wait` queue cap), `SNAP_PACE_VBLANK=0` (no vblank thread), `SNAP_VSYNC_HZ=<hz>` (legacy vsync loop period).
 - `SNAP_VSYNC=on|adaptive|fast|off` (default `on`): swapchain present mode only. `on` = FIFO (no tearing; today's behavior). `adaptive` = FIFO_RELAXED (tears only when a frame misses its vblank). `fast` = MAILBOX (no tearing, lowest latency; the GPU may render frames that are never shown). `off` = IMMEDIATE (tearing; when locked to the display the frame is released 0.5 ms after the vblank, so the tear line sits near the top). A mode the driver does not offer falls back (`off` to MAILBOX, then FIFO; the others to FIFO); the choice is logged once as `[vsync] SNAP_VSYNC=<v> -> present mode <M>`. Every mode keeps the frame limiter (60 fps or the frame cap) and the guest's 60 Hz vsync, so ride and game timing do not change; with a VRR (G-Sync/FreeSync) display use `on` or `adaptive`. Aliases: `relaxed`, `mailbox`, `immediate`/`0`. Live switch: `extern "C" void snap_vsync_set(const char* mode)` (same values) recreates the swapchain at the next present, no restart; `snap_vsync_get()` returns the active value. Menu: the Vsync row (native Output tab, F1 Graphics) calls it and stores settings key `vsync` (2026-11-14). A game asking for present interval 0 still gets IMMEDIATE/MAILBOX as before.
 
+## Performance overlay (2026-11-14, `runtime/ui/ui_fps.cpp`)
+
+- Settings key `fps_overlay` (env `SNAP_FPS_OVERLAY`): unset = Off (default, the original game), `fps`, `detailed`. Key
+  `fps_overlay_corner` (env `SNAP_FPS_OVERLAY_CORNER`): `tl`, `tr` (default), `bl`, `br`. Both are live (F1 Graphics >
+  Frame rate, native tab Performance, the 12th PC tab); the env var wins at start as for every option.
+- F3 cycles Off -> FPS -> Detailed -> Off and stores the choice, unless F3 is bound to a game button in the controls map (then
+  F3 stays the game's). F1 and F11 are untouched.
+- FPS: one number, the average over the last 0.5 s, refreshed twice a second (green at 55+, yellow at 28+, red below).
+  Detailed adds frame time (ms), 1% low (the average rate of the slowest 1% of frames in the last 10 s), CPU and GPU ms, render
+  size (1920x1080 times the render scale) and output size, the upscaler / AA / CAS line, frame cap and vsync, and a frame-time
+  graph of the last 2.5 s with a blue line at the target frame time (the frame cap or the game's pace rate; red segments are
+  over 1.5x the target). CPU and GPU come from the `SNAP_PERF` timing source (`runtime/nvn/nvn_perf.cpp`): GPU = busy time of
+  the timestamp pairs around every command buffer (collected one present late); CPU = the presenting thread's CPU time per
+  frame (its cycle count over the TSC rate). Detailed switches those timestamps on at run time (`snap_perf_overlay_timing`);
+  no CSV is written unless `SNAP_PERF` is set.
+- Size follows the output height (1x at 1080p, 2x at 4K) on a semi-transparent dark box with a text shadow.
+- Drawn by the host overlay (`ui_overlay.cpp`, the same path as the shiny badges and the F1 menu) into the swapchain image after
+  the game's frame is composed, so it is never in the game's photos, album or any guest capture. Choice for dumps:
+  `NVN_FRAME_DUMP_POST=1` dumps (the finished swapchain image) show it, as the player sees it; plain `NVN_FRAME_DUMP` dumps (the
+  game's image before the host overlay) do not.
+- Cost: Off = one relaxed atomic load per present. While on, the host overlay frame's CPU time is logged every 1200 presents as
+  `ui: performance overlay <mode>: host overlay CPU per present: median .., p99 .., mean ..`. Measured 2026-11-14 on Florio
+  (`core_florio_a`, 1280x720 hidden window, shared PC): FPS median 76-87 us, Detailed 92-112 us per present on the present
+  thread; p99 4-11 ms spikes in both modes (most likely the BelowNormal present thread being preempted on the busy PC, not
+  confirmed). Frame rate stayed at the 60 fps pace (Off 59.86, Detailed 59.79 fps over 140 s with `SNAP_PERF_SHARED`); GPU busy
+  was 2.53 ms Off and 2.30 ms Detailed, so the overlay's GPU cost was too small to measure.
+
+## High frame rate spike (2026-11-14, hifps worker; `host/mods/highfps.cpp`, `docs/high-fps-plan.md`, `analysis/perf/high-fps.md`)
+
+Everything is off by default (default game = 60 fps, unchanged). `SNAP_FPS=120|144` calls `nvnHostSetFramePacing(hz)` at present 1 and after the `SNAP_FAST_BOOT` window (60 or unset: inert; read once at start). `SNAP_FPS_UNCAPPED=1` turns the limiter off for measurement. Diagnostics: `SNAP_FPS_TRACE=<csv>` (one row per clock update: caller, mode, dt, the three ms channels; forces `g_fnprof`, slow), `SNAP_FPS_MSWATCH=1` (hardware watchpoints on the clock's ms channels, `[highfps-w]` rip table, resolve in the link map). The 14 ms sleep floor in the main loop is never reached in play, so there is no sleep patch. Measured: real 120 is reachable (117.5 fps), 144 is not yet (115.7 fps, quiet PC, 1440p; 99 at 4K); ride length in seconds is unchanged.
+
+Round 2 switches: `SNAP_ACQ_FENCE=0` (default on) restores the old swapchain acquire (GPU-side semaphore wait only); the new path waits an acquire fence on the CPU so guest `nvnSyncWait` no longer sits behind the blit (fixes ~16 ms waits at high fps). `SNAP_SYNC_TRACE=<ms>` logs `[synctrace]` for guest sync waits of that length or more. `SNAP_UPSCALE_HOLD_SCALE=0` restores the present-count shutter hold (default scales the hold by measured fps / 60).
+
 ## Ray tracing track (2026-11-14, rt worker; `runtime\nvn\nvn_rt.{h,cpp}`, `docs\lighting-rt-plan.md` section 4)
 
 Everything is off unless `SNAP_RT=1`: with it unset the device, shader modules, pipelines and buffers are what they were. The device needs `VK_KHR_acceleration_structure`, `VK_KHR_ray_query`, `VK_KHR_deferred_host_operations`, `VK_EXT_transform_feedback` and the Vulkan 1.2 `bufferDeviceAddress` feature; if any is missing the log says `[rt] off: ...` and the game runs as before. Memory pools the game creates are not touched (only the layer's own buffers carry device-address flags).
@@ -500,5 +556,6 @@ Everything is off unless `SNAP_RT=1`: with it unset the device, shader modules, 
 - `SNAP_RT_LOG=<n>`: stats every n presents (default 120 with `SNAP_RT_DEBUG`, off otherwise): triangles and draws captured, BLAS builds, live cache entries and memory, CPU record cost, GPU ms of convert+BLAS+TLAS (timestamps) and of the overlay, and the overlay's per-pixel class percentages.
 - `SNAP_RT_ARENA_MB` (384), `SNAP_RT_BLAS_MB` (512), `SNAP_RT_SCRATCH_MB` (256): capture arena, BLAS storage and build scratch. A draw that does not fit is skipped and counted.
 - `SNAP_RT_TTL=<frames>` (900): how long a draw seen in 3 or more frames stays in the TLAS after it last drew; draws seen fewer than 3 times drop after 2 frames.
+- `SNAP_RT_REUSE=0|1|2` (1) and `SNAP_RT_STATIC_FRAMES=<n>` (4): a draw whose converted world-space vertices stayed within a tolerance (0.02 m + 0.2% of the distance from the eye) of the copy taken at its last BLAS build for n frames keeps that BLAS; the motion test runs in the convert pass and is read back 4 frames later, so a draw that starts moving is rebuilt up to about 4 frames late. A draw that was off screen in between is always rebuilt. 0 rebuilds every visible draw every frame; 2 alternates on and off per log window (for A/B timing under GPU contention; the log line says `BLAS reuse ON` or `off`).
 - `SNAP_RT_KEYCB=0|1` (1): the draw identity for the BLAS cache includes a hash of the per-object vertex constants (tells apart draws that share one mesh); 0 keys by mesh identity only.
 - Photo and Evaluation frames get no capture and no build (`FxIsPhotoFrame`, `FxWritable`); scene depth is only sampled, never written. Validation: `NVN_VK_VALIDATION=1`.

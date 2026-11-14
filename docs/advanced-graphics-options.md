@@ -92,7 +92,8 @@ The lighting stream (see `docs/lighting-rt-plan.md`) uses this contract:
 
 - First add the option to the F1 table (`graphics_opts()` in `runtime/ui/ui_options.cpp`) with `kRestart` or `kLive`. A native row for a `kSoon` option is refused (the trace logs "(refused)").
 - Then add the key to `kEnvKeys` in `runtime/hle/settings.cpp`, the switch to `host/README.md`, and the native `row(...)` in tab 11, slots 4 to 6 (slot 1 to 3 are shadow distance, AO radius, AO strength).
-- Reserved row order in tab 11: Lighting preset, Shadow softness, RT toggle. A second new tab (12, "Lighting & RT") takes the rest. Tab 12 starts empty and is not added to `TABS` until it has at least one row.
+- Reserved row order in tab 11: Lighting preset, Shadow softness, RT toggle. A second new tab ("Lighting & RT") takes the rest. It starts empty and is not added to `TABS` until it has at least one row.
+- Update 2026-11-14: tab 11 now holds Shadow distance and Contact shadows (slots 1 and 2), so AO radius and strength move to slots 3 and 4 and the lighting rows to 5 and 6. Tab 12 is "Performance" (performance overlay mode and corner, `runtime/ui/ui_fps.cpp`); "Lighting & RT" becomes tab 13, inserted before Performance or appended after it (insert before to keep lighting next to Shadows & AO; the route `native_options_tabs` then needs one more R).
 - `gfx_lighting` `ultra` currently does nothing; either implement it or remove it from the F1 choices before the native row ships.
 
 ## 7. Testing and docs per row

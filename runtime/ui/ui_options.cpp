@@ -35,6 +35,8 @@
 
 extern "C" void snap_vsync_set(const char* mode);   // runtime/nvn/nvn_vk.cpp [vsync]: live, the next present rebuilds the swapchain
 extern "C" const char* snap_vsync_get();
+extern "C" void snap_contact_shadows_set(int on);   // runtime/nvn/nvn_contact.cpp: live, the next scene frame
+extern "C" int snap_contact_shadows_get();
 
 namespace snap::ui {
 
@@ -89,6 +91,18 @@ void set_vsync(const std::string& v) {
   else st::set("vsync", v);
   snap_vsync_set(v.c_str());
 }
+// Performance overlay (ui_fps.cpp): live; keys fps_overlay ("default" = Off, erased) and fps_overlay_corner ("tr" = erased)
+std::string get_fps_overlay() { return snap::ui::fps_overlay_value(); }
+void set_fps_overlay(const std::string& v) { snap::ui::fps_overlay_set(v); }
+std::string get_fps_corner() { return snap::ui::fps_overlay_corner_value(); }
+void set_fps_corner(const std::string& v) { snap::ui::fps_overlay_set_corner(v); }
+// Contact shadows: live, remembered as "contact_shadows" ("default" = off, erased; exported as SNAP_CONTACT_SHADOWS=1 at the next start)
+std::string get_contact() { return snap_contact_shadows_get() ? "1" : "default"; }
+void set_contact(const std::string& v) {
+  if (v == "1") st::set("contact_shadows", "1");
+  else st::erase("contact_shadows");
+  snap_contact_shadows_set(v == "1");
+}
 // ---- quality presets. The preset is not stored: it is worked out from the eleven rows below, so changing any row by hand shows "Custom" and
 // setting the rows to a preset's values shows that preset. "" in the table = the row's default (the key is erased, the game's own behavior).
 // Normal is all defaults. Left out on purpose: draw distance and full-rate animation (photo scores unverified), the lighting preset and
@@ -97,21 +111,23 @@ struct PresetKey { const char* key; const char* def; };
 const PresetKey kPresetKeys[] = {
     {"gfx_render_scale", "1.00"}, {"gfx_aa", "default"}, {"gfx_sharpen", snapdef::def("SNAP_SHARPEN")}, {"gfx_aniso", snapdef::def("SNAP_ANISO")}, {"gfx_lod_bias", "auto"},
     {"gfx_shadow_res", "default"}, {"ssao_quality", "default"}, {"gfx_ssao_samples", "default"}, {"gfx_ssao_hbao", "default"},
-    {"gfx_pass_bloom", "default"}, {"gfx_pass_dof", "default"},
+    {"gfx_pass_bloom", "default"}, {"gfx_pass_dof", "default"}, {"gfx_shadow_dist", "default"},
 };
-constexpr int kPresetKeyN = 11;
+constexpr int kPresetKeyN = 12;
 struct PresetDef { const char* id; const char* label; const char* v[kPresetKeyN]; };
 const PresetDef kPresets[] = {
     // Very Low draws at 0.5 (960 x 540). Sub-native scale used to lose the GPU device after the photo score screen: the album thumbnail
     // readback copied a 240x200 guest region out of a 120x100 scaled image; transfers are render-scale aware since 2026-11-12 (nvn_xfer.cpp).
     // The upscaler rows stay out of the presets (they need a backend DLL and pick their own scene scale).
     // sharpening "0.00", not "": "" is the visual_defaults.h default, which is 0.30 under SNAP_VISUALS=enhanced
-    {"verylow", "Very Low", {"0.50", "none", "0.00", "0", "1", "512", "", "4", "", "off", "off"}},
-    {"low", "Low", {"", "off", "0.00", "4", "", "", "", "8", "", "", ""}},
-    {"normal", "Normal", {"", "", "", "", "", "", "", "", "", "", ""}},
-    {"high", "High", {"", "ssaa2,smaa", "0.30", "16", "", "2048", "high", "", "", "", ""}},
-    {"ultra", "Ultra", {"2.00", "smaa", "0.30", "16", "", "4096", "ultra", "", "", "", ""}},
-    {"maximum", "Maximum", {"4.00", "smaa", "0.50", "16", "", "8192", "ultra", "512", "32,128", "", ""}},
+    // "normal" (all defaults, the game's own look) is labeled Original (owner 2026-11-14: every enhancement defaults to Original).
+    // Shadow distance (last column) doubles with the shadow resolution: the same shadow texels per meter as the game, over more ground.
+    {"verylow", "Very Low", {"0.50", "none", "0.00", "0", "1", "512", "", "4", "", "off", "off", ""}},
+    {"low", "Low", {"", "off", "0.00", "4", "", "", "", "8", "", "", "", ""}},
+    {"normal", "Original", {"", "", "", "", "", "", "", "", "", "", "", ""}},
+    {"high", "High", {"", "ssaa2,smaa", "0.30", "16", "", "2048", "high", "", "", "", "", "2"}},
+    {"ultra", "Ultra", {"2.00", "smaa", "0.30", "16", "", "4096", "ultra", "", "", "", "", "4"}},
+    {"maximum", "Maximum", {"4.00", "smaa", "0.50", "16", "", "8192", "ultra", "512", "32,128", "", "", "8"}},
 };
 bool preset_eq(int k, const std::string& a, const std::string& b) {
   if (a == b) return true;
@@ -178,15 +194,15 @@ std::vector<Opt>& graphics_opts() {
   static std::vector<Opt> v = {
       {"", "Picture quality", kSection, kLive, "", ""},
       {"gfx_preset", "Quality preset", kChoice, kRestart,
-       "Sets the picture-quality rows below together: render scale, anti-aliasing, sharpening, anisotropic filtering, texture sharpness, shadow resolution and ambient occlusion. "
+       "Sets the picture-quality rows below together: render scale, anti-aliasing, sharpening, anisotropic filtering, texture sharpness, shadow resolution and distance, and ambient occlusion. "
        "Very Low: for really weak hardware (draws the 3D scene at half size, 960 x 540, then stretches it to the window; no anti-aliasing, no filtering, softer textures, 512 shadows, few occlusion samples). "
-       "Low: for weak or older graphics cards (1920 x 1080, the game's own FXAA, 4x filtering, fewer occlusion samples). Normal: the defaults (the game's own look unless SNAP_VISUALS=enhanced). "
-       "High: 2x supersampling, SMAA, 2048 shadows, High occlusion. Ultra: 2x scale, 4096 shadows, Ultra occlusion. "
-       "Maximum: 4x scale (7680 x 4320), 8192 shadows and the most occlusion samples. It will slow even a very fast graphics card and needs a lot of video memory. "
+       "Low: for weak or older graphics cards (1920 x 1080, the game's own FXAA, 4x filtering, fewer occlusion samples). Original: the defaults (the game's own look unless SNAP_VISUALS=enhanced). "
+       "High: 2x supersampling, SMAA, 2048 shadows reaching 2x as far, High occlusion. Ultra: 2x scale, 4096 shadows at 4x distance, Ultra occlusion. "
+       "Maximum: 4x scale (7680 x 4320), 8192 shadows at 8x distance and the most occlusion samples. It will slow even a very fast graphics card and needs a lot of video memory. "
        "In the course the costly rows are render scale, anti-aliasing, filtering and texture sharpness; shadow size only sharpens Pokemon shadows and the occlusion rows only act on the photo-select screen. "
        "Changing any row by hand shows Custom. Draw distance and full-rate animation are not part of any preset.",
        "normal",
-       {{"verylow", "Very Low"}, {"low", "Low"}, {"normal", "Normal"}, {"high", "High"}, {"ultra", "Ultra"}, {"maximum", "Maximum"}, {"custom", "Custom"}}, 0, 0, "", nullptr, get_preset, set_preset},
+       {{"verylow", "Very Low"}, {"low", "Low"}, {"normal", "Original"}, {"high", "High"}, {"ultra", "Ultra"}, {"maximum", "Maximum"}, {"custom", "Custom"}}, 0, 0, "", nullptr, get_preset, set_preset},
       {"gfx_render_scale", "Render scale", kSlider, kRestart,
        "How sharp the 3D picture is drawn, as a multiple of the game's own 1920 x 1080. 2.00x draws 3840 x 2160 and then shows it on your screen. Higher is crisper and slower. "
        "Below 1.00x the scene is drawn smaller and stretched (0.50x = 960 x 540): blurrier, but much lighter for a weak graphics card. "
@@ -215,10 +231,13 @@ std::vector<Opt>& graphics_opts() {
       {"gfx_shadow_res", "Shadow resolution", kChoice, kRestart,
        "Size of the moving shadow map. The game uses 1024. Higher gives crisper shadow edges and uses more video memory.", "default",
        {{"512", "512 (fast, blocky shadows)"}, {"default", "1024 (the game's own)"}, {"2048", "2048"}, {"4096", "4096"}, {"8192", "8192 (very heavy)"}}, 0, 0, "", "SNAP_SHADOW_RES"},
-      // not in kPresetKeys: whether High/Ultra should set it is an open question (docs/advanced-graphics-options.md section 10)
+      // in kPresetKeys (2026-11-14): High/Ultra/Maximum double it with the shadow resolution, so shadow detail per meter stays the game's own
       {"gfx_shadow_dist", "Shadow distance", kChoice, kRestart,
        "How far the moving shadows reach (runtime/nvn/nvn_draw.cpp ShadowDistanceOnBind). The same shadow map covers more ground, so shadows get softer; pair it with a higher shadow resolution. Costs no GPU time.", "default",
        {{"default", "1x (the game's own)"}, {"1.5", "1.5x"}, {"2", "2x"}, {"3", "3x"}, {"4", "4x"}, {"6", "6x"}, {"8", "8x"}, {"12", "12x"}, {"16", "16x"}}, 0, 0, "", "SNAP_SHADOW_DISTANCE"},
+      {"contact_shadows", "Contact shadows", kChoice, kLive,
+       "Thin screen-space shadows where Pokemon and objects touch the ground, traced toward the sun (runtime/nvn/nvn_contact.cpp). Only frames with the sun's moving shadows get them. Off is the game's own look.", "default",
+       {{"default", "Off"}, {"1", "On"}}, 0, 0, "", "SNAP_CONTACT_SHADOWS", get_contact, set_contact},
       {"ssao_quality", "Ambient occlusion", kChoice, kRestart,
        "Soft contact shadows in corners and under objects. High and Ultra take more samples. The courses draw no ambient occlusion while you play (their contact shadows are baked in); the effect shows only on the photo-select screen, so this does not change the course view or its frame rate.", "default",
        {{"default", "Default"}, {"high", "High (96 samples)"}, {"ultra", "Ultra (256 samples)"}}, 0, 0, "", "SNAP_SSAO_QUALITY"},
@@ -285,6 +304,15 @@ std::vector<Opt>& graphics_opts() {
        "On: no tearing (the default). Adaptive: tears only while below the refresh rate. Fast: no tearing and lower latency, renders extra frames. "
        "Off: lowest latency, may tear. The game's own frame pacing is unchanged.", "on",
        {{"on", "On"}, {"adaptive", "Adaptive"}, {"fast", "Fast"}, {"off", "Off"}}, 0, 0, "", "SNAP_VSYNC", get_vsync, set_vsync},
+      {"fps_overlay", "Performance overlay", kChoice, kLive,
+       "Off is the original game. FPS: the frame rate in a corner. Detailed adds frame time and a frame-time graph, 1% low, CPU and GPU time, "
+       "render and output size, upscaler and anti-aliasing, frame cap and vsync. F3 cycles it (unless F3 is bound to a game button). "
+       "It is drawn over the finished picture, so it never appears in your photos.", "default",
+       {{"default", "Off"}, {"fps", "FPS"}, {"detailed", "Detailed"}}, 0, 0, "", "SNAP_FPS_OVERLAY", get_fps_overlay, set_fps_overlay},
+      {"fps_overlay_corner", "Overlay corner", kChoice, kLive,
+       "Where the performance overlay sits.", "tr",
+       {{"tl", "Top left"}, {"tr", "Top right"}, {"bl", "Bottom left"}, {"br", "Bottom right"}}, 0, 0, "", "SNAP_FPS_OVERLAY_CORNER",
+       get_fps_corner, set_fps_corner},
   };
   return v;
 }
@@ -322,7 +350,9 @@ std::vector<Opt>& photo_opts() {
       {"photo_export", "Save a PNG of every photo", kToggle, kRestart,
        "Each photo you keep is also written as a full-quality PNG file you can share, next to the game's own in-save copy. The save and scoring are not affected.", snapdef::def("SNAP_PHOTO_EXPORT")},
       {"photo_dir", "PNG folder", kPath, kRestart,
-       "Where the PNG files go. Empty uses %APPDATA%\\SnapRecomp\\photos. The folder is created when the first photo is saved.", ""},      {"", "Expedition", kSection, kLive, "", ""},
+       "Where the PNG files go. Empty uses %APPDATA%\\SnapRecomp\\photos. The folder is created when the first photo is saved.", ""},
+      {"hd_photos", "HD photos", kToggle, kRestart,
+       "With a render scale or upscaler at 4K, photo select and the album show each photo at 2160x1440 instead of the game's small copy. The game's own photo, save and scoring are unchanged. Uses more disk (about 1 to 2 MB per saved photo, in the save folder's photos_hd) and more GPU memory (up to 256 MB).", "0"},      {"", "Expedition", kSection, kLive, "", ""},
       {"neo_speed", "NEO-ONE speed", kSlider, kRestart,
        "How fast the NEO-ONE rides through a course (0.5 to 3, 1 is the game's own). The ride is shorter or longer, so you see less or more of each scene; Pokemon behave as before. Photos and scoring are not changed.",
        "1", {}, 0.5f, 3.0f, "%.2fx", "SNAP_NEO_SPEED"},

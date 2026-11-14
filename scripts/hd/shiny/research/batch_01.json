@@ -1,0 +1,211 @@
+[
+ {
+  "n": 5,
+  "name": "Torchic",
+  "normal": "orange-red body, yellow belly/beak/legs, yellow crest",
+  "shiny": "pale golden-yellow body (lighter, less saturated), crest and beak stay yellow",
+  "desc": "orange body turns pale yellow",
+  "rules": "50>92:22:0.85:1.1",
+  "source": "pokemondb.net/sprites/torchic (HOME normal vs shiny sprites measured in OKLCh; Bulbapedia 403)",
+  "confidence": "medium",
+  "note": "Body hue ~52 becomes ~92; yellow parts left alone."
+ },
+ {
+  "n": 8,
+  "name": "Caterpie",
+  "normal": "green body, yellow underside, red horn",
+  "shiny": "yellow body (green becomes yellow), underside stays yellow, horn turns orange",
+  "desc": "green body turns yellow",
+  "rules": "142>97:25;10>38:15",
+  "source": "pokemondb.net/sprites/caterpie (HOME normal vs shiny sprites measured in OKLCh; Bulbapedia 403)",
+  "confidence": "high",
+  "note": "Green hue ~142 moves to ~97; red horn shifts to orange."
+ },
+ {
+  "n": 10,
+  "name": "Swanna",
+  "normal": "white body, blue wing/tail tips and crest, yellow beak",
+  "shiny": "white body, blue parts turn violet/purple, beak stays yellow",
+  "desc": "blue accents turn violet",
+  "rules": "232>290:28",
+  "source": "pokemondb.net/sprites/swanna (HOME normal vs shiny sprites measured in OKLCh; Bulbapedia 403)",
+  "confidence": "high",
+  "note": "Not pink: measured shiny accents at hue ~290."
+ },
+ {
+  "n": 11,
+  "name": "Aipom",
+  "normal": "purple fur, tan face/hands/tail tip",
+  "shiny": "pink fur, tan parts turn pale pink-salmon",
+  "desc": "purple fur turns pink",
+  "rules": "322>352:25;80>15:20:0.6",
+  "source": "pokemondb.net/sprites/aipom (HOME normal vs shiny sprites measured in OKLCh; Bulbapedia 403)",
+  "confidence": "high",
+  "note": "Not blue: shiny fur measured at hue ~352; tan hands go pale pink."
+ },
+ {
+  "n": 12,
+  "name": "Bounsweet",
+  "normal": "green leaf crown, magenta-pink body, white face",
+  "shiny": "leaf crown turns pale lavender-violet, pink body stays",
+  "desc": "green leaves turn pale violet",
+  "rules": "127>292:22:0.6",
+  "source": "pokemondb.net/sprites/bounsweet (HOME normal vs shiny sprites measured in OKLCh; Bulbapedia 403)",
+  "confidence": "high",
+  "note": "Leaves (not body) change; pink body hue 345 untouched."
+ },
+ {
+  "n": 13,
+  "name": "Metapod",
+  "normal": "green chrysalis shell",
+  "shiny": "orange shell",
+  "desc": "green shell turns orange",
+  "rules": "130>52:25",
+  "source": "pokemondb.net/sprites/metapod (HOME normal vs shiny sprites measured in OKLCh; Bulbapedia 403)",
+  "confidence": "high",
+  "note": "Measured shiny at hue ~52 (orange), not yellow-green and not equal to Caterpie."
+ },
+ {
+  "n": 14,
+  "name": "Beautifly",
+  "normal": "yellow wings with red spots, dark grey body, blue eyes",
+  "shiny": "wings pale yellow-orange, dark grey parts turn purple, red spots stay",
+  "desc": "dark areas turn purple, yellow warms",
+  "rules": "97>80:15;grey:0.3-0.6>305:0.07",
+  "source": "pokemondb.net/sprites/beautifly (HOME normal vs shiny sprites measured in OKLCh; Bulbapedia 403)",
+  "confidence": "medium",
+  "note": "Grey-tint rule may also tint other mid-grey texels."
+ },
+ {
+  "n": 17,
+  "name": "Ducklett",
+  "normal": "light blue body and wings, darker blue feather tips, yellow beak",
+  "shiny": "pink body and wings, purple feather tips, beak stays yellow",
+  "desc": "blue body turns pink",
+  "rules": "205>15:22;235>310:12",
+  "source": "pokemondb.net/sprites/ducklett (HOME normal vs shiny sprites measured in OKLCh; Bulbapedia 403)",
+  "confidence": "high",
+  "note": "Main cyan-blue to pink; deeper blue tips to purple."
+ },
+ {
+  "n": 18,
+  "name": "Wooper",
+  "normal": "blue body, lavender gills, pale belly",
+  "shiny": "near-white pale pink body, peach/orange gills",
+  "desc": "blue body turns pale pink-white",
+  "rules": "212>10:35:0.15:1.1;307>45:22",
+  "source": "pokemondb.net/sprites/wooper (HOME normal vs shiny sprites measured in OKLCh; Bulbapedia 403)",
+  "confidence": "high",
+  "note": "Body desaturated heavily; gills lavender to peach."
+ },
+ {
+  "n": 19,
+  "name": "Emolga",
+  "normal": "white/cream body, dark grey wing membranes and ears, yellow cheeks/tail tip",
+  "shiny": "dark grey parts turn brown, yellow stays",
+  "desc": "grey wings turn brown",
+  "rules": "grey:0.3-0.6>65:0.08",
+  "source": "pokemondb.net/sprites/emolga (HOME normal vs shiny sprites measured in OKLCh; Bulbapedia 403)",
+  "confidence": "medium",
+  "note": "Yellow unchanged in shiny; only dark greys shift."
+ },
+ {
+  "n": 20,
+  "name": "Noibat",
+  "normal": "purple-violet body, grey ears/face",
+  "shiny": "teal-green body",
+  "desc": "purple body turns teal",
+  "rules": "322>172:28",
+  "source": "pokemondb.net/sprites/noibat (HOME normal vs shiny sprites measured in OKLCh; Bulbapedia 403)",
+  "confidence": "high",
+  "note": "Measured shiny at hue ~172."
+ },
+ {
+  "n": 21,
+  "name": "Tyrantrum",
+  "normal": "dark red-brown body, cream underside and frills",
+  "shiny": "dark blue body, cream parts stay light",
+  "desc": "red-brown body turns blue",
+  "rules": "10>262:25",
+  "source": "pokemondb.net/sprites/tyrantrum (HOME normal vs shiny sprites measured in OKLCh; Bulbapedia 403)",
+  "confidence": "high",
+  "note": "Not teal-green: shiny measured blue (~262)."
+ },
+ {
+  "n": 22,
+  "name": "Hippowdon",
+  "normal": "yellow-tan body, grey dark patches",
+  "shiny": "slightly greener yellow-tan body, grey patches turn olive-brown",
+  "desc": "grey patches turn olive",
+  "rules": "97>112:15;grey:0.3-0.6>97:0.05",
+  "source": "pokemondb.net/sprites/hippowdon (HOME normal vs shiny sprites measured in OKLCh; Bulbapedia 403)",
+  "confidence": "medium",
+  "note": "Small hue shift; mostly dark grey becomes olive."
+ },
+ {
+  "n": 23,
+  "name": "Wingull",
+  "normal": "white body, blue wing/tail tips, yellow-orange beak",
+  "shiny": "white body, green wing/tail tips",
+  "desc": "blue wing tips turn green",
+  "rules": "222>142:25",
+  "source": "pokemondb.net/sprites/wingull (HOME normal vs shiny sprites measured in OKLCh; Bulbapedia 403)",
+  "confidence": "high",
+  "note": "Measured shiny at hue ~142."
+ },
+ {
+  "n": 25,
+  "name": "Cubchoo",
+  "normal": "white face, blue/light blue fur and nose",
+  "shiny": "purple/violet-pink fur",
+  "desc": "blue fur turns purple",
+  "rules": "232>300:30",
+  "source": "pokemondb.net/sprites/cubchoo (HOME normal vs shiny sprites measured in OKLCh; Bulbapedia 403)",
+  "confidence": "high",
+  "note": "Blue to violet-magenta; white unchanged."
+ },
+ {
+  "n": 26,
+  "name": "Chandelure",
+  "normal": "dark grey body, purple-blue flames, pale blue orb",
+  "shiny": "orange flames, pale green orb, darker body",
+  "desc": "purple flames turn orange",
+  "rules": "270>55:25",
+  "source": "pokemondb.net/sprites/chandelure (HOME normal vs shiny sprites measured in OKLCh; Bulbapedia 403)",
+  "confidence": "medium",
+  "note": "Orb tint (blue to green) not separable by hue; only flames covered."
+ },
+ {
+  "n": 27,
+  "name": "Skorupi",
+  "normal": "purple body, blue-ish pincers/belly",
+  "shiny": "red-orange body, cyan-blue accents",
+  "desc": "purple body turns red-orange",
+  "rules": "285>22:18;252>215:14",
+  "source": "pokemondb.net/sprites/skorupi (HOME normal vs shiny sprites measured in OKLCh; Bulbapedia 403)",
+  "confidence": "medium",
+  "note": "Blue accent shift is small."
+ },
+ {
+  "n": 28,
+  "name": "Pikipek",
+  "normal": "black/grey body, white face and chest, orange beak",
+  "shiny": "beak turns red-pink, black parts slightly lighter",
+  "desc": "orange beak turns red",
+  "rules": "37>8:20",
+  "source": "pokemondb.net/sprites/pikipek (HOME normal vs shiny sprites measured in OKLCh; Bulbapedia 403)",
+  "confidence": "medium",
+  "note": "Black-to-grey lightening cannot be expressed by rules; skipped."
+ },
+ {
+  "n": 29,
+  "name": "Beartic",
+  "normal": "white fur with grey shading, blue accents",
+  "shiny": "lavender-tinted fur shading, purple accents",
+  "desc": "fur shading and accents turn lavender",
+  "rules": "232>272:25;grey:0.6-0.85>277:0.045",
+  "source": "pokemondb.net/sprites/beartic (HOME normal vs shiny sprites measured in OKLCh; Bulbapedia 403)",
+  "confidence": "medium",
+  "note": "Grey tint covers fur shadows."
+ }
+]

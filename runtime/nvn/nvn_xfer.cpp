@@ -6,6 +6,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include "nvn_shiny.h"
+#include "nvn_hdphoto.h"
 #include "nvn_internal.h"
 #include <windows.h>
 #include <atomic>
@@ -176,6 +178,8 @@ void DoCopyTextureToBuffer(ReplayCtx& cx, const Cmd& c) {
     LogError("CopyTextureToBuffer: destination 0x%llx is not in a CPU-visible pool", (unsigned long long)c.a[0]);
     return;
   }
+  if (ShinyActive()) ShinyCopySrc(t);   // shiny mod: is this photo copy a shiny photo
+  if (HdPhotoOn()) HdPhotoCopyToBuffer(t, static_cast<const uint8_t*>(pool->storage) + off);   // HD photos: the album photo buffer
   if (!t->uploaded) UploadStaticTexture(cx, t);
   else RefreshDynamicTexture(cx, t);
   uint32_t level, layer; ViewSub(v, c.i[0] != 0, &level, &layer);
@@ -254,6 +258,8 @@ void DoCopyTextureToTexture(ReplayCtx& cx, const Cmd& c) {
   TextureImpl* s = c.tex[0]; TextureImpl* d = c.tex[1];
   if (!s || !d || !s->EnsureImage() || !d->EnsureImage() || c.blob.size() < 2 * (sizeof(CopyRegion) + sizeof(TexView))) return;
   if (s == d) { LogError("CopyTextureToTexture: source and destination are the same texture"); return; }
+  if (ShinyActive()) ShinyCopyTex(s, d);   // shiny mod: a copy of a flagged photo image is flagged
+  if (HdPhotoOn()) HdPhotoCopyTex(s, d);   // HD photos: the copy shows the same capture
   CopyRegion sr, dr; TexView sv, dv;
   const uint8_t* b = c.blob.data();
   memcpy(&sr, b, sizeof sr); memcpy(&sv, b + sizeof sr, sizeof sv); b += sizeof sr + sizeof sv;
@@ -398,6 +404,8 @@ void FlushReadbacks(Host* h, bool wait) {
       if (FILE* f = fopen(rb.dumpPath.c_str(), "wb")) { fwrite(rb.map, 1, (size_t)rb.size, f); fclose(f); }
     } else if (rb.kind == 0) {
       memcpy(rb.dst, rb.map, (size_t)rb.size);
+    } else if (rb.kind == 4) {
+      HdPhotoReadback(rb.poolOff, rb.map, rb.size);   // HD photos (nvn_hdphoto.cpp): poolOff = capture id
     } else if (rb.kind == 3) {
       if (memcmp(rb.dst, rb.expect.data(), (size_t)rb.size) == 0) {
         memcpy(rb.dst, rb.map, (size_t)rb.size);

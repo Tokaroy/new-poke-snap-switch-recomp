@@ -20,6 +20,8 @@
 #include <cstring>
 #include <chrono>
 #include "nvn_shiny.h"   // shiny mod
+#include "nvn_capture.h"   // photo capture filter under render scale
+#include "nvn_hdphoto.h"   // HD photos (SNAP_HD_PHOTOS)
 #include <deque>
 #include <set>
 #include <string>
@@ -107,6 +109,9 @@ struct DrawState {
   }
 };
 
+static float ShadowDistK();
+static bool ShadowDynTexture(const TextureImpl* t);
+static const TextureImpl* g_dynShadowTex = nullptr;
 namespace {
 
 constexpr uint64_t kMaxUboRange = 65536;   // translated shaders declare vec4[4096]
@@ -266,7 +271,10 @@ static void MakePipeDesc(PipeDesc& pd, DrawState& d, VkPrimitiveTopology topo, c
   ProgramImpl* p = d.prog;
   memset(&pd, 0, sizeof pd);
   pd.pad0 = (uint32_t)XlateAbVariant();   // SNAP_XLATE_AB: separate pipelines for the alternate translation (0 when unset)
-  pd.pad1 = (p->st[1].valid && ShadowFilterTaps() && ShadowFilterApplies(p->st[1])) ? (uint32_t)ShadowFilterTaps() : 0u;   // SNAP_SHADOW_FILTER (P5): own pipeline keys for the patched fragment modules (0 when off: the original keys)
+  {   // pad1: bits 0..7 = soft-shadow taps (P5), bits 8..15 = shadow-distance factor * 4 (receivers remap the dynamic map's lookup, see ShadowDistanceOnBind)
+    const uint32_t kc = ShadowDistK() > 1.0f ? (uint32_t)(ShadowDistK() * 4.0f + 0.5f) : 0u;
+    pd.pad1 = (p->st[1].valid && (ShadowFilterTaps() || kc) && ShadowFilterApplies(p->st[1])) ? ((uint32_t)ShadowFilterTaps() | (kc << 8)) : 0u;
+  }   // SNAP_SHADOW_FILTER (P5): own pipeline keys for the patched fragment modules (0 when off: the original keys)
   for (int s = 0; s < 5; s++) if (p->st[s].valid) snprintf(pd.stage[s], sizeof pd.stage[s], "%s", p->st[s].key);
   pd.topo = (int)topo;
   pd.nattr = std::clamp(d.nattr, 0, 16);
@@ -351,7 +359,7 @@ VkPipeline CreateGraphicsPipelineImpl(Host* h, const PipeDesc& pd, StageProg* co
         }
         const VkShaderModule baseMod = useAlt ? fp.modAlt : fp.mod;
         VkShaderModule m = baseMod;
-        if (pcfTaps && PatchShadowPcf(cur, pcfTaps, ShadowFilterRadius(), ShadowFilterBias(), tmp)) { cur = tmp; m = VK_NULL_HANDLE; }
+        if (pcfTaps && PatchShadowPcf(cur, std::max(1, pcfTaps & 0xFF), ShadowFilterRadius(), ShadowFilterBias(), (float)(pcfTaps >> 8) / 4.0f, tmp)) { cur = tmp; m = VK_NULL_HANDLE; }
         if (PatchFragmentOutputs(cur, pd.nColor, dual, tmp)) cur = tmp, m = VK_NULL_HANDLE;
         if (intKindBits) {
           int skippedInt = 0;
@@ -580,11 +588,23 @@ ResolvedTex ResolveHandle(ReplayCtx& cx, DrawState& d, uint64_t handle, bool ima
   if (!image && !up && ShinyActive()) {   // shiny mod (nvn_shiny.cpp)
     ShinyDraw sd; sd.vb0 = d.vbAddr[0]; sd.vb1 = d.vbAddr[1];
     for (int i = 0; i < 8; i++) { sd.uboPool[i] = d.ubo[0][i].pool; sd.uboOff[i] = d.ubo[0][i].off; sd.uboRange[i] = d.ubo[0][i].range; }
-    sd.rtW = cx.rt[0] ? cx.rt[0]->b.width : 0; sd.rtH = cx.rt[0] ? cx.rt[0]->b.height : 0; sd.prog = d.prog ? (int)d.prog->id : -1;
+    sd.rtW = cx.rt[0] ? cx.rt[0]->b.width : 0; sd.rtH = cx.rt[0] ? cx.rt[0]->b.height : 0; sd.prog = d.prog ? (int)d.prog->id : -1; sd.rt0 = cx.rt[0];
+    { PoolImpl* vp = nullptr; uint64_t vo = 0; if (d.vbAddr[0] && r.t->host && r.t->host->ResolveAddress(d.vbAddr[0], &vp, &vo) && vp && vp->storage) sd.vbf = reinterpret_cast<const float*>(static_cast<const uint8_t*>(vp->storage) + vo); }
     r.t = ShinySubstitute(r.t, sd);
   }
+  bool hdSub = false;
+  if (!image && !up && HdPhotoOn() && cx.rt[0] && cx.rt[0]->b.width == 1920) {   // HD photos (nvn_hdphoto.cpp): a photo drawn large in the UI
+    float drawnW = 0;
+    PoolImpl* vp = nullptr; uint64_t vo = 0;
+    if (d.vbAddr[0] && r.t->host && r.t->host->ResolveAddress(d.vbAddr[0], &vp, &vo) && vp && vp->storage && vo + 4 * 14 * 3 <= vp->size) {
+      const float* f = reinterpret_cast<const float*>(static_cast<const uint8_t*>(vp->storage) + vo);   // UI sprite vertices, 14 floats each (as nvn_shiny.cpp)
+      drawnW = std::max(std::fabs(f[14 * 2] - f[0]), std::fabs(f[14] - f[0]));
+      if (!(drawnW < 4096.0f)) drawnW = 0;
+    }
+    if (TextureImpl* hs = HdPhotoSubstitute(r.t, drawnW)) { r.t = hs; hdSub = true; }
+  }
   if (!r.t->EnsureImage()) return r;
-  const TexView* tv = (slot.hasView && !up) ? &slot.view : nullptr;
+  const TexView* tv = (slot.hasView && !up && !hdSub) ? &slot.view : nullptr;
   r.range = r.t->RangeOf(tv);
   if (!image) {
     for (int i = 0; i < 9; i++) {
@@ -626,7 +646,7 @@ void BeginRendering(ReplayCtx& cx, const RtInfo& rt) {
     if (!t) continue;
     t->uploaded = true;
     SubRange rr;
-    col[i].imageView = t->RenderView(cx.rtHasView[i] ? &cx.rtView[i] : nullptr, &rr);   // the mip level / layer the game selected
+    col[i].imageView = t->RenderView(cx.rtHasView[i] ? &cx.rtView[i] : nullptr, &rr, true);   // the mip level / layer (and sRGB/UNORM format) the game selected
     TransitionRange(cx.cb, t, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, rr);
     col[i].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     col[i].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD; col[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -950,10 +970,35 @@ static void RtFillInfo(snap_rt::DrawInfo& ri, const DrawState& d, const ProgramI
     ri.cbHash = x; }
 }
 
+// Debug (NVN_DRAW_CENSUS=<file> [NVN_DRAW_CENSUS_FROM=<present>]): per present, the set of fragment programs drawn into targets of
+// 1280+ px width, tagged I (the game issued the draw) and D (it reached vkCmdDraw). One line per present that differs from the one
+// before: "+" keys that appeared, "-" keys that vanished. Finds draws that come and go between frames (worker eyes, 2026-11-14).
+static void DrawCensus(const ReplayCtx& cx, const ProgramImpl* p, char tag) {
+  static const char* path = getenv("NVN_DRAW_CENSUS");
+  if (!path || !p || !cx.rt[0] || cx.rt[0]->b.width < 1280) return;
+  static const int from = getenv("NVN_DRAW_CENSUS_FROM") ? atoi(getenv("NVN_DRAW_CENSUS_FROM")) : 0;
+  if (g_presentCount < from) return;
+  static std::mutex mu; static FILE* f = fopen(path, "w"); static int present = -1;
+  static std::set<std::string> cur, prev;
+  char k[64]; snprintf(k, sizeof k, "%c:%s/%s:%dx%d", tag, p->st[0].key, p->st[1].key, cx.rt[0]->b.width, cx.rt[0]->b.height);
+  std::lock_guard<std::mutex> g(mu);
+  if (g_presentCount != present) {
+    if (f && present >= 0 && cur != prev) {
+      fprintf(f, "p%d n=%zu", present, cur.size());
+      for (auto& s : cur) if (!prev.count(s)) fprintf(f, " +%s", s.c_str());
+      for (auto& s : prev) if (!cur.count(s)) fprintf(f, " -%s", s.c_str());
+      fprintf(f, "\n"); fflush(f);
+    }
+    prev.swap(cur); cur.clear(); present = g_presentCount;
+  }
+  cur.insert(k);
+}
+
 void DoDraw(ReplayCtx& cx, const Cmd& c) {
   Host* h = cx.h;
   DrawState& d = *cx.ds;
   ProgramImpl* p = d.prog;
+  DrawCensus(cx, p, 'I');
   snap_perf::count(snap_perf::V_DRAWS);
   const bool indexed = c.op == Op::DrawIndexed;
   if (!p || !p->layout || !p->st[0].valid) { LogError("draw without a usable graphics program"); return; }
@@ -1007,7 +1052,7 @@ void DoDraw(ReplayCtx& cx, const Cmd& c) {
   for (int i = 0; i < 8; i++) {
     TextureImpl* t = cx.rt[i];
     if (t && !t->EnsureImage()) return;
-    rt.color[i] = t ? t->fi->vk : VK_FORMAT_UNDEFINED;
+    rt.color[i] = t ? t->RtFormat(cx.rtHasView[i] ? &cx.rtView[i] : nullptr)->vk : VK_FORMAT_UNDEFINED;   // [colorfix] the view's sRGB/UNORM twin
     if (t) { rt.nColor = i + 1; rt.samples = std::max(rt.samples, t->b.samples); }
   }
   if (TextureImpl* t = cx.rt[8]) {
@@ -1100,12 +1145,15 @@ void DoDraw(ReplayCtx& cx, const Cmd& c) {
   }
   static const bool thumbLog = getenv("NVN_THUMB_LOG") != nullptr;
   const bool thumbDraw = thumbLog && cx.rt[0] && ((cx.rt[0]->b.width == 360 && cx.rt[0]->b.height == 240) || (cx.bcDst[0] && cx.bcDst[0]->b.width == 360));
+  if (cx.bcDst[0] && cx.bcDst[0]->b.width == 360 && cx.bcDst[0]->b.height == 240 && ShinyActive()) ShinyThumbCapture(cx.bcDst[0]);   // shiny mod: flag the thumbnail of a shiny photo
+  if (cx.bcDst[0] && HdPhotoOn()) HdPhotoCompress(cx.bcDst[0], texWrites.empty() ? nullptr : texWrites[0].r.t);   // HD photos: the BC1 thumbnail shows its source capture
   if (thumbDraw) {
     fprintf(stderr, "[thumb] p%d draw prog=%d prim=%d n=%d idx=%d rt0=%p f%x cull=%d vpSet=%d scSet=%d rendering=%d ntex=%zu:", g_presentCount, (int)p->id, c.i[0], c.i[2], (int)indexed, (void*)cx.rt[0], cx.rt[0]->b.format, (int)d.poly.cull, (int)cx.vpSet, (int)cx.scSet, (int)cx.rendering, texWrites.size());
     fprintf(stderr, " vp0=(%.0f %.0f %.0f %.0f) view=%d flags=%x fmt=%x", cx.vpGuest[0][0], cx.vpGuest[0][1], cx.vpGuest[0][2], cx.vpGuest[0][3], (int)cx.rtHasView[0], cx.rtView[0].flags, cx.rtView[0].format);
     for (auto& w : texWrites) fprintf(stderr, " [b%d t=%p view=%p fb=%d]", w.binding, (void*)w.r.t, (void*)w.r.view, (int)w.r.feedback);
     fprintf(stderr, "\n");
   }
+  for (auto& w : texWrites) if (w.binding == 33 && w.r.t && w.r.t->b.width == 1024 && w.r.t->b.height == 1024 && (w.r.t->b.format >= FMT_DEPTH16 && w.r.t->b.format <= FMT_DEPTH32F_STENCIL8)) g_dynShadowTex = w.r.t;   // dynamic shadow map (see ShadowDistanceOnBind)
   { static const int shLog = getenv("NVN_SHADOW_LOG") ? atoi(getenv("NVN_SHADOW_LOG")) : 0;   // debug: NVN_SHADOW_LOG=<present>: constants of the shadow-map casters and receivers at that present
     if (shLog && g_presentCount >= shLog && g_presentCount < shLog + 3000) {
       static int n = 0;
@@ -1125,9 +1173,16 @@ void DoDraw(ReplayCtx& cx, const Cmd& c) {
     for (int i = 0; i < 2; i++) { const BufBind& u = d.ubo[0][i]; if (u.pool && u.pool->storage) { vu[i] = (const uint8_t*)u.pool->storage + u.off; vr[i] = u.range; } }
     UpscaleOnDraw(cx, vu, vr, 2);
     { const BufBind& u9 = d.ubo[0][9]; FxOnDraw(cx, vu, vr, (u9.pool && u9.pool->storage) ? (const uint8_t*)u9.pool->storage + u9.off : nullptr, u9.range); } }   // [fx] camera and shadow caster capture (nvn_fx.cpp)
+  if (FxMidPass(cx, (d.color.blendEn & 1) != 0, DsGet(d.ds, DS_DW, 1) != 0)) FxReemitViewState(cx);   // [fx] opaque-only effects at the first blended scene draw
+  if (HdPhotoOn() && cx.rt[0] && !cx.bcDst[0] && texWrites.size() == 1 && !texWrites[0].image && texWrites[0].r.t) {   // HD photos: a 2160x1440 copy of each capture (nvn_hdphoto.cpp)
+    const BufBind& u4 = d.ubo[1][1];   // c4 = guest uniform buffer 1 (cbuf slot - 3)
+    HdPhotoCapture(cx, p, texWrites[0].r.t, cx.rt[0], (u4.pool && u4.pool->storage && u4.range >= 8) ? reinterpret_cast<const float*>(static_cast<const uint8_t*>(u4.pool->storage) + u4.off) : nullptr);
+  }
   if (!cx.rendering) BeginRendering(cx, rt);
 
-  ProgramImpl* const evalVar = EvalCopyDepthVariant(cx, p, texWrites);
+  ProgramImpl* evalVar = EvalCopyDepthVariant(cx, p, texWrites);
+  if (!evalVar && cx.rt[0] && !texWrites.empty() && !texWrites[0].image)   // photo capture Lanczos on a scaled source (nvn_capture.cpp)
+    evalVar = CaptureLanczosVariant(cx.h, p, texWrites[0].r.t, cx.rt[0], texWrites.size());
   if (evalVar) d.prog = evalVar;   // pipeline only; descriptors below still use p (same layout)
   VkPipeline pipe = GetPipeline(cx, d, topo, rt);
   if (evalVar) d.prog = p;
@@ -1163,6 +1218,7 @@ void DoDraw(ReplayCtx& cx, const Cmd& c) {
     VkDeviceSize o = d.vb[i].buf ? d.vb[i].off : 0;
     vkCmdBindVertexBuffers(cx.cb, (uint32_t)i, 1, &b, &o);
   }
+  const uint32_t shinyQ = cx.occOpen ? (ShinyQueryDiscard(), UINT32_MAX) : ShinyQueryBegin(h, cx.cb);   // shiny twin draw: own samples-passed query
   snap_rt::DrawCapture rtCap; snap_rt::DrawInfo rtInfo;   // [rt] SNAP_RT=1: transform-feedback capture of scene opaque draws (nvn_rt.cpp)
   const bool rtWant = snap_rt::Capture();
   if (rtWant) RtFillInfo(rtInfo, d, p, c, indexed, topo, rewrite ? (uint32_t)rw.size() : (uint32_t)std::max(c.i[2], 0));
@@ -1188,6 +1244,8 @@ void DoDraw(ReplayCtx& cx, const Cmd& c) {
     if (rtWant) rtCap.Begin(cx, rtInfo);
     vkCmdDraw(cx.cb, (uint32_t)c.i[2], (uint32_t)std::max(c.i[4], 1), (uint32_t)c.i[1], (uint32_t)c.i[3]);
   }
+  ShinyQueryEnd(cx.cb, shinyQ);
+  DrawCensus(cx, p, 'D');   // debug census (NVN_DRAW_CENSUS)
   rtCap.End();   // [rt] (a no-op unless this draw was captured; the build runs from the Fx post-tonemap slot, nvn_rt.cpp)
   FxAfterDraw(cx, p->st[1].key);   // [fx] post-tonemap slot (nvn_fx.cpp)
   AaAfterDraw(cx, p->st[1].key);   // SNAP_AA=smaa / SNAP_SHARPEN: in-place pass after the game's tonemap draw (nvn_aa.cpp)
@@ -1264,6 +1322,7 @@ void DoCopyBufferToTexture(ReplayCtx& cx, const Cmd& c) {
   PoolImpl* pool = nullptr; uint64_t off = 0;
   if (!h->ResolveAddress(c.a[0], &pool, &off)) { LogError("CopyBufferToTexture: source 0x%llx is not in any memory pool", (unsigned long long)c.a[0]); return; }
   if (!PoolBacked(pool)) return;   // [audit F6] acquire
+  if (HdPhotoOn()) HdPhotoUploadFrom(t, pool->storage ? static_cast<const uint8_t*>(pool->storage) + off : nullptr);   // HD photos: a decoded album photo
   static const bool kTexDump = getenv("NVN_TEX_DUMP") != nullptr;   // load pass: read once
   if (pool->storage && kTexDump) {
     const uint64_t n = (uint64_t)r.w * std::max(r.h, 1) * std::max(r.d, 1) * t->fi->bytes / std::max<uint32_t>(t->fi->bw * t->fi->bh, 1);
@@ -1571,32 +1630,35 @@ static void ShadowFadeOnBind(Host* h, ReplayCtx& cx, int slot, uint64_t addr, ui
   if (n2++ < 6) fprintf(stderr, "shadow fade x%.2f applied: farclip %g -> %g, fade length %g -> %g at %p", fk, farc, f[0x2e0 / 4], fade, f[0x2e4 / 4], (void*)f);
 }
 
+// The dynamic shadow map is the depth texture the receivers bind as texture control block C (set 2 binding 33); recorded per draw in DoDraw. Until one has been
+// seen every 1024 depth target counts (the first frame only).
+static bool ShadowDynTexture(const TextureImpl* t) { return !g_dynShadowTex || t == g_dynShadowTex; }
+
+// Shadow distance, caster side only: the light projection of the dynamic map's casters is widened k times (x and y columns scaled by 1/k, 64-byte VS buffer
+// at slot 9). The receivers are NOT edited in guest memory (an earlier version also scaled the 132-byte buffer's matrix, which only some receiver shaders
+// read: the others kept the unscaled lookup, giving 1/k-size, displaced and speckled shadows). Instead PatchShadowPcf remaps the dynamic map's lookup
+// coordinate in every receiver fragment shader: (uv - 0.5) / k + 0.5. Idempotent per buffer.
 static void ShadowDistanceOnBind(Host* h, ReplayCtx& cx, int stage, int slot, uint64_t addr, uint64_t size) {
   const float k = ShadowDistK();
   ShadowFadeOnBind(h, cx, slot, addr, size);
   if (k <= 1.0f || slot != 9 || !addr) return;
-  const bool cast = stage == 0 && size == 64 && cx.rt[8] && !cx.rt[0] && cx.rt[8]->b.width == 1024 && cx.rt[8]->b.height == 1024;
-  const bool recv = size == 132 && cx.rt[8] && cx.rt[8]->b.width != 1024;
-  if (!cast && !recv) return;
+  const bool cast = stage == 0 && size == 64 && cx.rt[8] && !cx.rt[0] && cx.rt[8]->b.width == 1024 && cx.rt[8]->b.height == 1024 && ShadowDynTexture(cx.rt[8]);
+  if (!cast) return;
   PoolImpl* pool = nullptr; uint64_t off = 0;
   if (!h->ResolveAddress(addr, &pool, &off) || !pool->storage || off + size > pool->size) return;
   float* f = (float*)((uint8_t*)pool->storage + off);
-  float* m = cast ? f : f + 16;
-  if (cast) { if (m[3] != 0 || m[7] != 0 || m[11] != 0 || m[15] != 1) return; }
-  else if (!(f[15] == 1 && m[3] == 0 && m[7] == 0 && m[11] == 0 && m[15] == 1)) return;
+  float* m = f;
+  if (m[3] != 0 || m[7] != 0 || m[11] != 0 || m[15] != 1) return;
   static std::unordered_map<float*, std::array<float, 16>> done;
   auto it = done.find(f);
   if (it != done.end() && !memcmp(it->second.data(), m, 64)) return;   // our own output from an earlier bind
   const float inv = 1.0f / k;
-  for (int r = 0; r < 4; r++) for (int c = 0; c < 2; c++) {
-    float& v = m[r * 4 + c];
-    v = (cast || r < 3) ? v * inv : (v - 0.5f) * inv + 0.5f;
-  }
+  for (int r = 0; r < 4; r++) for (int c = 0; c < 2; c++) m[r * 4 + c] *= inv;
   std::array<float, 16> o; memcpy(o.data(), m, 64);
   if (done.size() > 4096) done.clear();
   done[f] = o;
   static int n = 0;
-  if (n++ < 6) Log("shadow distance x%.2f applied (%s) at %p", k, cast ? "cast" : "receive", (void*)f);
+  if (n++ < 6) Log("shadow distance x%.2f applied (cast) at %p", k, (void*)f);
 }
 
 void ReplayDrawOp(ReplayCtx& cx, const Cmd& c) {

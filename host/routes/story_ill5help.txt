@@ -1,0 +1,18 @@
+# fixture: post_tutorial
+# Florio Illumina Spot (entry 2) with a save that has event 2 done: open the pause menu's How to Play page 1 to see which item buttons are unlocked.
+repeat @f300 @f30000 120 8 A
+wait ui=map_select:StageSelect timeout=240
+@f150 6 A
+wait ui=map_select:CourseSelect timeout=60
+@f90 6 Down
+@f210 6 Down
+@f330 6 A
+repeat @f700 @f3700 90 6 A
+wait ride timeout=300
+@f0 2000 shot=40
+3.0 0.2 Plus
+wait ui=pause_menu timeout=60
+1.5 0.2 Down
+2.5 0.2 Down
+3.5 0.2 Down
+4.5 0.2 A

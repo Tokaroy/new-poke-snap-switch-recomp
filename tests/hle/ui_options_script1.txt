@@ -8,11 +8,21 @@
 28.2 expect_when gfx_upscaler restart
 28.4 expect_when win_mode live
 28.5 expect_when audio_output restart
+# performance overlay (runtime/ui/ui_fps.cpp): default Off, live; F3 cycles Off -> FPS -> Detailed (F3 is not bound by default)
+28.51 expect_when fps_overlay live
+28.52 expect_opt fps_overlay default
+28.53 key F3
+28.7 expect_opt fps_overlay fps
+28.71 key F3
+28.88 expect_opt fps_overlay detailed
+28.89 opt fps_overlay_corner bl
+28.9 expect_opt fps_overlay_corner bl
 29 tab Graphics
 29.1 expect_opt gfx_preset normal
 29.2 opt gfx_preset maximum
 29.3 expect_opt gfx_shadow_res 8192
 29.4 expect_opt gfx_ssao_samples 512
+29.45 expect_opt gfx_shadow_dist 8
 29.5 expect_opt gfx_preset maximum
 29.6 opt gfx_preset verylow
 29.7 expect_opt gfx_shadow_res 512
@@ -25,6 +35,7 @@
 29.95 opt gfx_preset normal
 29.96 expect_opt gfx_shadow_res default
 29.965 expect_opt gfx_render_scale 1.00
+29.966 expect_opt gfx_shadow_dist default
 29.97 expect_opt gfx_preset normal
 29.975 opt gfx_pass_bloom off
 29.976 opt gfx_pass_dof off
@@ -43,6 +54,8 @@
 29.9852 opt gfx_aniso 16
 29.9853 opt gfx_shadow_res 2048
 29.9854 opt ssao_quality high
+29.98542 expect_opt gfx_preset custom
+29.98545 opt gfx_shadow_dist 2
 29.9855 expect_opt gfx_preset high
 29.9856 opt gfx_preset normal
 29.9857 expect_opt gfx_aa default
@@ -71,6 +84,9 @@
 31.405 expect_when vsync live
 31.406 opt vsync adaptive
 31.407 expect_opt vsync adaptive
+31.408 expect_when contact_shadows live
+31.409 opt contact_shadows 1
+31.4095 expect_opt contact_shadows 1
 # new and widened rows and the Shiny Pokemon row (2026-11-14): four more pending restart rows
 31.41 opt gfx_shadow_dist 2
 31.42 opt gfx_hdr_expand 0.50

@@ -5,8 +5,9 @@
 # Render scale pulldown, Down + A picks 1.25x (one below 1x). Down x2 to Sharpening, A, Down x2, A picks 0.2. Then R through every
 # PC tab (Textures ... Photos) with one change per tab (Textures goes to its second row, a pulldown, and opens and closes the popup
 # with B first; Output: HDR Off -> HDR10, Down x5 to Vsync, On -> Adaptive (live); Audio: Up x2 from 100% = 80%; see make_native_options.py TABS for the rows), Minus (Restore
-# Default Settings) on Photos, B (leaves the Reset button), R to the third tab set (Shadows & AO): A, Down, A picks 1.5x; R wraps to
-# Game, L comes back to Shadows & AO (the L/R chain of the last set), B closes.
+# Default Settings) on Photos, B (leaves the Reset button), R to the third tab set (Shadows & AO): A, Down, A picks 1.5x; Down, A, Down, A
+# turns Contact shadows On (live); R to Performance: A, Down, A picks the FPS overlay, A, Down, A picks Detailed (both live);
+# R wraps to Game, L comes back to Performance (the L/R chain of the last set), B closes (Detailed stays on over the lab hub).
 # Run with SNAP_MODS_DIR=<mods root holding native-options>, SNAP_NATIVE_OPT_SETTINGS=<settings.cfg>, SNAP_NATIVE_OPT_TRACE=1.
 repeat @f200 @f1400 100 8 ZL
 repeat @f1500 @f30000 240 8 Up
@@ -87,6 +88,17 @@ anchor options
 @f6780 8 A
 @f6840 8 Down
 @f6900 8 A
-@f7050 8 R
-@f7200 8 L
-@f7350 8 B
+@f7050 8 Down
+@f7110 8 A
+@f7260 8 Down
+@f7320 8 A
+@f7470 8 R
+@f7620 8 A
+@f7680 8 Down
+@f7740 8 A
+@f7890 8 A
+@f7950 8 Down
+@f8010 8 A
+@f8160 8 R
+@f8310 8 L
+@f8460 8 B

@@ -15,6 +15,7 @@
 #include <string>
 
 extern "C" int snap_shiny_recent(int frames, char* species, int n);   // runtime/nvn/nvn_shiny.cpp
+extern "C" int snap_shiny_copy_flag(int frames, char* species, int n);   // runtime/nvn/nvn_shiny.cpp
 extern "C" void snap_shiny_fx_trigger(const char* species);          // runtime/ui/ui_shiny.cpp
 
 namespace { void note_crc(uint32_t crc); }   // below
@@ -33,8 +34,8 @@ bool shiny_on() {
 extern "C" void snap_shiny_photo_encoded(const uint8_t* jpg, size_t n) {
   if (!shiny_on() || !jpg || !n || n > (1u << 26)) return;
   char sp[64] = {};
-  static const int window = [] { const char* e = getenv("SNAP_SHINY_WINDOW"); return e && atoi(e) > 0 ? atoi(e) : 120; }();
-  if (!snap_shiny_recent(window, sp, sizeof sp)) return;
+  static const int window = [] { const char* e = getenv("SNAP_SHINY_WINDOW"); return e && atoi(e) > 0 ? atoi(e) : 60; }();   // SNAP_SHINY_WINDOW: debug override, presents between the flagged GPU copy and the JPEG encode
+  if (!snap_shiny_copy_flag(window, sp, sizeof sp)) return;
   const uint32_t crc = crc32(jpg, n);
   note_crc(crc);   // badge it at once
   std::string dir;
@@ -63,6 +64,9 @@ extern "C" void snap_shiny_photo_encoded(const uint8_t* jpg, size_t n) {
 #include <vector>
 
 #include "loader.h"
+
+extern "C" int snap_hdphoto_on();   // runtime/nvn/nvn_hdphoto.cpp
+extern "C" void snap_hdphoto_decoded(uint64_t dst, uint64_t size, uint32_t crc, int w, int h);
 
 namespace {
 using namespace loader;
@@ -154,9 +158,12 @@ void h_decode(Cpu* c) {
   const uint64_t orig = lookup(kDecode);
   const uint64_t res = orig ? call_guest_nested(c, orig, {a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]}) : 0;
   c->x[0] = res;
-  if (!shiny_on() || (uint32_t)res != 0 || !a[0] || !a[3] || a[4] < 4 || a[4] > (1u << 26)) return;
+  const bool hd = snap_hdphoto_on() != 0;   // HD photos (runtime/nvn/nvn_hdphoto.cpp): the album texture made from this buffer
+  if ((!shiny_on() && !hd) || (uint32_t)res != 0 || !a[0] || !a[3] || a[4] < 4 || a[4] > (1u << 26)) return;
   bool hit;
   const uint32_t crc = crc32t(reinterpret_cast<const uint8_t*>(a[3]), (size_t)a[4]);
+  if (hd) { int hw = 0, hh = 0; jpeg_size(reinterpret_cast<const uint8_t*>(a[3]), (size_t)a[4], &hw, &hh); snap_hdphoto_decoded(a[0], a[1], crc, hw, hh); }
+  if (!shiny_on()) return;
   { std::lock_guard<std::mutex> lk(g_crcMu); if (!g_loaded) load_sidecar(); hit = g_shinyCrc.count(crc) != 0; }
   { static int tr = 0; static const bool trace = getenv("SNAP_SHINY_TRACE") != nullptr; if (trace && tr++ < 40) fprintf(stderr, "[shiny] decode: %llu bytes crc %08x %s\n", (unsigned long long)a[4], crc, hit ? "SHINY" : "plain"); }
   if (!hit) return;

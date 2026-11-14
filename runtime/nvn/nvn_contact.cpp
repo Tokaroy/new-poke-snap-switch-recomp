@@ -5,6 +5,7 @@
 //     present (static-only course, night) = the effect skips that frame.
 //   * Tunables (env, test aids): SNAP_CONTACT_STRENGTH (0.6), SNAP_CONTACT_LEN world units (0.6), SNAP_CONTACT_THICK (0.25), SNAP_CONTACT_FADE view distance (45),
 //     SNAP_CONTACT_LSIGN (+1 / -1: force the sign of the light direction; default: the sign that points the light upward in world space).
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -22,8 +23,21 @@ struct G {
   VkSampler samp = VK_NULL_HANDLE; VkPipeline pipe = VK_NULL_HANDLE, pipeDbg = VK_NULL_HANDLE; VkFormat fmt = VK_FORMAT_UNDEFINED;
 } g;
 
+// Outdoor gate: contact shadows follow the sun, so they only run where the sky is (or recently was) in view. Interiors (lab, camp huts) have a shadow pass
+// for the characters but no sun. Every 20 scene frames a few rows of the scene depth are copied to a host buffer and the sky (depth 0, reversed Z) fraction
+// is read back a few frames later; seeing at least 2% sky arms the effect for 30 s (SNAP_CONTACT_SKY=0 turns the gate off).
+struct Sky {
+  VkBuffer buf = VK_NULL_HANDLE; VkDeviceMemory mem = VK_NULL_HANDLE; const float* map = nullptr; uint32_t w = 0, rows = 0, step = 0;
+  int issued = -1000, armedUntil = -1; bool failed = false; float frac = 0;
+} sky;
 float EnvF(const char* n, float def) { const char* e = getenv(n); return e && *e ? (float)atof(e) : def; }
-bool Enabled() { static const bool on = [] { const char* e = getenv("SNAP_CONTACT_SHADOWS"); return e && *e && atoi(e) != 0; }(); return on; }
+// -1 = not read yet. Live: the options menu row (ui_options.cpp) calls snap_contact_shadows_set; nvn_fx.cpp asks Enabled() every present.
+std::atomic<int> g_on{-1};
+bool Enabled() {
+  int v = g_on.load(std::memory_order_relaxed);
+  if (v < 0) { const char* e = getenv("SNAP_CONTACT_SHADOWS"); v = e && *e && atoi(e) != 0 ? 1 : 0; int x = -1; g_on.compare_exchange_strong(x, v); v = g_on.load(); }
+  return v != 0;
+}
 
 struct Pc { float ivp[16]; float dclip[4]; float light[4]; float size[4]; float q[4]; };
 static_assert(sizeof(Pc) == 128, "push constants must fit the 128 byte guarantee");
@@ -51,6 +65,42 @@ bool Setup(Host* h, VkFormat fmt) {
   return g.pipe != VK_NULL_HANDLE;
 }
 
+bool SkyGate(ReplayCtx& cx, TextureImpl* z, float nearZ) {
+  static const bool off = [] { const char* e = getenv("SNAP_CONTACT_SKY"); return e && e[0] == '0'; }();
+  if (off) return true;
+  if (!sky.failed && !sky.buf) {
+    sky.w = z->HW(); sky.step = 16; sky.rows = z->HH() / sky.step;
+    VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO}; bi.size = (VkDeviceSize)sky.w * sky.rows * 4; bi.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT; bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VkMemoryRequirements mr;
+    bool ok = vkCreateBuffer(cx.h->device, &bi, nullptr, &sky.buf) == VK_SUCCESS;
+    if (ok) {
+      vkGetBufferMemoryRequirements(cx.h->device, sky.buf, &mr);
+      VkPhysicalDeviceMemoryProperties mp; vkGetPhysicalDeviceMemoryProperties(cx.h->phys, &mp);
+      uint32_t ti = UINT32_MAX;
+      for (uint32_t i = 0; i < mp.memoryTypeCount; i++) if ((mr.memoryTypeBits >> i & 1) && (mp.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) == (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) { ti = i; break; }
+      VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO}; ai.allocationSize = mr.size; ai.memoryTypeIndex = ti;
+      void* m = nullptr;
+      ok = ti != UINT32_MAX && vkAllocateMemory(cx.h->device, &ai, nullptr, &sky.mem) == VK_SUCCESS && vkBindBufferMemory(cx.h->device, sky.buf, sky.mem, 0) == VK_SUCCESS && vkMapMemory(cx.h->device, sky.mem, 0, VK_WHOLE_SIZE, 0, &m) == VK_SUCCESS;
+      sky.map = (const float*)m;
+    }
+    if (!ok) { sky.failed = true; fprintf(stderr, "contact: sky gate buffer failed, gate off\n"); }
+  }
+  if (sky.failed) return true;
+  if (z->HW() != sky.w || z->HH() / sky.step != sky.rows) return false;   // render scale changed: skip until the next rebuild (rare)
+  const int now = g_presentCount;
+  if (sky.issued >= 0 && now - sky.issued >= 6) {   // the copy was submitted a few presents ago
+    const float thr = nearZ / 150.0f;   // the sky dome sits beyond ~150 view units (reversed infinite Z: depth = near / distance)
+    size_t zero = 0; const size_t n = (size_t)sky.w * sky.rows;
+    for (size_t i = 0; i < n; i++) zero += sky.map[i] < thr;
+    sky.frac = (float)zero / (float)n; sky.issued = -1;
+    if (sky.frac >= 0.02f) sky.armedUntil = now + 1800;
+    static int lg; if (getenv("SNAP_FX_LOG") && lg++ % 20 == 0) fprintf(stderr, "contact: p%d sky fraction %.3f, outdoors %d\n", now, sky.frac, (int)(now <= sky.armedUntil));
+  }
+  static int lastTry = -1000;
+  if (sky.issued < 0 && now - lastTry >= 20) { lastTry = now; FxDepthCopyRows(cx, z, sky.buf, sky.step, sky.rows); sky.issued = now; }
+  return now <= sky.armedUntil;
+}
+
 void Pre(ReplayCtx& cx) {
   if (g.failed) return;
   const FxCam* cam = FxCamera(); const FxCaster* cs = FxCasterNow();
@@ -66,6 +116,7 @@ void Pre(ReplayCtx& cx) {
     if (!cs) nNoCaster++;
     return;
   }
+  if (!SkyGate(cx, z, cam->nearZ)) return;
   nRan++;
   if (c->HW() != z->HW() || c->HH() != z->HH() || !FxWritable(c)) return;
   if (!Setup(cx.h, c->fi->vk)) { g.failed = true; fprintf(stderr, "contact: setup failed, disabled\n"); return; }
@@ -77,13 +128,13 @@ void Pre(ReplayCtx& cx) {
   Pc pc{};
   for (int r = 0; r < 4; r++) for (int k = 0; k < 4; k++) pc.ivp[k * 4 + r] = (float)cam->ivp[r][k];
   for (int r = 0; r < 4; r++) pc.dclip[r] = (float)(cam->vp[r][0] * L[0] + cam->vp[r][1] * L[1] + cam->vp[r][2] * L[2]);
-  pc.light[0] = L[0]; pc.light[1] = L[1]; pc.light[2] = L[2]; pc.light[3] = EnvF("SNAP_CONTACT_STRENGTH", 0.6f);
+  pc.light[0] = L[0]; pc.light[1] = L[1]; pc.light[2] = L[2]; pc.light[3] = EnvF("SNAP_CONTACT_STRENGTH", 0.5f);
   int dbgMode = (int)EnvF("SNAP_CONTACT_DEBUG", 0.f);   // debug views of contact.frag: 2 tints, 3 view distance, 4 normal, 5 sun facing, 6 depth, 7 the factor itself; 100 = cycle 2..7 every 120 presents
   if (dbgMode >= 100) dbgMode = 2 + (g_presentCount / 120) % 6;
   if (dbgMode >= 2) pc.light[3] += 10.f * (float)dbgMode;
   float jx, jy; FxJitter(&jx, &jy);
   pc.size[0] = (float)c->HW(); pc.size[1] = (float)c->HH(); pc.size[2] = jx; pc.size[3] = jy;
-  pc.q[0] = EnvF("SNAP_CONTACT_LEN", 0.6f); pc.q[1] = EnvF("SNAP_CONTACT_THICK", 0.25f); pc.q[2] = EnvF("SNAP_CONTACT_FADE", 45.f); pc.q[3] = (float)(g_presentCount & 1023);
+  pc.q[0] = EnvF("SNAP_CONTACT_LEN", 0.4f); pc.q[1] = EnvF("SNAP_CONTACT_THICK", 0.15f); pc.q[2] = EnvF("SNAP_CONTACT_FADE", 45.f); pc.q[3] = (float)(g_presentCount & 1023);
   static int logged; if (logged++ < 3) fprintf(stderr, "contact: p%d light toward (%.3f %.3f %.3f) map %u, %ux%u jitter (%.2f %.2f)\n", g_presentCount, L[0], L[1], L[2], cs->mapSize, c->HW(), c->HH(), jx, jy);
   VkImageLayout prev;
   VkImageView dv = FxDepthRead(cx, z, &prev);
@@ -97,7 +148,13 @@ void Pre(ReplayCtx& cx) {
   FxDepthDone(cx, z, prev);
 }
 
-const FxEffect kEffect = {"contact_shadows", Enabled, Pre, nullptr};
+const FxEffect kEffect = {"contact_shadows", Enabled, Pre, nullptr, true};
 struct Reg { Reg() { FxRegister(&kEffect); } } reg;
 }  // namespace
 }  // namespace nvn
+
+extern "C" void snap_contact_shadows_set(int on) {
+  nvn::g_on.store(on ? 1 : 0);
+  fprintf(stderr, "contact: shadows %s (live)\n", on ? "on" : "off");
+}
+extern "C" int snap_contact_shadows_get() { return nvn::Enabled() ? 1 : 0; }

@@ -34,6 +34,8 @@
 using namespace loader;
 
 extern "C" void snap_shiny_photo_encoded(const uint8_t *jpg, size_t n);   // host/mods/shiny.cpp
+extern "C" void snap_hdphoto_pixels(uint64_t enc, uint64_t data, const int *dim);                   // runtime/nvn/nvn_hdphoto.cpp (HD photos; no-op when off)
+extern "C" void snap_hdphoto_encoded(uint64_t enc, const uint8_t *jpg, size_t n);
 
 namespace {
 
@@ -169,6 +171,7 @@ bool enabled() {
 
 // Source pixel format: the game passes 14 (R,G,B,A bytes); that is the only one converted. Photos are 1080x720, thumbnails 240x200 and 204x136.
 void h_setpixel(Cpu *c) {
+    snap_hdphoto_pixels(c->x[0], c->x[1], (const int *)c->x[3]);   // HD photos: which buffer this encoder compresses
     if (!enabled()) {
         uint64_t o = lookup(kSetPixel);
         if (o) c->x[0] = call_guest_nested(c, o, {c->x[0], c->x[1], c->x[2], c->x[3], c->x[4]});
@@ -184,12 +187,23 @@ void h_setpixel(Cpu *c) {
     if (orig) c->x[0] = call_guest_nested(c, orig, {c->x[0], c->x[1], c->x[2], c->x[3], c->x[4]});
 }
 
+// Log only (SNAP_PHOTO_LOG=1): the game retries a failed Encode (result 0x...ffbf, buffer too small) with a lower quality (main+0x473868),
+// so the quality of each attempt shows how much a photo had to be squeezed into its save budget.
+const char *kSetQuality = "_ZN2nn5image11JpegEncoder10SetQualityEi";
+void h_setquality(Cpu *c) {
+    (void)enabled();   // reads SNAP_PHOTO_LOG once
+    if (g_log) fprintf(stderr, "[photo-export] SetQuality enc=%#llx quality=%d\n", (unsigned long long)c->x[0], (int)c->x[1]);
+    uint64_t orig = lookup(kSetQuality);
+    if (orig) c->x[0] = call_guest_nested(c, orig, {c->x[0], c->x[1]});
+}
+
 void h_encode(Cpu *c) {
     uint64_t self = c->x[0], psize = c->x[1], out = c->x[2];
     uint64_t args[7] = {c->x[0], c->x[1], c->x[2], c->x[3], c->x[4], c->x[5], c->x[6]};
     uint64_t orig = lookup(kEncode);
     uint64_t res = orig ? call_guest_nested(c, orig, {args[0], args[1], args[2], args[3], args[4], args[5], args[6]}) : 0;
     if ((uint32_t)res == 0 && psize && out) snap_shiny_photo_encoded((const uint8_t *)out, (size_t)*(const uint64_t *)psize);   // shiny mod (host/mods/shiny.cpp; off unless SNAP_SHINY=1)
+    if ((uint32_t)res == 0 && psize && out) snap_hdphoto_encoded(self, (const uint8_t *)out, (size_t)*(const uint64_t *)psize);   // HD photos: the album JPEG names the HD copy
     if (!enabled()) { c->x[0] = res; return; }
     PixInfo p{};
     bool have = false;
@@ -243,6 +257,7 @@ namespace loader {
 void snap_photoexport_install() {
     add_override(kSetPixel, h_setpixel);
     add_override(kEncode, h_encode);
+    add_override(kSetQuality, h_setquality);
 }
 
 // Waits (bounded) until every queued photo export is written. Called by snap_fs_drain_for_exit (runtime/hle/fs.cpp), which the

@@ -2,9 +2,12 @@
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
 // Clip-space positions captured by transform feedback -> world space, in place (vec4, w = 1). Non-finite results become NaN (an inactive triangle).
+// Also compares each vertex with the copy taken when the draw's BLAS was last built (shadow); when any vertex moved by more than a tolerance that
+// grows with the distance from the eye, the draw's flag word is raised (atomicMax of the ratio bits). The host reads the flags a few frames later.
 layout(local_size_x = 64) in;
 layout(buffer_reference, std430, buffer_reference_align = 16) buffer Verts { vec4 v[]; };
-layout(push_constant) uniform PC { mat4 m; Verts verts; uint count; uint pad; } pc;
+layout(buffer_reference, std430, buffer_reference_align = 4) buffer Flags { uint f[]; };
+layout(push_constant) uniform PC { mat4 m; Verts verts; Verts shadow; Flags flags; uint count; uint idx; vec4 eye; } pc;
 void main() {
   uint i = gl_GlobalInvocationID.x;
   if (i >= pc.count) return;
@@ -13,4 +16,13 @@ void main() {
   vec3 p = w.xyz / w.w;
   bool bad = !(abs(w.w) > 1e-20) || any(isinf(p)) || any(isnan(p));
   pc.verts.v[i] = bad ? vec4(uintBitsToFloat(0x7fc00000u)) : vec4(p, 1.0);
+  vec4 s = pc.shadow.v[i];
+  bool sbad = any(isnan(s)) || any(isinf(s));
+  float ratio = 0.0;
+  if (bad != sbad) ratio = 1.0e9;
+  else if (!bad) {
+    float tol = 0.02 + 0.002 * length(p - pc.eye.xyz);
+    ratio = length(p - s.xyz) / tol;
+  }
+  if (ratio > 1.0) atomicMax(pc.flags.f[pc.idx], floatBitsToUint(ratio));
 }

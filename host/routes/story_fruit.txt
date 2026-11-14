@@ -1,0 +1,9 @@
+# fixture: post_tutorial
+# Florio first ride with post_tutorial: does a fluffruit tutorial appear, and does B throw? B every 2 s, A every 5 s, dense frames.
+repeat @f300 @f30000 120 8 A
+wait ui=map_select timeout=240
+repeat @f60 @f30000 120 8 A
+wait ride timeout=240
+@f0 3000 shot=45
+repeat 1.0 120 2.0 0.15 B
+repeat 2.0 120 5.0 0.15 A

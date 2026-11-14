@@ -50,6 +50,7 @@ struct Thread {
     Cpu *cpu = nullptr;              // the thread's own context
     Cpu *cur = nullptr;              // the context running now (own or a fiber's)
     bool is_host = false;            // a host helper thread adopted on first use: holds no virtual core
+    bool free_core = false;          // perf pass 11, SNAP_OS_FREE_THREADS: a named loader thread that runs without a virtual core
     bool owns_tt = false;            // tt was allocated by the runtime
     uint64_t entry = 0, arg = 0;
     // scheduling (under G)

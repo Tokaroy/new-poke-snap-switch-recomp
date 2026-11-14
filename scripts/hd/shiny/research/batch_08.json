@@ -1,0 +1,211 @@
+[
+ {
+  "n": 160,
+  "name": "Starly",
+  "normal": "grey body, white face and belly, black head cap, orange feet and beak",
+  "shiny": "brown body and head cap (warm brown, mid-dark), white face and belly stay, orange beak and feet stay",
+  "desc": "grey and black turn warm brown",
+  "rules": "grey:0.1-0.7>52:0.065",
+  "source": "https://github.com/PokeAPI/sprites (official Pokemon HOME normal vs shiny renders, compared per OKLCh hue bin); Bulbapedia blocked (403)",
+  "confidence": "high",
+  "note": "Measured: mid and dark greys gain hue ~52, chroma ~0.065; white stays."
+ },
+ {
+  "n": 161,
+  "name": "Abomasnow",
+  "normal": "white fur, teal-blue patches on arms, legs and back",
+  "shiny": "fur stays white (very faint cool tint), teal patches become stronger royal blue",
+  "desc": "teal patches turn brighter blue",
+  "rules": "205>244:25:1.7;grey:0.7-1.0>255:0.012",
+  "source": "https://github.com/PokeAPI/sprites (official Pokemon HOME normal vs shiny renders, compared per OKLCh hue bin); Bulbapedia blocked (403)",
+  "confidence": "medium",
+  "note": "Measured: teal hue ~210 to ~244, chroma x1.7. Draft green-yellow accents were wrong."
+ },
+ {
+  "n": 162,
+  "name": "Weavile",
+  "normal": "dark blue-grey body, crimson head crest, feathers and claw-tufts, white claws",
+  "shiny": "body turns pink-magenta, red crest and tufts turn yellow",
+  "desc": "blue body to pink, red to yellow",
+  "rules": "15>100:25:0.85:1.7;230>358:22:2.5",
+  "source": "https://github.com/PokeAPI/sprites (official Pokemon HOME normal vs shiny renders, compared per OKLCh hue bin); Bulbapedia blocked (403)",
+  "confidence": "high",
+  "note": "Measured: red ~15 to ~100 and lighter; blue body ~230 to ~358 with chroma x2.5. Draft left the body unchanged."
+ },
+ {
+  "n": 163,
+  "name": "Froslass",
+  "normal": "white body, pale blue-grey skirt and ice, orange-red scarf and sash, purple face",
+  "shiny": "scarf and sash turn pink, ice trim and skirt paler and less blue, face accents paler lilac",
+  "desc": "orange-red scarf to pink, pale parts desaturate",
+  "rules": "28>345:20:0.8;230>230:30:0.5;310>314:25:0.5",
+  "source": "https://github.com/PokeAPI/sprites (official Pokemon HOME normal vs shiny renders, compared per OKLCh hue bin); Bulbapedia blocked (403)",
+  "confidence": "medium",
+  "note": "Measured: orange-red ~28 to ~345; blue ice chroma halved; purple chroma halved. Draft pink-tinted white was wrong."
+ },
+ {
+  "n": 164,
+  "name": "Stoutland",
+  "normal": "cream and tan mane and coat, teal-grey lower body, navy back",
+  "shiny": "cream coat more yellow-golden, teal-grey lower body turns mauve-grey and lighter, navy parts turn dark teal-green-grey",
+  "desc": "grey-teal body to mauve, cream to golden",
+  "rules": "100>84:20:1.7;190>334:25:0.67:1.2;250>165:15:0.5:1.25",
+  "source": "https://github.com/PokeAPI/sprites (official Pokemon HOME normal vs shiny renders, compared per OKLCh hue bin); Bulbapedia blocked (403)",
+  "confidence": "medium",
+  "note": "Measured per hue bin. Draft blue-grey coat was wrong. Low-chroma dark parts are the least certain."
+ },
+ {
+  "n": 165,
+  "name": "Audino",
+  "normal": "pink body and ears, cream belly and hands, blue eyes",
+  "shiny": "lavender-purple body and ears, cream belly stays, eyes change to green",
+  "desc": "pink body turns lavender",
+  "rules": "10>320:25:0.7:0.95",
+  "source": "https://github.com/PokeAPI/sprites (official Pokemon HOME normal vs shiny renders, compared per OKLCh hue bin); Bulbapedia blocked (403)",
+  "confidence": "high",
+  "note": "Measured: pink ~5 to ~319 (lavender), chroma x0.7. Draft light blue was wrong."
+ },
+ {
+  "n": 166,
+  "name": "Trubbish",
+  "normal": "teal-green bag body, tan zipper and tips, yellow-green accents",
+  "shiny": "deep navy-blue bag body, tips and accents similar",
+  "desc": "teal-green body turns navy blue",
+  "rules": "170>256:25",
+  "source": "https://github.com/PokeAPI/sprites (official Pokemon HOME normal vs shiny renders, compared per OKLCh hue bin); Bulbapedia blocked (403)",
+  "confidence": "high",
+  "note": "Measured: teal ~170 to ~256 (78 percent of pixels); lightness slightly lower."
+ },
+ {
+  "n": 167,
+  "name": "Vanilluxe",
+  "normal": "white and pale blue ice-cream body, blue-cyan eyes and trim",
+  "shiny": "body shifts to pale lavender-blue, trim and eyes violet",
+  "desc": "pale blue to lavender-violet",
+  "rules": "222>272:32:1:0.93;258>287:12;grey:0.85-1.0>268:0.015",
+  "source": "https://github.com/PokeAPI/sprites (official Pokemon HOME normal vs shiny renders, compared per OKLCh hue bin); Bulbapedia blocked (403)",
+  "confidence": "medium",
+  "note": "Measured: blues 200-260 move to ~272-285. Draft pink was wrong."
+ },
+ {
+  "n": 168,
+  "name": "Braviary",
+  "normal": "red crest and wing top, purple-navy wings and body, white head, yellow talons, red and blue tail",
+  "shiny": "crest and wing top turn blue, wings and body turn brown, tail blue stripe turns red, white and yellow stay",
+  "desc": "red to blue, navy to brown",
+  "rules": "30>256:20:0.65;290>46:20:0.7;250>24:12:0.75",
+  "source": "https://github.com/PokeAPI/sprites (official Pokemon HOME normal vs shiny renders, compared per OKLCh hue bin); Bulbapedia blocked (403)",
+  "confidence": "high",
+  "note": "Measured: red ~30 to ~256, purple ~290 to ~46 (brown), blue stripe ~250 to ~24."
+ },
+ {
+  "n": 169,
+  "name": "Bunnelby",
+  "normal": "brown ears, arms and back, grey body, cream muzzle",
+  "shiny": "brown parts become light grey-cream, grey body stays",
+  "desc": "brown fur turns pale grey",
+  "rules": "45>113:25:0.12:1.7",
+  "source": "https://github.com/PokeAPI/sprites (official Pokemon HOME normal vs shiny renders, compared per OKLCh hue bin); Bulbapedia blocked (403)",
+  "confidence": "high",
+  "note": "Measured: brown ~45 to ~113, chroma x0.12, lightness x1.7 (L 0.48 to 0.85)."
+ },
+ {
+  "n": 170,
+  "name": "Aurorus",
+  "normal": "azure-blue body and crystals, pale yellow sail, cream underside",
+  "shiny": "body turns near-white with faint blue, sail stays pale yellow, crystals stay pale blue",
+  "desc": "blue body turns white",
+  "rules": "250>248:20:0.2:1.25",
+  "source": "https://github.com/PokeAPI/sprites (official Pokemon HOME normal vs shiny renders, compared per OKLCh hue bin); Bulbapedia blocked (403)",
+  "confidence": "high",
+  "note": "Measured: azure ~250 keeps hue but chroma x0.2 and lightness up."
+ },
+ {
+  "n": 171,
+  "name": "Dedenne",
+  "normal": "orange body, yellow ears and belly patch, dark whiskers",
+  "shiny": "body turns brown, ears and belly patch deeper yellow",
+  "desc": "orange body to brown, yellow deeper",
+  "rules": "68>50:22:0.37:0.84;108>101:14:1.75",
+  "source": "https://github.com/PokeAPI/sprites (official Pokemon HOME normal vs shiny renders, compared per OKLCh hue bin); Bulbapedia blocked (403)",
+  "confidence": "high",
+  "note": "Measured: orange ~70 to ~50 with chroma x0.37; yellow ~110 chroma x1.75. Draft was directionally right but missed the yellow."
+ },
+ {
+  "n": 172,
+  "name": "Avalugg",
+  "normal": "pale blue ice body, purple crystals, brown-grey base",
+  "shiny": "ice stays pale blue, purple crystal accents turn green",
+  "desc": "purple accents turn green",
+  "rules": "285>140:30:1:1.1",
+  "source": "https://github.com/PokeAPI/sprites (official Pokemon HOME normal vs shiny renders, compared per OKLCh hue bin); Bulbapedia blocked (403)",
+  "confidence": "medium",
+  "note": "Measured: only the violet 260-320 bins move (to ~132-146); ice is unchanged. Draft violet ice was wrong."
+ },
+ {
+  "n": 173,
+  "name": "Crabominable",
+  "normal": "blue claws and body pads, white fur, yellow eyes, purple underside",
+  "shiny": "blue claws turn orange-red, yellow turns orange-yellow, purple stays",
+  "desc": "blue claws turn red-orange",
+  "rules": "220>30:25;110>69:15",
+  "source": "https://github.com/PokeAPI/sprites (official Pokemon HOME normal vs shiny renders, compared per OKLCh hue bin); Bulbapedia blocked (403)",
+  "confidence": "high",
+  "note": "Measured: blue ~200-240 to ~27-32. Draft direction was right; draft windows were off center."
+ },
+ {
+  "n": 174,
+  "name": "Cutiefly",
+  "normal": "yellow body with white fluff, tan wings, black legs",
+  "shiny": "yellow body turns pink, white fluff stays",
+  "desc": "yellow body turns pink",
+  "rules": "100>8:22:0.3:0.97",
+  "source": "https://github.com/PokeAPI/sprites (official Pokemon HOME normal vs shiny renders, compared per OKLCh hue bin); Bulbapedia blocked (403)",
+  "confidence": "high",
+  "note": "Measured: yellow ~80-120 to ~5-13, chroma x0.3. Draft orange-pink hue was off."
+ },
+ {
+  "n": 176,
+  "name": "Clefairy",
+  "normal": "pink body, cream belly, brown ear and wing tips",
+  "shiny": "body paler pink, ear and wing tips turn green",
+  "desc": "brown tips turn green, pink paler",
+  "rules": "10>12:25:0.6;70>137:20:3.4:2;grey:0.7-1.0>14:0.028",
+  "source": "https://github.com/PokeAPI/sprites (official Pokemon HOME normal vs shiny renders, compared per OKLCh hue bin); Bulbapedia blocked (403)",
+  "confidence": "high",
+  "note": "Measured: brown tips ~70 to ~137 with chroma x3.4 and lightness x2. Draft peach-orange was wrong."
+ },
+ {
+  "n": 177,
+  "name": "Tentacruel",
+  "normal": "blue body and cap, red orbs, grey-pink tentacles",
+  "shiny": "body periwinkle-lavender-blue, orbs turn teal-green, tentacles turn cream",
+  "desc": "red orbs turn green, tentacles cream",
+  "rules": "25>172:25:0.5:1.3;225>266:25:0.65;grey:0.5-0.85>90:0.07",
+  "source": "https://github.com/PokeAPI/sprites (official Pokemon HOME normal vs shiny renders, compared per OKLCh hue bin); Bulbapedia blocked (403)",
+  "confidence": "high",
+  "note": "Measured: red ~25 to ~172, blue ~225 to ~266 with chroma x0.65, grey tentacles gain hue ~90."
+ },
+ {
+  "n": 179,
+  "name": "Geodude",
+  "normal": "grey rock body and hands",
+  "shiny": "golden-yellow rock",
+  "desc": "grey rock turns gold",
+  "rules": "grey:0.3-1.0>88:0.135",
+  "source": "https://github.com/PokeAPI/sprites (official Pokemon HOME normal vs shiny renders, compared per OKLCh hue bin); Bulbapedia blocked (403)",
+  "confidence": "high",
+  "note": "Measured: all greys gain hue ~88 and chroma ~0.13-0.14. Draft red-brown was wrong."
+ },
+ {
+  "n": 181,
+  "name": "Graveler",
+  "normal": "grey rock body and arms",
+  "shiny": "deeper golden-brown rock",
+  "desc": "grey rock turns golden-brown",
+  "rules": "grey:0.3-1.0>81:0.12",
+  "source": "https://github.com/PokeAPI/sprites (official Pokemon HOME normal vs shiny renders, compared per OKLCh hue bin); Bulbapedia blocked (403)",
+  "confidence": "high",
+  "note": "Measured: greys gain hue ~81 and chroma ~0.11-0.14."
+ }
+]

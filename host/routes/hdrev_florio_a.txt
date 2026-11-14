@@ -1,0 +1,11 @@
+# fixture: unlock_all
+# HD texture review (worker hdpoke, 2026-11-14): ride florio_a to the end, no shutter, no camera input
+# run: build/w/hdpoke/run_hd.ps1 (SNAP_MODS_AB=1, SNAP_NEO_SPEED=3, NVN_FRAME_DUMP_AT pairs N,N+1 from the ride start, about present 6139)
+wait ui=title timeout=200
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=300
+@f300 6 A
+wait ui=map_select:CourseSelect timeout=60
+@f180 6 A
+wait ride timeout=300
+end @f9000

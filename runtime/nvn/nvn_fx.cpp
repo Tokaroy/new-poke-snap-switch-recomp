@@ -42,6 +42,7 @@ struct State {
   TextureImpl* color = nullptr;
   FxCam cam;
   FxCaster caster;
+  bool midTried = false, midRan = false; int sceneDraws = 0, prevDraws = 0;
   int castSeen = -100;     // present of the last caster capture (first cast draw per present)
   int activePresent = -1; bool active = false;
   uint64_t frames = 0, runs = 0, holds = 0, photoSubmits = 0;
@@ -174,7 +175,7 @@ TextureImpl* FxSceneDepth() { return F.phase ? F.depth : nullptr; }
 TextureImpl* FxSceneColor() { return F.phase ? F.color : nullptr; }
 bool FxIsPhotoFrame() { return F.frameHold || F.submitPhoto; }
 void FxJitter(float* jx, float* jy) { UpscaleSceneJitter(jx, jy); }
-const FxCaster* FxCasterNow() { return F.caster.valid && g_presentCount - F.caster.present <= 1 ? &F.caster : nullptr; }
+const FxCaster* FxCasterNow() { return F.caster.valid && g_presentCount - F.caster.present <= 30 ? &F.caster : nullptr; }
 bool FxAbSkip() { const int p = AbP(); return p > 0 && ((g_presentCount / p) & 1) == 0; }
 uint32_t FxSplitX(uint32_t w) { return Split() ? w / 2 : 0; }
 bool FxIsTonemapKey(const char* k) { return AaIsTonemapKey(k); }
@@ -189,7 +190,7 @@ bool FxOnSetRenderTargets(ReplayCtx& cx) {
   TextureImpl* d = cx.rt[8]; TextureImpl* c0 = cx.rt[0];
   if (d && IsSceneDepth(d)) {
     if (F.phase == 0) {
-      F.phase = 1; F.depth = d; F.color = nullptr; F.cam.valid = false;
+      F.phase = 1; F.depth = d; F.color = nullptr; F.cam.valid = false; F.midTried = F.midRan = false; F.sceneDraws = 0;
       F.frameHold = F.submitPhoto || F.hold > 0 || FxAbSkip();
       F.frames++; if (F.frameHold) F.holds++;
     }
@@ -205,7 +206,7 @@ bool FxOnSetRenderTargets(ReplayCtx& cx) {
   if (!F.color->EnsureImage() || !F.depth->EnsureImage()) return false;
   bool rec = false;
   const int tsSlot = TimeBegin(cx);
-  for (const FxEffect* e : Effects()) if (e->preTonemap && e->enabled && e->enabled()) { e->preTonemap(cx); rec = true; F.runs++; }
+  for (const FxEffect* e : Effects()) if (e->preTonemap && !(e->opaqueOnly && F.midRan) && e->enabled && e->enabled()) { e->preTonemap(cx); rec = true; F.runs++; }
   TimeEnd(cx, tsSlot);
   if (Log() && rec) { static int n; if (n++ < 6) fprintf(stderr, "fx: p%d pre-tonemap effects ran on %ux%u\n", g_presentCount, F.color->HW(), F.color->HH()); }
   return rec;
@@ -217,6 +218,7 @@ void FxOnDraw(ReplayCtx& cx, const uint8_t* const* vsUbo, const uint64_t* vsRang
   if (!d) return;
   if (F.phase == 1 && d == F.depth) {
     if (!F.cam.valid && vsUbo[0] && vsRange[0] >= kCamBytes) TakeCamera(vsUbo[0]);
+    F.sceneDraws++;
     return;
   }
   // ShadowCast: a square depth-only target of a shadow-map size, the 64-byte caster matrix in slot 9
@@ -227,6 +229,23 @@ void FxOnDraw(ReplayCtx& cx, const uint8_t* const* vsUbo, const uint64_t* vsRang
       if (Log()) { static int n; if (n++ < 6) fprintf(stderr, "fx: p%d caster %ux%u axis (%.3f %.3f %.3f)\n", g_presentCount, d->b.width, d->b.height, F.caster.axis[0], F.caster.axis[1], F.caster.axis[2]); }
     }
   }
+}
+
+bool FxMidPass(ReplayCtx& cx, bool blend, bool depthWrite) {
+  if (F.phase != 1 || F.midTried || !blend || depthWrite || !Active()) return false;
+  if (cx.rt[8] != F.depth || !F.color || cx.rt[0] != F.color || F.sceneDraws < std::max(30, F.prevDraws * 6 / 10)) return false;   // not yet the opaque part's end
+  F.midTried = true;
+  if (F.frameHold || F.submitPhoto || cx.occOpen || !F.cam.valid || !cx.rendering) return false;
+  bool any = false;
+  for (const FxEffect* e : Effects()) if (e->opaqueOnly && e->preTonemap && e->enabled && e->enabled()) any = true;
+  if (!any || !F.color->EnsureImage() || !F.depth->EnsureImage()) return false;
+  EndRendering(cx);
+  const int tsSlot = TimeBegin(cx);
+  for (const FxEffect* e : Effects()) if (e->opaqueOnly && e->preTonemap && e->enabled && e->enabled()) { e->preTonemap(cx); F.runs++; }
+  TimeEnd(cx, tsSlot);
+  F.midRan = true;
+  if (Log()) { static int n; if (n++ < 6) fprintf(stderr, "fx: p%d mid-pass effects ran after %d scene draws (previous frame %d)\n", g_presentCount, F.sceneDraws, F.prevDraws); }
+  return true;
 }
 
 void FxAfterDraw(ReplayCtx& cx, const char* key) {
@@ -256,13 +275,11 @@ void FxBeforeSubmit(int n, CmdList* const* lists) {
 
 void FxOnPresent() {
   if (!Active() && F.phase == 0 && !F.hold) return;
+  if (F.phase) F.prevDraws = F.sceneDraws;
   F.phase = 0; F.depth = nullptr; F.color = nullptr; F.cam.valid = false;
   if (F.hold > 0 && !F.submitPhoto) F.hold--;
-  static uint64_t lastBtn = 0;
-  const uint64_t btn = hle::input::hub().pad().buttons;
-  const uint64_t shoot = (1ull << hle::input::kA) | (1ull << hle::input::kZR) | (1ull << hle::input::kR);
-  if ((btn & ~lastBtn) & shoot) F.hold = std::max(F.hold, 6);
-  lastBtn = btn;
+  // No hold on button presses: the photo pass renders into its own 360x240 / Evaluation targets (guarded by the submit look-ahead above), and a hold
+  // on every A press made the effect drop out for six presents each time the player advanced a dialog line.
 }
 
 // ---- Vulkan helpers ---------------------------------------------------------------------------------------------------
@@ -351,6 +368,20 @@ VkImageView FxDepthRead(ReplayCtx& cx, TextureImpl* z, VkImageLayout* prev) {
   *prev = z->subLayout.empty() ? z->layout : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
   Transition(cx.cb, z, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
   return z->View(nullptr, true);
+}
+
+void FxDepthCopyRows(ReplayCtx& cx, TextureImpl* z, VkBuffer dst, uint32_t rowStep, uint32_t rows) {
+  const VkImageLayout orig = z->subLayout.empty() ? z->layout : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+  Transition(cx.cb, z, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+  std::vector<VkBufferImageCopy> rg(rows);
+  const uint32_t w = z->HW();
+  for (uint32_t i = 0; i < rows; i++) {
+    VkBufferImageCopy& r = rg[i]; r = {};
+    r.bufferOffset = (VkDeviceSize)i * w * 4; r.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
+    r.imageOffset = {0, (int32_t)(i * rowStep), 0}; r.imageExtent = {w, 1, 1};
+  }
+  vkCmdCopyImageToBuffer(cx.cb, z->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst, rows, rg.data());
+  Transition(cx.cb, z, orig);
 }
 
 void FxDepthDone(ReplayCtx& cx, TextureImpl* z, VkImageLayout prev) {

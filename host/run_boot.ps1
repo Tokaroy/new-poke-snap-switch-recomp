@@ -125,7 +125,7 @@ try {
             if (-not (Test-Path $gl)) { Write-Host "ghost launcher not found ($gl); set SNAP_GHOST_LAUNCHER or use -Visible"; exit 97 }
             # the hidden desktop has no foreground window: the game must not gate (scripted) input on focus
             # ...and must not pause itself on focus loss (a hidden run once paused at 241 s)
-            $env:SNAP_INPUT_BACKGROUND = '1'; $env:SNAP_HEADLESS = '1'; $env:SNAP_WINDOW_PAUSE = '0'
+            $env:SNAP_INPUT_BACKGROUND = '1'; $env:SNAP_HEADLESS = '1'; if (-not $env:SNAP_WINDOW_PAUSE) { $env:SNAP_WINDOW_PAUSE = '0' }   # a pause test sets it to 1 (with SNAP_WINDOW_TEST blur/focus)
             # muted by default (owner, 2026-11-12): the timer-paced null audio backend keeps the game's audio timing and SNAP_AUDIO_CAPTURE, but nothing reaches the speakers; set SNAP_AUDIO_BACKEND=wasapi to hear it
             if (-not $env:SNAP_AUDIO_BACKEND) { $env:SNAP_AUDIO_BACKEND = 'null' }
             $gargs = @('-I', $gl, $exe) + @($argl)

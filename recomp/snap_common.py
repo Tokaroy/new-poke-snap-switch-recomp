@@ -1,13 +1,15 @@
 """Snap project inputs for the prototype: the ELF image as a generator Module, and the map files (module offsets)."""
+import os
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'recomp'))
 
-ELF = ROOT / 'analysis' / 'import' / 'v262144-main.elf'
-SDK_ELF = ROOT / 'analysis' / 'import' / 'v262144-sdk.elf'
-MAPS = ROOT / 'analysis' / 'maps'
+# SNAP_ELF_MAIN / SNAP_ELF_SDK / SNAP_MAPS point the lifter at other inputs (the builder's work folder); unset = the dev tree.
+ELF = Path(os.environ.get('SNAP_ELF_MAIN') or ROOT / 'analysis' / 'import' / 'v262144-main.elf')
+SDK_ELF = Path(os.environ.get('SNAP_ELF_SDK') or ROOT / 'analysis' / 'import' / 'v262144-sdk.elf')
+MAPS = Path(os.environ.get('SNAP_MAPS') or ROOT / 'analysis' / 'maps')
 BASE = 0x7100000000   # guest base of main; the ELF is linked at 0, so address = BASE + map offset
 SDK_BASE = 0x7110000000   # guest base of sdk (main's image plus bss is 0x2892000 bytes, so 256 MB apart is ample)
 MODULES = {'main': (ELF, BASE), 'sdk': (SDK_ELF, SDK_BASE)}

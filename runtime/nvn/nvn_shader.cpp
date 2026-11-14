@@ -17,6 +17,7 @@
 #include <bcrypt.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <fstream>
 #include <sstream>
@@ -192,10 +193,19 @@ bool RunHarness(const std::string& bin, const std::string& spv, const std::strin
     if (k == std::string::npos) k = dll.find("tools/shader_harness");
     if (k != std::string::npos) dll = dll.substr(0, k) + "build\\xlate\\r" + e + "\\h\\bin\\Release\\net10.0\\ShaderHarness.dll";
   }
+  if (dll.empty()) {   // release build (no baked dev path): the harness folder next to the exe
+    char mp[MAX_PATH] = {};
+    GetModuleFileNameA(nullptr, mp, MAX_PATH);
+    std::string d = mp;
+    size_t k = d.find_last_of("\\/");
+    if (k != std::string::npos) dll = d.substr(0, k) + "\\shader_harness\\ShaderHarness.exe";
+  }
   if (const char* e = getenv("NVN_SHADER_HARNESS")) dll = e;
   if (dll.empty()) { LogError("shader translation needs the harness: set NVN_SHADER_HARNESS=<ShaderHarness.dll>"); return false; }
   std::ostringstream cl;
-  cl << "dotnet \"" << dll << "\" --nvn \"" << bin << "\" \"" << spv << "\" \"" << json << "\" " << stage << " " << constOff << " "
+  const bool native = dll.size() > 4 && _stricmp(dll.c_str() + dll.size() - 4, ".exe") == 0;   // self-contained publish (release): run the apphost, no dotnet
+  if (!native) cl << "dotnet ";
+  cl << "\"" << dll << "\" --nvn \"" << bin << "\" \"" << spv << "\" \"" << json << "\" " << stage << " " << constOff << " "
      << codeOff;
   std::string cmd = cl.str();
   STARTUPINFOA si{sizeof si};
@@ -310,6 +320,11 @@ bool BuildStage(Host* h, const ShaderData& sd, StageProg* out) {
     bool ok = RunHarness(binPath, spvTmp, jsonTmp, stage, constOff, codeOff);
     DeleteFileA(binPath.c_str());
     if (ok) ok = MoveFileExA(spvTmp.c_str(), spvPath.c_str(), MOVEFILE_REPLACE_EXISTING) && MoveFileExA(jsonTmp.c_str(), jsonPath.c_str(), MOVEFILE_REPLACE_EXISTING);
+    if (ok) {   // first-launch progress line (a warm cache never gets here)
+      static std::atomic<int> translated{0};
+      int n = ++translated;
+      if (n == 1 || n % 100 == 0) fprintf(stderr, "[nvn] first-run shader translation: %d shaders translated so far (cache: %s)\n", n, h->cacheDir.c_str());
+    }
     if (!ok) { DeleteFileA(spvTmp.c_str()); DeleteFileA(jsonTmp.c_str()); return false; }
   }
   if (!loaded) { LogError("shader cache entry %s unusable after retranslation", base.c_str()); DeleteFileA(spvPath.c_str()); DeleteFileA(jsonPath.c_str()); return false; }

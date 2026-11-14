@@ -4,13 +4,33 @@
 # be back, must have reached the game as the documented env vars, and the game must log them (host policy, aa, gamemods lines are checked below).
 # Frames with the overlay (NVN_FRAME_DUMP_POST) go to analysis\ui\opt_dump_a and opt_dump_b; tests\hle\opt_shots.py turns them into analysis\ui\f1_<tab>.png.
 # Each run takes one run slot via run_boot.ps1; refuses while build\play.lock is live. Own files: build\testconfig_opts, build\testprofiles_opts, build\testsave_opts.
-param([switch]$Visible, [string]$BuildDir)
+param([switch]$Visible, [string]$BuildDir, [int]$LockWaitSec = 2000)
 $ErrorActionPreference = 'Stop'
 $root = Resolve-Path (Join-Path $PSScriptRoot '..\..')
 Set-Location $root
 if (Test-Path 'build\play.lock') { $pl = (Get-Content 'build\play.lock') -join ' '; if ($pl -match 'pid=(\d+)' -and (Get-Process -Id ([int]$Matches[1]) -ErrorAction SilentlyContinue)) { Write-Host "play.lock held: $pl"; exit 3 } }
-$lock = 'build\options_test.lock'
-for ($i = 0; $i -lt 100; $i++) { try { New-Item -ItemType File $lock -ErrorAction Stop | Out-Null; break } catch { Start-Sleep 20 } if ($i -eq 99) { throw 'no options_test lock' } }
+# options_test.lock: one options test at a time (they share the build\test*_opts folders). The lock is created atomically (CreateNew) with "pid=<this PID>" inside;
+# only the run whose PID is in the file removes it. A lock whose PID is no longer a live PowerShell is stale and is taken over. Waits up to -LockWaitSec, then exits 4
+# without touching the lock.
+$lock = Join-Path $root 'build\options_test.lock'
+$lockTag = "options-test pid=$PID start=$((Get-Process -Id $PID).StartTime.Ticks)"
+$script:ownLock = $false
+$waitUntil = (Get-Date).AddSeconds($LockWaitSec)
+while (-not $script:ownLock) {
+  try {
+    $fs = [IO.File]::Open($lock, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+    $b = [Text.Encoding]::ASCII.GetBytes("$lockTag $(Get-Date -Format s)"); $fs.Write($b, 0, $b.Length); $fs.Close(); $script:ownLock = $true
+  } catch [IO.IOException] {
+    $held = ''; try { $held = [IO.File]::ReadAllText($lock) } catch {}
+    $alive = $false
+    if ($held -match 'pid=(\d+) start=(\d+)') { $p = Get-Process -Id ([int]$Matches[1]) -ErrorAction SilentlyContinue; $alive = $p -and $p.StartTime.Ticks -eq [int64]$Matches[2] }
+    elseif ((Get-Date) - (Get-Item $lock -ErrorAction SilentlyContinue).LastWriteTime -lt [TimeSpan]::FromSeconds(30)) { $alive = $true }  # being written, or an old-format lock
+    if (-not $alive -and (Test-Path $lock)) { Write-Host "options_test.lock is stale ($held); taking it over"; Remove-Item $lock -Force -ErrorAction SilentlyContinue; continue }
+    if ((Get-Date) -gt $waitUntil) { Write-Host "OPTIONS TEST NOT RUN: options_test.lock held by another run ($held)"; exit 4 }
+    Start-Sleep 10
+  }
+}
+function Release-Lock { if ($script:ownLock) { $held = ''; try { $held = [IO.File]::ReadAllText($lock) } catch {}; if ($held.StartsWith($lockTag)) { Remove-Item $lock -Force -ErrorAction SilentlyContinue }; $script:ownLock = $false } }
 function Run-Stage($name, $script, $restartScript, $dump) {
   Remove-Item -Recurse -Force $dump -ErrorAction SilentlyContinue
   New-Item -ItemType Directory -Force $dump | Out-Null
@@ -29,7 +49,6 @@ function Run-Stage($name, $script, $restartScript, $dump) {
   Select-String -Path $stderr -Pattern 'ui-test|relaunched|host policy|aa: mode|gamemods: UI font|\[mods\] root|\[window\]|photoexport|audio: output' | ForEach-Object { $_.Line } | Add-Content 'analysis\ui\options_test.log'
 }
 try {
-  "options-test $PID $(Get-Date)" | Set-Content $lock
   $cfg = Join-Path $root 'build\testconfig_opts'
   Remove-Item -Recurse -Force $cfg -ErrorAction SilentlyContinue
   New-Item -ItemType Directory -Force $cfg, 'analysis\ui' | Out-Null
@@ -69,5 +88,5 @@ try {
   if ($nfail -gt 0) { Write-Host "OPTIONS TEST FAILED: $nfail failing ui-test line(s) (see analysis\ui\options_test.log)"; $script:testExit = 1 }
   elseif ($nsum -eq 0) { Write-Host 'OPTIONS TEST FAILED: no ui-test SUMMARY line (the game did not finish the scripted checks)'; $script:testExit = 1 }
   else { Write-Host "OPTIONS TEST PASSED ($nsum summary line(s), no failures)" }
-} finally { Remove-Item $lock -Force -ErrorAction SilentlyContinue }
+} finally { Release-Lock }
 if ($script:testExit) { exit $script:testExit }

@@ -41,8 +41,12 @@ void main() {
     if (wC > pc.q.z) return;
     vec3 pR = posAt(p + ivec2(1, 0), wR), pL = posAt(p - ivec2(1, 0), wL);
     vec3 pD = posAt(p + ivec2(0, 1), wD), pU = posAt(p - ivec2(0, 1), wU);
+    // central differences where the surface is smooth (no kinks or depth edges within a pixel), else the one-sided difference that agrees better:
+    // the one-sided choice alone flips between neighbouring pixels on low-poly characters and gave hard angular patches
     vec3 dx = abs(wR - wC) < abs(wC - wL) ? pR - pC : pC - pL;
     vec3 dy = abs(wD - wC) < abs(wC - wU) ? pD - pC : pC - pU;
+    if (abs(wR + wL - 2.0 * wC) < 0.01 * wC) dx = 0.5 * (pR - pL);
+    if (abs(wD + wU - 2.0 * wC) < 0.01 * wC) dy = 0.5 * (pD - pU);
     vec3 n = cross(dx, dy);
     float nl = length(n);
     if (!(nl > 1e-12)) return;
@@ -56,10 +60,17 @@ void main() {
     if (dm == 5) { outMul = vec4(vec3(facing), 1.0); return; }
     if (facing <= 0.0) { if (dbg) outMul = vec4(0.8, 1.0, 0.8, 1.0); return; }
 
-    const int N = 16;
     float jit = fract(52.9829189 * fract(dot(gl_FragCoord.xy + pc.q.w * vec2(5.588238, 2.173), vec2(0.06711056, 0.00583715))));
     float bias = 0.012 + 0.004 * wC, thick = pc.q.y + 0.01 * wC;
     vec4 C0 = vec4(ndcOf(vec2(p), d) * wC, wC);
+    // step count follows the ray's length on screen (about one step per 2 pixels, 8..32), so render scale 2 does not undersample the ray
+    vec4 C1 = C0 + pc.dclip * pc.q.x;
+    float pixLen = (C1.w > 1e-3) ? length((C1.xy / C1.w - C0.xy / C0.w) * 0.5 * pc.size.xy) : 64.0;
+    int N = int(clamp(pixLen * 0.5, 8.0, 32.0));
+    // slope-scaled bias: along a surface that is tilted to the view, depth changes by g view units per pixel, so a ray point d pixels from its origin
+    // is already about g * d "behind" the same surface; without this the low-poly characters shadow their own facets (hard angular patches)
+    float g = max(max(abs(wR - wC), abs(wC - wL)), max(abs(wD - wC), abs(wC - wU)));
+    vec2 win0 = (C0.xy / C0.w * vec2(0.5, -0.5) + 0.5) * pc.size.xy;
     float occ = 0.0, firstT = 0.0; int hits = 0;   // two hits needed: a single-step hit is a thin blade or a depth edge
     for (int i = 0; i < N; i++) {
         float t = (float(i) + jit) / float(N);
@@ -72,9 +83,11 @@ void main() {
         if (sd <= 0.0) continue;
         float sw = 1.0 / (pc.ivp * vec4(ndcOf(vec2(tp), sd), 1.0)).w;
         float diff = C.w - sw;   // > 0: the ray point is behind the surface the depth buffer shows there
-        if (diff > bias && diff < thick) { if (hits++ == 0) firstT = t; if (hits >= 2) { occ = 1.0 - 0.75 * firstT; break; } }
+        if (diff > bias + 2.5 * g * length(win - win0) && diff < thick) { if (hits++ == 0) firstT = t; if (hits >= 2) { occ = 1.0 - 0.75 * firstT; break; } }
     }
     float fade = 1.0 - smoothstep(0.5 * pc.q.z, pc.q.z, wC);
+    vec2 edge = min(gl_FragCoord.xy, pc.size.xy - gl_FragCoord.xy) / (0.04 * pc.size.y);   // rays that leave the screen read clamped depth: fade near the border
+    fade *= clamp(min(edge.x, edge.y), 0.0, 1.0);
     if (dbg) { outMul = vec4(1.0, 1.0 - occ * fade, 1.0 - occ * fade, 1.0); return; }
     float s = strength * occ * facing * fade;
     outMul = vec4(vec3(1.0 - s), 1.0);

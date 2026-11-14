@@ -8,7 +8,9 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <set>
 
+#include "nvn_shiny.h"
 #include "nvn_internal.h"
 #include "nvn_aa.h"   // AaForgetTexture
 #include "nvn_fx.h"   // [fx]
@@ -44,6 +46,7 @@ int PerfGpuBegin(Host* h, VkCommandBuffer cb);   // nvn_perf.cpp (SNAP_PERF only
 void PerfGpuEnd(Host* h, VkCommandBuffer cb, int slot);
 void PerfGpuSubmitted(int slot, uint64_t value);
 void PerfFrameMark(QueueImpl* q, uint64_t presentNo);
+bool PerfGpuOn();   // nvn_perf.cpp: SNAP_PERF, or the performance overlay's Detailed mode (ui_fps.cpp)
 
 Host* g_host = nullptr;
 std::atomic<uint32_t> g_valErrors{0}, g_valWarnings{0};
@@ -383,6 +386,14 @@ bool Host::Init(bool wantValidation) {
       std::string d = path;
       size_t k = d.find_last_of("\\/");
       cacheDir = (k == std::string::npos ? std::string(".") : d.substr(0, k)) + "\\nvn_cache";
+#ifdef SNAP_RELEASE_BUILD   // release objects (builder/): %LOCALAPPDATA%/SnapRecomp/nvn_cache, so a protected install folder works
+      char la[MAX_PATH] = {};
+      if (GetEnvironmentVariableA("LOCALAPPDATA", la, MAX_PATH) && la[0]) {
+        std::string base = std::string(la) + "\\SnapRecomp";
+        CreateDirectoryA(base.c_str(), nullptr);
+        cacheDir = base + "\\nvn_cache";
+      }
+#endif
     }
     if (const char* r = getenv("SNAP_XLATE_REV"); r && *r && strcmp(r, "0")) cacheDir += std::string("_r") + r;   // translator revision: separate shader cache (nvn_shader.cpp)
     CreateDirectoryA(cacheDir.c_str(), nullptr);
@@ -627,19 +638,54 @@ VkImageView TextureImpl::View(const TexView* v, bool sampled, int shaderType, co
   views[key] = iv; viewTypes[iv] = ci.viewType;
   return iv;
 }
-VkImageView TextureImpl::RenderView(const TexView* v, SubRange* out) {
+// [colorfix 2026-11-14] A render-target TexView can carry its own format (nvnTextureViewSetFormat). The game draws its UI and menus into
+// the sRGB window texture through an RGBA8 UNORM view: the shader output is already gamma encoded and must be stored unchanged. With the
+// texture's own (sRGB) format the hardware encoded it a second time, which lifted every dark and mid tone (washed-out menus and HUD).
+// Only same-layout sRGB/UNORM twins are honored (no other reinterpretation is needed); SNAP_RT_VIEW_FORMAT=0 restores the old behavior.
+static bool SrgbTwin(VkFormat a, VkFormat b) {
+  auto base = [](VkFormat f) {
+    switch (f) {
+      case VK_FORMAT_R8G8B8A8_SRGB: return VK_FORMAT_R8G8B8A8_UNORM;
+      case VK_FORMAT_B8G8R8A8_SRGB: return VK_FORMAT_B8G8R8A8_UNORM;
+      default: return f;
+    }
+  };
+  return a != b && base(a) == base(b);
+}
+const FormatInfo* TextureImpl::RtFormat(const TexView* v) const {
+  if (!v || !(v->flags & 4) || !fi || !(fi->aspect & VK_IMAGE_ASPECT_COLOR_BIT)) return fi;
+  const FormatInfo* o = LookupFormat(v->format);
+  if (!o || o->vk == fi->vk) return fi;
+  static const bool on = [] { const char* e = getenv("SNAP_RT_VIEW_FORMAT"); return !(e && e[0] == '0'); }();
+  const bool twin = SrgbTwin(fi->vk, o->vk);
+  static std::atomic<int> logged{0};
+  static std::mutex logMu; static std::set<std::pair<int, int>> seen;
+  if (logged.load(std::memory_order_relaxed) < 16) {
+    std::lock_guard<std::mutex> lk(logMu);
+    if (seen.insert({(int)fi->vk, (int)o->vk}).second) {
+      logged++;
+      fprintf(stderr, "[rtview] render target %ux%u format %d drawn through a view of format %d (nvn 0x%x): %s\n", b.width, b.height, (int)fi->vk, (int)o->vk,
+              v->format, !twin ? "not an sRGB twin, ignored" : on ? "view format used" : "ignored (SNAP_RT_VIEW_FORMAT=0)");
+    }
+  }
+  return (on && twin) ? o : fi;
+}
+VkImageView TextureImpl::RenderView(const TexView* v, SubRange* out, bool viewFmt) {
   if (!EnsureImage()) return VK_NULL_HANDLE;
   snap_perf::Scope perfScope(snap_perf::C_VIEW);   // [perf] replay sub-scope
   SubRange r = RtRange(this, v);
   if (out) *out = r;
+  const FormatInfo* af = viewFmt ? RtFormat(v) : fi;
   const VkImageViewType vt = r.yn > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
   char key[64];
-  snprintf(key, sizeof key, "R%d.%d.%u.%u.%u.%u", (int)vt, (int)fi->vk, (unsigned)fi->aspect, r.lb, r.yb, r.yn);
+  snprintf(key, sizeof key, "R%d.%d.%u.%u.%u.%u", (int)vt, (int)af->vk, (unsigned)fi->aspect, r.lb, r.yb, r.yn);
   auto it = views.find(key);
   if (it != views.end()) return it->second;
   VkImageViewCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-  ci.image = image; ci.viewType = vt; ci.format = fi->vk;
+  ci.image = image; ci.viewType = vt; ci.format = af->vk;
   ci.subresourceRange = {fi->aspect, r.lb, 1, r.yb, r.yn};
+  VkImageViewUsageCreateInfo uci{VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO};
+  if (af != fi) { uci.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT; ci.pNext = &uci; }   // the twin may lack storage support the image has
   VkImageView iv = VK_NULL_HANDLE;
   if (vkCreateImageView(host->device, &ci, nullptr, &iv) != VK_SUCCESS) { LogError("vkCreateImageView (attachment) failed"); return VK_NULL_HANDLE; }
   views[key] = iv; viewTypes[iv] = ci.viewType;
@@ -1170,6 +1216,7 @@ static void EmitScissor(ReplayCtx& cx, int i) {
   VkRect2D r{{x, y}, {(uint32_t)w, (uint32_t)ht}};
   vkCmdSetScissor(cx.cb, (uint32_t)i, 1, &r);
 }
+void FxReemitViewState(ReplayCtx& cx) { for (int i = 0; i < 4; i++) { if (cx.vpHave & (1u << i)) EmitViewport(cx, i); if (cx.scHave & (1u << i)) EmitScissor(cx, i); } }   // [fx] after a mid-pass effect
 
 // [nvnfix] review_nvn.md 11 (measurement): NVN clears honor the scissor, ours clear the whole subresource. Counts clears made while
 // scissor 0 is set smaller than the target level (guest pixels), to see whether the game relies on scissored clears.
@@ -1215,6 +1262,7 @@ static void Replay(ReplayCtx& cx, const CmdList& list) {
         EndRendering(cx);
         TextureImpl* t = (c.i[0] >= 0 && c.i[0] < 8) ? rt[c.i[0]] : nullptr;
         if (!t || !t->EnsureImage()) { Log("ClearColor with no usable render target %d", c.i[0]); break; }
+        if (ShinyActive()) ShinyRtClear(t);   // shiny mod: a cleared target no longer holds a shiny draw
         CountScissoredClear(cx, t, cx.rtHasView[c.i[0]] ? &cx.rtView[c.i[0]] : nullptr);   // [nvnfix] SNAP_NVN_STATS
         if ((c.i[1] & 0xF) != 0xF) { if (c.i[1] & 0xF) DoMaskedClear(cx, t, cx.rtHasView[c.i[0]] ? &cx.rtView[c.i[0]] : nullptr, c.i[1] & 0xF, c.f); break; }
         t->uploaded = true;
@@ -1337,7 +1385,7 @@ void SubmitLists(QueueImpl* q, int n, CmdList* const* lists) {
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(cb, &bi);
-    const int perfSlot = snap_perf::on ? PerfGpuBegin(h, cb) : -1;
+    const int perfSlot = PerfGpuOn() ? PerfGpuBegin(h, cb) : -1;
     perfSlots.push_back(perfSlot);
     ReplayCtx cx;
     cx.h = h; cx.cb = cb; cx.q = q;
@@ -1394,6 +1442,7 @@ void QueueFence(QueueImpl* q, SyncImpl* s) {
   si.signalSemaphoreInfoCount = 1; si.pSignalSemaphoreInfos = &sig;
   VKCHK(vkQueueSubmit2(h->queue, 1, &si, VK_NULL_HANDLE));
   s->sem = q->timeline; s->value = v; s->armed = true;
+  s->fenceNs = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); s->fencePresent = g_presentCount; s->fenceTid = (unsigned)GetCurrentThreadId();
 }
 
 void QueueFinishImpl(QueueImpl* q) {
@@ -1405,7 +1454,22 @@ void QueueFinishImpl(QueueImpl* q) {
 static SyncWaitResult WaitSyncRaw(const SyncImpl* s, uint64_t timeoutNs);
 SyncWaitResult WaitSync(const SyncImpl* s, uint64_t timeoutNs) {
   snap_perf::Scope perfScope(snap_perf::C_WAITSYNC);
+  // SNAP_SYNC_TRACE=<ms>: log every guest sync wait longer than <ms> (what it waited for, how far the GPU timeline was behind,
+  // how old the fence was, how many presents went by). Diagnostic, off by default.
+  static const double traceMs = [] { const char* e = getenv("SNAP_SYNC_TRACE"); return e ? atof(e) : 0.0; }();
+  if (traceMs <= 0) { SyncWaitResult r0 = WaitSyncRaw(s, timeoutNs); if (s->armed) FlushReadbacks(s->host, false); return r0; }
+  const auto t0 = std::chrono::steady_clock::now();
+  uint64_t cur0 = 0; if (s->armed) vkGetSemaphoreCounterValue(s->host->device, s->sem, &cur0);
   SyncWaitResult r = WaitSyncRaw(s, timeoutNs);
+  {
+    const auto t1 = std::chrono::steady_clock::now();
+    const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    if (ms >= traceMs) {
+      const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(t1.time_since_epoch()).count();
+      fprintf(stderr, "[synctrace] tid %u sync %p fenced by tid %u: wait %.2f ms present %d: sync value %llu timeline was %llu (%lld behind) fence age %.2f ms at wait end, %d presents since the fence, timeout %lld\n", (unsigned)GetCurrentThreadId(), (const void*)s, s->fenceTid, ms, g_presentCount,
+              (unsigned long long)s->value, (unsigned long long)cur0, (long long)(s->value - cur0), (double)(nowNs - s->fenceNs) / 1e6, g_presentCount - s->fencePresent, (long long)timeoutNs);
+    }
+  }
   if (s->armed) FlushReadbacks(s->host, false);
   return r;
 }
@@ -1607,7 +1671,7 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
   Host* h = q->host;
   if (slot < 0 || slot >= (int)w->tex.size()) { LogError("present of invalid slot %d", slot); return false; }
   TextureImpl* src = w->tex[slot];   // [nvnfix] EnsureImage moved under queueMutex below: a replay may create the same image
-  struct PerfFrame { QueueImpl* q; ~PerfFrame() { if (snap_perf::on) PerfFrameMark(q, (uint64_t)g_presentCount); } } perfFrame{q};   // one CSV row per present (SNAP_PERF)
+  struct PerfFrame { QueueImpl* q; ~PerfFrame() { if (PerfGpuOn()) PerfFrameMark(q, (uint64_t)g_presentCount); } } perfFrame{q};   // one CSV row per present (SNAP_PERF)
   {
     // Load pass (2026-11-13): the frame limiter is a wait (vsync on the Switch), so the presenting JobWorker gives its virtual
     // core back while it sleeps; loader threads pinned to that core (ResourceUncompress p31) ran only between frames before,
@@ -1662,7 +1726,16 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
       if (!ok) return false;
     }
     VkResult r;
-    { snap_perf::Scope perfScope(snap_perf::C_ACQUIRE); r = vkAcquireNextImageKHR(h->device, w->swapchain, UINT64_MAX, w->acquireSems[ak], VK_NULL_HANDLE, &idx); }
+    // [syncfix] The acquire returns when the image index is known; its semaphore can signal later (the display frees the image at
+    // vblank). The blit submit waits that semaphore, and every later submit on the queue (the guest's fences) sits behind it, so a
+    // guest nvnSyncWait lasted up to one display period on ~4.5% of frames at high fps. Waiting on an acquire fence here (lock
+    // dropped, no queue touched) makes the semaphore signaled before the blit is submitted. SNAP_ACQ_FENCE=0 restores the old path.
+    static const bool kAcqFence = [] { const char* e = getenv("SNAP_ACQ_FENCE"); return !(e && e[0] == '0'); }();
+    static VkFence acqFence = VK_NULL_HANDLE;
+    if (kAcqFence && !acqFence) { VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO}; if (vkCreateFence(h->device, &fci, nullptr, &acqFence) != VK_SUCCESS) acqFence = VK_NULL_HANDLE; }
+    const VkFence useFence = (kAcqFence && dropLock) ? acqFence : VK_NULL_HANDLE;
+    { snap_perf::Scope perfScope(snap_perf::C_ACQUIRE); r = vkAcquireNextImageKHR(h->device, w->swapchain, UINT64_MAX, w->acquireSems[ak], useFence, &idx);
+      if (useFence && (r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR)) { vkWaitForFences(h->device, 1, &useFence, VK_TRUE, UINT64_MAX); vkResetFences(h->device, 1, &useFence); } }
     if (r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR) { if (r == VK_SUBOPTIMAL_KHR) w->needRecreate = true; break; }
     if (r == VK_ERROR_OUT_OF_DATE_KHR) { w->needRecreate = true; if (attempt == 2) return false; continue; }
     if (r == VK_ERROR_DEVICE_LOST || r == VK_ERROR_SURFACE_LOST_KHR) FatalGpuLoss("vkAcquireNextImageKHR", r);
@@ -1676,7 +1749,7 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
   VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
   bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
   vkBeginCommandBuffer(cb, &bi);
-  const int perfSlot = snap_perf::on ? PerfGpuBegin(h, cb) : -1;
+  const int perfSlot = PerfGpuOn() ? PerfGpuBegin(h, cb) : -1;
 
   VkImage dst = w->scImages[idx];
   auto imgBarrier = [&](VkImage img, VkImageAspectFlags asp, VkImageLayout from, VkImageLayout to) {

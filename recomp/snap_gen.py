@@ -145,8 +145,17 @@ def plt_text(stubs):
     return '\n'.join(lines) + '\n', len(seen)
 
 
+def runtime_abi():
+    """SNAP_RUNTIME_ABI from runtime/cpu.h (the generated tables are tied to it)."""
+    m = re.search(r'^#define SNAP_RUNTIME_ABI (\d+)', (Path(os.environ.get('SNAP_RUNTIME_INCLUDE') or ROOT / 'runtime') / 'cpu.h').read_text(encoding='utf-8'), re.M)
+    return int(m.group(1))
+
+
 def table_text(addrs, mod='main'):
-    lines = [header(f'{mod} function table'), '#include "cpu.h"\n\n']
+    abi = runtime_abi()
+    lines = [header(f'{mod} function table'), '#include "cpu.h"\n\n',
+             f'_Static_assert(SNAP_RUNTIME_ABI == {abi}, "generated for runtime ABI {abi}: regenerate with this lifter or use matching headers");\n',
+             f'extern const int snap_runtime_abi_{abi};\nconst int *const {mod}_abi_ref = &snap_runtime_abi_{abi};\n\n']
     lines += [f'void {fname(a)}(Cpu *c);\n' for a in addrs]
     lines.append(f'\nconst uint64_t {mod}_fn_addrs[] = {{\n' + ',\n'.join(hx(a) for a in addrs))
     lines.append(f'\n}};\nconst GuestFn {mod}_fn_ptrs[] = {{\n' + ',\n'.join(fname(a) for a in addrs))
@@ -191,7 +200,10 @@ MAIN_INLINE_HOOKS = {BASE + 0x5e3a58: 'rt_mod_entry',
                          0x72bf84, 0x72c738, 0x72cf4c, 0x72d5e0, 0x730cc4, 0x7311b0, 0x731f98, 0x7328e4)},
                      # host/mods/routes.cpp (route "wait ui=" signals): no-ops unless a route has wait lines or SNAP_ROUTE_LOG is set
                      BASE + 0x6c1d90: 'rt_gm_route_ui_event',      # entry of the UI scene base's std::function operator(): x1 = int* event, x2 = Player**, x3 = std::string* state
-                     BASE + 0x79a6d0: 'rt_gm_route_ui_setstate'}   # entry of Player::SetState (player vtable +0x140): x0 = player, x1 = descriptor (state name at +0x18)
+                     BASE + 0x79a6d0: 'rt_gm_route_ui_setstate',   # entry of Player::SetState (player vtable +0x140): x0 = player, x1 = descriptor (state name at +0x18)
+                     # host/mods/drpfast.cpp (perf pass 11): DRP keystream decrypt on the host; SNAP_DRP_FASTDEC=0 keeps the guest loop
+                     BASE + 0x5ec9f0: 'rt_drp_decrypt',         # `cmp x28, x23` before the per-word loop of 0x5ec890: x21 = RNG state, w22 = bound
+                     BASE + 0x5eca1c: 'rt_drp_decrypt_check'}   # loop exit (SNAP_DRP_FASTDEC=check compares here)
 
 
 def sdk_plan():

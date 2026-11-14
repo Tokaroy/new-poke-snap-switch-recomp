@@ -1,0 +1,17 @@
+# fixture: post_tutorial
+# Open the pause menu's "How to Play" during a Florio ride to read the game's own controls pages.
+repeat @f3100 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=700
+@f150 6 A
+@f510 6 A
+repeat @f710 @f3710 90 6 A
+wait ride timeout=900
+wait rail>=3
+2.0 0.2 Plus
+wait ui=pause_menu timeout=60
+@f0 1400 shot=30
+1.5 0.2 Down
+2.5 0.2 Down
+3.5 0.2 Down
+4.5 0.2 A
+9.0 0.2 Right

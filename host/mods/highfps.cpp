@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: MIT
 // High frame rate spike (docs/high-fps-plan.md, WP1 first half). Everything here is inert unless an env switch is set, so the default
-// game (SNAP_FPS unset or 60) keeps its original 60 fps pacing and 14 ms sleep floor, byte for byte.
+// game (SNAP_FPS unset or 60) keeps its original 60 fps pacing, byte for byte.
 //
 //   SNAP_FPS=120|144            target simulation rate. Re-applies nvnHostSetFramePacing(fps) from the present hook (also right after the
-//                               SNAP_FAST_BOOT window, which hard-codes 60) and clamps the main loop's 14 ms sleep floor (see below).
-//   SNAP_FPS_FLOOR_MS=<ms>      the floor that replaces the game's 14 ms (default 0 = no floor; the limiter in the present path paces).
+//                               SNAP_FAST_BOOT window, which hard-codes 60).
 //   SNAP_FPS_UNCAPPED=1         measurement only: limiter off (nvnHostSetFramePacing(0)) so the real uncapped rate shows. Works with SNAP_FPS.
 //   SNAP_FPS_TRACE=<csv>        diagnostic: per clock update row (see below). Forces g_fnprof (slow; not for perf numbers).
 //   SNAP_FPS_MSWATCH=1          diagnostic: hardware read/write watchpoints on the clock's three integer ms channels (+0x10, +0x28, +0x40);
 //                               a VEH counts the rip of every access; table printed to stderr as "[highfps-w]" (resolve rva in the link map).
 //
-// Sleep floor: the main loop (main+0x4e0f64..0x4e1018) sleeps (14 - floor(elapsed_ms)) ms through PLT stub f_7100a36ad0 (SleepThread) with
-// x30 = 0x71004e1010. os_thread.cpp's ov_SleepThread passes (x30, ns) to snap_highfps_sleep_ns below, which shortens exactly that call.
-// No main regenerate. The pacing worker's files (nvn_pace.*, nvn_vk.cpp) are not touched: the only call into them is the public setter.
+// The 14 ms sleep floor (main+0x4e0f64..0x4e1018, SleepThread call with x30 = 0x71004e1010) is NOT clamped: measured 2026-11-14, that loop
+// never runs in play. All 17,920 clock updates of a title-to-evaluation Florio run came from the other loop (lr main+0x4e09c0, no
+// floor), and the sleep call at 0x4e1010 was hit 0 times (analysis/perf/high-fps.md). No OS-layer or main change is needed.
+// The pacing worker's files (nvn_pace.*, nvn_vk.cpp) are not touched: the only call into them is the public setter.
 #include <windows.h>
 #include <tlhelp32.h>
 
@@ -32,16 +32,12 @@ namespace {
 
 const uint64_t kMainBase = 0x7100000000ull;
 const uint64_t kClockUpdate = kMainBase + 0x6abea0;
-const uint64_t kFloorLr = kMainBase + 0x4e1010;   // return address of the sleep call in the main loop
 
 int g_fps;                    // 0 = inert
 bool g_uncapped, g_watch_on;
-double g_floor_ms;
 FILE* g_csv;
 std::atomic<uint64_t> g_clock{0};   // guest address of the clock object (x0 of the update)
 int g_fast_frames;
-std::atomic<uint64_t> g_sl_lr[32], g_sl_n[32];
-std::atomic<uint64_t> g_sl_calls{0}, g_sl_in_ns{0}, g_sl_out_ns{0}, g_sl_zero{0};
 
 double qpc_ms() {
     static LARGE_INTEGER f = [] { LARGE_INTEGER x; QueryPerformanceFrequency(&x); return x; }();
@@ -122,7 +118,6 @@ struct Init {
             else if (v != 60) std::fprintf(stderr, "[highfps] SNAP_FPS=%s ignored (use 60, 120 or 144)\n", e);
         }
         if (const char* u = std::getenv("SNAP_FPS_UNCAPPED")) g_uncapped = *u && *u != '0';
-        g_floor_ms = std::getenv("SNAP_FPS_FLOOR_MS") ? std::atof(std::getenv("SNAP_FPS_FLOOR_MS")) : 0.0;
         if (const char* f = std::getenv("SNAP_FAST_BOOT")) {
             if (*f && *f != '0') { const char* n = std::getenv("SNAP_FAST_BOOT_FRAMES"); int fr = n ? std::atoi(n) : 3200; g_fast_frames = fr > 0 ? fr : 3200; }
         }
@@ -136,7 +131,7 @@ struct Init {
             CreateThread(nullptr, 0, watch_thread, nullptr, 0, nullptr);
         }
         if (g_fps || g_uncapped || g_csv || g_watch_on)
-            std::fprintf(stderr, "[highfps] SNAP_FPS=%d uncapped=%d floor=%.2f ms trace=%d mswatch=%d\n", g_fps, (int)g_uncapped, g_floor_ms, g_csv != nullptr, (int)g_watch_on);
+            std::fprintf(stderr, "[highfps] SNAP_FPS=%d uncapped=%d trace=%d mswatch=%d\n", g_fps, (int)g_uncapped, g_csv != nullptr, (int)g_watch_on);
     }
 } g_init;
 
@@ -171,28 +166,4 @@ extern "C" void snap_highfps_on_present(uint64_t n) {
         nvnHostSetFramePacing(g_uncapped ? 0.0 : (double)g_fps);
         std::fprintf(stderr, "[highfps] pacing target %s at present %llu\n", g_uncapped ? "off (uncapped measurement)" : (g_fps == 144 ? "144 Hz" : "120 Hz"), (unsigned long long)n);
     }
-    if (n % 1200 == 0) {
-        for (int i = 0; i < 32 && g_sl_lr[i].load(); i++)
-            std::fprintf(stderr, "[highfps] SleepThread callers: main+%#llx x%llu\n", (unsigned long long)(g_sl_lr[i].load() - kMainBase), (unsigned long long)g_sl_n[i].load());
-        uint64_t c = g_sl_calls.load();
-        std::fprintf(stderr, "[highfps] present %llu: floor sleeps %llu (mean in %.2f ms, mean out %.2f ms, %llu zero)\n", (unsigned long long)n, (unsigned long long)c,
-                     c ? g_sl_in_ns.load() / 1e6 / (double)c : 0.0, c ? g_sl_out_ns.load() / 1e6 / (double)c : 0.0, (unsigned long long)g_sl_zero.load());
-    }
-}
-
-// Called by ov_SleepThread (runtime/os/os_thread.cpp) with the guest return address and the requested ns. Returns the ns to sleep.
-extern "C" int64_t snap_highfps_sleep_ns(uint64_t lr, int64_t ns) {
-    if (g_fps) {   // tally callers (lr is the guest return address) so a wrong floor address is visible; printed from on_present
-        for (int i = 0; i < 32; i++) {
-            uint64_t cur = g_sl_lr[i].load();
-            if (cur == lr) { g_sl_n[i]++; break; }
-            if (!cur) { uint64_t z = 0; if (g_sl_lr[i].compare_exchange_strong(z, lr)) { g_sl_n[i]++; break; } if (g_sl_lr[i].load() == lr) { g_sl_n[i]++; break; } }
-        }
-    }
-    if (!g_fps || lr != kFloorLr || ns <= 0) return ns;
-    // The game asks for (14 - elapsed_ms) ms; keep (floor - elapsed_ms) instead, never negative.
-    int64_t out = ns - (int64_t)((14.0 - g_floor_ms) * 1e6);
-    if (out < 0) out = 0;
-    g_sl_calls++; g_sl_in_ns += (uint64_t)ns; g_sl_out_ns += (uint64_t)out; if (!out) g_sl_zero++;
-    return out;
 }

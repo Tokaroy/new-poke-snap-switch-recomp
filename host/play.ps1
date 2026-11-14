@@ -75,36 +75,55 @@ if (-not $NoNativeOptions) {
     } else { Write-Host "native-options pack skipped: $lmb or $py missing" }
 }
 
-# 2. run the copy under play.lock
-Take-Lock $playLock "$Name pid=$PID $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') (play.ps1)" 1 1000000
-$p = $null
-try {
-    Remove-Item Env:NVN_VK_VALIDATION -ErrorAction SilentlyContinue
-    Remove-Item Env:SNAP_PLAY_ROOT -ErrorAction SilentlyContinue
-    Remove-Item Env:SNAP_PLAY_ROOT -ErrorAction SilentlyContinue
-    Remove-Item Env:SNAP_INPUT_BACKGROUND -ErrorAction SilentlyContinue
-    if ($Profile) { $env:SNAP_PROFILE = $Profile } else { Remove-Item Env:SNAP_PROFILE -ErrorAction SilentlyContinue }
-    if ($PickProfile) { $env:SNAP_PROFILE_PICKER = '1' } else { Remove-Item Env:SNAP_PROFILE_PICKER -ErrorAction SilentlyContinue }
-    if ($SkipIntro) { $env:SNAP_INPUT_SCRIPT = (Resolve-Path 'host\skip_intro.txt').Path } else { Remove-Item Env:SNAP_INPUT_SCRIPT -ErrorAction SilentlyContinue }
-    $p = Start-Process -FilePath 'build\play\snap_boot.exe' -ArgumentList @('run', '--trace', 'analysis\boot\play_trace.log') -NoNewWindow -PassThru `
-        -RedirectStandardError 'analysis\boot\play_stderr.log' -RedirectStandardOutput 'analysis\boot\play_stdout.log'
-    try { $p.PriorityClass = 'Normal' } catch {}
-    Write-Host "game started (pid $($p.Id)); close its window to quit. Click the window once so it has focus."
-    if ($SkipIntro) { Write-Host "-SkipIntro: scripted input runs through the lab cutscene (about 3 to 4 minutes), then presses nothing: you take over at the tutorial panels and photo selection. Real input works at any time." }
-    $env:SNAP_PLAY_ROOT = "$root"   # tells the game it was started here: "Restart now" / "Switch profile" in the F1 menu relaunch it (same exe, arguments, working directory, environment) and write the new pid to build\play.restart
-    $restartFile = Join-Path $root 'build\play.restart'
-    Remove-Item $restartFile -Force -ErrorAction SilentlyContinue
-    while ($true) {
-        $p.WaitForExit()
-        Write-Host "game exited with code $($p.ExitCode)"
-        $np = 0
+# 2. run the copy under play.lock. The lock names the live GAME pid (pid=..., what run_boot.ps1 and the tests check) and follows every
+# in-game restart, so it stays until the last game process exits even when the restarted game outlives this wrapper's own bookkeeping.
+$restartFile = Join-Path $root 'build\play.restart'
+function Lock-Text([int]$gamePid) { "$Name pid=$gamePid wrapper=$PID $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') (play.ps1)" }
+# The relaunched game (F1 "Restart now" / "Switch profile") is a child of the old one: play.restart names it; a child snap_boot.exe of the
+# exited pid is the fallback (the file can be missing if the old game died before writing it).
+function Find-Restarted([int]$oldPid) {
+    $np = 0
+    for ($i = 0; $i -lt 20 -and $np -le 0; $i++) {
         if (Test-Path $restartFile) {
             try { $np = [int](Get-Content $restartFile -ErrorAction Stop | Select-Object -First 1) } catch {}
             Remove-Item $restartFile -Force -ErrorAction SilentlyContinue
         }
+        if ($np -le 0) {
+            $kid = Get-CimInstance Win32_Process -Filter "Name='snap_boot.exe' AND ParentProcessId=$oldPid" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($kid) { $np = [int]$kid.ProcessId }
+        }
+        if ($np -le 0) { if ($i -eq 0) { Start-Sleep -Milliseconds 250 } else { break } }   # one short retry: the file write races the exit
+    }
+    return $np
+}
+Take-Lock $playLock (Lock-Text $PID) 1 1000000
+$p = $null
+try {
+    Remove-Item Env:NVN_VK_VALIDATION -ErrorAction SilentlyContinue
+    Remove-Item Env:SNAP_INPUT_BACKGROUND -ErrorAction SilentlyContinue
+    if ($Profile) { $env:SNAP_PROFILE = $Profile } else { Remove-Item Env:SNAP_PROFILE -ErrorAction SilentlyContinue }
+    if ($PickProfile) { $env:SNAP_PROFILE_PICKER = '1' } else { Remove-Item Env:SNAP_PROFILE_PICKER -ErrorAction SilentlyContinue }
+    if ($SkipIntro) { $env:SNAP_INPUT_SCRIPT = (Resolve-Path 'host\skip_intro.txt').Path } else { Remove-Item Env:SNAP_INPUT_SCRIPT -ErrorAction SilentlyContinue }
+    # Must be set BEFORE Start-Process (it was set after, so the game never saw it, never wrote play.restart, and the wrapper dropped the lock
+    # on the first restart while the new game ran on). Tells the game it was started here: "Restart now" / "Switch profile" relaunch it
+    # (same exe, arguments, working directory, environment) and write the new pid to build\play.restart.
+    $env:SNAP_PLAY_ROOT = "$root"
+    Remove-Item $restartFile -Force -ErrorAction SilentlyContinue
+    $p = Start-Process -FilePath 'build\play\snap_boot.exe' -ArgumentList @('run', '--trace', 'analysis\boot\play_trace.log') -NoNewWindow -PassThru `
+        -RedirectStandardError 'analysis\boot\play_stderr.log' -RedirectStandardOutput 'analysis\boot\play_stdout.log'
+    try { $p.PriorityClass = 'Normal' } catch {}
+    Set-Content $playLock (Lock-Text $p.Id)
+    Write-Host "game started (pid $($p.Id)); close its window to quit. Click the window once so it has focus."
+    if ($SkipIntro) { Write-Host "-SkipIntro: scripted input runs through the lab cutscene (about 3 to 4 minutes), then presses nothing: you take over at the tutorial panels and photo selection. Real input works at any time." }
+    while ($true) {
+        $oldId = $p.Id
+        $p.WaitForExit()
+        Write-Host "game exited with code $($p.ExitCode)"
+        $np = Find-Restarted $oldId
         if ($np -le 0) { break }
         $p = Get-Process -Id $np -ErrorAction SilentlyContinue
         if (-not $p) { break }
+        Set-Content $playLock (Lock-Text $np)
         Write-Host "game restarted (pid $np)"
     }
 } finally {

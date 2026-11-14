@@ -105,7 +105,10 @@ const struct { const char* key; const char* env; } kEnvKeys[] = {
     {"gfx_ssao_samples", "SNAP_SSAO_SAMPLES"}, {"gfx_ssao_hbao", "SNAP_SSAO_HBAO"},
     {"gfx_shadow_dist", "SNAP_SHADOW_DISTANCE"}, {"gfx_hdr_expand", "SNAP_HDR_EXPAND"},   // 2026-11-14, docs/advanced-graphics-options.md
     {"vsync", "SNAP_VSYNC"},   // the F1 / native Vsync row (live through snap_vsync_set; this carries it to the next start)
-    {"photo_export", "SNAP_PHOTO_EXPORT"},    {"photo_dir", "SNAP_PHOTO_DIR"},    {"neo_speed", "SNAP_NEO_SPEED"}, {"film", "SNAP_FILM"},
+    {"contact_shadows", "SNAP_CONTACT_SHADOWS"},
+    {"fps_overlay", "SNAP_FPS_OVERLAY"},                 // performance overlay "fps" / "detailed" or unset (live, runtime/ui/ui_fps.cpp)
+    {"fps_overlay_corner", "SNAP_FPS_OVERLAY_CORNER"},   // tl / tr / bl / br, unset = tr   // Contact shadows row: "1" or unset (live through snap_contact_shadows_set)
+    {"photo_export", "SNAP_PHOTO_EXPORT"},    {"photo_dir", "SNAP_PHOTO_DIR"}, {"hd_photos", "SNAP_HD_PHOTOS"},    {"neo_speed", "SNAP_NEO_SPEED"}, {"film", "SNAP_FILM"},
     {"skip_cutscenes", "SNAP_SKIP_CUTSCENES"},
 };
 

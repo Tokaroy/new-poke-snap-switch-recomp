@@ -1,0 +1,211 @@
+[
+ {
+  "n": 80,
+  "name": "Octillery",
+  "normal": "red body, yellow suckers and bumps, tan underside",
+  "shiny": "red body turns mustard yellow (olive-gold), lower chroma; yellow bits shift slightly greener-yellow",
+  "desc": "red body turns yellow-gold",
+  "rules": "25>96:15:0.5:1.04;88>107:12:1.0",
+  "source": "https://pokemondb.net/sprites/octillery (HOME normal vs shiny, re-measured)",
+  "confidence": "high",
+  "note": "Re-measured, confirmed. Red hue 20-40 (C0.22, 91% of the sprite) -> ~95 (C0.11, about x0.5), L about the same. Yellow bumps hue 80-100 -> ~108. Simulated mean error 0.017 vs 0.199 unrecolored."
+ },
+ {
+  "n": 81,
+  "name": "Taillow",
+  "normal": "dark blue back, white belly, red-orange chest",
+  "shiny": "light green back, red-orange chest unchanged",
+  "desc": "blue back turns green",
+  "rules": "255>145:30",
+  "source": "https://pokemongohub.net/generation-3/gen-3-shiny-chart/ (search summary of forum/guide text)",
+  "confidence": "medium",
+  "note": "Blue to green corroborated by several sources; draft 150 target kept but sources collapsed to one hue window."
+ },
+ {
+  "n": 82,
+  "name": "Pelipper",
+  "normal": "white body, blue wings and feet, yellow bill",
+  "shiny": "white body, green feet/wings and body accents",
+  "desc": "blue accents turn green",
+  "rules": "250>145:30",
+  "source": "https://www.touchtapplay.com/all-shiny-water-pokemon-in-scarlet-violet/",
+  "confidence": "medium",
+  "note": "Draft said red; source says blue to green."
+ },
+ {
+  "n": 83,
+  "name": "Zangoose",
+  "normal": "white fur, red markings, dark grey claws",
+  "shiny": "red markings turn blue, claws turn orange-brown, white unchanged",
+  "desc": "red markings turn blue, claws turn orange",
+  "rules": "13>249:20:0.52:1.1;grey:0.35-0.55>38:0.095",
+  "source": "https://pokemondb.net/sprites/zangoose (HOME normal vs shiny, re-measured)",
+  "confidence": "high",
+  "note": "Re-measured, confirmed. Red hue 0-20 (C0.18-0.2,L0.63) -> ~248 (C0.1,L0.70). Claws are dark near-grey (L~0.45,C~0.007) -> hue ~40, C~0.1, L up to ~0.6 (grey rule cannot raise L). White fur (L>0.85) unchanged. Simulated mean error 0.0135 vs 0.067 unrecolored."
+ },
+ {
+  "n": 84,
+  "name": "Shroomish",
+  "normal": "tan/cream cap and body, green spots and legs",
+  "shiny": "green spots and legs become orange",
+  "desc": "green spots/legs turn orange",
+  "rules": "145>55:35",
+  "source": "https://www.touchtapplay.com/all-shiny-grass-pokemon-in-scarlet-violet/",
+  "confidence": "medium",
+  "note": "Draft had normal and shiny colors reversed (red cap to green)."
+ },
+ {
+  "n": 85,
+  "name": "Seviper",
+  "normal": "dark navy-teal body, yellow plates and face, red/pink tail blade and eye, lavender stripes",
+  "shiny": "dark body turns lighter slate blue-grey, yellow plates turn green, red blade turns blue, lavender stripes turn pink",
+  "desc": "body lightens to slate, yellow turns green, blade blue, stripes pink",
+  "rules": "234>251:16:0.55:1.55;98>130:20:0.72;10>259:20:0.52:1.06;285>357:12:1.9:0.86",
+  "source": "https://pokemondb.net/sprites/seviper (HOME normal vs shiny, re-measured)",
+  "confidence": "high",
+  "note": "Re-measured. Body hue 218-250 (C0.065,L0.34) -> ~250 (C0.036,L0.52, x1.55). Yellow plates hue 80-110 (C0.14-0.15) -> ~127-133 (C x0.72). Red blade/eye hue 350-30 is a clean single shift (not mixed) -> ~259 blue, C x0.52, L x1.06. Lavender stripes hue 270-295 (C0.08) -> ~357 pink (C x1.9, L x0.86). Simulated mean error 0.026 vs 0.169 unrecolored."
+ },
+ {
+  "n": 86,
+  "name": "Combee",
+  "normal": "yellow body, pale honeycomb",
+  "shiny": "red body",
+  "desc": "yellow body turns red",
+  "rules": "85>29:35",
+  "source": "https://www.touchtapplay.com/all-shiny-bug-pokemon-in-scarlet-violet/",
+  "confidence": "medium",
+  "note": "Draft said teal-green; source says yellow to red."
+ },
+ {
+  "n": 87,
+  "name": "Torterra",
+  "normal": "saturated green body and shell, brown trunk and rocks, pale blue-grey belly",
+  "shiny": "green becomes olive green (duller, lighter), brown trunk turns yellow-green, pale belly nearly unchanged",
+  "desc": "brown trunk turns yellow-green, green goes olive",
+  "rules": "66>108:14:1.4:1.15;150>135:15:0.6:1.1",
+  "source": "https://pokemondb.net/sprites/torterra (HOME normal vs shiny, re-measured)",
+  "confidence": "high",
+  "note": "Re-measured. Green hue 140-160 (C0.165,L0.60) -> ~135 (C x0.6, L x1.1). Brown trunk hue 60-70 (C0.09,L0.65) -> ~109 (C x1.44, L x1.16); window tightened from 78+-20 to 66+-14 to match. Pale belly C<0.03 barely moves, not encoded. Not teal. Simulated mean error 0.014 vs 0.095 unrecolored."
+ },
+ {
+  "n": 88,
+  "name": "Clamperl",
+  "normal": "blue shell, tan body, pink pearl",
+  "shiny": "purple shell, golden pearl",
+  "desc": "blue shell turns purple",
+  "rules": "262>300:35",
+  "source": "https://www.gamesradar.com/pokemon-go-clamperl-evolution-huntail-gorebyss",
+  "confidence": "medium",
+  "note": "Draft pink-magenta 340 changed to purple 300."
+ },
+ {
+  "n": 89,
+  "name": "Vespiquen",
+  "normal": "black and yellow-orange body, honeycomb abdomen",
+  "shiny": "black and red",
+  "desc": "yellow-orange turns red",
+  "rules": "85>29:35",
+  "source": "https://www.touchtapplay.com/all-shiny-bug-pokemon-in-scarlet-violet/",
+  "confidence": "medium",
+  "note": "Draft said green-teal; source says black and red."
+ },
+ {
+  "n": 90,
+  "name": "Glaceon",
+  "normal": "light blue fur, dark blue markings",
+  "shiny": "same blue family, darker/more saturated",
+  "desc": "subtle darker blue",
+  "rules": "225>235:35:1.1:0.9",
+  "source": "https://bulbapedia.bulbagarden.net/wiki/Shiny_Pok%C3%A9mon (via search summary)",
+  "confidence": "medium",
+  "note": "Draft pink-lavender wrong; sources say only a few shades different."
+ },
+ {
+  "n": 91,
+  "name": "Tangrowth",
+  "normal": "blue vines over dark body",
+  "shiny": "green vines",
+  "desc": "blue vines turn green",
+  "rules": "255>145:30",
+  "source": "https://www.fandomspot.com/shiny-grass-type-pokemon/",
+  "confidence": "medium",
+  "note": "Draft red-orange wrong."
+ },
+ {
+  "n": 92,
+  "name": "Leafeon",
+  "normal": "green leaves/tail (H~155), tan-yellow body (H~90), brown ears/paws (H~65)",
+  "shiny": "tan body slightly yellower/duller and a little darker; leaves slightly deeper, more saturated green; brown parts turn olive-tan",
+  "desc": "subtle: body shifts yellower and duller, leaves slightly greener",
+  "rules": "95>85:14:0.83:0.94;66>92:5:0.9:1.0;121>128:5:1.26:0.96;155>146:8:1.2:0.93",
+  "source": "pokemondb.net HOME sprites; per-pixel aligned normal vs shiny, measured OKLCh hue shift/chroma/lightness",
+  "confidence": "high",
+  "note": "Pixel-aligned: tan H80-110 shifts -8..-15 deg, C x0.83, L x0.94; green H150-160 shifts -9, C x1.21, L x0.93; brown H63-70 (9%) shifts +26 to olive-tan, C x0.9; light yellow-green H119-123 (4%) +7, C x1.26. Overall subtle."
+ },
+ {
+  "n": 93,
+  "name": "Drifblim",
+  "normal": "purple body, yellow-tan details",
+  "shiny": "gold body with cyan accents",
+  "desc": "purple body turns gold",
+  "rules": "300>85:40",
+  "source": "https://www.touchtapplay.com/all-shiny-flying-pokemon-in-scarlet-violet/",
+  "confidence": "medium",
+  "note": "Draft teal-blue wrong; cyan accents not modeled."
+ },
+ {
+  "n": 94,
+  "name": "Manaphy",
+  "normal": "blue body (H~205-230), light blue underside, small yellow/red parts",
+  "shiny": "teal/cyan-green body (H~185-190), slightly lighter and less saturated",
+  "desc": "blue body turns teal",
+  "rules": "212>187:9:0.79:1.06;226>189:6:0.7:1.04",
+  "source": "pokemondb.net HOME sprites; per-pixel aligned normal vs shiny, measured OKLCh hue shift/chroma/lightness",
+  "confidence": "high",
+  "note": "Pixel-aligned: shift is not constant because shiny converges on H~187: H203-215 shifts -17..-25 (C x0.8, L x1.06), H219-231 (54%) shifts -33..-37 (C x0.7, L x1.04). Two rules approximate this. Yellow/red bits (5%) only lose a little chroma; not modeled."
+ },
+ {
+  "n": 95,
+  "name": "Shaymin",
+  "normal": "yellow-green body (H~129), pink flower (H~5), dark green leaves (H~149)",
+  "shiny": "teal/sea-green body (H~177), orange-pink flower (H~22), dark green leaves unchanged",
+  "desc": "light green body turns teal, flower shifts toward orange-pink",
+  "rules": "129>177:7:0.78:1.0;5>22:10:0.89:0.92",
+  "source": "pokemondb.net HOME sprites; per-pixel aligned normal vs shiny, measured OKLCh hue shift/chroma/lightness",
+  "confidence": "high",
+  "note": "Land form, pixel-aligned: body H122-136 (42%) shifts +48, C x0.78, L x1.0; flower H0-10 (22%) shifts +17, C x0.89, L x0.92; dark green H146-152 (14%) shifts about -4 (unchanged). Body window is 7 wide because the 12 deg feather would otherwise pull in the dark green at H146+. Sky form not measured."
+ },
+ {
+  "n": 96,
+  "name": "Foongus",
+  "normal": "white body, red and white Poke Ball cap",
+  "shiny": "red accents become violet",
+  "desc": "red cap turns violet",
+  "rules": "29>292:30",
+  "source": "https://www.touchtapplay.com/all-shiny-poison-pokemon-in-scarlet-violet/",
+  "confidence": "medium",
+  "note": "Draft target 300 changed to violet 292, width 30."
+ },
+ {
+  "n": 97,
+  "name": "Bouffalant",
+  "normal": "brown fur (H~62, C.10), cream horns/face (H~83), dark grey-brown fur",
+  "shiny": "reddish-brown fur (H~32, C.083), peach-cream horns/face (H~43), darker overall",
+  "desc": "brown fur turns reddish brown, cream turns peach",
+  "rules": "63>32:7:0.81:0.89;85>44:4:0.98:1.03",
+  "source": "pokemondb.net HOME sprites; per-pixel aligned normal vs shiny, measured OKLCh hue shift/chroma/lightness",
+  "confidence": "medium",
+  "note": "Pixel-aligned: fur H59-68 (20%) shifts -31, C x0.81, L x0.89; cream H80-90 (13%) shifts about -40 (bin H80 mixed, -17), chroma unchanged (x0.98), L x1.03. The dark grey fur (55% of pixels, L .54 to .43) cannot be darkened by the grammar (grey rules only tint), so it is not covered; medium confidence."
+ },
+ {
+  "n": 98,
+  "name": "Inkay",
+  "normal": "blue body (H~230, C.084), pale near-white head with faint pink tint (H~346, C.015)",
+  "shiny": "gold body (H~90, C.10), light violet head (H~310, C.06)",
+  "desc": "blue body turns gold, pale head turns light violet",
+  "rules": "230>85:12:1.2:1.0;grey:0.86-0.92>310:0.06",
+  "source": "pokemondb.net HOME sprites; per-pixel aligned normal vs shiny, measured OKLCh hue shift/chroma/lightness",
+  "confidence": "medium",
+  "note": "Pixel-aligned: body H220-240 (29%) shifts -145 to H~90, C x1.2, L x1.0. Head (normal L .85-.92, C .014-.02) becomes violet H~310 C~.06; true white parts (L>.95, C~0) stay white, so the grey tint is limited to L .86-.92 to avoid tinting them. Other pale areas share that lightness band, so confidence medium."
+ }
+]

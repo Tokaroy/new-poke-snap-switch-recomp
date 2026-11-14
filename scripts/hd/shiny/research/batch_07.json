@@ -1,0 +1,211 @@
+[
+ {
+  "n": 140,
+  "name": "Salazzle",
+  "normal": "dark charcoal-grey body, magenta/pink markings and pink tail underside",
+  "shiny": "white-silver body; markings turn purple-navy with pink kept on the tail",
+  "desc": "dark body turns white (lightness change)",
+  "rules": "skip",
+  "source": "https://pokemondb.net/pokedex/shiny (official HOME normal vs shiny renders, viewed side by side)",
+  "confidence": "high",
+  "note": "Body goes dark to white, which hue or grey-tint rules cannot do (grey rules keep lightness). Skip. Bulbapedia 403; read from HOME renders."
+ },
+ {
+  "n": 142,
+  "name": "Zeraora",
+  "normal": "yellow body and tail, near-black legs and arm markings, blue accents",
+  "shiny": "yellow body becomes cream-white/pale silver; dark legs and arms become dark teal; blue accents stay",
+  "desc": "yellow body turns cream-white, dark limbs turn teal",
+  "rules": "100>100:17:0.2:1.15;grey:0.15-0.5>195:0.06",
+  "source": "https://pokemondb.net/pokedex/shiny (official HOME normal vs shiny renders, viewed side by side)",
+  "confidence": "medium",
+  "note": "Draft said body shifts to teal; wrong. Body is cream-white. Dark-to-teal depends on dark texels being near grey."
+ },
+ {
+  "n": 143,
+  "name": "Rattata",
+  "normal": "purple body and ears, cream belly and whiskers, pink nose",
+  "shiny": "olive/sage green body and ears, cream belly kept",
+  "desc": "purple body turns olive green",
+  "rules": "315>130:35:0.55:1.2",
+  "source": "https://pokemondb.net/pokedex/shiny (official HOME normal vs shiny renders, viewed side by side)",
+  "confidence": "high",
+  "note": "Draft said dark brown; wrong. Draft had two overlapping rules with the same target, merged into one."
+ },
+ {
+  "n": 144,
+  "name": "Sandslash",
+  "normal": "golden-yellow body and claws, brown-gold spikes",
+  "shiny": "cream/pale-yellow body, red spikes",
+  "desc": "yellow body turns cream, brown spikes turn red",
+  "rules": "68>29:14:1.1;100>100:17:0.35:1.1",
+  "source": "https://pokemondb.net/pokedex/shiny (official HOME normal vs shiny renders, viewed side by side)",
+  "confidence": "medium",
+  "note": "Draft said grey-blue; wrong. Windows kept disjoint (54-82 for spikes, 83-117 for body)."
+ },
+ {
+  "n": 145,
+  "name": "Vulpix",
+  "normal": "orange-red body, orange tails, brown paws",
+  "shiny": "pale yellow-cream body, pale peach tails, olive-green paw/ear tips",
+  "desc": "orange body turns pale yellow-cream",
+  "rules": "50>90:30:0.6:1.2",
+  "source": "https://pokemondb.net/pokedex/shiny (official HOME normal vs shiny renders, viewed side by side)",
+  "confidence": "medium",
+  "note": "Draft said tan; closer to pale yellow, and tails stay a light peach. Tails share the body hue window, so they pale too."
+ },
+ {
+  "n": 146,
+  "name": "Meowth",
+  "normal": "cream body, black ears, orange paws and orange-brown tail tip",
+  "shiny": "cream body kept, paws and tail tip turn pink",
+  "desc": "orange paws and tail tip turn pink",
+  "rules": "48>355:18",
+  "source": "https://pokemondb.net/pokedex/shiny (official HOME normal vs shiny renders, viewed side by side)",
+  "confidence": "high",
+  "note": "Draft said blue-grey; wrong, it is pink. Window 30-66 avoids the cream body (about 95) and the gold coin."
+ },
+ {
+  "n": 147,
+  "name": "Dewgong",
+  "normal": "white body with pale blue-grey shading",
+  "shiny": "cream/pale beige body",
+  "desc": "white body turns cream",
+  "rules": "grey:0.6-1.0>90:0.035",
+  "source": "https://pokemondb.net/pokedex/shiny (official HOME normal vs shiny renders, viewed side by side)",
+  "confidence": "medium",
+  "note": "Draft said pink tint; wrong, it is cream-yellow."
+ },
+ {
+  "n": 148,
+  "name": "Jynx",
+  "normal": "purple skin and hands, blonde hair, red dress and lips",
+  "shiny": "pink dress and lips, pale cream-white hair, greyer lavender skin and hands",
+  "desc": "red dress turns pink, hair whitens, skin greyer",
+  "rules": "29>350:25;315>300:25:0.45:1.15;100>100:20:0.3:1.15",
+  "source": "https://pokemondb.net/pokedex/shiny (official HOME normal vs shiny renders, viewed side by side)",
+  "confidence": "medium",
+  "note": "Draft said dress turns purple; wrong, it is hot pink. Windows disjoint (4-54, 290-340, 80-120)."
+ },
+ {
+  "n": 149,
+  "name": "Furret",
+  "normal": "tan-brown fur and brown rings, cream belly",
+  "shiny": "pink rings and ears, cream-pink fur",
+  "desc": "brown fur and rings turn pink",
+  "rules": "62>358:22:1.8:1.1",
+  "source": "https://pokemondb.net/pokedex/shiny (official HOME normal vs shiny renders, viewed side by side)",
+  "confidence": "medium",
+  "note": "Draft said olive; wrong, it is pink."
+ },
+ {
+  "n": 150,
+  "name": "Sudowoodo",
+  "normal": "brown trunk body, green foliage on head and arms",
+  "shiny": "red foliage, olive-green trunk",
+  "desc": "green foliage turns red, brown trunk turns olive",
+  "rules": "145>29:25;65>115:20:0.8",
+  "source": "https://pokemondb.net/pokedex/shiny (official HOME normal vs shiny renders, viewed side by side)",
+  "confidence": "high",
+  "note": "Draft had foliage right but missed that the trunk turns olive; foliage window narrowed to 25."
+ },
+ {
+  "n": 151,
+  "name": "Swinub",
+  "normal": "brown-tan body with darker brown stripes, pink nose",
+  "shiny": "pale mint-green body with darker green stripes, pink nose kept",
+  "desc": "brown body turns mint green",
+  "rules": "58>150:25:0.5:1.1",
+  "source": "https://pokemondb.net/pokedex/shiny (official HOME normal vs shiny renders, viewed side by side)",
+  "confidence": "high",
+  "note": "Draft said blue-grey; wrong, it is mint green. Pink nose (about 5 degrees) is outside the window."
+ },
+ {
+  "n": 152,
+  "name": "Delibird",
+  "normal": "red hat, body and tail, white beard and belly, yellow feet",
+  "shiny": "purple/orchid hat, body and tail, white kept",
+  "desc": "red parts turn orchid purple",
+  "rules": "29>325:30",
+  "source": "https://pokemondb.net/pokedex/shiny (official HOME normal vs shiny renders, viewed side by side)",
+  "confidence": "high",
+  "note": "Draft said blue; wrong, it is purple. Draft had three overlapping rules, merged into one."
+ },
+ {
+  "n": 153,
+  "name": "Skarmory",
+  "normal": "steel blue-grey body and wings, dark red wing feathers",
+  "shiny": "olive-khaki body, green wing feathers",
+  "desc": "grey body turns olive-khaki, red feathers turn green",
+  "rules": "grey:0.4-1.0>95:0.045;25>145:25",
+  "source": "https://pokemondb.net/pokedex/shiny (official HOME normal vs shiny renders, viewed side by side)",
+  "confidence": "medium",
+  "note": "Draft said red tint to the body; wrong. Draft rule 2 also moved blue to red, backwards. Feathers go red to green."
+ },
+ {
+  "n": 154,
+  "name": "Suicune",
+  "normal": "pale blue-teal body, lavender-purple mane, crystal head",
+  "shiny": "body stays pale blue-teal, mane turns deep royal blue",
+  "desc": "purple mane turns royal blue",
+  "rules": "300>265:22:1.5:0.85",
+  "source": "https://pokemondb.net/pokedex/shiny (official HOME normal vs shiny renders, viewed side by side)",
+  "confidence": "medium",
+  "note": "Draft said body turns violet; wrong, only the mane changes. Draft rules also moved blue body, removed."
+ },
+ {
+  "n": 155,
+  "name": "Mightyena",
+  "normal": "black and charcoal fur, light grey/white muzzle and chest, red markings",
+  "shiny": "dark brown fur, golden-tan lighter fur",
+  "desc": "grey/black fur turns brown and gold-tan",
+  "rules": "grey:0.0-0.5>55:0.04;grey:0.5-0.95>90:0.08",
+  "source": "https://pokemondb.net/pokedex/shiny (official HOME normal vs shiny renders, viewed side by side)",
+  "confidence": "medium",
+  "note": "Draft said lilac tint; wrong, it is brown and gold."
+ },
+ {
+  "n": 156,
+  "name": "Snorunt",
+  "normal": "tan-peach cone with orange outline, grey face",
+  "shiny": "pale blue cone with yellow outline",
+  "desc": "tan cone turns pale blue, orange trim turns yellow",
+  "rules": "75>210:18:0.7;42>90:12",
+  "source": "https://pokemondb.net/pokedex/shiny (official HOME normal vs shiny renders, viewed side by side)",
+  "confidence": "medium",
+  "note": "Draft said grey-blue to green; wrong. Normal cone is tan, shiny is pale blue."
+ },
+ {
+  "n": 157,
+  "name": "Glalie",
+  "normal": "white-silver body with holes, black horns",
+  "shiny": "pale teal-grey body, dark grey horns, orange eyes (eyes skipped)",
+  "desc": "white body gets a pale teal tint",
+  "rules": "grey:0.75-1.0>195:0.03",
+  "source": "https://pokemondb.net/pokedex/shiny (official HOME normal vs shiny renders, viewed side by side)",
+  "confidence": "medium",
+  "note": "Draft said olive green; wrong. The change is a subtle teal tint. Eye colour is outside the pack."
+ },
+ {
+  "n": 158,
+  "name": "Spheal",
+  "normal": "blue body, cream belly",
+  "shiny": "purple-pink body, cream belly kept",
+  "desc": "blue body turns purple-pink",
+  "rules": "250>315:30",
+  "source": "https://pokemondb.net/pokedex/shiny (official HOME normal vs shiny renders, viewed side by side)",
+  "confidence": "high",
+  "note": "Draft target roughly right (320); two overlapping rules merged into one."
+ },
+ {
+  "n": 159,
+  "name": "Piplup",
+  "normal": "blue head and back, white face and belly, yellow beak and feet",
+  "shiny": "teal head and back, white kept",
+  "desc": "blue turns teal",
+  "rules": "255>200:25",
+  "source": "https://pokemondb.net/pokedex/shiny (official HOME normal vs shiny renders, viewed side by side)",
+  "confidence": "high",
+  "note": "Draft said violet-blue; wrong, it is teal."
+ }
+]

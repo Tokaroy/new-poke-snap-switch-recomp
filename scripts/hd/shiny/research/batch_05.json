@@ -1,0 +1,211 @@
+[
+ {
+  "n": 100,
+  "name": "Mareanie",
+  "normal": "cyan-blue body (H~200, C.084), magenta spines/markings (H~310)",
+  "shiny": "red body (H~10, C.147), orange-pink markings (H~25-30), yellow bits unchanged",
+  "desc": "blue body turns red, magenta turns orange-pink",
+  "rules": "201>9:7:1.75:0.84;313>30:6:0.72:1.15;307>356:3:1.65:0.95",
+  "source": "pokemondb.net HOME sprites; per-pixel aligned normal vs shiny, measured OKLCh hue shift/chroma/lightness",
+  "confidence": "high",
+  "note": "Pixel-aligned: body H196-208 (66%) shifts +168 (to H~8), C x1.75, L x0.84; markings H310-316 (22%) shift +75 to H~30, C x0.72, L x1.15; small cluster H306-309 (4.5%) shifts +49 to H~356 and gains chroma (x1.65). Yellow H80-100 unchanged."
+ },
+ {
+  "n": 101,
+  "name": "Sandygast",
+  "normal": "beige sand body (H~100, C.04), red shovel (H~28, C.19)",
+  "shiny": "dark grey-black body (L x0.62, nearly no chroma), yellow shovel (H~100, C.18)",
+  "desc": "sand turns dark grey-black, red shovel turns yellow",
+  "rules": "100>100:30:0.15:0.62;28>102:12:0.94:1.28",
+  "source": "pokemondb.net HOME sprites; per-pixel aligned normal vs shiny, measured OKLCh hue shift/chroma/lightness",
+  "confidence": "medium",
+  "note": "Pixel-aligned: sand H80-120 (52%) keeps hue but C x0.13-0.34 and L x0.62-0.70, so chroma 0.15 and L 0.62; shovel H20-40 (8%) shifts +74, C x0.94, L x1.28. Sand chroma is only .03-.06 so the 0.04 chroma gate weights most but not all sand texels; near-grey parts (L .8-1 to .61) cannot be darkened by the grammar. Eyes not covered."
+ },
+ {
+  "n": 102,
+  "name": "Squirtle",
+  "normal": "blue skin (H~225, C.10), cream belly (H~92), brown shell",
+  "shiny": "pale, desaturated blue skin (H~215, C.05, brighter); belly slightly more yellow",
+  "desc": "blue skin becomes pale washed-out blue",
+  "rules": "224>213:20:0.5:1.11;92>103:8:1.25:1.04",
+  "source": "pokemondb.net HOME sprites; per-pixel aligned normal vs shiny, measured OKLCh hue shift/chroma/lightness",
+  "confidence": "high",
+  "note": "Pixel-aligned: skin H205-235 (80%) shifts -9..-15, C x0.5, L x1.11; belly H90 (21%) shifts +11, C x1.25, L x1.04 (cream to slightly more yellow). Shell is a tiny share and not modeled."
+ },
+ {
+  "n": 103,
+  "name": "Morelull",
+  "normal": "dark blue-grey body, pink and lavender glowing caps",
+  "shiny": "caps turn red, orange, brown and yellow (autumn look)",
+  "desc": "pink/lavender caps turn red-orange",
+  "rules": "295>60:25;355>30:25",
+  "source": "https://www.fandomspot.com/shiny-fairy-type-pokemon/",
+  "confidence": "medium",
+  "note": "FandomSpot text. Widths kept at 25 so the blue-grey body (hue ~262) is not caught."
+ },
+ {
+  "n": 104,
+  "name": "Charmander",
+  "normal": "orange body (H~55, C.17), yellow belly/flame (H~105), red flame tip (H~30)",
+  "shiny": "golden yellow body (H~92, C.13, brighter), flame tip and belly unchanged",
+  "desc": "orange body turns golden yellow",
+  "rules": "57>95:10:0.75:1.2",
+  "source": "pokemondb.net HOME sprites; per-pixel aligned normal vs shiny, measured OKLCh hue shift/chroma/lightness",
+  "confidence": "high",
+  "note": "Pixel-aligned: body H47-67 (65%) shifts +33..+41, C x0.73-0.8, L x1.2. Flame tip H27-43 shifts 0 and belly H95+ shifts ~0-8. The 12 deg feather pulls a little of the tip at H39-43 (about 1% of pixels) along, so the window stays at 47-67."
+ },
+ {
+  "n": 105,
+  "name": "Ariados",
+  "normal": "red body (H~20, C.22), purple legs/markings (H~282, C.105), yellow (H~85)",
+  "shiny": "pink-magenta body (H~330, C.15), pale blue legs/markings (H~238, C.06), yellow unchanged",
+  "desc": "red body turns pink-magenta, purple turns pale blue",
+  "rules": "20>330:20:0.72:1.08;282>239:8:0.58:1.34",
+  "source": "pokemondb.net HOME sprites; per-pixel aligned normal vs shiny, measured OKLCh hue shift/chroma/lightness",
+  "confidence": "high",
+  "note": "Pixel-aligned: red H0-40 (32%) shifts -50, C x0.7-0.8, L x1.06-1.18; purple H277-290 (22%) shifts -43 (thin tail H285-300 shifts up to -110, ignored), C x0.58, L x1.34. Yellow H70-100 shifts ~0, unchanged."
+ },
+ {
+  "n": 106,
+  "name": "Bulbasaur",
+  "normal": "teal body (H~180, C.08), green bulb (H~138, C.175)",
+  "shiny": "green body (H~135, C.125, brighter), bulb paler mint (H~149, C.105)",
+  "desc": "teal body turns green, bulb shifts slightly toward mint",
+  "rules": "138>149:6:0.6:1.14;178>134:14:1.55:1.05",
+  "source": "pokemondb.net HOME sprites; per-pixel aligned normal vs shiny, measured OKLCh hue shift/chroma/lightness",
+  "confidence": "high",
+  "note": "Pixel-aligned: bulb H134-142 (22%) shifts +11, C x0.6, L x1.14; body H165-190 (68%) shifts -33..-47 (about -44), C x1.55, L x1.05. Rules read the original texture, so body output at H134 is not re-caught by the bulb rule. Red eyes (H12, 6%) shift about -8, ignored."
+ },
+ {
+  "n": 107,
+  "name": "Steelix",
+  "normal": "silver-grey iron body, dark grey segments",
+  "shiny": "golden metal body",
+  "desc": "grey body tinted gold",
+  "rules": "grey:0.4-0.95>88:0.08",
+  "source": "https://currentcover.pages.dev/posts/pok-mon-the-10-best-yellow-shiny-pok-mon-ranked181443",
+  "confidence": "medium",
+  "note": "Commentary calls it a solid golden metal snake. Chroma raised from 0.06 to 0.08 so the gold reads. Dark parts under L 0.4 stay."
+ },
+ {
+  "n": 108,
+  "name": "Milotic",
+  "normal": "cream body (H~90), red-pink hair/ovals (H~13, C.20), blue tail (H~233, C.14)",
+  "shiny": "cream body (H~86), hair pale violet-blue (H~268-285, C.09), tail gold-cream (H~88, C.126)",
+  "desc": "red hair turns pale violet-blue, blue tail turns gold",
+  "rules": "13>268:12:0.43:1.23;233>88:8:0.9:1.28",
+  "source": "pokemondb.net HOME sprites; per-pixel aligned normal vs shiny, measured OKLCh hue shift/chroma/lightness",
+  "confidence": "high",
+  "note": "Pixel-aligned so the source-to-target mapping is confirmed: red hair H8-24 (23%) shifts -104, C x0.43, L x1.23; blue tail H223-239 (22%) shifts -145 to H~88, C x0.9 (earlier 0.6 was wrong: tail stays quite saturated gold), L x1.28. Cream body H80-110 shifts only -9 (unchanged)."
+ },
+ {
+  "n": 109,
+  "name": "Volcarona",
+  "normal": "white fuzz (grey 36%), red wing (H~22, C.185), orange wing (H~46, C.175), dark grey body",
+  "shiny": "yellow-gold wings (H~88-91, C.12-.13), dark grey body areas tinted violet (H~288, C.05), fuzz stays white",
+  "desc": "red and orange wings turn yellow-gold, grey body areas gain a violet tint",
+  "rules": "22>87:9:0.64:1.23;46>90:7:0.74:1.08;grey:0.4-0.75>288:0.045",
+  "source": "pokemondb.net HOME sprites; per-pixel aligned normal vs shiny, measured OKLCh hue shift/chroma/lightness",
+  "confidence": "medium",
+  "note": "Pixel-aligned: red H14-34 (30%) shifts +65, C x0.64, L x1.23; orange H40-52 (27%) shifts +44, C x0.74, L x1.08 (H26-38 between, 4%, feathered). Mid-grey body (normal L .4-.8, 17%) becomes violet H~288 in 50-70% of pixels at C~.05, so a mild grey tint is added (white fuzz L>.8 untouched). A small H200-220 (2.6%) area turns violet and is not modeled."
+ },
+ {
+  "n": 110,
+  "name": "Xerneas",
+  "normal": "dark grey-navy body (about 40% of pixels), blue markings, pale blue-white antlers and legs",
+  "shiny": "near-white body, antlers/legs/markings deep azure-blue",
+  "desc": "pale antlers and legs turn blue, blue markings lighten to azure; dark body cannot be lightened by rules",
+  "rules": "grey:0.75-1.0>258:0.11;262>228:10:0.9:1.4;230>258:16:3:0.65",
+  "source": "pokemondb.net/sprites/<name> (HOME normal vs shiny sprites, per-pixel OKLCh comparison; Bulbapedia 403)",
+  "confidence": "high",
+  "note": "Re-measured pixel by pixel. Blue markings (h262, L0.52, C0.143, 22%) go to h228, L0.74, C0.130 (cs 0.9, ls 1.4; window narrowed to 10 so the h245-255 antler edge is not caught). Pale antlers/legs (h230-240, L0.81, C0.045, about 19%) go to h258, L0.52, C0.13, so a 230>258 rule with chroma x3 and light x0.65 was added; the old grey-only tint kept them pale. Grey tint hue moved 250 to 258. The dark body (L0.42, C0.012, 40%) turns near-white L0.82; hue rules need C>=0.04 and grey rules cannot change lightness, so it is not modeled. Sim OKLab error vs shiny sprite 0.287 -> 0.221."
+ },
+ {
+  "n": 111,
+  "name": "Wishiwashi",
+  "normal": "white/light-grey belly and head, blue back, cyan eye pattern",
+  "shiny": "cream-yellow belly and head, blue back unchanged, yellow eye pattern",
+  "desc": "white body turns cream yellow, cyan eye pattern turns yellow, back stays blue",
+  "rules": "grey:0.78-1.0>112:0.052;229>93:8:1.05:1.15",
+  "source": "pokemondb.net/sprites/<name> (HOME normal vs shiny sprites, per-pixel OKLCh comparison; Bulbapedia 403)",
+  "confidence": "high",
+  "note": "Re-measured. White texels (L0.8-1.0, 52%) go to h109-116, C0.045-0.058. The old grey 0.6-0.8 rule was wrong: those texels (22%, L0.75) stay unchanged (h246, C0.017), so it was removed. Cyan eye is only h225-235 (L0.69, C0.115) and goes to h93, L0.79; window narrowed to 229+-8 because the blue back starts at h250 and the 12-wide window plus 12 feather reached it. Blue back (h254) unchanged. Sim error 0.0376 -> 0.0293."
+ },
+ {
+  "n": 112,
+  "name": "Grookey",
+  "normal": "bright lime-green fur, pale belly, orange muzzle, brown ears/hands",
+  "shiny": "yellow-green fur, cream-white belly, orange muzzle unchanged, ears and hands red-pink",
+  "desc": "green fur turns yellow-green (h110), belly goes paler, brown ears turn red-pink",
+  "rules": "107>104:8:0.4:1.02;63.5>16:2.5:0.9:0.95;128>110:10:0.84:1.07",
+  "source": "pokemondb.net/sprites/<name> (HOME normal vs shiny sprites, per-pixel OKLCh comparison; Bulbapedia 403)",
+  "confidence": "high",
+  "note": "Re-measured. Fur (h125-135, 45%, L0.83, C0.161) goes to h110, L0.89, C0.135. Belly (h100-110, 14%, C0.128) goes to C0.04-0.06 at about the same hue (cs 0.4). Ears (h60-65, 16%, L0.55, C0.10) go to h16. The orange muzzle (h50-60, 15%) is unchanged but sits only 3-10 degrees from the ears, and the 12 degree feather leaks a partial shift onto it; the ear window was tightened to 61-66 to limit that. Fur rule listed last so it wins overlaps. Sim error 0.0195 -> 0.0098."
+ },
+ {
+  "n": 113,
+  "name": "Scorbunny",
+  "normal": "white fur, vivid orange ears and feet",
+  "shiny": "white fur, golden-yellow ears and feet",
+  "desc": "orange accents turn gold yellow",
+  "rules": "42>77:8:0.85:1.25",
+  "source": "pokemondb.net/sprites/<name> (HOME normal vs shiny sprites, per-pixel OKLCh comparison; Bulbapedia 403)",
+  "confidence": "high",
+  "note": "Re-measured. Orange (h35-45, 21%, L0.64, C0.194) goes to h77, L0.80, C0.165. The old 45>78:25 window reached h20-25 dark red-orange tips (2%) that stay h22 in the shiny, so it was narrowed to 34-50. Yellow-cream (h85-95) and white fur are unchanged. Sim error 0.0277 -> 0.0227."
+ },
+ {
+  "n": 114,
+  "name": "Sobble",
+  "normal": "azure/blue skin, yellow head crest and tail, small dark-blue patches",
+  "shiny": "lavender-blue skin, pink crest and tail, dark-blue patches lighten to azure",
+  "desc": "yellow crest turns pink, blue skin shifts toward violet-blue, dark patches lighten",
+  "rules": "103>357:8:0.83:0.82;232>259:14:0.74:0.91;257>224:5:1.1:1.4",
+  "source": "pokemondb.net/sprites/<name> (HOME normal vs shiny sprites, per-pixel OKLCh comparison; Bulbapedia 403)",
+  "confidence": "high",
+  "note": "Re-measured. Crest (h100-105, 16%, L0.92, C0.168) goes to h357, L0.75, C0.139. Skin (h215-240, 45%, L0.79, C0.083) goes to h259, L0.72, C0.061. Dark-blue patch (h255-260, 8%, L0.50, C0.114) goes to h224, L0.70, C0.127, so a 257>224 rule (ls 1.4) was added; it is listed last so it overrides the skin window feather. Sim error 0.0345 -> 0.0162."
+ },
+ {
+  "n": 115,
+  "name": "Venusaur",
+  "normal": "teal body, green leaves, red-pink flower, red mouth",
+  "shiny": "green body, lighter green leaves, cream-yellow flower, red mouth unchanged",
+  "desc": "flower turns pale yellow, teal body turns green",
+  "rules": "7.5>97:7.5:0.6:1.3;22>9:3.5:0.67:1.16;80>95:8:0.95:1.12;138>145:8:0.84:1.16;209>134:13:0.77:1.03",
+  "source": "pokemondb.net/sprites/<name> (HOME normal vs shiny sprites, per-pixel OKLCh comparison; Bulbapedia 403)",
+  "confidence": "high",
+  "note": "Re-measured. Flower (h0-15, 18%, L0.67, C0.21) goes to h96-108, L0.88, C0.12. The old 18-wide flower window reached the h20-25 red parts (4%, stay h9), so it was narrowed to 0-15 and a 22>9 counter rule keeps them red. Teal body (h200-215, 35%, C0.128) goes to h134-135, C0.097. Green (h135-140, 25%) stays h145 but lightens L0.66 to 0.77, so a 138>145 rule with ls 1.16 was added. Brown-olive h75-85 (5%) goes to h92-95. Sim error 0.0572 -> 0.0231."
+ },
+ {
+  "n": 116,
+  "name": "Arbok",
+  "normal": "grey-purple body, pale yellow belly, red/pink hood markings",
+  "shiny": "gold/tan body, violet hood markings, cream belly",
+  "desc": "purple body turns gold-tan, red markings turn violet",
+  "rules": "290>88:8:2.1:1.16;grey:0.35-0.7>88:0.075;6>276:6:0.8:0.88;20>8:5:0.6:1.15;102>92:6:0.52",
+  "source": "pokemondb.net/sprites/<name> (HOME normal vs shiny sprites, per-pixel OKLCh comparison; Bulbapedia 403)",
+  "confidence": "high",
+  "note": "Re-measured. Body (h285-295, 69%, L0.66, C0.047) goes to h88, L0.77, C0.098 (cs 2.1, ls 1.16). Mid greys (L0.35-0.7) go to h88, C0.075. Hood red at h0-14 goes to h275-280; the red-orange at h15-25 stays h8 (counter rule added). Belly yellow (h102, C0.173) loses chroma to 0.09 at h92. Dark greys (L0.1-0.3, 10%) lighten to L0.4 in the shiny; not expressible. Sim error 0.0356 -> 0.0305."
+ },
+ {
+  "n": 117,
+  "name": "Sandshrew",
+  "normal": "yellow-tan body, cream belly",
+  "shiny": "green body",
+  "desc": "yellow-tan body turns green",
+  "rules": "90>140:30",
+  "source": "https://www.wepc.com/tips/can-sandshrew-be-shiny-in-pokemon-go/",
+  "confidence": "medium",
+  "note": "Several guides say yellow/gold becomes green. Draft pink/blue was wrong."
+ },
+ {
+  "n": 118,
+  "name": "Diglett",
+  "normal": "brown body, pink nose, grey rock base",
+  "shiny": "lighter sandy-tan body, blue-violet nose, darker neutral grey base",
+  "desc": "nose turns blue-violet, body slightly lighter and yellower",
+  "rules": "46>67:8:1.28:1.07;340>272:17:1.5:0.85",
+  "source": "pokemondb.net/sprites/<name> (HOME normal vs shiny sprites, per-pixel OKLCh comparison; Bulbapedia 403)",
+  "confidence": "high",
+  "note": "Re-measured. Body (h40-50, 53%, C0.058) goes to h67, C0.075, L +0.05. Nose (h325-355, 3.5%, L0.88, C0.07) goes to h269-274, C0.11, L0.75. Grey rock base (38%) darkens L0.66 to 0.57; grey rules cannot darken, so not modeled. Sim error 0.0412 -> 0.0395."
+ }
+]

@@ -12,6 +12,7 @@ import concurrent.futures as cf
 import ctypes
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import time
@@ -22,9 +23,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from snap_common import MemSampler, lower_priority  # noqa: E402
 
-CLANG = ROOT / 'tools' / 'llvm' / 'bin' / 'clang.exe'
-AR = ROOT / 'tools' / 'llvm' / 'bin' / 'llvm-ar.exe'
-RUNTIME = ROOT / 'runtime'
+# SNAP_LLVM_BIN (folder with clang.exe and llvm-ar.exe) and SNAP_RUNTIME_INCLUDE (folder with cpu.h, simd.h, simd_fp.h) let the builder
+# (builder/) use its own toolchain and the shipped headers; unset = the dev tree.
+LLVM_BIN = Path(os.environ.get('SNAP_LLVM_BIN') or ROOT / 'tools' / 'llvm' / 'bin')
+CLANG = LLVM_BIN / 'clang.exe'
+AR = LLVM_BIN / 'llvm-ar.exe'
+RUNTIME = Path(os.environ.get('SNAP_RUNTIME_INCLUDE') or ROOT / 'runtime')
 BELOW_NORMAL = 0x4000
 TU_TIMEOUT = 30 * 60
 

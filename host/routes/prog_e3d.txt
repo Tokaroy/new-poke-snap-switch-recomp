@@ -1,0 +1,14 @@
+# fixture: prog_e33
+# Event 3 proof: hub "Bouken" runs state 0x452650, which plays pending events 0,3,6,... first. Event 3 is the Research Camp
+# apple tutorial (SD_10_01_sk, SD_10_03_sk); "+ Skip" then Up (Yes) + A ends it, which runs the completion lambda.
+repeat @f300 @f30000 120 8 A
+wait ui=main_menu:MainMenu timeout=300
+@f200 8 A
+wait dialog timeout=150
+repeat @f200 @f30000 600 8 Plus
+repeat @f300 @f30000 600 8 Up
+repeat @f360 @f30000 600 8 A
+wait ui=main_menu:MainMenu timeout=400
+@f200 8 Y
+@f700 8 Down
+end @f1200
