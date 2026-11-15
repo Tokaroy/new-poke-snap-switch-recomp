@@ -22,9 +22,16 @@ The download holds no game data and does not help you get any. You need a legal 
 4. Setup downloads the build tools from their publishers and checks every file against a pinned SHA-256 hash. The Windows SDK pieces come from Microsoft after you accept Microsoft's license in the wizard. They are not in the download.
 5. At the end you get a desktop and a Start menu shortcut and a Play now button. HD textures and upscalers are optional pages; each vendor license is shown before anything downloads.
 
+![Setup: welcome](screenshots/setup_1_welcome.png)
+![Setup: options and disk space](screenshots/setup_3_options.png)
+![Setup: build progress](screenshots/setup_4_build.png)
+![Setup: done](screenshots/setup_5_done.png)
+
 Setup remembers your game folder. A repair, a rebuild or an update reuses it without asking. "Change game folder" is on the maintenance page. If the files moved, it asks once.
 
 Run `SnapRecompSetup.exe` again later to Repair (rebuild with the same game files) or Uninstall (removes the shortcuts, the built program and the game data setup extracted; the build tools and your saves stay unless you tick the matching box; your own game files are never touched). Nothing is deleted behind your back while the game is installed: the extracted RomFS stays, because the game reads it every time it runs.
+
+Time: the first build takes about an hour on a fast PC, most of it the Ghidra step (15 to 30 minutes) and the compile. The last step starts the new game once to check it reaches the title screen. That first start translates the game's shaders and takes about 8 minutes, so setup waits up to 20 minutes before it calls it a failure. A rebuild with the same game files takes a few minutes.
 
 Space: plan on about 31 GB free while building and about 17 GB afterwards. A raw dump needs about 16 GB more scratch space during extraction. The wizard shows the exact figure for your PC before you press Build.
 

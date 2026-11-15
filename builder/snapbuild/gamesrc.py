@@ -520,7 +520,7 @@ def settings_path(base=None):
 def load_settings(path=None):
     """The settings file (default: %LOCALAPPDATA%\\SnapRecomp\\setup\\settings.json); {} when missing or unreadable."""
     try:
-        return json.loads((settings_path() if path is None else Path(path)).read_text(encoding='utf-8'))
+        return json.loads((settings_path() if path is None else Path(path)).read_text(encoding='utf-8-sig'))   # utf-8-sig: a hand-edited file may carry a BOM
     except (OSError, ValueError):
         return {}
 
