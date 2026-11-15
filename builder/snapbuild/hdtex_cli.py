@@ -32,7 +32,8 @@ ROUTES = H.BUILDER / 'hdtex_routes'
 def add_args(p):
     p.add_argument('--level', choices=['off', 'sharp', 'hd', 'ultra', 'custom'], help='quality level (HD is the suggested one)')
     p.add_argument('--set', action='append', default=[], metavar='CAT.KEY=VALUE',
-                   help='custom setting, e.g. creature.scale=2 scenery.model=texture-dat2 creature.strength=0.4 ui.denoise=0.5 (repeatable)')
+                   help='custom setting, e.g. creature.scale=2 scenery.model=texture-dat2 creature.strength=0.4 ui.denoise=0.5 '
+                        'lighting.scale=0 (repeatable)')
     p.add_argument('--base', choices=['sharp', 'hd', 'ultra'], default='hd', help='level that --level custom starts from')
     p.add_argument('--bc7', choices=['off', 'on', 'all'], default='on',
                    help='on: BC3 color maps become BC7 (same memory, better quality); all: BC1 too (twice the memory); off: keep every format')
@@ -267,7 +268,7 @@ def _main(a, table, say, emit):
     except ValueError as e:
         say(str(e))
         return 2
-    used = sorted({settings[c]['model'] for c in hc.AI_CATEGORIES if settings[c].get('scale', 0) > 1} |
+    used = sorted({settings[c]['model'] for c in hc.AI_CATEGORIES + ('lightmap',) if settings[c].get('scale', 0) > 1 and settings[c].get('model')} |
                   ({'dejpg'} if any(settings[c].get('denoise') for c in hc.AI_CATEGORIES) else set()))
     for mid in used:
         if mid not in pins['models']:

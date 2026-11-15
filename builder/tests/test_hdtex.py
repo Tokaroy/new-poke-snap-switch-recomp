@@ -117,6 +117,9 @@ class ClassifyTests(unittest.TestCase):
             ('nx/pack/resident/master/a.drp/T_Rock_mask.nutexb', 0x180): 'mask',
             ('nx/pack/resident/master/a.drp/T_Sky_cubemap.nutexb', 0x485): 'skip',
             ('nx/pack/levelcomposite/master/lc_999_z.drp/LV_A^SM_Ground1^42^groundShape^0^Shadow.nutexb', 0x4a5): 'mask',
+            ('nx/pack/levelcomposite/master/lc_101.drp/LV_ENV_101_1_A^SM_ENV_Rock^Rock01^3^0^Lightmap.nutexb', 0x4d7): 'lightmap',
+            ('nx/pack/levelcomposite/master/lc_101.drp/LV_ENV_101_1_A^SM_ENV_Rock^Rock01^3^2^Lightmap.nutexb', 0x4d7): 'lightdir',
+            ('nx/pack/levelcomposite/master/lc_101.drp/LV_ENV_101_1_A^SM_ENV_Rock^Rock01^3^1^LIGHTMAP.nutexb', 0x4d7): 'lightdir',
         }
         for (rel, fmt), want in cases.items():
             self.assertEqual(hc.classify(rel, tex(fmt)), want, rel)
@@ -148,6 +151,9 @@ class LevelTests(unittest.TestCase):
         self.assertLess(hd['creature']['strength'], hd['scenery']['strength'])   # fur: conservative
         self.assertGreater(u['_boost'], 0)
         self.assertEqual(hd['normal']['scale'], 0)
+        self.assertEqual([x['lightmap']['scale'] for x in (s, hd, u)], [0, 2, 4])   # the Lighting row
+        self.assertEqual([x['lightdir']['scale'] for x in (s, hd, u)], [0, 0, 0])
+        self.assertEqual(hd['lightmap']['model'], H.LIGHT_MODEL)
 
     def test_custom(self):
         c = H.level_settings('custom', ['creature.scale=4', 'scenery.model=texture-dat2', 'ui.denoise=0.5'], base='sharp')
@@ -155,7 +161,9 @@ class LevelTests(unittest.TestCase):
         self.assertEqual(c['scenery']['model'], 'texture-dat2')
         self.assertEqual(c['ui']['denoise'], 0.5)
         self.assertEqual(c['scenery']['scale'], 2)
-        for bad in ('creature.color=red', 'fish.scale=2', 'nonsense'):
+        self.assertEqual(H.level_settings('custom', ['lighting.scale=0'])['lightmap']['scale'], 0)
+        self.assertEqual(H.level_settings('custom', ['lightmap.scale=4'])['lightmap']['scale'], 4)
+        for bad in ('creature.color=red', 'fish.scale=2', 'nonsense', 'lightdir.scale=2'):
             with self.assertRaises(ValueError):
                 H.level_settings('custom', [bad])
         self.assertEqual(H.LEVELS['hd']['creature']['scale'], 2)   # overrides never leak into the table
@@ -394,6 +402,48 @@ class SetupTests(unittest.TestCase):
         keys = [x['key'] for x in C.needed_licenses(pins, ['nomos2-plksr', 'x4plus'], Path(tempfile.mkdtemp()))]
         self.assertEqual(keys, ['texconv', 'directml', 'ncnn', 'model:nomos2-plksr', 'model:x4plus'])
         self.assertEqual([x['key'] for x in C.needed_licenses(pins, [], Path(tempfile.mkdtemp()))], ['texconv'])
+
+
+class LightmapTests(unittest.TestCase):
+    """The HDR light map path: energy kept, no NaN, gutters filled (no dark seams), float16 out."""
+    def lightmap(self, n=64):
+        rng = np.random.default_rng(3)
+        y, x = np.mgrid[0:n, 0:n] / n
+        light = 0.2 + 6.0 * ((x + 0.3 * y) > 0.5) + 30.0 * np.exp(-((x - 0.3) ** 2 + (y - 0.7) ** 2) / 0.003)
+        px = np.ones((n, n, 4), np.float32)
+        px[..., :3] = light[..., None] * np.array([1.0, 0.9, 0.7]) * (1 + 0.05 * rng.standard_normal((n, n, 1)))
+        px[:, :n // 8, :3] = 0          # an empty gutter left of the island
+        px[n // 2:n // 2 + 3, :, :3] = 0   # and one through it
+        return px
+
+    def test_process(self):
+        px = self.lightmap()
+        n = px.shape[0]
+        it = H.Item('lm', 'lightmap', 0x4d7, n, n, 1, 0, 0x4d7, 2 * n, 2 * n, 1, 0, 2, H.LIGHT_MODEL, 1.0, 0.0)
+        x, rng = H.light_prepare(px)
+        self.assertTrue(0 <= x.min() and x.max() <= 1 and x.dtype == np.float32)
+        ai = NearestEngine().upscale(im.pad(x, H.PAD, False))
+        for a in (None, ai):
+            out = H.process_lightmap(it, px, False, a, (x, rng), 2)
+            self.assertEqual((out[0].shape, out[0].dtype), ((2 * n, 2 * n, 4), np.float16))
+            o = out[0].astype(np.float32)
+            self.assertTrue(np.isfinite(o).all())
+            self.assertGreaterEqual(o.min(), 0)
+            m = px[..., :3].max(2) > 0
+            mo = np.repeat(np.repeat(m, 2, 0), 2, 1)
+            src, got = px[..., :3][m].mean(), o[..., :3][mo].mean()
+            self.assertLess(abs(got / src - 1), 0.02)                       # energy within 2%
+            self.assertGreater(o[:, :n // 8 - 4, :3].min(), 0.1)            # gutter holds island light, not black
+            L, M = o[..., :3].max(2), mo                                       # the bilinear footprint on island borders:
+            q = [(L[i:L.shape[0] - 1 + i, j:L.shape[1] - 1 + j], M[i:M.shape[0] - 1 + i, j:M.shape[1] - 1 + j]) for i in (0, 1) for j in (0, 1)]
+            cnt = sum(m.astype(int) for _, m in q)
+            edge = (cnt > 0) & (cnt < 4)
+            full = sum(v for v, _ in q) / 4
+            isl = sum(v * m for v, m in q) / np.maximum(cnt, 1)
+            self.assertLess(abs(full[edge].sum() / isl[edge].sum() - 1), 0.05)   # gutters neither darken nor brighten seams
+
+    def test_directional_never_planned(self):
+        self.assertEqual(H.level_settings('ultra')['lightdir']['scale'], 0)
 
 
 class NearestEngine:

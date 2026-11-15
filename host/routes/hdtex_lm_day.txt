@@ -1,0 +1,10 @@
+# fixture: post_tutorial
+# hdtex light map A/B (2026-11-15): Florio day (the only open course on this save), ride to the end with no shutter and no
+# camera input. Run with SNAP_NEO_SPEED=0.5, SNAP_MODS_AB=1 and NVN_FRAME_DUMP_AT pairs (N, N+1): even presents show the pack,
+# odd ones the originals, and the slow ride keeps the camera within a few pixels between the two (build/w/hdtex/hdtex_lm_ab.ps1).
+# (A paused ride does not work: the pause menu shows a blurred copy of the last frame.)
+repeat @f300 @f30000 120 8 A
+wait ui=map_select timeout=240
+repeat @f60 @f30000 120 8 A
+wait ride timeout=300
+end @f9000

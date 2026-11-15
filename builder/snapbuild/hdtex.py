@@ -55,17 +55,20 @@ def load_pins(path=None):
 
 # ---- levels -------------------------------------------------------------------------------------------------------------
 # Per category: scale (0 = untouched), model (AI categories), strength (0 = plain Lanczos .. 1 = the model's output),
-# denoise (0 = off .. 1 = full 1xDeJPG pass first). Data maps (normal, mask, emissive), effects and light maps get no AI.
+# denoise (0 = off .. 1 = full 1xDeJPG pass first). Data maps (normal, mask, emissive) and effects get no AI. Light maps
+# (the Lighting row) get the HDR-safe light map path; their directional terms (lightdir) are never changed.
 
-DATA_CATS = ('normal', 'mask', 'emissive', 'effect', 'lightmap')
+DATA_CATS = ('normal', 'mask', 'emissive', 'effect', 'lightmap', 'lightdir')
+LIGHT_MODEL = 'aomr2'   # light map bench 2026-11-15: least ringing and flat-area noise of the pinned models (HD-TEXTURES.md)
 
 
-def _lv(scenery, creature, ui, data=0, lightmap=0, boost=0.0):
+def _lv(scenery, creature, ui, data=0, lighting=0, boost=0.0):
     out = {
         'scenery': dict(scale=scenery, model='nomos2-plksr', strength=1.0, denoise=0.0),
         'creature': dict(scale=creature, model='texture-dat2', strength=0.5, denoise=0.0),
         'ui': dict(scale=ui, model='spanimation2', strength=1.0, denoise=0.0),
-        'lightmap': dict(scale=lightmap),
+        'lightmap': dict(scale=lighting, model=LIGHT_MODEL, strength=1.0),
+        'lightdir': dict(scale=0),
     }
     for c in ('normal', 'mask', 'emissive', 'effect'):
         out[c] = dict(scale=data)
@@ -75,8 +78,8 @@ def _lv(scenery, creature, ui, data=0, lightmap=0, boost=0.0):
 
 LEVELS = {
     'sharp': _lv(2, 0, 2),
-    'hd': _lv(4, 2, 2),
-    'ultra': _lv(4, 4, 4, data=2, lightmap=2, boost=0.6),
+    'hd': _lv(4, 2, 2, lighting=2),
+    'ultra': _lv(4, 4, 4, data=2, lighting=4, boost=0.6),
 }
 DEFAULT_LEVEL = 'hd'
 MAX_EDGE = 4096
@@ -87,9 +90,12 @@ def level_settings(level, overrides=(), base='hd'):
     s = json.loads(json.dumps(LEVELS[base if level == 'custom' else level]))
     for o in overrides:
         m = re.match(r'^(\w+)\.(\w+)=(.+)$', o.strip())
-        if not m or m.group(1) not in s or m.group(1) == '_boost':
+        if not m or (m.group(1) not in s and m.group(1) != 'lighting') or m.group(1) == '_boost':
             raise ValueError(f'bad setting "{o}": use category.key=value, category one of {", ".join(k for k in s if k[0] != "_")}')
         cat, key, val = m.groups()
+        cat = 'lightmap' if cat == 'lighting' else cat   # the Lighting row: lighting.scale=0 turns it off
+        if cat == 'lightdir':
+            raise ValueError('lightdir (the directional terms of the light maps) is never changed')
         if key == 'model':
             s[cat][key] = val
         elif key in ('scale', 'strength', 'denoise'):
@@ -188,7 +194,7 @@ def plan(cache, settings, models_sha, bc7=False, exclude=(), max_edge=MAX_EDGE, 
             continue
         cat = hc.classify(rel, t)
         counts[cat] = counts.get(cat, 0) + 1
-        if cat == 'skip' or hc.species(rel) in excl:
+        if cat in ('skip', 'lightdir') or hc.species(rel) in excl:
             continue
         cs = settings[cat]
         scale = int(cs.get('scale', 0))
@@ -227,6 +233,7 @@ def _footer_only(foot, size):
 SPEED = {'nomos2-plksr': 0.16, 'nomos2': 0.24, 'texture-dat2': 1.75, 'gtav-rgts': 1.82, 'aomr2': 0.25, 'dejpg': 1.4,
          'spanimation2': 0.12, 'ultrasharp2': 1.4, 'x4plus': 0.5, 'x4plus-anime': 0.4, '': 0.0}   # dejpg per INPUT Mpx; 2x models per pass; x4plus/anime include ncnn start-up
 FILTER_S_PER_MPX = 0.35   # resize, mips, encode
+LIGHT_S_PER_MPX = 2.0     # light maps: fill, gate, energy match and the BC6H encode (611 maps, 120 Mpx: 280 s, 2026-11-15)
 
 
 def course_of(rel):
@@ -243,7 +250,7 @@ def estimate(items, speed=SPEED, probe=1.0):
     vr, vo = {}, {}
     for it in items:
         mpx = it.out_w * it.out_h / 1e6
-        sec = FILTER_S_PER_MPX * mpx
+        sec = (LIGHT_S_PER_MPX if it.cat == 'lightmap' else FILTER_S_PER_MPX) * mpx
         if it.model:
             sec += speed.get(it.model, 1.0) * mpx * probe
             if it.denoise:
@@ -445,14 +452,83 @@ def process_filter(it, px, wrap):
     return [to_store(l, srgb) for l in im.mip_chain(g, it.out_mips, 'color')]
 
 
-def process_lightmap(it, px, wrap):
-    """BC6H light maps: Lanczos in log2(1 + v) space (no ringing around bright spots), back to linear, float16."""
-    f = px.astype(np.float32)
-    rgb = im.from_log(im.resize(im.to_log(f[..., :3]), it.out_w, it.out_h, wrap=wrap))
-    a = im.resize(f[..., 3], it.out_w, it.out_h, wrap=wrap)
-    lv = im.mip_chain(np.concatenate([rgb, a[..., None]], -1), it.out_mips, 'color')
-    signed = nb.FORMATS[it.src_fmt][3] == 'bc6s'
-    return [(l if signed else np.maximum(l, 0)).astype(np.float16) for l in lv]
+# Light maps (the Lighting row). Studied against MatyMeatBoy/NewSnapRecomp newsnap/hdshadows.py (MIT, commit 10e5a20); no code
+# taken. Differences: float log input (no 8-bit step), directional terms found by name (^1^..^3^) not by sign, filled
+# gutters kept (no dark seams), the model gated to shadow edges, and texconv's full BC6H encoder.
+LIGHT_FLOOR = 1.0 / 1024   # light below this counts as black in the log encoding
+
+
+def light_fill(rgb, mask):
+    """Push-pull: texels outside the UV islands take the average of the nearest island texels, so resizing and the
+    game's own filtering never pull black into an island's border (dark seams)."""
+    if mask.all() or not mask.any():
+        return rgb
+    levels = [(rgb * mask[..., None], mask.astype(np.float32))]
+    while min(levels[-1][1].shape) > 1:
+        c, m = levels[-1]
+        hh, ww = (c.shape[0] + 1) // 2 * 2, (c.shape[1] + 1) // 2 * 2
+        c = np.pad(c, ((0, hh - c.shape[0]), (0, ww - c.shape[1]), (0, 0)))
+        m = np.pad(m, ((0, hh - m.shape[0]), (0, ww - m.shape[1])))
+        levels.append((c.reshape(hh // 2, 2, ww // 2, 2, -1).sum((1, 3)), m.reshape(hh // 2, 2, ww // 2, 2).sum((1, 3))))
+    col = levels[-1][0] / np.maximum(levels[-1][1], 1e-6)[..., None]
+    for c, m in reversed(levels[:-1]):
+        up = np.repeat(np.repeat(col, 2, 0), 2, 1)[:c.shape[0], :c.shape[1]]
+        col = np.where((m > 0)[..., None], c / np.maximum(m, 1e-6)[..., None], up)
+    return np.where(mask[..., None], rgb, col).astype(np.float32)
+
+
+def light_prepare(px):
+    """-> (model input in [0, 1]: log2 light spread over this map's own range, (low, range)). Float all the way: no 8-bit
+    step, so gradients do not band."""
+    rgb = np.maximum(px[..., :3].astype(np.float32), 0)
+    f = light_fill(rgb, rgb.max(2) > 1e-6)
+    lg = np.log2(f + LIGHT_FLOOR)
+    lo = float(lg.min())
+    top = max(float(lg.max()) - lo, 1e-6)
+    return (lg - lo) / top, (lo, top)
+
+
+def _blur(x, s):
+    r = max(1, int(3 * s))
+    k = np.exp(-0.5 * (np.arange(-r, r + 1) / s) ** 2)
+    k /= k.sum()
+    o = np.pad(x, ((r, r),) + ((0, 0),) * (x.ndim - 1), mode='edge')
+    o = sum(k[i] * o[i:i + x.shape[0]] for i in range(2 * r + 1))
+    o = np.pad(o, ((0, 0), (r, r)) + ((0, 0),) * (x.ndim - 2), mode='edge')
+    return sum(k[i] * o[:, i:i + x.shape[1]] for i in range(2 * r + 1)).astype(np.float32)
+
+
+def light_gate(base, s):
+    """Where the model's output is used: along coherent shadow edges (gradient of the blurred light), not in flat light and
+    not where the map itself is noisy (that is where models invent cell patterns)."""
+    lum = base.mean(2)
+    g = np.hypot(*np.gradient(_blur(lum, 1.0 * s)))
+    noise = _blur(np.abs(lum - _blur(lum, 0.5 * s)), 1.5 * s)
+    w = np.clip(g / (np.percentile(g, 90) + 1e-6), 0, 1) * np.clip(1 - 0.25 * noise / (g + 1e-6), 0, 1)
+    return _blur(w, 0.5 * s)[..., None]
+
+
+def process_lightmap(it, px, wrap, ai=None, rng=None, ai_scale=1):
+    """Light maps, HDR-safe: log2 light, the model gated to shadow edges, back to linear, then the low frequencies matched
+    to a plain log-Lanczos enlargement so the amount, colour and spread of the light stay the game's. Empty texels keep
+    the filled (nearest island) light instead of black. ai: the model's output on light_prepare's input (padded)."""
+    x, (lo, top) = rng if rng else light_prepare(px)
+    s = max(it.out_w / it.src_w, 1.0)
+    base = im.resize(x, it.out_w, it.out_h, wrap=wrap)
+    y = base
+    if ai is not None:
+        hh, ww = x.shape[:2]
+        crop = ai[PAD * ai_scale:(PAD + hh) * ai_scale, PAD * ai_scale:(PAD + ww) * ai_scale].astype(np.float32)
+        if crop.shape[:2] != (it.out_h, it.out_w):
+            crop = im.resize(crop, it.out_w, it.out_h, wrap=wrap)
+        y = base + light_gate(base, s) * (crop - base) * float(max(min(it.strength, 1.0), 0.0))
+    plain = np.exp2(base * top + lo) - LIGHT_FLOOR
+    out = np.exp2(y * top + lo) - LIGHT_FLOOR
+    ratio = (_blur(plain, 1.5 * s) + 1e-4) / (_blur(out, 1.5 * s) + 1e-4)
+    out = np.maximum(out * np.clip(ratio, 0.6, 1.6), 0)
+    a = im.resize(px[..., 3].astype(np.float32), it.out_w, it.out_h, wrap=wrap)
+    lv = im.mip_chain(np.concatenate([out, a[..., None]], -1), it.out_mips, 'color')
+    return [np.nan_to_num(l, nan=0.0, posinf=60000.0).astype(np.float16) for l in lv]
 
 
 # ---- state and pack -------------------------------------------------------------------------------------------------------
@@ -672,9 +748,17 @@ def run(items, o, say=print):
         for it in batch:
             if it.cat in hc.AI_CATEGORIES and it.model:
                 by_model.setdefault((it.model, it.denoise > 0, it.scale), []).append(it)
+        light = {}
+        for it in batch:
+            if it.cat == 'lightmap' and it.model and it.scale > 1:
+                light[it.rel] = light_prepare(px[it.rel])
+                by_model.setdefault((it.model, False, it.scale), []).append(it)
         for (model, dn, scale), its in by_model.items():
             reqs = {}
             for it in its:
+                if it.rel in light:
+                    reqs[it.rel] = im.pad(light[it.rel][0], PAD, False)
+                    continue
                 rgb = im.pad(px[it.rel][..., :3].astype(np.float32) / 255, PAD, wrap[it.rel])
                 reqs[it.rel] = rgb
             if dn:
@@ -682,7 +766,7 @@ def run(items, o, say=print):
                 reqs = {k: v + (clean[k] - v) * next(i.denoise for i in its if i.rel == k) for k, v in reqs.items()}
             res, got = ai_upscale(up, model, o.model_scale, reqs, scale)
             for k, v in res.items():
-                ai[k] = (v.astype(np.float16), got)
+                ai[k] = (v if k in light else v.astype(np.float16), got)   # light maps stay float32: log light must not band
         # 3. per-category processing, mips, then one texconv encode run per output format
         enc = {}
         for i, it in enumerate(batch):
@@ -695,7 +779,9 @@ def run(items, o, say=print):
                 elif it.cat == 'normal':
                     levels, in_dx = process_normal(it, p, wrap[it.rel]), nb.DXGI_RGBA8
                 elif it.cat == 'lightmap':
-                    levels, in_dx = process_lightmap(it, p, wrap[it.rel]), nb.DXGI_RGBA16F
+                    r = ai.get(it.rel)
+                    levels = process_lightmap(it, p, wrap[it.rel], r[0] if r else None, light.get(it.rel), r[1] if r else 1)
+                    in_dx = nb.DXGI_RGBA16F
                 else:
                     levels = process_filter(it, p, wrap[it.rel])
                     in_dx = nb.DXGI_RGBA8_SRGB if nb.FORMATS[it.src_fmt][4] else nb.DXGI_RGBA8
