@@ -484,7 +484,8 @@ def smoke(opt, exe, cfg, work, table, log):
     trace.unlink(missing_ok=True)
     env = dict(os.environ, SNAP_LAUNCHER_AUTOPLAY='1', SNAP_BOOT_TRACE=str(trace), SNAP_SAVE_DIR=str(sm / 'save'), SNAP_MODS_DIR=str(sm / 'mods'),
                SNAP_SHADERCACHE_DIR=str(sm / 'shadercache'), LOCALAPPDATA=str(sm / 'localappdata'), APPDATA=str(sm / 'appdata'),
-               SNAP_AUDIO_BACKEND='null', SNAP_HLE_TRACE='open')   # open traces carry the title-screen marker
+               SNAP_AUDIO_BACKEND='null', SNAP_HLE_TRACE='open',   # open traces carry the title-screen marker
+               SNAP_WINDOW_PAUSE='0')   # the setup window or another app is in front during the check; the game must not freeze on focus loss
     for k in ('NVN_CACHE_DIR', 'NVN_SHADER_HARNESS', 'SNAP_HLE_CONFIG'):
         env.pop(k, None)   # the launcher must find everything itself: config.json and shader_harness\ next to the exe
     if opt.harness:
