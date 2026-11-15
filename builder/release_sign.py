@@ -48,7 +48,9 @@ def genkey(seed_file=SEED_FILE, pub_file=PUB_FILE):
 def sign_zip(zip_path, version, seed):
     zip_path = Path(zip_path)
     ver = update.norm_version(version)
-    if update.ZIP_RE.match(zip_path.name) is None or update.norm_version(update.ZIP_RE.match(zip_path.name).group(1)) != ver:
+    if zip_path.name == 'SnapRecompSetup.exe':
+        pass   # the one-click installer: same signature format, the version comes from --version
+    elif update.ZIP_RE.match(zip_path.name) is None or update.norm_version(update.ZIP_RE.match(zip_path.name).group(1)) != ver:
         raise SystemExit(f'the zip must be named SnapRecomp-Builder-v{ver}-win-x64.zip')
     digest, size = update.sha256_of(zip_path), zip_path.stat().st_size
     sig = ed25519.sign(seed, update.signed_message(ver, digest, size))
@@ -75,10 +77,11 @@ def main(argv=None):
         seed = load_seed(a.key)
         # the version inside the zip must say the same thing the signature does
         import zipfile
-        with zipfile.ZipFile(a.zip) as z:
-            names = [n for n in z.namelist() if n.replace('\\', '/').endswith('builder/VERSION')]
-            if len(names) != 1 or update.norm_version(z.read(names[0]).decode().strip()) != update.norm_version(a.version):
-                raise SystemExit('builder/VERSION inside the zip does not say ' + a.version)
+        if a.zip.lower().endswith('.zip'):
+            with zipfile.ZipFile(a.zip) as z:
+                names = [n for n in z.namelist() if n.replace('\\', '/').endswith('builder/VERSION')]
+                if len(names) != 1 or update.norm_version(z.read(names[0]).decode().strip()) != update.norm_version(a.version):
+                    raise SystemExit('builder/VERSION inside the zip does not say ' + a.version)
         print('wrote', sign_zip(a.zip, a.version, seed))
         return 0
     if a.verify:
