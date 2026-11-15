@@ -212,8 +212,9 @@ MAIN_INLINE_HOOKS = {BASE + 0x5e3a58: 'rt_mod_entry',
 UI_PACE_DEFAULT = True
 UI_PACE_INLINE = {BASE + 0x783614: 'rt_gm_ui_enter',    # handler 0x7835d0 after `str x0, [sp, #0x188]`: x0 = the interface object
                   BASE + 0x794b90: 'rt_gm_ui_event',    # label of the per-frame event 22 raise (`ldr x0, [sp, #0x188]` before bl 0x7a9a70)
-                  BASE + 0x9263ac: 'rt_gm_ui_pad'}      # the pad update 0x925b60's one epilogue: x19 = pad
-# FPS-02 (pause pointer at 0x643ccc, after `ldr s1, [x19, #0x1c]`) is NOT included: its 60 vs 144 speed was not confirmed.
+                  BASE + 0x9263ac: 'rt_gm_ui_pad',      # the pad update 0x925b60's one epilogue: x19 = pad
+                  # FPS-02 (analysis/perf/fps_audit.md): pointer update 0x643a70 after `ldr s1, [x19, #0x1c]`: s1 = frame time, 0 on a stopped clock
+                  BASE + 0x643ccc: 'rt_gm_ui_pointer'}
 UI_PACE_BRANCH = {BASE + 0x783614: BASE + 0x794b4c,     # not due: draw only (the section that draws the movies)
                   BASE + 0x794b90: BASE + 0x795f08}     # not due: leave without event 22 (the handler's exit)
 

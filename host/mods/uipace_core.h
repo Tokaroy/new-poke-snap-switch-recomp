@@ -46,6 +46,18 @@ inline int decide(Pace& p, uint64_t frame, uint64_t now_ns, uint64_t period_ns) 
     return p.step = 1;
 }
 
+// ---- pointer time (FPS-02)
+// Frame time in seconds for the pointer update when the game passes 0: the last game-frame time (real_ns; 0 or over kMaxDtNs = the
+// pace period), averaged over about 16 frames; a frame more than twice the average counts at its own length. Result 1 to 100 ms.
+inline float pointer_dt(double& avg_ns, uint64_t real_ns, uint64_t period_ns) {
+    if (!real_ns || real_ns > kMaxDtNs) real_ns = period_ns ? period_ns : kStepNs;
+    avg_ns = avg_ns > 0 ? avg_ns + ((double)real_ns - avg_ns) / 16.0 : (double)real_ns;
+    double dt = (double)real_ns > 2.0 * avg_ns ? (double)real_ns : avg_ns;
+    if (dt < 1e6) dt = 1e6;
+    if (dt > (double)kMaxDtNs) dt = (double)kMaxDtNs;
+    return (float)(dt / 1e9);
+}
+
 // ---- pad sampling
 // The game's pad object (update at main+0x925b60): +0x44 four 32-bit masks [held, pressed, released, previous], +0x54 one byte
 // per button (current), +0x74 the same bytes of the previous update. Held buttons are read from the bytes, new presses

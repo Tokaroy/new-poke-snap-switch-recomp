@@ -1,0 +1,5 @@
+# fixture: new_game
+# Frame-rate timer check: title, intro and the yard camera tutorial with slow A taps (wall seconds, so 60 and 144 press at the same times),
+# then no input from 330 s, so the tutorial hint reminder ("Try lining up ... with Pikachu") repeats on its own. Compare the reminder
+# interval at SNAP_FPS=60 and 144 (SNAP_ROUTE_LOG=1 logs the dialogue window; frame dumps every second).
+repeat 20 330 0.83 0.2 A

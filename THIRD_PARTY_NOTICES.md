@@ -195,7 +195,8 @@ Software. The Software is provided "AS IS", without warranty of any kind.
 
 Used in `host/mods/uipace.cpp`, `host/mods/uipace_core.h` and the hook table in `recomp/snap_gen.py` (interface pacing above 60 fps): the
 method and the guest addresses and object layouts for the interface handler pacing, the pad sampling and the pause pointer are adapted from
-its `docs/HIGH_FPS.md`, `newsnap/overlays/snap_ui_pace.c` and `patches/snap-2.0.1-ui-pace.txt`.
+its `docs/HIGH_FPS.md`, `newsnap/overlays/snap_ui_pace.c` and `patches/snap-2.0.1-ui-pace.txt`. The pause pointer time (`rt_gm_ui_pointer`: the frame time at `main+0x643ccc`, a 16-frame average, a hitch counted at its
+own length, a 1 ms floor) follows its `snap_ui_pace_pointer`, and its FPS-02 list of the 1/60 sites was used to cross-check our own scan.
 
 MIT License
 

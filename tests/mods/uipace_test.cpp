@@ -98,6 +98,25 @@ int main() {
         uipace::sample_pad(s, mask, bytes, true, true);
         CHECK(mask[0] == 1 && mask[1] == 1 && bytes[0] == 1);
     }
+    // Pointer time (FPS-02): steady frames give their own length; 0 or a huge gap falls back to the pace period; a hitch counts in full;
+    // the result stays within 1 to 100 ms. Pointer travel per second is then the same at 60 and 144 fps.
+    {
+        double avg = 0;
+        float dt = 0;
+        for (int i = 0; i < 64; i++) dt = uipace::pointer_dt(avg, 6944444, 6944444);
+        CHECK(dt > 0.00693f && dt < 0.00696f);
+        dt = uipace::pointer_dt(avg, 0, 6944444);
+        CHECK(dt > 0.00693f && dt < 0.00696f);
+        dt = uipace::pointer_dt(avg, 40000000, 6944444);   // a 40 ms hitch: its own length
+        CHECK(dt > 0.0399f && dt < 0.0401f);
+        double a2 = 0;
+        CHECK(uipace::pointer_dt(a2, 500000, 0) >= 0.001f);   // floor 1 ms
+        double travel144 = 0, travel60 = 0, a144 = 0, a60 = 0;
+        for (int i = 0; i < 144; i++) travel144 += uipace::pointer_dt(a144, 6944444, 6944444) * 60.0;   // step = speed * dt * 60
+        for (int i = 0; i < 60; i++) travel60 += uipace::pointer_dt(a60, 16666667, 16666667) * 60.0;
+        std::printf("pointer travel in one second (units of one 60 fps step): %.2f at 144, %.2f at 60\n", travel144, travel60);
+        CHECK(travel144 > 59.5 && travel144 < 60.5 && travel60 > 59.5 && travel60 < 60.5);
+    }
     std::printf(g_fail ? "uipace: %d FAILED\n" : "uipace: all passed\n", g_fail);
     return g_fail ? 1 : 0;
 }

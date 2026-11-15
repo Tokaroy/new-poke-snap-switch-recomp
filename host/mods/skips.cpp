@@ -2,7 +2,8 @@
 //
 // SNAP_SKIPS_REC=<from>,<len>,<out>  records, for presents [from, from+len), every main function that is entered in few distinct
 // presents (at most 40), with the presents it was entered in and x0 of the first entry. Used to find the code that handles one
-// button press or one state (a function entered only on the presents around a scripted press). Off unless set.
+// button press or one state (a function entered only on the presents around a scripted press). Off unless set. With from >= 600 the
+// function hook (slow) is switched on only 60 presents before the window.
 #include <windows.h>
 
 #include <cstdint>
@@ -13,6 +14,7 @@
 #include <chrono>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -150,7 +152,14 @@ void snap_skips_install() {
                 if (g_bucket < 1) g_bucket = 50;
             }
             g_rec = true;
-            g_fnprof = 1;
+            if (from < 600) {
+                g_fnprof = 1;
+            } else {   // a late window: switch the function hook on just before it, so the run reaches it at full speed
+                std::thread([] {
+                    while (snap_present_count() + 60 < g_from) Sleep(20);
+                    g_fnprof = 1;
+                }).detach();
+            }
         }
     }
 }

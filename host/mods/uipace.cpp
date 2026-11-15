@@ -15,11 +15,19 @@
 //                     show the last step's buttons and no new edges; a step compares with the last step; a press that came and went
 //                     in between still counts. Sticks are not touched.
 //
+//   rt_gm_ui_pointer  the pointer update main+0x643a70, before `fcmp s1, #0.0` at 0x643ccc: s1 = the frame time it was given ([x19+0x1c],
+//                     seconds). With a positive time the game scales the pointer step by time * 60; with 0 (the game clock stopped,
+//                     as in the pause menu) it moves one fixed step per frame. Above 60 fps a zero time is replaced by the measured
+//                     game-frame time (smoothed over about 16 frames, 1 to 100 ms), so the step is per second. FPS-02 in
+//                     analysis/perf/fps_audit.md.
+//
 //   SNAP_UI_PACE=0     kill switch for the handler and event hooks (every frame steps, as without this file).
 //   SNAP_PAD_PACE=0    kill switch for the pad sampling (the pad stays as the game wrote it).
+//   SNAP_PTR_PACE=0    kill switch for the pointer time (a stopped clock moves the pointer per frame, as without this file).
 //   SNAP_UI_PACE_TRACE=1  logs the handler counts every 5 s ("[uipace]" in stderr).
 #include <windows.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -36,7 +44,7 @@ namespace nvn { extern double g_paceHz; }   // runtime/nvn/nvn_vk.cpp: rate of p
 
 namespace {
 
-bool g_ui_on = true, g_pad_on = true, g_trace;
+bool g_ui_on = true, g_pad_on = true, g_ptr_on = true, g_trace;
 std::atomic<bool> g_cfg{false};
 
 uint64_t now_ns() {
@@ -47,8 +55,10 @@ void cfg_once() {
     if (g_cfg.load(std::memory_order_acquire)) return;
     if (const char* e = std::getenv("SNAP_UI_PACE")) g_ui_on = !(*e == '0' && !e[1]);
     if (const char* e = std::getenv("SNAP_PAD_PACE")) g_pad_on = !(*e == '0' && !e[1]);
+    if (const char* e = std::getenv("SNAP_PTR_PACE")) g_ptr_on = !(*e == '0' && !e[1]);
     if (const char* e = std::getenv("SNAP_UI_PACE_TRACE")) g_trace = *e && *e != '0';
-    if (g_trace || !g_ui_on || !g_pad_on) std::fprintf(stderr, "[uipace] ui=%d pad=%d trace=%d\n", (int)g_ui_on, (int)g_pad_on, (int)g_trace);
+    if (g_trace || !g_ui_on || !g_pad_on || !g_ptr_on)
+        std::fprintf(stderr, "[uipace] ui=%d pad=%d ptr=%d trace=%d\n", (int)g_ui_on, (int)g_pad_on, (int)g_ptr_on, (int)g_trace);
     g_cfg.store(true, std::memory_order_release);
 }
 
@@ -70,6 +80,7 @@ uipace::Pace g_pace, g_pace_presented;
 std::atomic<uint64_t> g_pad_tick_ns{0}, g_pad_dt_ns{0};
 uint64_t g_pad_tick;
 uipace::PadState g_pads[4];
+double g_ptr_avg;   // smoothed game-frame time for the pointer (ns)
 uint64_t g_pad_ptr[4];
 
 int pace_step(uint64_t now) {
@@ -140,4 +151,48 @@ extern "C" void rt_gm_ui_pad(Cpu* c) {
         g_steps += g_pace.step != 0;
         g_edges += (uint64_t)__builtin_popcount(mask[1]);
     }
+}
+
+extern "C" void rt_gm_ui_pointer(Cpu* c) {
+    cfg_once();
+    float t;
+    std::memcpy(&t, &c->v[1], sizeof t);
+    if (g_trace) {   // per second: frames with a game time / with 0, and how far the pointer (x21+0x118, +0x11c) moved
+        // speed = the last frame's step over the real time since the previous call; the median over moving frames is the pointer speed
+        static uint64_t n_zero, n_time, win_ns, last_ns;
+        static float last_x, last_y;
+        static double moved, speeds[512];
+        static int n_speeds;
+        const uint64_t now = now_ns();
+        (t > 0.0f ? n_time : n_zero)++;
+        const uint64_t o = c->x[21];
+        if (o && !IsBadReadPtr((const void*)(o + 0x118), 8)) {
+            float x, y;
+            std::memcpy(&x, (const void*)(o + 0x118), 4);
+            std::memcpy(&y, (const void*)(o + 0x11c), 4);
+            const double step = __builtin_sqrt((double)(x - last_x) * (x - last_x) + (double)(y - last_y) * (y - last_y));
+            moved += step;
+            if (step > 0.01 && last_ns && now > last_ns && n_speeds < 512) speeds[n_speeds++] = step * 1e9 / (double)(now - last_ns);
+            last_x = x, last_y = y;
+        }
+        last_ns = now;
+        if (!win_ns) win_ns = now, moved = 0, n_speeds = 0;
+        if (now - win_ns >= 1000000000ull) {
+            const double s = (double)(now - win_ns) / 1e9;
+            double med = 0;
+            if (n_speeds) {
+                std::nth_element(speeds, speeds + n_speeds / 2, speeds + n_speeds);
+                med = speeds[n_speeds / 2];
+            }
+            if (moved > 0.5 || n_zero)
+                std::fprintf(stderr, "[uipace] pointer: %.1f s, %llu frames with a game time, %llu with 0, moved %.0f units/s, median speed %.0f units/s over %d moving frames (period %.3f ms, fix %d)\n",
+                             s, (unsigned long long)n_time, (unsigned long long)n_zero, moved / s, med, n_speeds, (double)period_ns() / 1e6, (int)g_ptr_on);
+            n_time = n_zero = 0, win_ns = now, moved = 0, n_speeds = 0;
+        }
+    }
+    if (!g_ptr_on) return;
+    const uint64_t period = period_ns();
+    if (t > 0.0f || !uipace::above60(period)) return;
+    const float dt = uipace::pointer_dt(g_ptr_avg, g_pad_dt_ns.load(std::memory_order_relaxed), period);
+    std::memcpy(&c->v[1], &dt, sizeof dt);
 }
