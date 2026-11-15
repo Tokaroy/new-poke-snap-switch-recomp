@@ -60,7 +60,7 @@ class Options:
         self.ghost = None
         self.force = []
         self.compare_generated = None
-        self.smoke_timeout = 420
+        self.smoke_timeout = 1200   # the first start translates the game's shaders: about 7 minutes on a busy PC, so allow 20
         self.winsdk = 'auto'         # where the C runtime and Windows SDK files come from: auto, vs or xwin
         self.upscalers = None        # names to fetch after the link (default: the ones marked default in versions.json)
         self.accept_license = []     # upscaler names whose vendor license the user accepted on the command line

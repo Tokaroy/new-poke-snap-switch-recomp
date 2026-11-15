@@ -712,7 +712,7 @@ def run(cfg, ev, opener=None):
         stage('build')
         opt = pipeline.Options(main=main, sdk=sdk, romfs=romfs, work=str(work), maps=cfg.get('maps'), prebuilt=cfg.get('prebuilt'),
                                jobs=int(cfg.get('jobs') or 0), skip_smoke=bool(cfg.get('skip_smoke')), harness=cfg.get('harness'),
-                               smoke_timeout=int(cfg.get('smoke_timeout') or 420), winsdk=mode, upscalers=cfg.get('upscalers') or [],
+                               smoke_timeout=int(cfg.get('smoke_timeout') or 1200), winsdk=mode, upscalers=cfg.get('upscalers') or [],
                                accept_license=list(cfg.get('accept_license') or []), cache_dir=cfg.get('cache_dir'),
                                llvm=cfg.get('llvm'), python=cfg.get('python'))
         exe, smoke = pipeline.build(opt, log)

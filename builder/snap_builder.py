@@ -102,7 +102,7 @@ def main(argv=None):
     b.add_argument('--skip-smoke', action='store_true', help='do not start the game at the end')
     b.add_argument('--harness', help='ShaderHarness.dll for the smoke run')
     b.add_argument('--ghost', help='developer use: hidden-desktop launcher script for the smoke run')
-    b.add_argument('--smoke-timeout', type=int, default=420, help='seconds to wait for the title screen')
+    b.add_argument('--smoke-timeout', type=int, default=1200, help='seconds to wait for the title screen')
     b.add_argument('--no-cache', dest='cache', action='store_false', help='do not reuse or store function lists and generated C in the private cache')
     b.add_argument('--cache-dir', help='private cache folder (default %%LOCALAPPDATA%%\\SnapRecomp\\cache)')
     b.add_argument('--force', action='append', default=[], choices=pipeline.STEPS, help='rerun this step even if it is stamped done')
