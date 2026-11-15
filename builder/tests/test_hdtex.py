@@ -353,6 +353,19 @@ class ImageTests(unittest.TestCase):
         np.testing.assert_allclose(im.blend_detail(base, ai, 0.0), base)
         np.testing.assert_allclose(im.blend_detail(base, ai, 1.0), ai, atol=1e-6)
 
+    def test_local_contrast(self):
+        rng = np.random.default_rng(3)
+        x = im.resize(rng.random((16, 16, 3)).astype(np.float32) * 0.6 + 0.2, 64, 64, wrap=True)
+        y = im.local_contrast(x, 0.7, wrap=True)
+        self.assertEqual(y.shape, x.shape)
+        self.assertGreaterEqual(float(y.min()), 0.0)
+        self.assertAlmostEqual(float(y.mean() / x.mean()), 1.0, delta=0.02)   # colour and average kept
+        fine = lambda z: float((z.mean(-1) - im.gauss(z.mean(-1), 1.2, True)).std())
+        self.assertGreater(fine(y), fine(x) * 1.2)                                # grain crisper
+        edge = float(np.abs(y[:, 0] - y[:, -1]).mean())                            # still tiles: the wrap edge
+        inner = float(np.abs(y[:, 31] - y[:, 32]).mean())                          # is no harsher than inside
+        self.assertLess(edge, inner * 1.5 + 1e-3)
+
 
 class SetupTests(unittest.TestCase):
     def test_offline_files_are_never_moved_or_deleted(self):

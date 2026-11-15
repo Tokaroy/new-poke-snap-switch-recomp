@@ -20,7 +20,7 @@ You can also skip `--collect`: run `hdtex --capture on`, play normally for a whi
 | Off | | | | | turns the pack off; deletes nothing |
 | Sharp | 2x | original | 2x | original | quickest |
 | HD (suggested) | 4x | 2x | 2x | 2x | |
-| Ultra | 4x, up to 4096 | 4x | 4x | 4x | normal maps and masks 2x; extra fine detail on tiling ground and rock |
+| Ultra | 4x, up to 4096 | 4x | 4x | 4x | normal maps and masks 2x; crisper grain on tiling ground and rock |
 | Custom | your choice | your choice | your choice | your choice | `--level custom --set creature.scale=4 --set scenery.model=texture-dat2` |
 
 Custom keys per category (`scenery`, `creature`, `ui`): `scale` (0, 2 or 4), `model`, `strength` (0 = plain resize, 1 = all AI) and `denoise` (0 to 1, runs a cleanup model first). `lighting` takes `scale`, `model` and `strength`: `--set lighting.scale=0` turns the Lighting row off, `4` doubles it again. `normal`, `mask`, `emissive` and `effect` take `scale` only.

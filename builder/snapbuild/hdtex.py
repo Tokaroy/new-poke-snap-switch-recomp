@@ -72,14 +72,14 @@ def _lv(scenery, creature, ui, data=0, lighting=0, boost=0.0):
     }
     for c in ('normal', 'mask', 'emissive', 'effect'):
         out[c] = dict(scale=data)
-    out['_boost'] = boost   # Ultra: the texture's own fine detail one octave finer on tiling ground and rock
+    out['_boost'] = boost   # Ultra: local contrast of the finest grain on tiling ground and rock (terrain bench 2026-11-15)
     return out
 
 
 LEVELS = {
     'sharp': _lv(2, 0, 2),
     'hd': _lv(4, 2, 2, lighting=2),
-    'ultra': _lv(4, 4, 4, data=2, lighting=4, boost=0.6),
+    'ultra': _lv(4, 4, 4, data=2, lighting=4, boost=0.7),
 }
 DEFAULT_LEVEL = 'hd'
 MAX_EDGE = 4096
@@ -230,7 +230,7 @@ def _footer_only(foot, size):
 
 # Seconds per million OUTPUT pixels on the reference PC (measured 2026-11-15, see builder/HD-TEXTURES.md); scaled on the
 # user's PC by a one-tile probe before the run. Filters (non-AI) cost about the same everywhere.
-SPEED = {'nomos2-plksr': 0.16, 'nomos2': 0.24, 'texture-dat2': 1.75, 'gtav-rgts': 1.82, 'aomr2': 0.25, 'dejpg': 1.4,
+SPEED = {'nomos2-plksr': 0.16, 'pbrify-plksr': 0.21, 'pbrify-dat': 3.45, 'nomos2': 0.24, 'texture-dat2': 1.75, 'gtav-rgts': 1.82, 'aomr2': 0.25, 'dejpg': 1.4,
          'spanimation2': 0.12, 'ultrasharp2': 1.4, 'x4plus': 0.5, 'x4plus-anime': 0.4, '': 0.0}   # dejpg per INPUT Mpx; 2x models per pass; x4plus/anime include ncnn start-up
 FILTER_S_PER_MPX = 0.35   # resize, mips, encode
 LIGHT_S_PER_MPX = 2.0     # light maps: fill, gate, energy match and the BC6H encode (611 maps, 120 Mpx: 280 s, 2026-11-15)
@@ -411,7 +411,7 @@ def process_color(it, px, ai_rgb, ai_scale, wrap):
             ai = im.resize(ai, it.out_w, it.out_h, wrap=wrap)
         out = im.blend_detail(base, ai, it.strength)
     if it.boost and wrap:
-        out = im.fine_band(out, it.boost)
+        out = im.local_contrast(out, it.boost, wrap)
     a = np.clip(im.resize(f[..., 3], it.out_w, it.out_h, wrap=wrap), 0, 1)
     img = np.concatenate([np.clip(out, 0, 1), a[..., None]], -1)
     cutoff = 0.5 if nb.FORMATS[it.src_fmt][3] in ('bc1', 'bc3', 'bc7', 'rgba8') and alpha_tested(f[..., 3]) else None
@@ -489,13 +489,7 @@ def light_prepare(px):
 
 
 def _blur(x, s):
-    r = max(1, int(3 * s))
-    k = np.exp(-0.5 * (np.arange(-r, r + 1) / s) ** 2)
-    k /= k.sum()
-    o = np.pad(x, ((r, r),) + ((0, 0),) * (x.ndim - 1), mode='edge')
-    o = sum(k[i] * o[i:i + x.shape[0]] for i in range(2 * r + 1))
-    o = np.pad(o, ((0, 0), (r, r)) + ((0, 0),) * (x.ndim - 2), mode='edge')
-    return sum(k[i] * o[:, i:i + x.shape[1]] for i in range(2 * r + 1)).astype(np.float32)
+    return im.gauss(x, s, False)
 
 
 def light_gate(base, s):

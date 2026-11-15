@@ -172,17 +172,22 @@ def blend_detail(base, ai, strength):
     return base + (ai - base) * float(max(strength, 0.0))
 
 
-def fine_band(rgb, amount, wrap=True):
-    """Detail for 'Ultra' tiling ground and rock: the texture's own finest band-pass detail, re-used one octave finer
-    (tiled 2x2 with a half-tile shift so it wraps like the texture). Zero-mean; nothing outside the texture is added.
-    rgb: the upscaled image (linear light); returns rgb + band."""
-    h, w = rgb.shape[:2]
+def gauss(x, s, wrap=False):
+    """Separable Gaussian blur (sigma s px) over the first two axes; wrap for tiling textures, else edge."""
+    r = max(1, int(3 * s))
+    k = np.exp(-0.5 * (np.arange(-r, r + 1) / s) ** 2)
+    k /= k.sum()
+    mode = 'wrap' if wrap else 'edge'
+    o = np.pad(x, ((r, r),) + ((0, 0),) * (x.ndim - 1), mode=mode)
+    o = sum(k[i] * o[i:i + x.shape[0]] for i in range(2 * r + 1))
+    o = np.pad(o, ((0, 0), (r, r)) + ((0, 0),) * (x.ndim - 2), mode=mode)
+    return sum(k[i] * o[:, i:i + x.shape[1]] for i in range(2 * r + 1)).astype(np.float32)
+
+
+def local_contrast(rgb, amount, wrap=True, s=1.2):
+    """Detail for 'Ultra' tiling ground and rock: the finest band of the upscaled image's own luminance (sigma s output
+    px), relative to the local light level, added back amount times. Grain gets crisper; colour, the average and the
+    tiling stay. rgb: linear light; returns the sharpened rgb (never negative)."""
     lum = rgb[..., :3].mean(-1)
-    small = resize(lum, max(w // 2, 1), max(h // 2, 1), wrap=wrap)
-    blur = resize(resize(small, max(w // 4, 1), max(h // 4, 1), wrap=wrap), small.shape[1], small.shape[0], wrap=wrap)
-    band = small - blur                       # the finest octave of the half-size image
-    tiled = np.tile(band, (2, 2))[:h, :w]
-    tiled = np.roll(tiled, (h // 4, w // 4), (0, 1))
-    tiled -= tiled.mean()
-    rel = np.maximum(rgb[..., :3], 1e-4)
-    return np.clip(rgb[..., :3] + rel * (tiled[..., None] * float(amount) / np.maximum(lum.mean(), 1e-3)), 0, None)
+    band = (lum - gauss(lum, s, wrap)) / np.maximum(gauss(lum, 4 * s, wrap), 1e-3)
+    return np.clip(rgb[..., :3] + np.maximum(rgb[..., :3], 1e-4) * band[..., None] * float(amount), 0, None)
