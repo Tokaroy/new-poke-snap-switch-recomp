@@ -205,6 +205,8 @@ an optional `@f` prefix (frames either way on such a line). Time lines and frame
 1 s; under load the game just takes longer in wall time and the route stays in step. Implemented in `runtime\hle\input_core.cpp`
 (the script player lives there, not in `hid.cpp`).
 
+Photo-score comparisons between frame rates must use game-second taps (`host/routes/score_time_a.txt`): present-indexed `@f` taps fire 2.4x as often at 144 as at 60 and shoot different photos.
+
 ### Waiting on game state (`wait`, `end`; 2026-11-13)
 
 Present counts still drift by thousands between runs (load times, ride phase), so routes wait on the game instead:
