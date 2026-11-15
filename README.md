@@ -80,12 +80,19 @@ Early playable. The game boots to the title screen and the lab hub, all 14 cours
 - Render scale from 0.5x to 4x, shadow resolution up to 8192, ambient occlusion options.
 - Optional color looks (Neutral, Vivid, Warm, Cool) and per-pass switches for bloom, depth of field, film grain and chromatic aberration.
 
+### Frame rate and HD textures
+
+- Frame rate target: 60 (the game's own), 90, 120 or 144 fps, under Options > Frame rate target. Menus, dialogue and the interface keep their original speed. The frame rate limit is a separate setting (Off, 30 to 240).
+- Local AI HD textures: the builder upscales the textures your own copy loads, on your own GPU, and installs them as a mod pack. Levels are Off, Sharp, HD, Ultra and Custom, and F8 in game switches between original and HD. Nothing is uploaded.
+- A built-in updater checks for a new release once a day. Nothing installs until you click. Every update is signed (Ed25519) and can be rolled back.
+
 ### Menus and controls
 
 - Ten PC settings tabs inside the game's own Settings screen: Quality, Textures, Effects, Output, View, Display, Controller, Mouse, Audio and Photos. They use the game's own widgets and its Restore Default Settings. They need a local pack built from your own game files (see [Running and settings](#running-and-settings)).
 - An F1 overlay (or hold Back/View + Start on a controller for half a second) with the same options, button remapping, mods and save management.
 - Rumble support (host side; not yet seen in game actions) and gyro aim on controllers that report a gyro. Gyro drives the right stick because the game never reads motion.
-- Keyboard and mouse, including mouse look and click-to-touch.
+- Keyboard and mouse, including mouse look and click-to-touch. During rides with mouse look on, the left button takes a photo and the right button zooms (`mouse.look_click_a`, `mouse.look_click_zl` in `input.json`).
+- Button icons: Auto (default), Switch, Xbox or PlayStation pictures in the game's button prompts, so the prompts match your controller. The icon art is Kenney's "Input Prompts" (CC0).
 
 ### Window, saves and tools
 
