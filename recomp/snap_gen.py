@@ -67,7 +67,8 @@ def _emitter():
         lsda = ehlsda.module_pads(mod) if _W['resume'] else {}
         e = _W['emitter'] = Emitter(mod, set(_W['starts']), lsda=lsda, resume=_W['resume'], hooks=_W['hooks'],
                                     plt_got=_W['plt_got'], setjmp_targets=_W['setjmp'],
-                                    inline_hooks=MAIN_INLINE_HOOKS if _W['module'] == 'main' else None)
+                                    inline_hooks=MAIN_INLINE_HOOKS if _W['module'] == 'main' else None,
+                                    branch_hooks=MAIN_BRANCH_HOOKS if _W['module'] == 'main' else None)
     return e
 
 
@@ -204,6 +205,29 @@ MAIN_INLINE_HOOKS = {BASE + 0x5e3a58: 'rt_mod_entry',
                      # host/mods/drpfast.cpp (perf pass 11): DRP keystream decrypt on the host; SNAP_DRP_FASTDEC=0 keeps the guest loop
                      BASE + 0x5ec9f0: 'rt_drp_decrypt',         # `cmp x28, x23` before the per-word loop of 0x5ec890: x21 = RNG state, w22 = bound
                      BASE + 0x5eca1c: 'rt_drp_decrypt_check'}   # loop exit (SNAP_DRP_FASTDEC=check compares here)
+# Interface pacing above 60 fps (host/mods/uipace.cpp; UI-HZ-01, INPUT-HZ-01 of analysis/perf/high-fps.md). Off unless the generator runs with
+# SNAP_GEN_UI_PACE=1 (or --ui-pace): the default output, and with it the shared build/eh/main, stays byte-identical and SNAP_RUNTIME_ABI stays 1.
+# When the shared main is regenerated with these sites, flip UI_PACE_DEFAULT and bump SNAP_RUNTIME_ABI (runtime/cpu.h) in the same change.
+# A branch hook is an inline hook that returns its decision in c->x[16]: 0 = `goto target` (registers as before the instruction), else fall on.
+UI_PACE_DEFAULT = False
+UI_PACE_INLINE = {BASE + 0x783614: 'rt_gm_ui_enter',    # handler 0x7835d0 after `str x0, [sp, #0x188]`: x0 = the interface object
+                  BASE + 0x794b90: 'rt_gm_ui_event',    # label of the per-frame event 22 raise (`ldr x0, [sp, #0x188]` before bl 0x7a9a70)
+                  BASE + 0x9263ac: 'rt_gm_ui_pad'}      # the pad update 0x925b60's one epilogue: x19 = pad
+# FPS-02 (pause pointer at 0x643ccc, after `ldr s1, [x19, #0x1c]`) is NOT included: its 60 vs 144 speed was not confirmed.
+UI_PACE_BRANCH = {BASE + 0x783614: BASE + 0x794b4c,     # not due: draw only (the section that draws the movies)
+                  BASE + 0x794b90: BASE + 0x795f08}     # not due: leave without event 22 (the handler's exit)
+
+
+def ui_pace_enabled():
+    v = os.environ.get('SNAP_GEN_UI_PACE')
+    return UI_PACE_DEFAULT if v is None else v not in ('', '0')
+
+
+MAIN_BRANCH_HOOKS = {}
+if ui_pace_enabled():
+    MAIN_INLINE_HOOKS = {**MAIN_INLINE_HOOKS, **UI_PACE_INLINE}
+    MAIN_BRANCH_HOOKS = dict(UI_PACE_BRANCH)
+assert set(MAIN_BRANCH_HOOKS) <= set(MAIN_INLINE_HOOKS)
 # host/mods/crcfast.cpp (perf pass 17, PCLMUL crc32) is not hooked in: no wall-clock gain; its header says how to add it back.
 
 
@@ -355,6 +379,8 @@ def main():
         'jobs': args.jobs, 'system_peak_used_mb': sampler.peak_used_mb, 'parent_peak_rss_mb': round(peak_rss_mb()), 'worker_peak_rss_mb': round(max(r['peak_mb'] for r in results)),
         'jt_source': args.jt_source, 'chunk_bytes_target': args.chunk_bytes,
     }
+    if name == 'main' and MAIN_BRANCH_HOOKS:
+        manifest['ui_pace_hooks'] = sorted(hex(x - base) for x in MAIN_INLINE_HOOKS if x in UI_PACE_INLINE)
     write_if_changed(moddir / 'manifest.json', json.dumps(manifest, indent=1) + '\n')
     print(json.dumps({k: v for k, v in manifest.items() if k not in ('chunks', 'chunk_info')}), file=sys.stderr)
     if errors:

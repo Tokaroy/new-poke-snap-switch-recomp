@@ -265,26 +265,375 @@ static std::string save_folder(const hle::Json& cfg) {
   return out;
 }
 
-// Dialog result: 1 Play, 2 Change game folder, 3 Open save folder, 4 Upscalers, 5 Import save, 6 Export save, 0 Quit.
-static int ask() {
+// ---- Updates. builder/snapbuild/update.py does all the work (check, download, signature, rebuild, rollback); the launcher only starts
+// the builder and shows what it found. The background check never waits: it writes startup_check.new, the next start picks it up.
+struct UpdateNotice {
+  bool available = false;
+  std::string latest, notes, size_text;
+  int low = 0, high = 0;
+};
+
+static fs::path updates_dir() {
+  wchar_t env_la[MAX_PATH] = {};
+  if (GetEnvironmentVariableW(L"LOCALAPPDATA", env_la, MAX_PATH) && env_la[0]) return fs::path(env_la) / L"SnapRecomp" / L"updates";
+  fs::path p;
+  wchar_t* la = nullptr;
+  if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &la))) { p = fs::path(la) / L"SnapRecomp" / L"updates"; CoTaskMemFree(la); }
+  return p;
+}
+
+static bool update_enabled(const hle::Json& cfg) {   // on unless config.json says "update_check": false
+  const hle::Json* j = cfg.get("update_check");
+  return !(j && j->type == hle::Json::Bool && !j->b);
+}
+
+static void save_config(const fs::path& cfg_path, const hle::Json& cfg) {
+  std::string text;
+  hle::json_dump(cfg, text);
+  std::ofstream f(cfg_path, std::ios::binary | std::ios::trunc);
+  f << text << "\n";
+}
+
+// "python" -I "<builder>\snap_builder.py" <args>; empty when config.json does not say where the builder is.
+static std::wstring builder_cmd(const hle::Json& cfg, const std::wstring& args) {
+  auto s = [&](const char* k) { return cfg.get(k) ? cfg.get(k)->str() : std::string(); };
+  std::string py = s("python"), bd = s("builder_dir");
+  std::error_code ec;
+  if (py.empty() || bd.empty() || !fs::exists(fs::u8path(py), ec) || !fs::exists(fs::u8path(bd) / "snap_builder.py", ec)) return L"";
+  return L"\"" + W(py) + L"\" -I \"" + (fs::u8path(bd) / "snap_builder.py").wstring() + L"\" " + args;
+}
+
+// Starts the builder. Hidden with stdout in out_file, or in its own console window. Returns the process handle (caller closes), or null.
+static HANDLE spawn(const std::wstring& cmd, bool visible, const fs::path& out_file) {
+  if (cmd.empty()) return nullptr;
+  STARTUPINFOW si{};
+  si.cb = sizeof si;
+  HANDLE out = INVALID_HANDLE_VALUE;
+  DWORD flags = CREATE_NO_WINDOW;
+  if (visible) {
+    flags = CREATE_NEW_CONSOLE;
+  } else {
+    std::error_code ec;
+    fs::create_directories(out_file.parent_path(), ec);
+    SECURITY_ATTRIBUTES sa{sizeof sa, nullptr, TRUE};
+    out = CreateFileW(out_file.c_str(), GENERIC_WRITE, FILE_SHARE_READ, &sa, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (out == INVALID_HANDLE_VALUE) return nullptr;
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdOutput = out;
+    si.hStdError = out;
+    si.hStdInput = INVALID_HANDLE_VALUE;
+  }
+  std::wstring mutable_cmd = cmd;
+  PROCESS_INFORMATION pi{};
+  BOOL ok = CreateProcessW(nullptr, mutable_cmd.data(), nullptr, nullptr, !visible, flags, nullptr, nullptr, &si, &pi);
+  if (out != INVALID_HANDLE_VALUE) CloseHandle(out);
+  if (!ok) return nullptr;
+  CloseHandle(pi.hThread);
+  return pi.hProcess;
+}
+
+static UpdateNotice read_notice(const fs::path& f) {
+  UpdateNotice n;
+  hle::Json j;
+  if (!read_json(f, j) || j.type != hle::Json::Obj) return n;
+  const hle::Json* a = j.get("update_available");
+  if (!a || !a->boolean() || !j.get("latest")) return n;
+  n.available = true;
+  n.latest = j.get("latest")->str();
+  if (const hle::Json* x = j.get("notes")) n.notes = x->str();
+  if (const hle::Json* x = j.get("size_text")) n.size_text = x->str();
+  if (const hle::Json* e = j.get("estimate")) {
+    if (const hle::Json* lo = e->get("low_min")) n.low = (int)lo->num();
+    if (const hle::Json* hi = e->get("high_min")) n.high = (int)hi->num();
+  }
+  return n;
+}
+
+static std::wstring describe(const UpdateNotice& n) {
+  std::wstring t = L"Download " + W(n.size_text.empty() ? "a small file" : n.size_text);
+  if (n.low > 0) t += L", then your copy is rebuilt from your own game files (about " + std::to_wstring(n.low) + L" to " + std::to_wstring(n.high) + L" minutes)";
+  return t;
+}
+
+// Last start's background check, if it finished and did not fail, replaces the stored answer; a failed or offline try leaves the old one.
+static UpdateNotice load_notice() {
+  fs::path dir = updates_dir();
+  if (dir.empty()) return {};
+  std::error_code ec;
+  fs::path nw = dir / L"startup_check.new", cur = dir / L"startup_check.json";
+  if (fs::exists(nw, ec)) {
+    hle::Json j;
+    if (read_json(nw, j) && j.type == hle::Json::Obj && !j.get("error") && !j.get("disabled")) {
+      fs::remove(cur, ec);
+      fs::rename(nw, cur, ec);
+    } else {
+      fs::remove(nw, ec);
+    }
+  }
+  return read_notice(cur);
+}
+
+static void start_background_check(const hle::Json& cfg, const fs::path& cfg_path) {
+  if (!update_enabled(cfg)) return;
+  fs::path dir = updates_dir();
+  auto s = [&](const char* k) { return cfg.get(k) ? cfg.get(k)->str() : std::string(); };
+  std::string work = s("work");
+  if (dir.empty() || work.empty()) return;
+  std::wstring cmd = builder_cmd(cfg, L"update check --startup --json --config \"" + cfg_path.wstring() + L"\" --work \"" + W(work) + L"\"");
+  HANDLE h = spawn(cmd, false, dir / L"startup_check.new");
+  if (h) CloseHandle(h);   // never waited for: the answer is read at the next start
+}
+
+// The Updates page. Returns true when an install or rollback was started (it replaces the exe, so the launcher must close).
+static bool updates_flow(const fs::path& cfg_path, hle::Json& cfg, UpdateNotice& notice) {
+  auto s = [&](const char* k) { return cfg.get(k) ? cfg.get(k)->str() : std::string(); };
+  const std::string work = s("work");
+  const std::wstring wpid = std::to_wstring(GetCurrentProcessId());
+  for (;;) {
+    const bool on = update_enabled(cfg);
+    std::error_code ec;
+    const bool can_back = !work.empty() && fs::exists(fs::u8path(work) / "builds" / "previous", ec);
+    std::vector<int> ids;
+    std::vector<std::wstring> links;
+    if (notice.available) {
+      ids.push_back(1);
+      links.push_back(L"Install version " + W(notice.latest) + L"...\n" + describe(notice));
+    }
+    ids.push_back(2);
+    links.push_back(L"Check for updates now\nThis is version " + W(s("builder_version")));
+    ids.push_back(3);
+    links.push_back(on ? L"Turn off the daily check\nIt looks once a day when the launcher starts and only tells you; nothing installs without you"
+                       : L"Turn on the daily check\nIt looks once a day when the launcher starts and only tells you; nothing installs without you");
+    if (can_back) {
+      ids.push_back(4);
+      links.push_back(L"Go back to the previous version\nYour saves and settings stay as they are");
+    }
+    int sel = choose(L"Updates", notice.available ? L"Version " + W(notice.latest) + L" is available." : L"Nothing new is waiting.", links);
+    if (sel < 0) return false;
+    const int what = ids[(size_t)sel];
+    if (what == 3) {
+      cfg.set("update_check", hle::Json::boolean_(!on));
+      save_config(cfg_path, cfg);
+      continue;
+    }
+    if (what == 2) {
+      fs::path dir = updates_dir();
+      fs::path out = dir / L"check_now.json";
+      HCURSOR old = SetCursor(LoadCursor(nullptr, IDC_WAIT));
+      HANDLE h = spawn(builder_cmd(cfg, L"update check --json" + (work.empty() ? std::wstring() : L" --work \"" + W(work) + L"\"")), false, out);
+      bool done = h && WaitForSingleObject(h, 40000) == WAIT_OBJECT_0;
+      if (h) CloseHandle(h);
+      SetCursor(old);
+      hle::Json j;
+      if (!done || !read_json(out, j) || j.type != hle::Json::Obj) { message("Snap Recomp", "Could not check for updates right now. Try again later.", MB_ICONWARNING); continue; }
+      if (const hle::Json* e = j.get("error")) { message("Snap Recomp", "Could not check for updates: " + e->str(), MB_ICONWARNING); continue; }
+      notice = read_notice(out);
+      if (notice.available) message("Snap Recomp", "Version " + notice.latest + " is available.");
+      else message("Snap Recomp", "You are up to date.");
+      continue;
+    }
+    if (what == 1) {
+      std::string notes = notice.notes.size() > 900 ? notice.notes.substr(0, 900) + "..." : notice.notes;
+      std::wstring q = L"Install version " + W(notice.latest) + L"?\n\n" + describe(notice) +
+                       L". Your saves and settings are not touched, and this version stays here so you can go back.\n\nWhat changed:\n" + W(notes);
+      if (MessageBoxW(nullptr, q.c_str(), L"Snap Recomp", MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND) != IDYES) continue;
+      HANDLE h = spawn(builder_cmd(cfg, L"update apply --work \"" + W(work) + L"\" --yes --wait-pid " + wpid), true, fs::path());
+      if (!h) { message("Snap Recomp", "The updater could not be started (the builder folder is missing). Run the builder yourself: snap_builder.py update apply", MB_ICONWARNING); continue; }
+      CloseHandle(h);
+      message("Snap Recomp", "The update runs in a new window. This launcher closes now; start it again when that window says it is done.");
+      return true;
+    }
+    if (what == 4) {
+      if (MessageBoxW(nullptr, L"Go back to the previous version? Your saves and settings stay as they are.", L"Snap Recomp", MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND) != IDYES) continue;
+      HANDLE h = spawn(builder_cmd(cfg, L"update rollback --work \"" + W(work) + L"\" --wait-pid " + wpid), true, fs::path());
+      if (!h) { message("Snap Recomp", "The updater could not be started (the builder folder is missing).", MB_ICONWARNING); continue; }
+      CloseHandle(h);
+      message("Snap Recomp", "The rollback runs in a new window. This launcher closes now; start it again when that window says it is done.");
+      return true;
+    }
+  }
+}
+
+// ---- HD textures. builder/snapbuild/hdtex_cli.py does the work (capture, plan, licenses, AI upscale, pack); with --json its stdout is one JSON
+// object per line and the human text goes to stderr. The launcher asks the questions and starts the builder; the long build runs in its own console.
+static bool hd_json(const hle::Json& cfg, const std::wstring& args, const char* key, hle::Json& out, DWORD wait_ms = 120000) {
+  fs::path f = updates_dir() / L"hdtex_out.json";
+  HANDLE h = spawn(builder_cmd(cfg, L"hdtex " + args + L" --json"), false, f);
+  if (!h) return false;
+  bool done = WaitForSingleObject(h, wait_ms) == WAIT_OBJECT_0;
+  if (!done) TerminateProcess(h, 1);
+  CloseHandle(h);
+  if (!done) return false;
+  std::ifstream in(f, std::ios::binary);
+  std::string line;
+  while (std::getline(in, line)) {
+    if (line.empty() || line[0] != '{') continue;
+    hle::Json j;
+    std::string err;
+    if (hle::json_parse(line, j, err) && j.type == hle::Json::Obj && j.get(key)) { out = *j.get(key); return true; }
+  }
+  return false;
+}
+
+static std::wstring gb_text(double bytes) {
+  wchar_t b[32];
+  swprintf_s(b, L"%.1f GB", bytes / 1073741824.0);
+  return b;
+}
+
+static std::wstring minutes_text(double seconds) {
+  int m = (int)(seconds / 60.0 + 0.5);
+  if (m < 1) return L"under a minute";
+  if (m < 90) return L"about " + std::to_wstring(m) + L" minutes";
+  wchar_t b[32];
+  swprintf_s(b, L"about %.1f hours", m / 60.0);
+  return b;
+}
+
+// Shows each license that is not accepted yet and records the ones the user accepts (the builder keeps them in tools\hdtex\licenses.json).
+// Nothing is accepted for the user. Returns false when one is declined.
+static bool hd_licenses(const hle::Json& cfg, const std::string& level) {
+  hle::Json lic;
+  std::wstring base = L"--licenses --level " + W(level);
+  if (!hd_json(cfg, base, "licenses", lic) || lic.type != hle::Json::Arr) { message("Snap Recomp", "The license list could not be read. Check that the builder folder is still where config.json says.", MB_ICONWARNING); return false; }
+  std::wstring accept_args;
+  for (const hle::Json& l : lic.a) {
+    if (l.get("accepted") && l.get("accepted")->boolean()) continue;
+    std::string key = l.get("key") ? l.get("key")->str() : "";
+    std::string title = l.get("title") ? l.get("title")->str() : key;
+    std::string name = l.get("name") ? l.get("name")->str() : "";
+    std::string author = l.get("author") ? l.get("author")->str() : "";
+    std::string url = l.get("url") ? l.get("url")->str() : "";
+    bool personal = l.get("personal_use_only") && l.get("personal_use_only")->boolean();
+    for (;;) {
+      std::wstring text = W(title + " is made by " + (author.empty() ? "its author" : author) + " and used under the " + name + " license." +
+                            (personal ? "\nIts license allows personal, non-commercial use only." : "") +
+                            "\nIt is downloaded from its author onto this PC; nothing is uploaded.");
+      int sel = choose(L"License: " + W(title), text, {L"Read the license (opens your browser)", L"I accept this license", L"No, do not use it"});
+      if (sel == 0 && url.rfind("https://", 0) == 0) { ShellExecuteW(nullptr, L"open", W(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL); continue; }
+      if (sel == 1) { accept_args += L" --accept-license " + W(key); break; }
+      return false;
+    }
+  }
+  if (!accept_args.empty()) {
+    hle::Json after;
+    if (!hd_json(cfg, base + accept_args, "licenses", after)) { message("Snap Recomp", "The licenses could not be recorded.", MB_ICONWARNING); return false; }
+  }
+  return true;
+}
+
+static void hd_textures_flow(const fs::path& exe_dir, const fs::path& cfg_path, hle::Json& cfg) {
+  if (builder_cmd(cfg, L"").empty()) {
+    message("Snap Recomp", "The builder folder was not found, so the HD texture tool cannot start. Run the builder again (snap_builder.py build).", MB_ICONWARNING);
+    return;
+  }
+  wchar_t mp[MAX_PATH * 2] = {};
+  GetModuleFileNameW(nullptr, mp, (DWORD)(sizeof mp / sizeof mp[0]));
+  for (;;) {
+    hle::Json st;
+    std::wstring state = L"Makes sharper textures from your own game files on this PC with a local AI model. Nothing is uploaded.";
+    double captured = -1;
+    HCURSOR old = SetCursor(LoadCursor(nullptr, IDC_WAIT));
+    bool have = hd_json(cfg, L"--status", "status", st, 60000);
+    SetCursor(old);
+    if (have) {
+      captured = st.get("captured") ? st.get("captured")->num() : 0;
+      const hle::Json* en = st.get("enabled");
+      const hle::Json* pt = st.get("pack_textures");
+      if (en && en->type == hle::Json::Bool)
+        state += en->b ? L"\n\nThe HD pack is on (" + std::to_wstring((long long)(pt ? pt->num() : 0)) + L" textures)." : L"\n\nThe HD pack is off.";
+      else
+        state += L"\n\nNo HD pack has been made yet.";
+      state += L"\nTextures captured from your game so far: " + std::to_wstring((long long)captured) + L".";
+    }
+    int sel = choose(L"HD textures", state,
+                     {L"Off\nTurn the HD pack off. Nothing is deleted",
+                      L"Sharp\nQuickest. Courses and menus at 2x",
+                      L"HD (suggested)\nCourses 4x, Pokemon and menus 2x",
+                      L"Ultra\nCourses and Pokemon at 4x with extra detail. Slowest and the most video memory",
+                      L"Capture textures from your game...\nPlays each unlocked course hidden and muted to collect the textures to upscale",
+                      L"Custom...\nChoose a model and size for each kind of texture"});
+    if (sel < 0) return;
+    if (sel == 5) {
+      message("Snap Recomp", "Custom levels are set from a command window, for example:\n\n  python builder\\snap_builder.py hdtex --level custom --set creature.scale=4\n\nSee builder\\HD-TEXTURES.md for every setting.");
+      continue;
+    }
+    if (sel == 0) {
+      hle::Json d;
+      if (hd_json(cfg, L"--level off", "done", d)) message("Snap Recomp", "The HD pack is off. Nothing was deleted; pick a level again to turn it back on.");
+      else message("Snap Recomp", "Could not turn the HD pack off.", MB_ICONWARNING);
+      continue;
+    }
+    if (sel == 4) {
+      std::string root, label;
+      if (!save_target(cfg_path, &root, &label)) continue;
+      if (MessageBoxW(nullptr, L"The game will run hidden and muted through each course your save has unlocked and save the textures it loads. This can take a while (up to about 7 minutes per course) and uses the GPU. Continue?",
+                      L"Snap Recomp", MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND) != IDYES) continue;
+      HANDLE h = spawn(builder_cmd(cfg, L"hdtex --collect \"" + std::wstring(mp) + L"\" --save-dir \"" + W(root) + L"\""), true, fs::path());
+      if (!h) { message("Snap Recomp", "The capture could not be started.", MB_ICONWARNING); continue; }
+      WaitForSingleObject(h, INFINITE);
+      DWORD code = 1;
+      GetExitCodeProcess(h, &code);
+      CloseHandle(h);
+      message("Snap Recomp", code == 0 ? "Capture finished. Pick a level to build the HD pack from the captured textures." : "The capture stopped before it finished. The textures captured so far are kept.", code == 0 ? MB_ICONINFORMATION : MB_ICONWARNING);
+      continue;
+    }
+    const std::string level = sel == 1 ? "sharp" : sel == 2 ? "hd" : "ultra";
+    if (have && captured <= 0) {
+      message("Snap Recomp", "No textures have been captured from your game yet. Use \"Capture textures from your game\" first, or play with capture on (hdtex --capture on).", MB_ICONINFORMATION);
+      continue;
+    }
+    hle::Json plan;
+    old = SetCursor(LoadCursor(nullptr, IDC_WAIT));
+    bool ok = hd_json(cfg, L"--level " + W(level) + L" --dry-run", "plan", plan, 180000);
+    SetCursor(old);
+    if (!ok) { message("Snap Recomp", "The plan could not be made. Run the builder's hdtex command in a window to see why.", MB_ICONWARNING); continue; }
+    auto n = [&](const char* k) { return plan.get(k) ? plan.get(k)->num() : 0.0; };
+    const bool fits = !plan.get("fits") || plan.get("fits")->boolean(true);
+    std::wstring q = L"Level " + W(level) + L": " + std::to_wstring((long long)n("textures")) + L" textures, " + minutes_text(n("seconds")) +
+                     L", " + gb_text(n("disk_bytes")) + L" of disk, up to " + gb_text(n("vram_peak_bytes")) + L" of video memory in the busiest course.";
+    if (!fits) {
+      message("Snap Recomp", U8(q) + "\n\nThat does not fit your graphics card. Pick a lower level.", MB_ICONWARNING);
+      continue;
+    }
+    q += L"\n\nThe AI tools and models are downloaded from their authors. A rebuild only redoes what changed.\n\nStart?";
+    if (MessageBoxW(nullptr, q.c_str(), L"Snap Recomp", MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND) != IDYES) continue;
+    if (!hd_licenses(cfg, level)) { message("Snap Recomp", "The HD pack was not built because a license was not accepted. The game is unchanged."); continue; }
+    HANDLE h = spawn(builder_cmd(cfg, L"hdtex --level " + W(level) + L" --yes"), true, fs::path());
+    if (!h) { message("Snap Recomp", "The HD build could not be started.", MB_ICONWARNING); continue; }
+    WaitForSingleObject(h, INFINITE);
+    DWORD code = 1;
+    GetExitCodeProcess(h, &code);
+    CloseHandle(h);
+    if (code == 0) message("Snap Recomp", "The HD pack is ready and on. Press Play to use it. Pick Off here to turn it off.");
+    else if (code == 3) message("Snap Recomp", "A license was not accepted, so nothing was built.", MB_ICONWARNING);
+    else message("Snap Recomp", "The HD build stopped before it finished (the build window shows why). The textures finished so far are kept; run it again to continue.", MB_ICONWARNING);
+  }
+}
+
+// Dialog result: 1 Play, 2 Change game folder, 3 Open save folder, 4 Upscalers, 5 Import save, 6 Export save, 7 Updates, 8 HD textures, 0 Quit.
+static int ask(const UpdateNotice& notice) {
   using TDI = HRESULT(WINAPI*)(const TASKDIALOGCONFIG*, int*, int*, BOOL*);
   HMODULE cc = LoadLibraryW(L"comctl32.dll");
   TDI td = cc ? (TDI)GetProcAddress(cc, "TaskDialogIndirect") : nullptr;
   if (!td) return 1;   // no task dialog (old system): just play
-  TASKDIALOG_BUTTON b[6] = {{1001, L"Play"}, {1002, L"Change game folder..."}, {1003, L"Open save folder"}, {1005, L"Import save...\nFrom a console backup (JKSV, Checkpoint) or an emulator"}, {1006, L"Export save...\nCopy your save out for a save manager or an emulator"}, {1004, L"Upscalers: FSR, DLSS, XeSS..."}};
+  std::wstring upd = notice.available ? L"Updates...\nVersion " + W(notice.latest) + L" is available" : std::wstring(L"Updates...\nCheck for a new version, or go back to the previous one");
+  TASKDIALOG_BUTTON b[8] = {{1001, L"Play"}, {1002, L"Change game folder..."}, {1003, L"Open save folder"}, {1005, L"Import save...\nFrom a console backup (JKSV, Checkpoint) or an emulator"}, {1006, L"Export save...\nCopy your save out for a save manager or an emulator"}, {1004, L"Upscalers: FSR, DLSS, XeSS..."}, {1008, L"HD textures...\nSharper textures made from your own game files with a local AI model"}, {1007, upd.c_str()}};
   TASKDIALOGCONFIG c{};
   c.cbSize = sizeof c;
   c.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION;
   c.dwCommonButtons = 0;
   c.pszWindowTitle = L"Snap Recomp";
   c.pszMainInstruction = L"Snap Recomp";
-  c.pszContent = L"Works with your own copy of the game.";
+  std::wstring content = L"Works with your own copy of the game.";
+  if (notice.available) content += L"\n\nUpdate available: version " + W(notice.latest) + L". " + describe(notice) + L". Open Updates to read what changed.";
+  c.pszContent = content.c_str();
   c.pButtons = b;
-  c.cButtons = 6;
+  c.cButtons = 8;
   c.nDefaultButton = 1001;
   int sel = 0;
   if (FAILED(td(&c, &sel, nullptr, nullptr))) return 1;
-  return sel == 1001 ? 1 : sel == 1002 ? 2 : sel == 1003 ? 3 : sel == 1004 ? 4 : sel == 1005 ? 5 : sel == 1006 ? 6 : 0;
+  return sel == 1001 ? 1 : sel == 1002 ? 2 : sel == 1003 ? 3 : sel == 1004 ? 4 : sel == 1005 ? 5 : sel == 1006 ? 6 : sel == 1007 ? 7 : sel == 1008 ? 8 : 0;
 }
 
 bool prepare(Result& r) {
@@ -313,10 +662,16 @@ bool prepare(Result& r) {
     f << text << "\n";
   }
   if (std::getenv("SNAP_LAUNCHER_FETCH_ONLY")) return true;   // test switch: only the upscaler offer, never start the game
+  // Update notice from the last background check, then start the next one (at most one GitHub request a day, none when switched off;
+  // a test run never checks unless SNAP_LAUNCHER_UPDATE_CHECK is set). Play is never delayed by it.
+  UpdateNotice notice = load_notice();
+  if (!autoplay || std::getenv("SNAP_LAUNCHER_UPDATE_CHECK")) start_background_check(cfg, cfg_path);
   for (;;) {
     std::string romfs = cfg.get("romfs_root") ? cfg.get("romfs_root")->str() : "";
-    int choice = autoplay ? 1 : ask();
+    int choice = autoplay ? 1 : ask(notice);
     if (choice == 0) return true;   // quit
+    if (choice == 7) { if (updates_flow(cfg_path, cfg, notice)) return true; continue; }
+    if (choice == 8) { hd_textures_flow(exe_dir, cfg_path, cfg); continue; }
     if (choice == 4) { offer_upscalers(exe_dir, data, false); continue; }
     if (choice == 5) { import_save_flow(cfg_path); continue; }
     if (choice == 6) { export_save_flow(cfg_path); continue; }

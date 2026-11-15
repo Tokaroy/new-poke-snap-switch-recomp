@@ -1,0 +1,4 @@
+# fixture: new_game
+# High-fps dialogue check: A every 37 presents (6 held) from title through the intro dialogue, presses landing on every phase of the interface
+# steps at 144 fps. No double advances: each press completes a typing line or goes to the next one, as at 60.
+repeat @f1100 @f30000 37 6 A

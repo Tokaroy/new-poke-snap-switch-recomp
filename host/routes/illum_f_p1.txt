@@ -1,0 +1,33 @@
+# fixture: unlock_all
+# worker illum: Florio Illumina photo run (SNAP_NEO_SPEED=1). Same camera sweeps as illum_f_l1 (Meganium is left of the default view, its glow pattern
+# showed at +50..53 s and +66..70 s after the ride starts), shutter every 0.45 s in those two windows, then the photo select tail.
+wait ui=title timeout=200
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=300
+@f240 6 A
+wait ui=map_select:CourseSelect timeout=60
+@f90 6 Down
+@f180 6 Down
+@f360 6 A
+wait ride timeout=300
+@f2700 2400 shot=45
+repeat 0 400 16 4 rx=-0.6
+repeat 8 400 16 4 rx=0.6
+repeat 4 400 16 3 ry=0.4
+repeat 12 400 16 3 ry=-0.4
+repeat 47 56 0.45 0.12 A
+repeat 63 74 0.45 0.12 A
+repeat 156 3000 1.5 0.15 A
+wait ui=photo_submit:FolderSelect timeout=400
+repeat @f100 @f900 90 8 Down if=!focus=AllCheck
+@f1000 8 A
+@f1150 8 Plus
+@f1260 8 Up
+@f1350 8 A
+wait ui=evaluation timeout=60
+# 6) Evaluation: A taps through the comments and the score; the run ends after the evaluation closes.
+repeat @f240 @f60000 90 8 A
+wait ui=evaluation:Score timeout=120
+repeat @f60 @f60000 90 8 A
+wait ui=evaluation:End timeout=240
+end @f300

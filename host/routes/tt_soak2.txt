@@ -1,0 +1,87 @@
+# fixture: unlock_all
+# worker tools_soak 2: Jungle, River, Beach back to back through the hub (two Return to Camp loops), ZR turbo held, photos skipped.
+# Each map visit first presses Down, Left x4, Down so the cursor is on Florio whether or not the map remembers the last course.
+# Retry Menu exit (the album_save scene stays open after the first loop, so only PhotoDetail is a usable wait): A taps to the detail, B, B, then Down Down A (Return to Camp is the third item when Retry is enabled).
+# Run with SNAP_NEO_SPEED=3 SNAP_SOAK_LOG=30 -Timeout 570.
+wait ui=title timeout=200
+repeat @f60 @f30000 40 4 A
+# course 1: Founja Jungle Day
+wait ui=map_select:StageSelect timeout=300
+@f100 6 Down
+@f170 6 Left
+@f240 6 Left
+@f310 6 Left
+@f380 6 Left
+@f450 6 Down
+@f520 6 Up
+@f630 6 A
+wait ui=map_select:CourseSelect timeout=60
+@f120 6 A
+wait ride timeout=300
+repeat @f0 @f60000 36 4 A
+repeat @f0 @f60000 400 60 rx=0.25
+repeat @f200 @f60000 400 60 rx=-0.25
+0 300 ZR
+wait ui=photo_submit:FolderSelect timeout=400
+@f90 8 Plus
+@f160 8 Up
+@f230 8 A
+repeat @f400 @f60000 60 4 A
+wait ui=album_save:PhotoDetail timeout=300
+@f60 6 B
+wait ui=album_save:PhotoSelect timeout=60
+@f150 6 B
+@f400 6 Down
+@f500 6 Down
+@f650 6 A
+repeat @f800 @f30000 50 4 A
+# course 2: Mightywide River Day
+wait ui=map_select:StageSelect timeout=300
+@f100 6 Down
+@f170 6 Left
+@f240 6 Left
+@f310 6 Left
+@f380 6 Left
+@f450 6 Down
+@f520 6 Right
+@f590 6 Up
+@f700 6 A
+wait ui=map_select:CourseSelect timeout=60
+@f120 6 A
+wait ride timeout=300
+repeat @f0 @f60000 36 4 A
+repeat @f0 @f60000 400 60 rx=0.25
+repeat @f200 @f60000 400 60 rx=-0.25
+0 300 ZR
+wait ui=photo_submit:FolderSelect timeout=400
+@f90 8 Plus
+@f160 8 Up
+@f230 8 A
+repeat @f400 @f60000 60 4 A
+wait ui=album_save:PhotoDetail timeout=300
+@f60 6 B
+wait ui=album_save:PhotoSelect timeout=60
+@f150 6 B
+@f400 6 Down
+@f500 6 Down
+@f650 6 A
+repeat @f800 @f30000 50 4 A
+# course 3: Blushing Beach Day
+wait ui=map_select:StageSelect timeout=300
+@f100 6 Down
+@f170 6 Left
+@f240 6 Left
+@f310 6 Left
+@f380 6 Left
+@f450 6 Down
+@f520 6 Right
+@f590 6 Right
+@f700 6 A
+wait ui=map_select:CourseSelect timeout=60
+@f120 6 A
+wait ride timeout=300
+repeat @f0 @f60000 36 4 A
+repeat @f0 @f60000 400 60 rx=0.25
+repeat @f200 @f60000 400 60 rx=-0.25
+0 300 ZR
+end @f60000

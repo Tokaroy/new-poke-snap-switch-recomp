@@ -1220,6 +1220,23 @@ static void test_input_mapping() {
   m.mouse_look = false;
   CHECK_EQ(map_touch(m, r).count, 1);
 
+  // --- mouse-look click bindings: left = A, right = ZL, ride only, mouse look on only
+  m = Mapping::defaults();
+  r = RawInput{}; r.focused = true; r.in_ride = true; r.mouse_buttons = 3;
+  CHECK_EQ(mapped(m, r).buttons & 0x101, 0u);        // mouse look off: nothing
+  m.mouse_look = true;
+  CHECK_EQ(mapped(m, r).buttons & 0x101, 0x101u);    // ride: A and ZL
+  r.mouse_buttons = 1; CHECK_EQ(mapped(m, r).buttons & 0x101, 0x1u);
+  r.mouse_buttons = 2; CHECK_EQ(mapped(m, r).buttons & 0x101, 0x100u);
+  r.mouse_buttons = 3; r.in_ride = false;
+  CHECK_EQ(mapped(m, r).buttons & 0x101, 0u);        // menu: nothing
+  r.in_ride = true; m.look_a.clear();
+  CHECK_EQ(mapped(m, r).buttons & 0x101, 0x100u);    // overridable
+  { Mapping m2 = Mapping::defaults(); m2.look_a = {SRC("mouse:middle")}; Mapping m3; std::string e3;
+    CHECK(m3.from_json(m2.to_json(), &e3)); CHECK(m3.look_a.size() == 1 && m3.look_a[0] == SRC("mouse:middle")); CHECK(m3.look_zl.size() == 1);
+    Json old = m2.to_json(); if (auto* mo = const_cast<Json*>(old.get("mouse"))) { std::vector<std::pair<std::string, Json>> keep; for (auto& kv : mo->o) if (kv.first.rfind("look_click", 0) != 0) keep.push_back(kv); mo->o = keep; }
+    Mapping m4; CHECK(m4.from_json(old, &e3)); CHECK(m4.look_a.size() == 1 && m4.look_a[0] == SRC("mouse:left")); }   // a file without the keys loads, with the defaults
+
   // --- slots: two per device, replacement, clear, duplicates, wrong device
   std::vector<Source> v;
   CHECK(slot_set(v, kDevKeyboard, 0, SRC("key:W")));

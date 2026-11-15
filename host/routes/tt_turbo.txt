@@ -1,0 +1,32 @@
+# fixture: unlock_all
+# tools check (worker tools_soak): Florio Day, rail checkpoints every 4 units; ZR held from rail 4
+wait ui=title timeout=200
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=300
+@f90 6 A
+wait ui=map_select:CourseSelect timeout=60
+@f180 6 A
+wait ride timeout=300
+wait rail>=4 timeout=150
+0 30 ZR
+wait rail>=8 timeout=150
+0 30 ZR
+wait rail>=12 timeout=150
+0 30 ZR
+wait rail>=16 timeout=150
+0 30 ZR
+wait rail>=20 timeout=150
+0 30 ZR
+wait rail>=24 timeout=150
+0 30 ZR
+wait rail>=28 timeout=150
+0 30 ZR
+wait rail>=32 timeout=150
+0 30 ZR
+wait rail>=36 timeout=150
+0 30 ZR
+wait rail>=40 timeout=150
+0 30 ZR
+wait rail>=44 timeout=150
+0 30 ZR
+end @f60

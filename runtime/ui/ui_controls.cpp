@@ -301,7 +301,7 @@ void tab_mouse() {
   ImGui::Spacing();
   bool ch = false;
   ch |= checkbox("Mouse look (mouse moves the camera)", &m.mouse_look,
-                 "Mouse movement drives the right stick, the camera aim. Off by default. While on, the cursor is hidden and held at the window center, and the left button no longer acts as the touch screen.");
+                 "Mouse movement drives the right stick, the camera aim. Off by default. While on, the cursor is hidden and held at the window center, the left button no longer acts as the touch screen, and during a ride the left button is A (Take Photo) and the right button is ZL (Zoom). Change those two in input.json (mouse.look_click_a, mouse.look_click_zl).");
   ImGui::BeginDisabled(!m.mouse_look);
   ch |= slider("Sensitivity", "##sens", &m.mouse_sensitivity, 0.1f, 5.0f, "%.2f",
                "How far the stick moves for a given mouse speed. 1.00 reaches full deflection at about 1500 pixels per second.");

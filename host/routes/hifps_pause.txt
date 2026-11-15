@@ -1,0 +1,13 @@
+# fixture: post_tutorial
+# High-fps pause pointer check: ride into Florio, pause, then move the pause menu pointer with the left stick (diagonal, 1 s each way).
+# The pointer's speed in pixels per second should be the same at SNAP_FPS=144 and 60 (FPS-02).
+repeat @f300 @f30000 120 8 A
+wait ui=map_select timeout=240
+repeat @f60 @f30000 120 8 A
+wait ride>=8 timeout=300
+@f10 8 Plus
+wait ui=pause_menu timeout=60
+2.0 1.0 lx=1.0 ly=1.0
+5.0 1.0 lx=-1.0 ly=-1.0
+8.0 1.0 lx=1.0 ly=-1.0
+end 11

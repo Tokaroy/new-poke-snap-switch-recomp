@@ -1,0 +1,34 @@
+# fixture: unlock_all
+# worker illum: Volcano Illumina aimed run 2 (SNAP_NEO_SPEED=1). From vx1/va1 frames Volcarona sits at about 50..70% of the width, 40..48% of the height
+# from +21 s to +41 s after the ride starts. Move the pointer right (lx=+1 for 24 presents = about 12%), then Fluffruit (B) every 1.2 s from +19 s.
+wait ui=title timeout=200
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=500
+@f120 6 Right
+@f480 6 Right
+@f840 6 Right
+@f1200 6 Right
+@f1560 6 Up
+@f2100 6 A
+wait ui=map_select:CourseSelect timeout=400
+@f90 6 Down
+@f270 6 A
+wait ride timeout=300
+@f1000 2200 shot=40
+@f840 24 lx=1.0
+repeat 19 46 1.2 0.2 B
+repeat 31 90 2.5 0.2 A
+repeat 150 3000 1.5 0.15 A
+wait ui=photo_submit:FolderSelect timeout=400
+repeat @f100 @f900 90 8 Down if=!focus=AllCheck
+@f1000 8 A
+@f1150 8 Plus
+@f1260 8 Up
+@f1350 8 A
+wait ui=evaluation timeout=60
+# 6) Evaluation: A taps through the comments and the score; the run ends after the evaluation closes.
+repeat @f240 @f60000 90 8 A
+wait ui=evaluation:Score timeout=120
+repeat @f60 @f60000 90 8 A
+wait ui=evaluation:End timeout=240
+end @f300

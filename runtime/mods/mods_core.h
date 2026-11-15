@@ -63,4 +63,15 @@ std::vector<uint8_t> build_chunk(const uint8_t* orig, size_t hdr_len, const uint
 // Header length of a chunk with a NUL-terminated name of `name_len` bytes at +0x18: 0x18 + ((len + 4) & ~3)
 size_t chunk_header_len(size_t name_len);
 
+// ---- Texture capture for the builder's AI texture upscaling (SNAP_TEXDUMP; docs/hd-textures-ai.md). Each nutexb the
+// game loads is saved once, decompressed, at <root>/<archive>/<entry name>: the same layout as a pack folder.
+// Root: SNAP_TEXDUMP_DIR, else %LOCALAPPDATA%\SnapRecomp\texcache.
+std::string texdump_root();
+// On when SNAP_TEXDUMP is set to anything but "0"; when it is unset, on while <root>\capture.on exists (the builder
+// creates that file so normal play keeps filling the cache).
+bool texdump_enabled();
+// Relative cache path of one entry: "<archive_norm>/<name>", with ".nutexb" added when the name has no extension.
+// Empty when the name could leave the folder (separators, "..", ':', control characters) or is empty.
+std::string texdump_rel(const std::string& archive_norm, const std::string& name);
+
 }  // namespace mods

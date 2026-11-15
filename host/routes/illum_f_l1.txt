@@ -1,0 +1,20 @@
+# fixture: unlock_all
+# worker illum: Florio Illumina look-around run (SNAP_NEO_SPEED=1): slow camera sweeps left and right the whole ride, frames every ~1.8 s,
+# X scan every 14 s. No tools thrown, so the only question is where Meganium is besides the start.
+wait ui=title timeout=200
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=300
+@f240 6 A
+wait ui=map_select:CourseSelect timeout=60
+@f90 6 Down
+@f180 6 Down
+@f360 6 A
+wait ride timeout=300
+@f0 12000 shot=110
+repeat 0 400 16 4 rx=-0.6
+repeat 8 400 16 4 rx=0.6
+repeat 4 400 16 3 ry=0.4
+repeat 12 400 16 3 ry=-0.4
+repeat 6 400 14 1.4 X
+wait ride>=104 timeout=400
+end @f60

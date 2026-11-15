@@ -26,6 +26,7 @@
 #include "nvn_state.h"
 
 extern "C" unsigned snap_mods_ab_period();
+extern "C" bool snap_mods_ab_live(unsigned present);
 extern "C" void snap_perf_overlay_timing(int on);   // nvn_perf.cpp: GPU busy time per frame without SNAP_PERF
 extern "C" void snap_perf_overlay_info(double* gpu_ms, double* cpu_ms, int* render_w, int* render_h, double* pace_hz, char* aa, int aa_len);
 
@@ -131,7 +132,8 @@ bool ModelDrawAdjust(ReplayCtx& cx, const Cmd& c, Cmd& adj) {
     g_split[c.a[0]] = Split{n, sep};
   }
   const unsigned P = AbPeriod();
-  const bool orig = eval || Mode() == 0 || (P && ((unsigned)g_presentCount / P) % 2 == 1);
+  static const bool own = getenv("SNAP_MODEL_AB") != nullptr;   // else follow the texture A/B (period, or F8 with SNAP_MODS_AB=key)
+  const bool orig = eval || Mode() == 0 || (P && (own ? ((unsigned)g_presentCount / P) % 2 == 1 : snap_mods_ab_live((unsigned)g_presentCount)));
   if (!eval) (orig ? g_curOrig : g_curRef)++;
   adj = c;
   if (orig) { adj.a[0] = c.a[0] + 9 * 2; adj.i[2] = sep - 9; }

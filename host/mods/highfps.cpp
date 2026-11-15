@@ -2,7 +2,7 @@
 // High frame rate spike (docs/high-fps-plan.md, WP1 first half). Everything here is inert unless an env switch is set, so the default
 // game (SNAP_FPS unset or 60) keeps its original 60 fps pacing, byte for byte.
 //
-//   SNAP_FPS=120|144            target simulation rate. Re-applies nvnHostSetFramePacing(fps) from the present hook (also right after the
+//   SNAP_FPS=90|120|144         target simulation rate. Re-applies nvnHostSetFramePacing(fps) from the present hook (also right after the
 //                               SNAP_FAST_BOOT window, which hard-codes 60).
 //   SNAP_FPS_UNCAPPED=1         measurement only: limiter off (nvnHostSetFramePacing(0)) so the real uncapped rate shows. Works with SNAP_FPS.
 //   SNAP_FPS_TRACE=<csv>        diagnostic: per clock update row (see below). Forces g_fnprof (slow; not for perf numbers).
@@ -114,8 +114,8 @@ struct Init {
         const char* e = std::getenv("SNAP_FPS");
         if (e && *e) {
             int v = std::atoi(e);
-            if (v == 120 || v == 144) g_fps = v;
-            else if (v != 60) std::fprintf(stderr, "[highfps] SNAP_FPS=%s ignored (use 60, 120 or 144)\n", e);
+            if (v == 90 || v == 120 || v == 144) g_fps = v;
+            else if (v != 60) std::fprintf(stderr, "[highfps] SNAP_FPS=%s ignored (use 60, 90, 120 or 144)\n", e);
         }
         if (const char* u = std::getenv("SNAP_FPS_UNCAPPED")) g_uncapped = *u && *u != '0';
         if (const char* f = std::getenv("SNAP_FAST_BOOT")) {
@@ -164,6 +164,6 @@ extern "C" void snap_highfps_on_present(uint64_t n) {
     // fast_boot_step (window_opts.cpp) sets 0 at present 1 and 60 at present g_fast_frames; our value replaces both.
     if (n == 1 || (g_fast_frames && n == (uint64_t)g_fast_frames)) {
         nvnHostSetFramePacing(g_uncapped ? 0.0 : (double)g_fps);
-        std::fprintf(stderr, "[highfps] pacing target %s at present %llu\n", g_uncapped ? "off (uncapped measurement)" : (g_fps == 144 ? "144 Hz" : "120 Hz"), (unsigned long long)n);
+        std::fprintf(stderr, "[highfps] pacing target %s at present %llu\n", g_uncapped ? "off (uncapped measurement)" : (g_fps == 144 ? "144 Hz" : g_fps == 120 ? "120 Hz" : "90 Hz"), (unsigned long long)n);
     }
 }

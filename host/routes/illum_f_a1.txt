@@ -1,0 +1,44 @@
+# fixture: unlock_all
+# worker illum: Florio Illumina aimed run 1 (SNAP_NEO_SPEED=1). Orb at Meganium at the start, then scan + orbs + melody at the glowing flower (rail 70+).
+wait ui=title timeout=200
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=300
+@f240 6 A
+wait ui=map_select:CourseSelect timeout=60
+@f90 6 Down
+@f180 6 Down
+@f360 6 A
+wait ride timeout=300
+@f0 1500 shot=75
+@f0 26 lx=-1.0
+@f32 6 Y
+@f90 6 Y
+@f150 6 R
+wait rail>=66 timeout=300
+@f0 4800 shot=75
+0.5 1.5 X
+@f100 14 ly=0.6
+3 0.2 Y
+5 0.2 R
+8 0.2 Y
+10 0.2 R
+13 0.2 Y
+15 0.2 R
+18 0.2 Y
+20 0.2 R
+23 0.2 Y
+repeat 6 120 2.5 0.2 A
+wait ui=photo_submit:FolderSelect timeout=400
+
+repeat @f100 @f900 90 8 Down if=!focus=AllCheck
+@f1000 8 A
+@f1150 8 Plus
+@f1260 8 Up
+@f1350 8 A
+wait ui=evaluation timeout=60
+# 6) Evaluation: A taps through the comments and the score; the run ends after the evaluation closes.
+repeat @f240 @f60000 90 8 A
+wait ui=evaluation:Score timeout=120
+repeat @f60 @f60000 90 8 A
+wait ui=evaluation:End timeout=240
+end @f300

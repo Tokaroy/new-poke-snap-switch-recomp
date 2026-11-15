@@ -1,0 +1,15 @@
+# fixture: unlock_all
+# worker illum: Florio Illumina exploration, SNAP_NEO_SPEED=1, dense frames, X scan pulses so the HUD labels the subjects. No orbs yet.
+wait ui=title timeout=200
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=300
+@f240 6 A
+wait ui=map_select:CourseSelect timeout=60
+@f90 6 Down
+@f180 6 Down
+@f360 6 A
+wait ride timeout=300
+@f0 12000 shot=150
+repeat 3 400 9 1.4 X
+wait ride>=110 timeout=400
+end @f60

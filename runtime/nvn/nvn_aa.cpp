@@ -87,7 +87,21 @@ struct G {
   Sized sz;
   std::map<std::tuple<VkImage, uint32_t, uint32_t>, VkImageView> unormViews;   // sRGB targets: UNORM view of (image, level, layer); guarded by unormMu
   std::mutex unormMu;   // AaAfterDraw (replay thread) vs AaForgetTexture (graveyard reaper)
+  // [perf pass 20] SMAA + CAS read the tonemap target directly (no copy of it into the scratch image C): a sampled view and the two descriptor
+  // sets that read it, per (image, level, layer). Guarded by unormMu; toFree holds sets of destroyed targets until the replay thread frees them.
+  struct Direct { VkImageView view = VK_NULL_HANDLE; VkDescriptorSet setEdge = VK_NULL_HANDLE, setBlend = VK_NULL_HANDLE; };
+  std::map<std::tuple<VkImage, uint32_t, uint32_t>, Direct> direct;
+  std::vector<VkDescriptorSet> toFree;
 } g;
+
+// SNAP_AA_VERIFY=1 (test aid, with SMAA + CAS and the direct read): on every 100th AA step (at most 40) the frame runs the old chain (copy of the target
+// into C, edge, weights, blend, CAS) into the scratch image X and then the direct chain into the target, and a few presents later both are compared
+// byte for byte. The log line `aa verify: ...` says whether they were identical.
+struct Verify {
+  bool init = false, on = false; Img x; uint32_t xw = 0, xh = 0; VkFormat xfmt = VK_FORMAT_UNDEFINED;
+  VkBuffer buf[2] = {}; VkDeviceMemory mem[2] = {}; void* map[2] = {}; uint64_t bytes = 0;
+  int calls = 0, done = 0, pendingAt = -1; uint32_t w = 0, h = 0; int same = 0, diff = 0;
+} ver;
 
 // SNAP_AA_DUMP=<dir> SNAP_AA_DUMP_AT=<p1,p2,...> (test aid): at the first tonemap draw at or after each present count, write the scene before the
 // AA step (<dir>/aa_p<N>_before.bmp) and after it (aa_p<N>_after.bmp) from the SAME frame (no UI), so before/after pairs share one pose.
@@ -175,7 +189,7 @@ bool Setup(Host* h) {
   pli.setLayoutCount = 1; pli.pSetLayouts = &g.dsl; pli.pushConstantRangeCount = 1; pli.pPushConstantRanges = &pr;
   if (vkCreatePipelineLayout(d, &pli, nullptr, &g.pl) != VK_SUCCESS) return false;
   VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 4 * 16}, {VK_DESCRIPTOR_TYPE_SAMPLER, 2 * 16}};
-  VkDescriptorPoolCreateInfo dp{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO}; dp.maxSets = 16; dp.poolSizeCount = 2; dp.pPoolSizes = ps;
+  VkDescriptorPoolCreateInfo dp{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO}; dp.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT; dp.maxSets = 16; dp.poolSizeCount = 2; dp.pPoolSizes = ps;
   if (vkCreateDescriptorPool(d, &dp, nullptr, &g.pool) != VK_SUCCESS) return false;
   if (!MakeImg(h, g.area, 160, 560, VK_FORMAT_R8G8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT)) return false;
   if (!MakeImg(h, g.search, 64, 16, VK_FORMAT_R8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT)) return false;
@@ -247,11 +261,12 @@ bool Resize(uint32_t w, uint32_t hh, VkFormat fmt) {
     // still use the old images and sets. They get a fresh descriptor pool, and the old images and pool go to the graveyard (nvn_life.cpp).
     LifeCount(LS_AA_RESIZE);
     VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 4 * 16}, {VK_DESCRIPTOR_TYPE_SAMPLER, 2 * 16}};   // as in Init
-    VkDescriptorPoolCreateInfo dp{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO}; dp.maxSets = 16; dp.poolSizeCount = 2; dp.pPoolSizes = ps;
+    VkDescriptorPoolCreateInfo dp{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO}; dp.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT; dp.maxSets = 16; dp.poolSizeCount = 2; dp.pPoolSizes = ps;
     VkDescriptorPool fresh = VK_NULL_HANDLE;
     if (vkCreateDescriptorPool(h->device, &dp, nullptr, &fresh) != VK_SUCCESS) return false;
     Sized old = g.sz; const VkDescriptorPool oldPool = g.pool;
     g.pool = fresh;
+    { std::lock_guard<std::mutex> lk(g.unormMu); for (auto& kv : g.direct) kv.second.setEdge = kv.second.setBlend = VK_NULL_HANDLE; g.toFree.clear(); }   // sets of the retired pool
     RetireFn([h, old, oldPool]() mutable {
       FreeImg(h, old.c); FreeImg(h, old.e); FreeImg(h, old.wt); FreeImg(h, old.b);
       vkDestroyDescriptorPool(h->device, oldPool, nullptr);
@@ -268,6 +283,31 @@ bool Resize(uint32_t w, uint32_t hh, VkFormat fmt) {
   g.sz.setCas = MakeSet(g.sz.b.view, g.sz.b.view, g.area.view, g.search.view);
   g.sz.setCasC = MakeSet(g.sz.c.view, g.sz.c.view, g.area.view, g.search.view);
   return g.sz.setEdge && g.sz.setW && g.sz.setBlend && g.sz.setCas && g.sz.setCasC;
+}
+
+// The sampled view of the target and the sets that read it (edge pass: target twice; blend pass: target and the weights). False when the view or
+// the sets cannot be made; the caller then copies the target into C as before. Frees the sets of targets destroyed since the last call.
+bool DirectSets(const TextureImpl* t, const SubRange& rr, VkFormat fmt, G::Direct& out) {
+  Host* h = g.h;
+  std::lock_guard<std::mutex> lk(g.unormMu);
+  if (!g.toFree.empty()) { vkFreeDescriptorSets(h->device, g.pool, (uint32_t)g.toFree.size(), g.toFree.data()); g.toFree.clear(); }
+  const auto k = std::make_tuple(t->image, (uint32_t)rr.lb, (uint32_t)rr.yb);
+  auto it = g.direct.find(k);
+  if (it == g.direct.end()) {
+    VkImageViewCreateInfo vc{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    vc.image = t->image; vc.viewType = VK_IMAGE_VIEW_TYPE_2D; vc.format = fmt; vc.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, rr.lb, 1, rr.yb, 1};
+    VkImageViewUsageCreateInfo uci{VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO}; uci.usage = VK_IMAGE_USAGE_SAMPLED_BIT; vc.pNext = &uci;
+    VkImageView v = VK_NULL_HANDLE;
+    if (vkCreateImageView(h->device, &vc, nullptr, &v) != VK_SUCCESS) return false;
+    G::Direct d; d.view = v;
+    it = g.direct.emplace(k, d).first;
+  }
+  G::Direct& d = it->second;
+  if (!d.setEdge) d.setEdge = MakeSet(d.view, d.view, g.area.view, g.search.view);
+  if (!d.setBlend) d.setBlend = MakeSet(d.view, g.sz.wt.view, g.area.view, g.search.view);
+  if (!d.setEdge || !d.setBlend) return false;
+  out = d;
+  return true;
 }
 
 void FullPass(ReplayCtx& cx, VkImageView target, uint32_t w, uint32_t hh, VkAttachmentLoadOp load, VkPipeline pipe, VkDescriptorSet set, const float pc[4], uint32_t x0 = 0) {
@@ -360,6 +400,12 @@ void AaForgetTexture(const TextureImpl* t) {
     vkDestroyImageView(g.h->device, it->second, nullptr);
     it = g.unormViews.erase(it);
   }
+  for (auto it = g.direct.lower_bound(std::make_tuple(t->image, 0u, 0u)); it != g.direct.end() && std::get<0>(it->first) == t->image;) {
+    vkDestroyImageView(g.h->device, it->second.view, nullptr);
+    if (it->second.setEdge) g.toFree.push_back(it->second.setEdge);
+    if (it->second.setBlend) g.toFree.push_back(it->second.setBlend);
+    it = g.direct.erase(it);
+  }
 }
 
 bool AaIsTonemapKey(const char* key) { return IsTonemap(key); }   // [fx]
@@ -417,6 +463,16 @@ void AaAfterDraw(ReplayCtx& cx, const char* key) {
     const char* d = getenv("SNAP_AA_DUMP"); const char* a = getenv("SNAP_AA_DUMP_AT");
     if (d && *d && a) { dmp.on = true; dmp.dir = d; for (const char* c = a; *c;) { dmp.at.push_back(atoi(c)); while (*c && *c != ',') c++; if (*c == ',') c++; } }
   }
+  if (!ver.init) { ver.init = true; const char* e = getenv("SNAP_AA_VERIFY"); ver.on = e && e[0] == '1'; }
+  if (ver.pendingAt >= 0 && g_presentCount >= ver.pendingAt + 3) {   // the copies recorded a few frames ago are done: compare them
+    vkDeviceWaitIdle(h->device);
+    uint64_t nd = 0; const uint8_t* a = (const uint8_t*)ver.map[0]; const uint8_t* b2 = (const uint8_t*)ver.map[1];
+    for (uint64_t i = 0; i < ver.bytes; i++) nd += a[i] != b2[i];
+    (nd ? ver.diff : ver.same)++;
+    fprintf(stderr, "aa verify: present %d %ux%u: old chain vs direct chain %s (%llu differing bytes of %llu); %d identical, %d different so far\n", ver.pendingAt, ver.w, ver.h,
+            nd ? "DIFFER" : "identical", (unsigned long long)nd, (unsigned long long)ver.bytes, ver.same, ver.diff);
+    ver.pendingAt = -1;
+  }
   if (dmp.pendingAt >= 0 && g_presentCount >= dmp.pendingFrame + 3) {   // the copies recorded a few frames ago are done: write them
     vkDeviceWaitIdle(h->device);
     char nm[64];
@@ -431,6 +487,49 @@ void AaAfterDraw(ReplayCtx& cx, const char* key) {
     dmp.bytes = (uint64_t)w * hh * 4;
     for (int i = 0; i < 3; i++) if (!CreateHostBuffer(h, dmp.bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, &dmp.buf[i], &dmp.mem[i], &dmp.map[i])) { dmp.on = false; dumpNow = false; }
   }
+  // [perf pass 20] SMAA + CAS: the edge and blend passes sample the target itself and only the last pass (CAS) writes it, so the copy of the
+  // target into C is not needed (SNAP_AA_COPY=1 keeps it; the dump and the split view keep it too: they read C).
+  static const bool kCopy = [] { const char* e = getenv("SNAP_AA_COPY"); return e && e[0] == '1'; }();
+  G::Direct ds{};
+  const bool direct = !kCopy && smaa && cas && !dumpNow && !g_split && DirectSets(t, rr, fmt, ds);
+  if (g_perfPassOn) PerfMark(cx.h, cx.cb, "aa copy");   // [perf pass 20] the copy below and its layout changes show up as their own row (SNAP_GPU_PASSES)
+  bool verNow = false;
+  if (direct && ver.on && ver.pendingAt < 0 && ver.done < 40 && (ver.calls++ % 100) == 0 && t->fi->bytes == 4) {
+    if (!ver.x.img && ver.xfmt == VK_FORMAT_UNDEFINED) {
+      ver.xw = w; ver.xh = hh; ver.xfmt = fmt;
+      MakeImg(h, ver.x, w, hh, fmt, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+      ver.bytes = (uint64_t)w * hh * 4;
+      for (int i = 0; i < 2; i++) if (!CreateHostBuffer(h, ver.bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, &ver.buf[i], &ver.mem[i], &ver.map[i])) ver.on = false;
+    }
+    if (ver.on && ver.x.img && ver.xw == w && ver.xh == hh && ver.xfmt == fmt) {
+      verNow = true;
+      const float vrtm[4] = {1.0f / w, 1.0f / hh, (float)w, (float)hh};
+      const float vcpc[4] = {1.0f / w, 1.0f / hh, g_aaSharpen, 0};
+      TransitionRange(cb, t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rr);
+      ImgBar(cb, g.sz.c.img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+      VkImageCopy vcp{}; vcp.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, rr.lb, rr.yb, 1}; vcp.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; vcp.extent = {w, hh, 1};
+      vkCmdCopyImage(cb, t->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g.sz.c.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &vcp);
+      ImgBar(cb, g.sz.c.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+      TransitionRange(cb, t, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, rr);
+      ImgBar(cb, g.sz.e.img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+      FullPass(cx, g.sz.e.view, w, hh, VK_ATTACHMENT_LOAD_OP_CLEAR, pp->edge, g.sz.setEdge, vrtm);
+      ImgBar(cb, g.sz.e.img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+      ImgBar(cb, g.sz.wt.img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+      FullPass(cx, g.sz.wt.view, w, hh, VK_ATTACHMENT_LOAD_OP_CLEAR, pp->weights, g.sz.setW, vrtm);
+      ImgBar(cb, g.sz.wt.img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+      ImgBar(cb, g.sz.b.img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+      FullPass(cx, g.sz.b.view, w, hh, VK_ATTACHMENT_LOAD_OP_DONT_CARE, pp->blend, g.sz.setBlend, vrtm);
+      ImgBar(cb, g.sz.b.img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+      ImgBar(cb, ver.x.img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+      FullPass(cx, ver.x.view, w, hh, VK_ATTACHMENT_LOAD_OP_DONT_CARE, pp->cas, g.sz.setCas, vcpc);
+      ImgBar(cb, ver.x.img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+      VkBufferImageCopy vb{}; vb.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; vb.imageExtent = {w, hh, 1};
+      vkCmdCopyImageToBuffer(cb, ver.x.img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, ver.buf[0], 1, &vb);
+    }
+  }
+  if (direct) {
+    TransitionRange(cb, t, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, rr);   // the edge and blend passes sample the target; CAS writes it again below
+  } else {
   // 1. copy the target into the scratch image C
   TransitionRange(cb, t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rr);
   ImgBar(cb, g.sz.c.img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
@@ -438,22 +537,31 @@ void AaAfterDraw(ReplayCtx& cx, const char* key) {
   vkCmdCopyImage(cb, t->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g.sz.c.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cp);
   ImgBar(cb, g.sz.c.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
   TransitionRange(cb, t, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, rr);
+  }
   const float rtm[4] = {1.0f / w, 1.0f / hh, (float)w, (float)hh};
   VkImageView first = rtv;   // where the blend pass writes
   if (smaa) {
     ImgBar(cb, g.sz.e.img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-    FullPass(cx, g.sz.e.view, w, hh, VK_ATTACHMENT_LOAD_OP_CLEAR, pp->edge, g.sz.setEdge, rtm);
+    FullPass(cx, g.sz.e.view, w, hh, VK_ATTACHMENT_LOAD_OP_CLEAR, pp->edge, direct ? ds.setEdge : g.sz.setEdge, rtm);
     ImgBar(cb, g.sz.e.img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     ImgBar(cb, g.sz.wt.img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     FullPass(cx, g.sz.wt.view, w, hh, VK_ATTACHMENT_LOAD_OP_CLEAR, pp->weights, g.sz.setW, rtm);
     ImgBar(cb, g.sz.wt.img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     if (cas) { ImgBar(cb, g.sz.b.img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL); first = g.sz.b.view; }
-    FullPass(cx, first, w, hh, cas ? VK_ATTACHMENT_LOAD_OP_DONT_CARE : (g_split ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE), pp->blend, g.sz.setBlend, rtm, cas ? 0 : (g_split ? w / 2 : 0));
+    FullPass(cx, first, w, hh, cas ? VK_ATTACHMENT_LOAD_OP_DONT_CARE : (g_split ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE), pp->blend, direct ? ds.setBlend : g.sz.setBlend, rtm, cas ? 0 : (g_split ? w / 2 : 0));
     if (cas) ImgBar(cb, g.sz.b.img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    if (direct) TransitionRange(cb, t, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, rr);   // the blend pass is done reading the target
   }
   if (cas) {
     const float cpc[4] = {1.0f / w, 1.0f / hh, g_aaSharpen, 0};
     FullPass(cx, rtv, w, hh, g_split ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE, pp->cas, smaa ? g.sz.setCas : g.sz.setCasC, cpc, g_split ? w / 2 : 0);
+  }
+  if (verNow) {   // the target now holds the direct chain's picture: read it back next to the old chain's (ver.buf[0])
+    VkBufferImageCopy vb{}; vb.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, rr.lb, rr.yb, 1}; vb.imageExtent = {w, hh, 1};
+    TransitionRange(cb, t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rr);
+    vkCmdCopyImageToBuffer(cb, t->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, ver.buf[1], 1, &vb);
+    TransitionRange(cb, t, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, rr);
+    ver.pendingAt = g_presentCount; ver.w = w; ver.h = hh; ver.done++;
   }
   if (dumpNow) {   // before: the scratch copy of the untouched frame; after: the target as it is now
     VkBufferImageCopy bc{}; bc.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; bc.imageExtent = {w, hh, 1};

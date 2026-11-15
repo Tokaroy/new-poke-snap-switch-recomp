@@ -180,3 +180,19 @@ Permission is hereby granted, free of charge, to any person obtaining a copy of 
 distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the
 following conditions: the above copyright notice and this permission notice shall be included in all copies or substantial portions of the
 Software. The Software is provided "AS IS", without warranty of any kind.
+
+### NewSnapRecomp (MIT)
+
+Used in `host/mods/uipace.cpp`, `host/mods/uipace_core.h` and the hook table in `recomp/snap_gen.py` (interface pacing above 60 fps): the
+method and the guest addresses and object layouts for the interface handler pacing, the pad sampling and the pause pointer are adapted from
+its `docs/HIGH_FPS.md`, `newsnap/overlays/snap_ui_pace.c` and `patches/snap-2.0.1-ui-pace.txt`.
+
+MIT License
+
+Copyright (c) 2026 MatyMeatBoy and NewSnapRecomp contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the
+following conditions: the above copyright notice and this permission notice shall be included in all copies or substantial portions of the
+Software. The Software is provided "AS IS", without warranty of any kind.

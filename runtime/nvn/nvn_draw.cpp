@@ -541,6 +541,7 @@ bool ExcludeAttachment(SubRange& rg, const SubRange& a) {
 // upload, with an image built from the original file (runtime/mods/mods.cpp finds it by comparing the guest bytes with the
 // replacement). While (present count / P) is odd the draw samples the original image, otherwise the replacement.
 extern "C" unsigned snap_mods_ab_period();
+extern "C" bool snap_mods_ab_live(unsigned present);   // true while the original should show (period parity, or F8)
 extern "C" const uint8_t* snap_mods_ab_original(const uint8_t* src, uint32_t w, uint32_t h, uint32_t mips, uint32_t* ow, uint32_t* oh, uint32_t* om);
 TextureImpl* AbSubstitute(ReplayCtx&, TextureImpl* t) {
   static const unsigned P = snap_mods_ab_period();
@@ -563,7 +564,7 @@ TextureImpl* AbSubstitute(ReplayCtx&, TextureImpl* t) {
       }
     }
   }
-  return (t->abAlt && ((unsigned)g_presentCount / P & 1)) ? t->abAlt : t;
+  return (t->abAlt && snap_mods_ab_live((unsigned)g_presentCount)) ? t->abAlt : t;   // SNAP_MODS_AB=key: F8 toggles
 }
 
 ResolvedTex ResolveHandle(ReplayCtx& cx, DrawState& d, uint64_t handle, bool image, int shaderType) {

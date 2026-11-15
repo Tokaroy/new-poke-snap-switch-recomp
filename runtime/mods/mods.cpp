@@ -115,7 +115,7 @@ const char* nutexb_problem(const std::vector<uint8_t>& d) {
 }  // namespace
 
 // ---- SNAP_MODS_AB=<P> (test aid, off when unset): in-run before/after of replaced textures. While (present count / P) is
-// odd the renderer shows the ORIGINAL texture, otherwise the replacement. Each replaced nutexb is paired with the original
+// odd the renderer shows the ORIGINAL texture, otherwise the replacement. SNAP_MODS_AB=key: F8 switches instead. Each replaced nutexb is paired with the original
 // file from SNAP_MODS_AB_ORIG (default extracted/drp-v262144, same relative path as in the pack); the renderer
 // (runtime/nvn/nvn_draw.cpp ResolveHandle) finds the pair by comparing the guest texture's bytes with the replacement and
 // samples a second image built from the original at bind time. Both versions stay resident; nothing is re-uploaded.
@@ -157,10 +157,34 @@ void ab_register(const mods::Override* o, const std::shared_ptr<const std::vecto
 }
 }  // namespace
 
-// Renderer side: the period (0 = off).
+// Renderer side: the period (0 = off). SNAP_MODS_AB=key pairs textures the same way (period 1) but F8 picks the side.
+static bool ab_keyed() {
+  static const bool k = getenv("SNAP_MODS_AB") && _stricmp(getenv("SNAP_MODS_AB"), "key") == 0;
+  return k;
+}
 extern "C" unsigned snap_mods_ab_period() {
-  static const unsigned p = getenv("SNAP_MODS_AB") ? (unsigned)strtoul(getenv("SNAP_MODS_AB"), nullptr, 0) : 0;
+  static const unsigned p = ab_keyed() ? 1u : getenv("SNAP_MODS_AB") ? (unsigned)strtoul(getenv("SNAP_MODS_AB"), nullptr, 0) : 0;
   return p;
+}
+// Renderer side, once per bind: true while the ORIGINAL should show. Keyed mode: F8 toggles (polled once per present, so
+// the cost is one compare per bind); starts on the pack. Otherwise odd (present / period) shows the original.
+extern "C" bool snap_mods_ab_live(unsigned present) {
+  static const unsigned P = snap_mods_ab_period();
+  if (!P) return false;
+  if (!ab_keyed()) return (present / P) & 1;
+  static std::atomic<unsigned> seen{~0u};
+  static std::atomic<bool> orig{false}, down{false};
+  if (seen.exchange(present, std::memory_order_relaxed) != present) {
+    const bool d = (GetAsyncKeyState(VK_F8) & 0x8000) != 0;
+    if (d && !down.exchange(true)) {
+      const bool o = !orig.load();
+      orig.store(o);
+      fprintf(stderr, "[mods-ab] F8: showing %s textures\n", o ? "original" : "pack");
+    } else if (!d) {
+      down.store(false);
+    }
+  }
+  return orig.load(std::memory_order_relaxed);
 }
 // Renderer side: `src` is the guest's copy of a texture of w x h x mips. Returns the original's data and size, or null.
 extern "C" const uint8_t* snap_mods_ab_original(const uint8_t* src, uint32_t w, uint32_t h, uint32_t mips,
@@ -210,7 +234,16 @@ bool same_header(const BuiltChunk* b, const uint8_t* chunk, size_t hdr) {
 }
 }  // namespace
 
+// Texture capture (SNAP_TEXDUMP, mods_core.h texdump_*): host/mods/texdump.cpp sets this; it saves the original entry
+// before any replacement is swapped in. g_texdump_on is fixed at start-up, so the off path costs one load.
+void (*g_snap_texdump)(Cpu* c, const std::string& archive) = nullptr;
+static const bool g_texdump_on = mods::texdump_enabled();
+
 extern "C" void rt_mod_entry(Cpu* c) {
+  if (g_texdump_on && g_snap_texdump && c->x[20]) {
+    std::string a;
+    if (mods_archive_of(c, &a)) g_snap_texdump(c, a);
+  }
   int st = g_state.load(std::memory_order_acquire);
   if (st == 1) return;
   if (st == 0) { std::call_once(g_once, init); st = g_state.load(); if (st == 1) return; }
@@ -338,7 +371,8 @@ void tap_read(uint64_t id, const void* buf, size_t n) {
 struct Installer {
   Installer() {
     std::call_once(g_once, init);
-    if (g_state.load() == 2) { g_snap_fs_tap_open = tap_open; g_snap_fs_tap_close = tap_close; g_snap_fs_tap_read = tap_read; }
+    if (g_state.load() == 2 || g_texdump_on) { g_snap_fs_tap_open = tap_open; g_snap_fs_tap_close = tap_close; g_snap_fs_tap_read = tap_read; }
+    if (g_texdump_on) fprintf(stderr, "[texdump] capture on: %s\n", mods::texdump_root().c_str());
     if (!g_index.rom_layers.empty())
       g_snap_fs_extra_rom_layers = [] { std::vector<std::string> v; for (auto& l : g_index.rom_layers) v.push_back(l.first); return v; };
   }

@@ -38,6 +38,34 @@ int main() {
   CHECK(!parse_pack_path("a.drp/sub/foo.msbt", &a, &s, &x));              // entry must sit directly in the archive folder
   CHECK(!parse_pack_path("a.drp/noext", &a, &s, &x));
 
+  // Texture capture paths (SNAP_TEXDUMP): pack layout, ".nutexb" added only when missing, nothing that leaves the folder
+  CHECK(texdump_rel("nx/pack/characters/master/ch_097.drp", "CH_097_00_0_A00_Body_dif.nutexb") ==
+        "nx/pack/characters/master/ch_097.drp/CH_097_00_0_A00_Body_dif.nutexb");
+  CHECK(texdump_rel("a.drp", "icon") == "a.drp/icon.nutexb");
+  {
+    std::string ra, rs; uint32_t rx = 0;   // a capture path is a valid pack path for the same entry
+    CHECK(parse_pack_path(texdump_rel("common/ui/x.drp", "Icon_A.nutexb"), &ra, &rs, &rx) && ra == "common/ui/x.drp" && rs == "icon_a" && rx == ext_crc("nutexb"));
+  }
+  CHECK(texdump_rel("a.drp", "").empty());
+  CHECK(texdump_rel("a.drp", "../x").empty());
+  CHECK(texdump_rel("a.drp", "sub/x").empty());
+  CHECK(texdump_rel("a.drp", "c:x").empty());
+  CHECK(texdump_rel("../a.drp", "x").empty());
+  CHECK(texdump_rel("/a.drp", "x").empty());
+  CHECK(texdump_rel("a.drp", std::string("x\x01y")).empty());
+#ifdef _WIN32
+  _putenv_s("SNAP_TEXDUMP_DIR", "C:/tmp/tc"); _putenv_s("SNAP_TEXDUMP", "0");
+#else
+  setenv("SNAP_TEXDUMP_DIR", "C:/tmp/tc", 1); setenv("SNAP_TEXDUMP", "0", 1);
+#endif
+  CHECK(texdump_root() == "C:/tmp/tc" && !texdump_enabled());
+#ifdef _WIN32
+  _putenv_s("SNAP_TEXDUMP", "1");
+#else
+  setenv("SNAP_TEXDUMP", "1", 1);
+#endif
+  CHECK(texdump_enabled());
+
   // Index: first (highest priority) pack wins; the game's name may carry its extension
   Index ix;
   ix.packs.resize(2);

@@ -1880,10 +1880,6 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
   bool hdrDone = false;   // HDR10 swapchain (SNAP_HDR=1): nvn_hdr.cpp draws the PQ pass instead of the clear + blit below (set after the rects are known)
   if (!w->hdr) {
   imgBarrier(dst, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-  VkClearColorValue black{};
-  VkImageSubresourceRange rg{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-  vkCmdClearColorImage(cb, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &rg);
-  imgBarrier(dst, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
   }
 
   // source rectangle: crop if set, else the whole texture
@@ -1899,12 +1895,23 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
   int dw = w->scExtent.width, dh = w->scExtent.height;
   if (sa > da) dh = std::max(1, (int)(dw / sa + 0.5)); else dw = std::max(1, (int)(dh * sa + 0.5));
   int dx = ((int)w->scExtent.width - dw) / 2, dy = ((int)w->scExtent.height - dh) / 2;
+  // [perf pass 20] The black clear is for the letterbox bars. When the blit covers the whole swapchain image (the usual case: the window texture
+  // has the window's aspect) it writes every pixel, so the clear and its barrier are skipped. SNAP_PRESENT_CLEAR=1 keeps the clear.
+  static const bool kClearAlways = [] { const char* e = getenv("SNAP_PRESENT_CLEAR"); return e && e[0] == '1'; }();
+  const bool blitCoversAll = dx == 0 && dy == 0 && dw == (int)w->scExtent.width && dh == (int)w->scExtent.height;
+  if (!w->hdr && (kClearAlways || !blitCoversAll)) {
+    VkClearColorValue black{};
+    VkImageSubresourceRange rg{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCmdClearColorImage(cb, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &rg);
+    imgBarrier(dst, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+  }
   VkImageBlit blit{};
   blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
   blit.srcOffsets[0] = {sx, sy, 0}; blit.srcOffsets[1] = {sx + sw, sy + sh, 1};
   blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
   blit.dstOffsets[0] = {dx, dy, 0}; blit.dstOffsets[1] = {dx + dw, dy + dh, 1};
   const bool same = (sw == dw && sh == dh);
+  PerfMark(h, cb, "present blit");   // [perf pass 20] splits the clear from the blit in the SNAP_GPU_PASSES rows
   if (w->hdr) {
     // HDR path: the scene is blitted into an SDR scratch image so SNAP_LOOK and the F1 overlay (SDR code) keep working; the overlay draws into a
     // transparent layer. nvn_hdr.cpp then encodes scene (inverse tone map) + layer (paper white) into the HDR swapchain image.

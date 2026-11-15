@@ -1,0 +1,13 @@
+# fixture: unlock_all
+# melody audio check (worker tools_soak round 2): taps R at known presents after rail>=6
+wait ui=title timeout=200
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=300
+@f90 6 A
+wait ui=map_select:CourseSelect timeout=60
+@f180 6 A
+wait ride timeout=300
+@f600 20 R
+@f1500 20 R
+@f2400 20 R
+end @f3300

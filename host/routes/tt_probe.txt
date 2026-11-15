@@ -1,0 +1,25 @@
+# fixture: unlock_all
+# worker tools_soak: Florio Day with turbo, skip photos, Return to Camp, then R on the map (does the cursor reset to Florio or stay?)
+wait ui=title timeout=200
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=300
+@f90 6 A
+wait ui=map_select:CourseSelect timeout=60
+@f180 6 A
+wait ride timeout=300
+repeat @f0 @f60000 36 4 A
+repeat @f0 @f60000 400 60 rx=0.25
+repeat @f200 @f60000 400 60 rx=-0.25
+0 200 ZR
+wait ui=photo_submit:FolderSelect timeout=400
+@f150 8 Plus
+@f230 8 Up
+@f310 8 A
+repeat @f600 @f60000 90 4 A
+wait ui=retry_menu timeout=300
+@f240 6 Down
+@f420 6 A
+wait ui=map_select:StageSelect timeout=250
+@f200 6 R
+@f500 6 R
+end @f600

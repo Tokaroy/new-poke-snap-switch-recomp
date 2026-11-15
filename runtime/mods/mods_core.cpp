@@ -125,6 +125,31 @@ std::string default_root() {
   return std::string(ap ? ap : ".") + "\\SnapRecomp\\mods";
 }
 
+std::string texdump_root() {
+  if (const char* e = std::getenv("SNAP_TEXDUMP_DIR")) if (*e) return e;
+  const char* la = std::getenv("LOCALAPPDATA");
+  return std::string(la ? la : ".") + "\\SnapRecomp\\texcache";
+}
+
+bool texdump_enabled() {
+  if (const char* e = std::getenv("SNAP_TEXDUMP")) return *e && std::strcmp(e, "0") != 0;
+  std::error_code ec;
+  return fs::exists(fs::path(texdump_root()) / "capture.on", ec);
+}
+
+std::string texdump_rel(const std::string& archive_norm, const std::string& name) {
+  if (name.empty() || name.size() > 200 || archive_norm.empty() || archive_norm.find("..") != std::string::npos) return {};
+  if (name == "." || name.find("..") != std::string::npos) return {};
+  for (unsigned char ch : name)
+    if (ch < 0x20 || ch == '/' || ch == '\\' || ch == ':' || ch == '*' || ch == '?' || ch == '"' || ch == '<' || ch == '>' || ch == '|') return {};
+  for (unsigned char ch : archive_norm)
+    if (ch < 0x20 || ch == '\\' || ch == ':' || ch == '*' || ch == '?' || ch == '"' || ch == '<' || ch == '>' || ch == '|') return {};
+  if (archive_norm[0] == '/') return {};
+  std::string n = name;
+  if (n.find('.') == std::string::npos) n += ".nutexb";
+  return archive_norm + "/" + n;
+}
+
 static bool read_text(const fs::path& p, std::string* out) {
   std::ifstream f(p, std::ios::binary);
   if (!f) return false;

@@ -211,12 +211,16 @@ class Emitter:
     """C for the functions of one module. starts is the set of every function start of the module."""
 
     def __init__(self, mod, starts, patched=None, reg_locals=regs.LOCALS, callee_saved=True, spins=None,
-                 lsda=None, resume=False, setjmp_targets=(), hooks=None, plt_got=None, inline_hooks=None):
+                 lsda=None, resume=False, setjmp_targets=(), hooks=None, plt_got=None, inline_hooks=None, branch_hooks=None):
         self.lsda = lsda or {}                      # recomp/ehlsda.module_pads: {function: (range, [(site, len, pad, action)])}
         self.resume = resume                        # emit the exception/longjmp resume checks after every call
         self.setjmp_targets = frozenset(setjmp_targets)   # call targets that are setjmp (resume point after the call)
         self.hooks = hooks or {}                    # {function address: host symbol}: body replaced by a call to it
         self.inline_hooks = inline_hooks or {}      # {instruction address: host symbol}: `sym(c)` runs just before that instruction (it sees only the Cpu: callee-saved registers and memory)
+        # {instruction address: branch target}: a branch hook (recomp/snap_gen.py MAIN_BRANCH_HOOKS). Its address is also in inline_hooks; after
+        # the hook returns, `goto target` when the hook left c->x[16] == 0 (the registers are as before the instruction at that address).
+        # Inert when empty: the emitted C is then byte-identical to a build without this table.
+        self.branch_hooks = branch_hooks or {}
         self.plt_got = plt_got or {}                # {PLT stub address: GOT slot address}: body is a load and dispatch
         self._pads = {}
         self.mod = mod
@@ -260,6 +264,9 @@ class Emitter:
                     self.unsupported[re.sub(r'\b[0-9a-f]{8}\b', '', msg).strip()] += 1
             elif k == 'asm':
                 raise ValueError(f'{entry + 4 * i:#x}: asm instruction from the portable lifter')
+        for a, t in self.branch_hooks.items():   # a branch hook's target inside the function needs its label
+            if entry <= a < end and entry <= t < end:
+                labels.add(t)
         for a in self.patched:   # a replacement's branch into the function needs its label
             if entry <= a < end:
                 for words in self.replacements(a):
@@ -312,6 +319,8 @@ class Emitter:
         for i, ins in enumerate(insns):
             s = of(ins, i)
             a = entry + 4 * i
+            if a in self.branch_hooks:   # the hook may branch before the instruction runs
+                s += [t for t in idx(self.branch_hooks[a]) if t not in s]
             if a in self.patched:
                 for words in self.replacements(a):
                     s += [t for t in of(words[-1], i) if t not in s]
@@ -331,6 +340,8 @@ class Emitter:
                 exits.add(i)
             elif k == 'br':
                 exits.add(i)   # through rt_dispatch, also a table's default
+            if a in self.branch_hooks and not entry <= self.branch_hooks[a] < end:
+                exits.add(i)
             if a in self.patched:
                 effects.append(self.patched_effect(ins, a))
                 for words in self.replacements(a):
@@ -566,6 +577,10 @@ class Emitter:
             if a in self.inline_hooks:
                 hook_rows.add(len(body))
                 emit(i, '    ' + inline_hook(a))
+                if a in self.branch_hooks:
+                    hook_rows.add(len(body))
+                    self.stats['branch_hook_sites'] += 1
+                    emit(i, f'    if ((c)->x[16] == 0) {{ {jump(self.branch_hooks[a], i)} }}')
             if a in self.patched:
                 emit(i, patch(i, ins, a))
             elif k == 'op':

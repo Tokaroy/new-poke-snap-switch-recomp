@@ -1,0 +1,35 @@
+# fixture: unlock_all
+# worker illum: Volcano Illumina aimed run 1 (SNAP_NEO_SPEED=1). Volcarona is in view 19..45 s after the ride starts, near screen centre.
+# Fluffruit (B) every 2 s from 17 s, orbs (Y) offset by 1 s, melody (R) at 30/38 s, shutter (A) every 2.5 s, then the photo select tail.
+wait ui=title timeout=200
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=500
+@f120 6 Right
+@f480 6 Right
+@f840 6 Right
+@f1200 6 Right
+@f1560 6 Up
+@f2100 6 A
+wait ui=map_select:CourseSelect timeout=400
+@f90 6 Down
+@f270 6 A
+wait ride timeout=300
+@f900 2700 shot=45
+repeat 17 60 2 0.2 B
+repeat 18 60 3 0.2 Y
+repeat 19 90 2.5 0.2 A
+30 0.2 R
+38 0.2 R
+wait ui=photo_submit:FolderSelect timeout=400
+repeat @f100 @f900 90 8 Down if=!focus=AllCheck
+@f1000 8 A
+@f1150 8 Plus
+@f1260 8 Up
+@f1350 8 A
+wait ui=evaluation timeout=60
+# 6) Evaluation: A taps through the comments and the score; the run ends after the evaluation closes.
+repeat @f240 @f60000 90 8 A
+wait ui=evaluation:Score timeout=120
+repeat @f60 @f60000 90 8 A
+wait ui=evaluation:End timeout=240
+end @f300

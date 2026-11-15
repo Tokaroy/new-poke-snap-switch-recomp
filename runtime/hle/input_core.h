@@ -62,6 +62,7 @@ struct RawInput {
   uint8_t mouse_buttons = 0;           // MouseBtn bits: left, right, middle, x1, x2, wheel up and down (a short pulse per notch)
   float mouse_dx = 0, mouse_dy = 0;    // pixels moved since the previous backend poll
   float mouse_vx = 0, mouse_vy = 0;    // pixels per second, filled by the Hub from mouse_dx/dy (used by mouse-look); y down positive
+  bool in_ride = false;                // set by the Hub: a rail is advancing (ride); gates the mouse-look click bindings
   bool gyro_present = false;           // a connected pad reports a gyroscope (SDL3 sensor API)
   float gyro_x = 0, gyro_y = 0, gyro_z = 0;   // angular rate in deg/s, SDL axes: x = pitch (positive tips the front up), y = yaw (positive turns left), z = roll
 };
@@ -138,6 +139,7 @@ struct Mapping {
   float mouse_sensitivity = 1.0f;                   // 1 = full deflection at kMouseLookFullPxPerSec
   bool mouse_invert_x = false, mouse_invert_y = false;
   float mouse_smoothing = 0.0f;                     // 0 off .. 1 (averaging window 40 ms .. 340 ms)
+  std::vector<Source> look_a, look_zl;              // mouse-look click bindings: pressed during a ride while mouse_look is on (defaults: left = A, right = ZL; []: none)
   bool lock_cursor = true;                          // confine the cursor to the window while playing (not while the menu is open)
   // accessibility
   bool toggle_zl = false, toggle_zr = false;        // a press flips the trigger on or off instead of holding it

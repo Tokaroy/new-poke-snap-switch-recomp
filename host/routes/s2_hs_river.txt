@@ -1,0 +1,16 @@
+# fixture: unlock_all
+# sweep2 route hs_river nav=R U entry=0 level=0 mode=ride (mk_routes2.py)
+wait ui=title timeout=200
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=300
+@f120 6 Right
+@f300 6 Up
+@f600 6 A
+wait ui=map_select:CourseSelect timeout=60
+@f180 6 A
+wait ride timeout=300
+repeat @f0 @f60000 24 4 A
+repeat @f0 @f60000 400 60 rx=0.25
+repeat @f200 @f60000 400 60 rx=-0.25
+wait ui=photo_submit:FolderSelect timeout=500
+end @f120

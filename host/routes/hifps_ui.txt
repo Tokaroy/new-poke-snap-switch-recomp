@@ -1,0 +1,4 @@
+# fixture: new_game
+# High-fps UI check (SNAP_FPS=144 vs 60): title, intro dialogue, then the camera tutorial and its control hint panel, all driven by wall seconds
+# (not presents) so both frame rates press at the same times. Slow A taps all along. Shots every 2 s: same screens at the same seconds.
+repeat 20 400 0.83 0.2 A

@@ -13,4 +13,13 @@ if ($LASTEXITCODE -ne 0) { throw "build failed" }
 $p = Start-Process -FilePath $exe -NoNewWindow -PassThru
 $p.PriorityClass = 'BelowNormal'
 if (-not $p.WaitForExit(120000)) { taskkill /PID $p.Id /T /F | Out-Null; throw "tests timed out" }
-exit $p.ExitCode
+$code = $p.ExitCode
+# Interface pacing decision and pad sampling (host/mods/uipace_core.h).
+$exe2 = Join-Path $out 'uipace_test.exe'
+& clang++ -std=c++20 -O1 -g (Join-Path $PSScriptRoot 'uipace_test.cpp') -o $exe2
+if ($LASTEXITCODE -ne 0) { throw "uipace_test build failed" }
+$p2 = Start-Process -FilePath $exe2 -NoNewWindow -PassThru
+$p2.PriorityClass = 'BelowNormal'
+if (-not $p2.WaitForExit(60000)) { taskkill /PID $p2.Id /T /F | Out-Null; throw "uipace_test timed out" }
+if ($p2.ExitCode -ne 0) { $code = $p2.ExitCode }
+exit $code

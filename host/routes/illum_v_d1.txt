@@ -1,0 +1,25 @@
+# fixture: unlock_all
+# worker illum: Volcano last run. Dense shutter while Volcarona is in view (+12..+52 s, every 0.6 s), no tools, then open the Volcarona folder in photo select
+# and step through its photos with A / Right, dense frames, to read the game's refusal text.
+wait ui=title timeout=200
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=500
+@f120 6 Right
+@f480 6 Right
+@f840 6 Right
+@f1200 6 Right
+@f1560 6 Up
+@f2100 6 A
+wait ui=map_select:CourseSelect timeout=400
+@f90 6 Down
+@f270 6 A
+wait ride timeout=300
+@f900 2100 shot=120
+repeat 12 52 0.6 0.12 A
+repeat 160 3000 1.5 0.15 A
+wait ui=photo_submit:FolderSelect timeout=400
+@f0 3000 shot=45
+@f150 8 A
+repeat @f400 @f3000 100 8 A
+repeat @f450 @f3000 100 8 Right
+end @f2400

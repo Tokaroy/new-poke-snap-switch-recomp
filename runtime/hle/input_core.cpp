@@ -178,6 +178,8 @@ Mapping Mapping::defaults() {
   set(kUp, {"pad:dpad_up", "key:T"});
   set(kRight, {"pad:dpad_right", "key:H"});
   set(kDown, {"pad:dpad_down", "key:G"});
+  m.look_a = {S("mouse:left")};
+  m.look_zl = {S("mouse:right")};
   m.left.analog = "left";
   m.left.up = {S("key:W")}; m.left.down = {S("key:S")}; m.left.left = {S("key:A")}; m.left.right = {S("key:D")};
   m.right.analog = "right";
@@ -222,6 +224,8 @@ Json Mapping::to_json() const {
   mouse.set("invert_y", Json::boolean_(mouse_invert_y));
   mouse.set("smoothing", Json::number(mouse_smoothing));
   mouse.set("lock_cursor", Json::boolean_(lock_cursor));
+  mouse.set("look_click_a", sources_json(look_a));
+  mouse.set("look_click_zl", sources_json(look_zl));
   j.set("mouse", mouse);
   Json acc = Json::object();
   acc.set("toggle_zl", Json::boolean_(toggle_zl));
@@ -286,6 +290,8 @@ bool Mapping::from_json(const Json& j, std::string* err) {
   if (auto* v = j.get("mouse")) {
     if (v->type != Json::Obj) { *err = "\"mouse\" must be an object"; return false; }
     if (auto* t = v->get("touch")) m.mouse_touch = t->boolean(true);
+    if (auto* t = v->get("look_click_a")) if (!read_sources(*t, &m.look_a, err, "mouse.look_click_a")) return false;
+    if (auto* t = v->get("look_click_zl")) if (!read_sources(*t, &m.look_zl, err, "mouse.look_click_zl")) return false;
     if (auto* t = v->get("look")) m.mouse_look = t->boolean(false);
     if (auto* t = v->get("sensitivity")) m.mouse_sensitivity = clampf(t, 1.0, 0.05f, 10.0f);
     if (auto* t = v->get("invert_x")) m.mouse_invert_x = t->boolean(false);
@@ -374,6 +380,7 @@ void reset_device(Mapping& m, Device d) {
   } else if (d == kDevMouse) {
     m.mouse_touch = def.mouse_touch; m.mouse_look = false; m.mouse_sensitivity = def.mouse_sensitivity;
     m.mouse_invert_x = m.mouse_invert_y = false; m.mouse_smoothing = 0; m.lock_cursor = def.lock_cursor;
+    m.look_a = def.look_a; m.look_zl = def.look_zl;
   }
 }
 void set_face_layout(Mapping& m, int layout) {
@@ -488,6 +495,10 @@ PadSample map_pad(const Mapping& m, const RawInput& in) {
       float t = s.kind == Source::Pad && s.id == kPadRTrigger ? m.zr_threshold : s.kind == Source::Pad && s.id == kPadLTrigger ? m.zl_threshold : thr;
       if (source_down(s, eff, t)) { out.buttons |= 1ull << b; break; }
     }
+  }
+  if (m.mouse_look && eff.focused && eff.in_ride) {   // mouse-look click bindings, ride only: menus keep the touch screen / pad flow
+    if (any_down(m.look_a, eff, 0.5f)) out.buttons |= 1ull << kA;
+    if (any_down(m.look_zl, eff, 0.5f)) out.buttons |= 1ull << kZL;
   }
   float lx, ly, rx, ry;
   stick_value(m.left, true, m, eff, 0, 0, &lx, &ly);
@@ -1123,6 +1134,11 @@ void Hub::poll(int min_interval_ms) {
   if (g_script_gyro_on) { r.gyro_present = true; r.gyro_y = g_script_gyro_yaw; r.gyro_x = g_script_gyro_pitch; }   // scripted `gyro=` token (applied one poll late)
   if (env_fx().fake) { r.gyro_present = true; r.gyro_y = env_fx().fake_yaw; r.gyro_x = env_fx().fake_pitch; }   // SNAP_GYRO_FAKE
   cursor_hidden_ = recenter && r.focused;
+  if (map_.mouse_look) {   // ride flag for the mouse-look click bindings (rail reports are off unless asked for)
+    route_enable();
+    std::lock_guard<std::mutex> rl(g_rs_mu);
+    r.in_ride = g_rail_cur >= 0 && (int)nvn::g_presentCount - g_rail[g_rail_cur].f_adv <= 20;
+  }
   // injected sources (tests) and wheel pulses
   r.keys |= inject_.keys;
   r.pad |= inject_.pad;

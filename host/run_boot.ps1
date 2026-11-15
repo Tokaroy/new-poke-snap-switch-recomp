@@ -147,7 +147,8 @@ try {
     if ((Test-Path $testSave) -and (Get-ChildItem $testSave -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1)) {
         $keep = Join-Path $root "build\runs\saves\$runId"; New-Item -ItemType Directory -Force $keep | Out-Null
         Copy-Item -Recurse -Force (Join-Path $testSave '*') $keep -ErrorAction SilentlyContinue; Write-Host "save kept in $keep"
-        # owner 2026-11-12: these copies filled F: (195 runs x ~3.7 GB = 721 GB). Keep only the generation CURRENT names, and only the newest 20 runs.
+        # owner 2026-11-12: these copies filled F: (195 runs x ~3.7 GB = 721 GB). Keep only the generation CURRENT names, and only the newest 5 runs
+        # (2026-11-15: 20 x ~1.6 GB filled F: again with 4 slots running; set SNAP_KEEP_SAVES=<n> to keep more).
         Get-ChildItem $keep -Recurse -Filter CURRENT -File -ErrorAction SilentlyContinue | ForEach-Object {
             $lines = @(Get-Content $_.FullName -ErrorAction SilentlyContinue)   # "SNAPSAVE1", current generation, checksum
             $gen = if ($lines.Count -ge 2 -and $lines[0] -eq 'SNAPSAVE1') { $lines[1].Trim() } else { '' }
@@ -156,7 +157,7 @@ try {
                 Get-ChildItem $gens -Directory | Where-Object { $_.Name -ne $gen } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
             }
         }
-        Get-ChildItem (Join-Path $root 'build\runs\saves') -Directory | Sort-Object LastWriteTime -Descending | Select-Object -Skip 20 |
+        Get-ChildItem (Join-Path $root 'build\runs\saves') -Directory | Sort-Object LastWriteTime -Descending | Select-Object -Skip $(if ($env:SNAP_KEEP_SAVES -match '^\d+$') { [int]$env:SNAP_KEEP_SAVES } else { 5 }) |
             Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
     }
     # owner 2026-11-12 "keep my drive a little clean": route screenshots in analysis\boot older than 24 h are deleted unless a doc names them
