@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "nvn_aa.h"
+#include "nvn_dev.h"
 #include "nvn_internal.h"
 #include "os/perf.h"
 #include "upscale/upscaler.h"
@@ -20,7 +21,8 @@
 namespace nvn {
 
 std::atomic<bool> g_overlayTiming{false};
-bool PerfGpuOn() { return snap_perf::on || g_overlayTiming.load(std::memory_order_relaxed); }
+std::atomic<bool> g_devTiming{false};   // nvn_dev.h: the dev overlay or `timing on` wants pass timestamps (SNAP_DEV=1 only)
+bool PerfGpuOn() { return snap_perf::on || g_overlayTiming.load(std::memory_order_relaxed) || g_devTiming.load(std::memory_order_relaxed); }
 namespace {
 std::atomic<double> g_ovGpuMs{-1.0}, g_ovCpuMs{-1.0};
 }  // namespace
@@ -47,12 +49,12 @@ FILE* g_pf = nullptr;
 bool g_perfPassOn = false;
 uint32_t g_perfDraws = 0;
 
-void PerfMark(Host* h, VkCommandBuffer cb, const char* label) {
-  if (!g_perfPassOn || g_curSlot < 0 || cb != g_curCb) return;
+static void PerfMarkRaw(Host* h, VkCommandBuffer cb, const char* label) {
+  if (g_curSlot < 0 || cb != g_curCb) return;
   if (!g_mpool) {
     VkQueryPoolCreateInfo qi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
     qi.queryType = VK_QUERY_TYPE_TIMESTAMP; qi.queryCount = kMarkQ;
-    if (vkCreateQueryPool(h->device, &qi, nullptr, &g_mpool) != VK_SUCCESS) { g_perfPassOn = false; return; }
+    if (vkCreateQueryPool(h->device, &qi, nullptr, &g_mpool) != VK_SUCCESS) { g_perfPassOn = false; g_devTiming.store(false); return; }
   }
   const uint32_t q = g_markNext++ % kMarkQ;
   vkResetQueryPool(h->device, g_mpool, q, 1);
@@ -60,6 +62,18 @@ void PerfMark(Host* h, VkCommandBuffer cb, const char* label) {
   Mark m{q, g_perfDraws, {}};
   snprintf(m.label, sizeof m.label, "%s", label);
   g_marks[g_curSlot].push_back(m);
+}
+void PerfMark(Host* h, VkCommandBuffer cb, const char* label) {
+  if (!g_perfPassOn) return;
+  PerfMarkRaw(h, cb, label);
+}
+
+// nvn_dev.h: the dev pass marks bypass g_perfPassOn (the renderer's own marks stay off unless asked for) but share the timestamp slots
+void DevPassBegin(VkCommandBuffer cb, const char* name) { if (g_devTiming.load(std::memory_order_relaxed) && g_host) PerfMarkRaw(g_host, cb, name); }
+void DevPassEnd(VkCommandBuffer cb, const char* name) {
+  if (!g_devTiming.load(std::memory_order_relaxed) || !g_host) return;
+  char lb[96]; snprintf(lb, sizeof lb, "(end %s)", name);
+  PerfMarkRaw(g_host, cb, lb);
 }
 
 bool PerfGpuReady(Host* h) {
@@ -102,6 +116,7 @@ void PerfFrameMark(QueueImpl* q, uint64_t presentNo) {
   if (!PerfGpuOn()) return;
   std::lock_guard<std::mutex> lk(q->host->queueMutex);
   double busy = -1, span = -1; int cbs = 0;
+  const bool devOn = g_devTiming.load(std::memory_order_relaxed);
   if (g_pool) {
     uint64_t done = 0;
     vkGetSemaphoreCounterValue(q->host->device, q->timeline, &done);
@@ -113,7 +128,7 @@ void PerfFrameMark(QueueImpl* q, uint64_t presentNo) {
       uint64_t t[2] = {0, 0};
       if (vkGetQueryPoolResults(q->host->device, g_pool, s * 2, 2, sizeof t, t, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS && t[1] >= t[0]) {
         sum += t[1] - t[0]; lo = std::min(lo, t[0]); hi = std::max(hi, t[1]); cbs++;
-        if (g_perfPassOn && g_pf && !g_marks[s].empty()) {   // per-pass rows: each segment runs from its mark to the next one (or the end)
+        if ((g_pf || devOn) && !g_marks[s].empty()) {   // per-pass rows: each segment runs from its mark to the next one (or the end)
           const auto& ms = g_marks[s];
           const double per = q->host->props.limits.timestampPeriod / 1e6;
           uint64_t prev = t[0]; uint32_t prevDraws = g_startDraws[s]; const char* prevLabel = "cb-start"; int idx = 0;
@@ -125,7 +140,9 @@ void PerfFrameMark(QueueImpl* q, uint64_t presentNo) {
               at = mt; dr = ms[k].draws;
             }
             if (at < prev) at = prev;
-            fprintf(g_pf, "%llu,%u,%d,%.4f,%u,%s\n", (unsigned long long)presentNo, s, idx++, (double)(at - prev) * per, dr - prevDraws, prevLabel);
+            if (g_pf) fprintf(g_pf, "%llu,%u,%d,%.4f,%u,%s\n", (unsigned long long)presentNo, s, idx, (double)(at - prev) * per, dr - prevDraws, prevLabel);
+            if (devOn) dev_pass_sample(prevLabel, (double)(at - prev) * per);
+            idx++;
             prev = at; prevDraws = dr;
             if (k < ms.size()) prevLabel = ms[k].label;
           }
@@ -155,6 +172,7 @@ void PerfFrameMark(QueueImpl* q, uint64_t presentNo) {
     if (busy >= 0 && cbs > 0) g_ovGpuMs.store(busy);
   }
   if (g_pf) fflush(g_pf);
+  if (devOn && busy >= 0 && cbs > 0) dev_gpu_frame(busy);
   if (snap_perf::on) snap_perf::frame_mark(presentNo, busy, span, cbs);
 }
 
@@ -182,4 +200,14 @@ extern "C" void snap_perf_overlay_info(double* gpu_ms, double* cpu_ms, int* rend
     if (up && strcmp(up, "off")) snprintf(aa, (size_t)aa_len, "%s  %s%s", up, m, sh);
     else snprintf(aa, (size_t)aa_len, "%s%s", m, sh);
   }
+}
+
+// ---- nvn_dev.h glue (SNAP_DEV=1 only) ----
+void dev_pass_begin_impl(VkCommandBuffer cb, const char* name) { nvn::DevPassBegin(cb, name); }
+void dev_pass_end_impl(VkCommandBuffer cb, const char* name) { nvn::DevPassEnd(cb, name); }
+// Turns the dev timestamp marks on or off (present thread: the overlay toggle and ctl `timing` / `renderer`). The renderer's own marks (rp, cs, aa, fx...)
+// are booked too only with `renderer on`; they are many per frame and cost GPU time themselves.
+void dev_timing_apply(bool on) {
+  nvn::g_devTiming.store(on);
+  if (!nvn::g_pf) nvn::g_perfPassOn = on && dev_renderer_marks();
 }

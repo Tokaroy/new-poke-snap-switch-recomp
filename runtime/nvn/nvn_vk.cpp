@@ -13,6 +13,7 @@
 #include "nvn_shiny.h"
 #include "nvn_internal.h"
 #include "nvn_aa.h"   // AaForgetTexture
+#include "nvn_dev.h"   // dev loop (SNAP_DEV=1)
 #include "nvn_btnicon.h"   // BtnIconForget
 #include "nvn_fx.h"   // [fx]
 #include "nvn_hdr.h"   // HDR10 output (SNAP_HDR=1)
@@ -1755,6 +1756,7 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
   if (slot < 0 || slot >= (int)w->tex.size()) { LogError("present of invalid slot %d", slot); return false; }
   TextureImpl* src = w->tex[slot];   // [nvnfix] EnsureImage moved under queueMutex below: a replay may create the same image
   struct PerfFrame { QueueImpl* q; ~PerfFrame() { if (PerfGpuOn()) PerfFrameMark(q, (uint64_t)g_presentCount); } } perfFrame{q};   // one CSV row per present (SNAP_PERF)
+  if (dev_on()) dev_frame((uint64_t)g_presentCount);   // nvn_dev.h (SNAP_DEV=1): control channel, shader watcher
   {
     // Load pass (2026-11-13): the frame limiter is a wait (vsync on the Switch), so the presenting JobWorker gives its virtual
     // core back while it sleeps; loader threads pinned to that core (ResourceUncompress p31) ran only between frames before,
