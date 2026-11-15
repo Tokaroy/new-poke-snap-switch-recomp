@@ -591,6 +591,7 @@ ResolvedTex ResolveHandle(ReplayCtx& cx, DrawState& d, uint64_t handle, bool ima
   TextureImpl* const up = image ? nullptr : UpscaleSubstitute(cx, r.t);   // [upscale] the final pass reads the upscaled scene
   if (up) r.t = up;
   if (!image && !up) r.t = AbSubstitute(cx, r.t);   // SNAP_MODS_AB test aid
+  if (!image && !up) r.t = WideCropSubstitute(cx, r.t);   // [wide] a 16:9 target reads the middle of an ultrawide image
   if (!image && !up && ShinyActive()) {   // shiny mod (nvn_shiny.cpp)
     ShinyDraw sd; sd.vb0 = d.vbAddr[0]; sd.vb1 = d.vbAddr[1];
     for (int i = 0; i < 8; i++) { sd.uboPool[i] = d.ubo[0][i].pool; sd.uboOff[i] = d.ubo[0][i].off; sd.uboRange[i] = d.ubo[0][i].range; }
@@ -650,6 +651,7 @@ VkImageLayout SampledLayout(const TextureImpl* t) {
 
 void BeginRendering(ReplayCtx& cx, const RtInfo& rt) {
   snap_perf::Scope perfScope(snap_perf::C_RENDBEGIN);   // [perf] replay sub-scope
+  for (int i = 0; i < 9; i++) WideMarkDrawn(cx.rt[i]);   // [wide] crop stand-ins of these targets need a fresh copy
   VkRenderingAttachmentInfo col[8] = {};
   VkRenderingAttachmentInfo dep{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}, stc{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
   uint32_t w = 0, hgt = 0, layerCount = 1;
@@ -1255,6 +1257,53 @@ void DoDraw(ReplayCtx& cx, const Cmd& c0) {
       fprintf(stderr, "\n");
     }
     HdPhotoCapture(cx, p, texWrites[0].r.t, cx.rt[0], (u4.pool && u4.pool->storage && u4.range >= 8) ? reinterpret_cast<const float*>(static_cast<const uint8_t*>(u4.pool->storage) + u4.off) : nullptr, uvp);
+  }
+  struct WideUboRestore {   // [wide] put back the c3 bindings a widened-camera copy replaced, on every exit of this draw
+    DrawState* d = nullptr; BufBind saved[6]; bool swapped[6] = {};
+    ~WideUboRestore() { if (d) for (int s = 0; s < 6; s++) if (swapped[s]) d->ubo[s][0] = saved[s]; }
+  } wideUbo;
+  if (g_wideK > 1.0f) {   // [wide] ultrawide: choose how this draw maps onto a widened target (nvn_wide.cpp)
+    TextureImpl* samp[8]; int ns = 0;
+    for (auto& w : texWrites) if (!w.image && w.r.t && ns < 8) samp[ns++] = w.r.t;
+    const BufBind& u0 = d.ubo[0][0];
+    float box[4]; const float* boxp = nullptr;
+    TextureImpl* frt = nullptr; for (int i = 0; i < 9 && !frt; i++) frt = cx.rt[i];
+    if (frt && frt->wide > 1.0f && d.nattr > 0 && c.i[2] >= 3 && c.i[2] <= 64) {   // a few quads (a panel, a 9-slice): the box its positions cover
+      const int sp = (d.attr[0].v >> 9) & 15; const uint32_t op = d.attr[0].v >> 13;
+      PoolImpl *pp = nullptr, *ip = nullptr; uint64_t po = 0, io = 0;
+      const int n = c.i[2]; int vi[64] = {}; bool ok = true;
+      if (indexed) {
+        const int isz = c.i[1] == IDX_U32 ? 4 : c.i[1] == IDX_U16 ? 2 : 1;
+        ok = h->ResolveAddress(c.a[0], &ip, &io) && ip && ip->storage && io + (uint64_t)(c.i[4] + n) * isz <= ip->size;
+        if (ok) {
+          const uint8_t* ib = static_cast<const uint8_t*>(ip->storage) + io + (uint64_t)c.i[4] * isz;
+          for (int k = 0; k < n; k++) { vi[k] = (isz == 4 ? (int)((const uint32_t*)ib)[k] : isz == 2 ? (int)((const uint16_t*)ib)[k] : (int)ib[k]) + c.i[3]; ok = ok && vi[k] >= 0 && vi[k] < 65536; }
+        }
+      } else { for (int k = 0; k < n; k++) vi[k] = c.i[1] + k; ok = c.i[1] >= 0; }
+      int vmax = 0; for (int k = 0; k < n; k++) vmax = std::max(vmax, vi[k]);
+      if (ok && d.stream[sp].stride && h->ResolveAddress(d.vbAddr[sp], &pp, &po) && pp && pp->storage && po + (uint64_t)vmax * d.stream[sp].stride + op + 8 <= pp->size) {
+        box[0] = box[1] = 1e30f; box[2] = box[3] = -1e30f;
+        for (int k = 0; k < n && ok; k++) {
+          float P[2]; memcpy(P, static_cast<const uint8_t*>(pp->storage) + po + (uint64_t)vi[k] * d.stream[sp].stride + op, 8);
+          ok = std::isfinite(P[0]) && std::isfinite(P[1]) && std::fabs(P[0]) < 1e5f && std::fabs(P[1]) < 1e5f;
+          box[0] = std::min(box[0], P[0]); box[1] = std::min(box[1], P[1]); box[2] = std::max(box[2], P[0]); box[3] = std::max(box[3], P[1]);
+        }
+        if (ok) boxp = box;
+      }
+    }
+    bool c3 = false, c4 = false;   // the camera only from c3 (no per-object matrix in c4): a widened c3 widens the draw
+    for (int s = 0; s < 6; s++) if (p->st[s].valid) for (auto& cb : p->st[s].cb) { if (cb.slot == 3) c3 = true; if (cb.slot == 4) c4 = true; }
+    const uint8_t* c3p = (u0.pool && u0.pool->storage) ? (const uint8_t*)u0.pool->storage + u0.off : nullptr;
+    cx.wideFs = p->st[1].valid ? p->st[1].key : nullptr;
+    if (WideOnDraw(cx, samp, ns, c3p, u0.range, boxp, c3 && !c4)) {
+      const BufBind orig = u0;
+      const uint64_t rng = std::min<uint64_t>({orig.range, orig.pool->size > orig.off ? orig.pool->size - orig.off : 0, 0x400});
+      if (VkBuffer nb = rng >= 0x180 ? WideC3Copy(cx, c3p, rng) : VK_NULL_HANDLE) {
+        wideUbo.d = &d;
+        for (int s = 0; s < 6; s++)
+          if (d.ubo[s][0].buf == orig.buf && d.ubo[s][0].off == orig.off) { wideUbo.saved[s] = d.ubo[s][0]; wideUbo.swapped[s] = true; d.ubo[s][0] = BufBind{nb, 0, rng, nullptr}; }
+      }
+    }
   }
   if (!cx.rendering) BeginRendering(cx, rt);
   g_perfDraws++;

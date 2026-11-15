@@ -502,6 +502,11 @@ Build the pack once from your own extracted textures: `python -E -P scripts\hd\m
 - Display: the album's photo texture is recognized when the game decodes that JPEG (CRC) and uploads the pixels; the HD file is read and decoded on the worker when the photo is first drawn large, LRU GPU budget 256 MB (about 20 photos). Missing or corrupt files fall back silently to the game's image. Photo Editing screens keep the game's image (their effect passes feed the edited photo the game saves). Profile duplicate and folder import copy `photos_hd` along (`runtime/hle/profiles.cpp`). Nothing the game reads (save, JPEG, score inputs) changes.
 - `SNAP_HD_PHOTOS_LOG=1`: `[hdphoto]` log lines (captures, matches, files, swaps).
 
+## Ultrawide (2026-11-15, `runtime/nvn/nvn_wide.cpp`, on by default for windows wider than 16:9; `docs/ultrawide.md`)
+
+- `SNAP_ULTRAWIDE=auto|off` (settings key `gfx_ultrawide`; F1 > Graphics and the launcher, restart). Auto widens the 3D view by k = window aspect / (16/9), capped at 4, with the same vertical field of view; the HUD, menus, videos and photos stay 16:9 in the middle. Off, or a window at 16:9 or narrower, leaves every path as before. Log line: `ultrawide: auto, window client WxH, factor k`.
+- Developer switches: `SNAP_WIDE_LOG=1|2|3` (decisions; `SNAP_WIDE_LOG_FROM=<present>`), `SNAP_WIDE_TRACE=1` (camera callers), `SNAP_WIDE_SITES=0xOFF:reg,...` (extra camera sites), `SNAP_WIDE_NO_C3=1` (16:9 effect cameras stay narrow).
+
 ## Scheduler switches (nn::os review fixes, 2026-11-13; `analysis\core\review_os.md`, `runtime\os\os_kernel.cpp`)
 
 All fixes are on by default. `SNAP_SCHED_LEGACY=1` (or `all`) restores every old path below; a comma list of names restores only those (for example `SNAP_SCHED_LEGACY=migrate,yield`). The run log prints `SNAP_SCHED_LEGACY: old scheduler paths 0x..` when any is set.

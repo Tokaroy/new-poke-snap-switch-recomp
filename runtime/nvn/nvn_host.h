@@ -58,6 +58,9 @@ NVN_HOST_EXPORT void nvnHostSetShadowResolution(int side);
 NVN_HOST_EXPORT int nvnHostGetShadowResolution(void);
 // Whether window (DISPLAY) textures follow the render scale (default 1). Needed for a real 4K frame: the game composes UI into them.
 NVN_HOST_EXPORT void nvnHostSetScaleDisplay(int on);
+// Ultrawide (nvn_wide.cpp, docs/ultrawide.md): k = window aspect / (16/9) when wider (1 = off). Set before the game creates its targets.
+NVN_HOST_EXPORT void nvnHostSetUltrawide(float k);
+NVN_HOST_EXPORT float nvnHostGetUltrawide(void);
 // Environment read once at DeviceInitialize: SNAP_RENDER_SCALE, SNAP_ANISO (1..16), SNAP_LOD_BIAS, SNAP_SHADOW_RES. The output
 // (swapchain) resolution is the window size: SNAP_WINDOW_W / SNAP_WINDOW_H (host/window_opts.cpp).
 // Number of guest entry points registered in the getProcAddress table.

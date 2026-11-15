@@ -266,9 +266,12 @@ Boolean TextureInitialize(void* tex, const void* b) {
     if (g_scale.scale != 1.0f || g_scale.shadowRes) { static const bool lg = getenv("SNAP_SCALE_LOG") != nullptr; if (lg && (tb->width >= 192 || t->scale != 1.0f)) {
       char cs[160] = ""; for (int i = 0, n = 0; i < nChain && n < (int)sizeof cs - 16; i++) n += snprintf(cs + n, sizeof cs - n, " %llx", (unsigned long long)(chain[i] - kGuestMain));
       fprintf(stderr, "[scale] tex %dx%d fmt=0x%x flags=0x%x tgt=%d lv=%d tag=%x -> scale %.2f; main+%s\n", tb->width, tb->height, tb->format, tb->flags, tb->target, tb->levels, tag, t->scale, cs); } }
-    if (t->scale != 1.0f) {
-      t->hostW = (uint32_t)std::max(1.0f, std::ceil(tb->width * t->scale));
+    t->wide = WideFor(*tb, tag);   // [wide] ultrawide: 16:9 targets get a k times wider image (nvn_wide.cpp)
+    if (t->scale != 1.0f || t->wide != 1.0f) {
+      t->hostW = (uint32_t)std::max(1.0f, std::ceil(tb->width * t->scale * t->wide));
       t->hostH = (uint32_t)std::max(1.0f, std::ceil(tb->height * t->scale));
+      static const bool wl = getenv("SNAP_WIDE_LOG") != nullptr;
+      if (wl && t->wide != 1.0f) fprintf(stderr, "[wide] tex %dx%d fmt=0x%x flags=0x%x -> image %ux%u\n", tb->width, tb->height, tb->format, tb->flags, t->hostW, t->hostH);
     }
   }
   if (PoolAcctOn()) if (auto* pp = Impl<PoolImpl>(tb->pool, MAGIC_POOL)) {

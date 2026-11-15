@@ -24,6 +24,7 @@
 #include "nvn_aa.h"
 #include "nvn_aa_spv.h"
 #include "nvn_internal.h"
+#include "nvn_fx.h"   // [wide] FxReemitViewState
 #include "hle/visual_defaults.h"   // the one table of visual defaults
 
 namespace nvn {
@@ -588,6 +589,12 @@ void AaAfterDraw(ReplayCtx& cx, const char* key) {
   mb.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT; mb.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
   VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO}; di.memoryBarrierCount = 1; di.pMemoryBarriers = &mb;
   vkCmdPipelineBarrier2(cb, &di);
+  if (g_wideK > 1.0f) {   // [wide] an ultrawide target maps guest x per draw mode (nvn_wide.cpp): the shared re-emit knows it
+    FxReemitViewState(cx);
+    if (!(cx.vpHave & 1)) cx.vpSet = false;
+    if (!(cx.scHave & 1)) cx.scSet = false;
+    return;
+  }
   if (cx.vpHave & 1) { const float* v = cx.vpGuest[0]; VkViewport vp = MakeNvnViewport(h->originMode, v[0], v[1], v[2], v[3], t->scale); vkCmdSetViewport(cb, 0, 1, &vp); }
   else cx.vpSet = false;
   if (cx.scHave & 1) {

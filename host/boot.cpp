@@ -551,6 +551,16 @@ static void bind_host_layers() {
     snap_bind_nvn();
     bind_codec_stubs();
     bind_window();
+    {   // ultrawide (docs/ultrawide.md): SNAP_ULTRAWIDE=auto (default) widens the 3D view on a window wider than 16:9; off keeps 16:9 with bars
+        const char *uw = getenv("SNAP_ULTRAWIDE");
+        const bool off = uw && (!_stricmp(uw, "off") || !strcmp(uw, "0"));
+        RECT cr = {};
+        float k = 1.0f;
+        if (!off && g_game_hwnd && GetClientRect(g_game_hwnd, &cr) && cr.right > 0 && cr.bottom > 0)
+            k = (float)((double)cr.right / cr.bottom / (16.0 / 9.0));
+        nvnHostSetUltrawide(k > 1.01f ? std::min(k, 4.0f) : 1.0f);
+        trace("ultrawide: %s, window client %ldx%ld, factor %.4f", off ? "off" : "auto", cr.right, cr.bottom, nvnHostGetUltrawide());
+    }
     hle::set_log_sink([](const char *l, size_t n) { trace("%.*s", (int)n, l); });   // timestamped HLE log lines
     { static NvnHostHooks hk = {nullptr, hook_present, hook_submit}; nvnHostSetHooks(&hk); }
     size_t no = 0;

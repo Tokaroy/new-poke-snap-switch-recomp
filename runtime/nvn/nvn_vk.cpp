@@ -705,6 +705,7 @@ void DestroyTexture(TextureImpl* t) {
   AaForgetTexture(t);   // drops the AA step's cached UNORM views of this image (the graveyard calls this once the GPU is done with it)
   if (t->bcShadow) { DestroyTexture(t->bcShadow); t->bcShadow = nullptr; }
   if (t->xferShadow) { DestroyTexture(t->xferShadow); t->xferShadow = nullptr; }
+  if (t->wideTwin) { DestroyTexture(t->wideTwin); t->wideTwin = nullptr; }   // [wide] middle-16:9 stand-in
   if (t->abAlt) { DestroyTexture(t->abAlt); t->abAlt = nullptr; }   // SNAP_MODS_AB twin (only ever sampled via the parent, so the GPU is done with it too)
   if (t->biAlts) BtnIconForget(t);   // button icon twins, same reasoning
   if (t->host && t->host->device) {
@@ -1270,8 +1271,9 @@ static float RtScale(const ReplayCtx& cx) {
 static void EmitViewport(ReplayCtx& cx, int i) {
   const float* v = cx.vpGuest[i];
   if (v[2] <= 0 || v[3] <= 0) return;
-  cx.vpScale = RtScale(cx);
+  cx.vpScale = WideXform(cx, v, &cx.vpSx, &cx.vpOx);   // [wide] y scale = the render scale; x may be wider, narrowed or unwidened
   VkViewport vp = MakeNvnViewport(cx.h->originMode, v[0], v[1], v[2], v[3], cx.vpScale);
+  if (cx.vpSx != cx.vpScale || cx.vpOx != 0.0f) { vp.x = cx.vpOx + v[0] * cx.vpSx; vp.width = v[2] * cx.vpSx; }
   { float jx, jy; UpscaleViewportJitter(cx, &jx, &jy); vp.x += jx; vp.y += jy; }   // [upscale] sub-pixel jitter of the scene's draws
   vkCmdSetViewport(cx.cb, (uint32_t)i, 1, &vp);
 }
@@ -1281,8 +1283,10 @@ static void EmitScissor(ReplayCtx& cx, int i) {
   if (y < 0) { ht += y; y = 0; }
   if (w < 0) w = 0;
   if (ht < 0) ht = 0;
-  const float sc = cx.scScale = RtScale(cx);
-  if (sc != 1.0f) { x = (int)std::floor(x * sc); y = (int)std::floor(y * sc); w = (int)std::ceil(w * sc); ht = (int)std::ceil(ht * sc); }
+  const float sc = cx.scScale = WideXform(cx, nullptr, &cx.scSx, &cx.scOx);   // [wide]
+  if (cx.scSx != sc || cx.scOx != 0.0f) { const float sx = cx.scSx, ox = cx.scOx; const int x1 = (int)std::ceil(ox + (x + w) * sx); x = (int)std::floor(ox + x * sx); w = std::max(0, x1 - x); }
+  else if (sc != 1.0f) { x = (int)std::floor(x * sc); w = (int)std::ceil(w * sc); }
+  if (sc != 1.0f) { y = (int)std::floor(y * sc); ht = (int)std::ceil(ht * sc); }
   VkRect2D r{{x, y}, {(uint32_t)w, (uint32_t)ht}};
   vkCmdSetScissor(cx.cb, (uint32_t)i, 1, &r);
 }
@@ -1325,8 +1329,8 @@ static void Replay(ReplayCtx& cx, const CmdList& list) {
         if (FxOnSetRenderTargets(cx)) { for (int i = 0; i < 4; i++) { if (cx.vpHave & (1u << i)) EmitViewport(cx, i); if (cx.scHave & (1u << i)) EmitScissor(cx, i); } }   // [fx] pre-tonemap slot, before the upscaler reads the scene colour; its passes changed the viewport / scissor state
         { const bool jit = UpscaleOnSetRenderTargets(cx);   // [upscale] scene / upscale point; jitter changed: re-emit viewports
           if (jit && cx.vpHave) for (int i = 0; i < 4; i++) if (cx.vpHave & (1u << i)) EmitViewport(cx, i); }
-        if (cx.vpHave && RtScale(cx) != cx.vpScale) for (int i = 0; i < 4; i++) if (cx.vpHave & (1u << i)) EmitViewport(cx, i);
-        if (cx.scHave && RtScale(cx) != cx.scScale) for (int i = 0; i < 4; i++) if (cx.scHave & (1u << i)) EmitScissor(cx, i);
+        if (cx.vpHave && (RtScale(cx) != cx.vpScale || g_wideK > 1.0f)) for (int i = 0; i < 4; i++) if (cx.vpHave & (1u << i)) EmitViewport(cx, i);   // [wide] x mapping may differ per target
+        if (cx.scHave && (RtScale(cx) != cx.scScale || g_wideK > 1.0f)) for (int i = 0; i < 4; i++) if (cx.scHave & (1u << i)) EmitScissor(cx, i);
         break;
       case Op::ClearColor: {
         EndRendering(cx);
@@ -1905,6 +1909,9 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
   if (w->crop[2] > 0 && w->crop[3] > 0) { sx = (int)(w->crop[0] * rsx + 0.5); sy = (int)(w->crop[1] * rsy + 0.5); sw = (int)(w->crop[2] * rsx + 0.5); sh = (int)(w->crop[3] * rsy + 0.5); }
   sx = std::clamp(sx, 0, srcW - 1); sy = std::clamp(sy, 0, srcH - 1);
   sw = std::clamp(sw, 1, srcW - sx); sh = std::clamp(sh, 1, srcH - sy);
+  { int wx = 0, ww = 0; if (WidePresentCrop(src, &wx, &ww)) {   // [wide] no widened 3D this present: the middle 16:9, bars at the sides
+      if (w->crop[2] > 0 && w->crop[3] > 0) { const double r = (double)ww / src->b.width; sx = std::clamp(wx + (int)(w->crop[0] * r + 0.5), 0, srcW - 1); sw = std::clamp((int)(w->crop[2] * r + 0.5), 1, srcW - sx); }   // a guest crop is in 16:9 guest pixels: map it into the middle
+      else { sx = wx; sw = ww; } } }
   // destination rectangle: aspect-preserving fit
   const double sa = (double)sw / sh, da = (double)w->scExtent.width / w->scExtent.height;
   int dw = w->scExtent.width, dh = w->scExtent.height;

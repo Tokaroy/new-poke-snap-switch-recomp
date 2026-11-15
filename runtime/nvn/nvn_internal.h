@@ -257,6 +257,8 @@ struct TextureImpl {
   VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
   uint32_t hostW = 0, hostH = 0;   // image size when render-target scaling applies (0 = same as the guest size)
   float scale = 1.0f;
+  float wide = 1.0f;                     // [wide] ultrawide: extra horizontal factor of the image (hostW = guest width * scale * wide; nvn_wide.cpp)
+  TextureImpl* wideTwin = nullptr; bool wideDirty = false;   // [wide] middle-16:9 stand-in for 16:9-only targets and whether it is stale
   uint32_t HW() const { return hostW ? hostW : (uint32_t)b.width; }
   uint32_t HH() const { return hostH ? hostH : (uint32_t)b.height; }
   TextureImpl* shAlt = nullptr; uint64_t shKey = 0; bool shTried = false;   // shiny mod (nvn_shiny.cpp): data key of a body texture and its recolored twin
@@ -408,6 +410,10 @@ struct ReplayCtx {
   // guest (unscaled) viewport / scissor 0..3 as last set, re-applied when SetRenderTargets changes the render scale (the game
   // often sets them before binding targets, so a value scaled for the previous target would land in a corner of a scaled one)
   float vpGuest[4][4] = {}; int scGuest[4][4] = {}; uint8_t vpHave = 0, scHave = 0; float vpScale = 1.0f, scScale = 1.0f;
+  float vpSx = 1.0f, vpOx = 0.0f, scSx = 1.0f, scOx = 0.0f;   // [wide] x scale / offset the viewport and scissor were emitted with
+  uint8_t wideMode = 0;            // [wide] 0 full, 1 narrow (middle 16:9), 2 unwiden (nvn_wide.cpp)
+  uint64_t wideC3Hash[8] = {}; VkBuffer wideC3Buf[8] = {}; uint8_t wideC3Next = 0;   // [wide] widened c3 copies of this recording
+  const char* wideFs = nullptr;   // [wide] fragment program key of the current draw (decision log only)
   DrawState* ds = nullptr;
 };
 
@@ -534,6 +540,16 @@ struct ScalePolicy {
   float For(const TextureBuilder& b, uint32_t tag) const;   // 1.0 when the texture is not scaled
 };
 extern ScalePolicy g_scale;
+// [wide] ultrawide (nvn_wide.cpp, docs/ultrawide.md)
+extern float g_wideK;   // window aspect / (16/9) on a wider window, else 1
+float WideFor(const TextureBuilder& b, uint32_t tag);   // extra horizontal factor for a new texture (1 = none)
+float WideXform(const ReplayCtx& cx, const float* vpGuest, float* sx, float* ox);   // x mapping of the bound targets (vpGuest null = scissor); returns the y scale
+// returns true when the draw should read a widened copy of its c3 camera buffer (WideC3Copy): a 16:9 camera drawn across a wide target
+bool WideOnDraw(ReplayCtx& cx, TextureImpl* const* sampled, int nSampled, const uint8_t* c3, uint64_t c3range, const float* box, bool c3Only);
+VkBuffer WideC3Copy(ReplayCtx& cx, const uint8_t* c3, uint64_t range);   // c3 with the projection k times wider (same vertical field of view)
+TextureImpl* WideCropSubstitute(ReplayCtx& cx, TextureImpl* src);   // middle 16:9 of a wide image for a draw into a 16:9-only target
+void WideMarkDrawn(TextureImpl* t);                                  // BeginRendering: a wide target changed
+bool WidePresentCrop(const TextureImpl* src, int* sx, int* sw);      // once per present: middle 16:9 when no widened camera drew
 extern float g_lodBiasExtra;    // SNAP_LOD_BIAS: added to the game's bias on mipmapped, non-compare samplers
 extern bool g_lodBiasAuto;      // SNAP_LOD_BIAS=auto: -log2(render scale)
 extern void ApplyHostEnvPolicy();   // SNAP_ANISO, SNAP_LOD_BIAS, SNAP_RENDER_SCALE, SNAP_SHADOW_RES (called from DeviceInitialize)

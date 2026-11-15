@@ -23,6 +23,7 @@
 using namespace loader;
 
 extern "C" volatile int g_fnprof;
+extern "C" float nvnHostGetUltrawide(void);   // runtime/nvn/nvn_wide.cpp
 
 namespace {
 
@@ -201,6 +202,51 @@ void fov_mark_impl(bool end) {
 }
 }  // namespace
 namespace {
+// Ultrawide (docs/ultrawide.md): camera builders load the aspect from camera+0x12c into a float register just before their tanf
+// call and divide by it after, so widening that register at the call gives the same vertical field of view, k times the width.
+// Only 16:9 cameras. Photos keep the widened projection; the Evaluation passes unwiden it on the GPU (nvn_wide.cpp, mode 2).
+struct WideSite { uint64_t off; int reg; };
+WideSite g_wide_sites[8] = {{0x296400, 9}};   // ride and lab camera (builder 0x295170)
+int g_wide_nsites = 1;
+float wide_k() { static const float k = nvnHostGetUltrawide(); return k; }
+void wide_camera(Cpu *c, uint64_t off) {
+    int reg = -1;
+    for (int i = 0; i < g_wide_nsites; i++) if (g_wide_sites[i].off == off) { reg = g_wide_sites[i].reg; break; }
+    if (reg < 0) return;
+    static const bool wtrace = getenv("SNAP_WIDE_TRACE") != nullptr;   // developer aid: which caller builds which camera
+    if (wtrace) {
+        const uint64_t fp = c->x[29];
+        uint64_t lr1 = 0, lr2 = 0;
+        if (fp && !IsBadReadPtr((void *)fp, 16)) {
+            lr1 = *(const uint64_t *)(fp + 8);
+            const uint64_t fp2 = *(const uint64_t *)fp;
+            if (fp2 && !IsBadReadPtr((void *)fp2, 16)) lr2 = *(const uint64_t *)(fp2 + 8);
+        }
+        uint32_t ab = (uint32_t)c->v[reg];
+        float a;
+        memcpy(&a, &ab, 4);
+        static uint64_t seen[256][3];
+        static int nseen = 0;
+        const uint64_t obj = c->x[20];
+        bool found = false;
+        for (int i = 0; i < nseen; i++) if (seen[i][0] == lr1 && seen[i][1] == lr2 && seen[i][2] == obj) { found = true; break; }
+        if (!found && nseen < 256) {
+            seen[nseen][0] = lr1; seen[nseen][1] = lr2; seen[nseen][2] = obj; nseen++;
+            trace("ultrawide: camera at main+%#llx p%llu obj %#llx caller main+%#llx <- main+%#llx aspect %.4f",
+                  (unsigned long long)off, (unsigned long long)snap_present_count(), (unsigned long long)obj,
+                  (unsigned long long)(lr1 - kMainBase), (unsigned long long)(lr2 - kMainBase), a);
+        }
+    }
+    uint32_t ab = (uint32_t)c->v[reg];
+    float a;
+    memcpy(&a, &ab, 4);
+    if (std::fabs(a - 16.0f / 9.0f) >= 0.01f) return;
+    a *= wide_k();
+    memcpy(&ab, &a, 4);
+    c->v[reg] = (__uint128_t)ab;
+}
+}  // namespace
+namespace {
 void h_tanf(Cpu *c) {
     uint32_t b = (uint32_t)c->v[0];
     float x;
@@ -230,6 +276,7 @@ void h_tanf(Cpu *c) {
                 trace("fov: tanf caller main+%#llx x=%g rad (half-angle %.2f deg) hits=%llu", (unsigned long long)(lr - kMainBase), x, x * 57.29578, (unsigned long long)s.n);
         }
     }
+    if (wide_k() > 1.0f) wide_camera(c, lr - kMainBase);
     float r = tanf(xr);
     uint32_t rb;
     memcpy(&rb, &r, 4);
@@ -390,6 +437,20 @@ void snap_lodanim_install() {
         g_fov_allow.clear();
         while (s && *s) { char *end; g_fov_allow.push_back(strtoull(s, &end, 0)); s = *end == ',' ? end + 1 : nullptr; }
     }
-    if (g_fov_trace || g_fov_scale != 1.0 || g_fov_target_deg > 0) add_override("tanf", h_tanf);
+    const char *uw = getenv("SNAP_ULTRAWIDE");   // the factor is set later (boot.cpp, once the window exists); h_tanf reads it on first use
+    const bool wide = !(uw && (!_stricmp(uw, "off") || !strcmp(uw, "0")));
+    if (const char *ws = getenv("SNAP_WIDE_SITES")) {   // developer aid: more camera sites as main offset:register, e.g. 0x38cdbc:9
+        for (const char *p = ws; *p && g_wide_nsites < 8;) {
+            char *e;
+            const uint64_t off = strtoull(p, &e, 0);
+            if (*e != ':') break;
+            const int reg = (int)strtol(e + 1, &e, 10);
+            if (off && reg >= 0 && reg < 32) g_wide_sites[g_wide_nsites++] = {off, reg};
+            if (*e != ',') break;
+            p = e + 1;
+        }
+        trace("ultrawide: %d camera sites", g_wide_nsites);
+    }
+    if (g_fov_trace || g_fov_scale != 1.0 || g_fov_target_deg > 0 || wide) add_override("tanf", h_tanf);
 }
 }  // namespace loader
