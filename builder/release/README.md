@@ -19,7 +19,7 @@ The zip holds no game data and does not help you get any. You need a legal copy 
 | Python 3.14 | Only to start the builder. The builder installs its own pinned Python packages with `pyenv`. Python 3.14 is what was tested. |
 | Visual Studio Build Tools 2022 | The "Desktop development with C++" workload (Windows SDK included). Free from Microsoft. |
 | Your game files | `main` and `sdk` from the game's program files, and the patched RomFS folder, all from version 2.0.1. |
-| Disk and memory | About 15 GB free on the drive that holds the tools, the work folder and the caches (the tools are about 2 GB, the work folder about 3 GB, the shader cache about 7 GB). 16 GB of RAM for the Ghidra step, 8 GB without it. |
+| Disk and memory | About 15 GB free on the drive that holds the tools, the work folder and the caches (measured on a clean PC: the unpacked tools 5.5 GB plus 1.6 GB of kept downloads, the work folder 3 GB, the builder's caches 0.6 GB, and the shader cache about 2 GB after the first start). 16 GB of RAM for the Ghidra step, 8 GB without it. |
 | Internet, once | To download the pinned build tools and, if you choose, upscalers. |
 
 ## Steps
