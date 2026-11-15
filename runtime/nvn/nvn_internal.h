@@ -343,8 +343,8 @@ struct ProgramImpl {
 bool PatchAlphaTest(const std::vector<uint32_t>& in, int func, std::vector<uint32_t>& out);   // nvn_alpha.cpp
 bool GtaoPatchFragment(std::vector<uint32_t>& words, const char* key);   // nvn_gtao.cpp (P8, SNAP_SSAO_GTAO): the HBAO fragment program becomes GTAO
 struct PcssParams {   // nvn_shadowpcf.cpp: contact-hardening soft shadows (SNAP_SHADOW_PCSS, the Enhanced lighting preset)
-  float lightSize = 6.0f;     // filter radius in map UV per unit of receiver-minus-blocker depth (the sun's angular size on the normalized shadow depth)
-  float maxTexels = 10.0f;    // widest penumbra radius, in texels of the game's own 1024 map
+  float lightSize = 2.5f;     // filter radius in map UV per unit of receiver-minus-blocker depth (the sun's angular size on the normalized shadow depth)
+  float maxTexels = 3.5f;     // widest penumbra radius, in texels of the game's own 1024 map
   int searchTaps = 8;         // blocker search fetches
   bool flip = false;          // test aid: treat map depths above the receiver as blockers
 };

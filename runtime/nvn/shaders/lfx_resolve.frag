@@ -21,7 +21,7 @@ void main() {
     if (d <= 0.0) { outRes = vec4(1.0, 1.0, 1e6, 1.0); return; }
     float wC = pc.size.w / d;
     vec2 cur = texelFetch(rawTex, p, 0).rg;
-    vec2 acc = vec2(0.0); float wsum = 0.0;
+    vec2 acc = vec2(0.0); vec2 wsum = vec2(0.0);   // r (AO) and g (contact) have their own kernel: contact is noisier, so its taps are weighted flatter
     vec2 nmin = cur, nmax = cur;
     for (int y = -2; y <= 2; y++) for (int x = -2; x <= 2; x++) {
         ivec2 q = clamp(p + ivec2(x, y), ivec2(0), mx);
@@ -32,10 +32,10 @@ void main() {
         float wg = exp(-0.25 * float(x * x + y * y));
         vec2 v = texelFetch(rawTex, q, 0).rg;
         if (abs(x) <= 1 && abs(y) <= 1) { nmin = min(nmin, v); nmax = max(nmax, v); }
-        float wt = wg * wd;
+        vec2 wt = vec2(wg, exp(-0.06 * float(x * x + y * y))) * wd;
         acc += v * wt; wsum += wt;
     }
-    vec2 spat = wsum > 1e-4 ? acc / wsum : cur;
+    vec2 spat = vec2(wsum.x > 1e-4 ? acc.x / wsum.x : cur.x, wsum.y > 1e-4 ? acc.y / wsum.y : cur.y);
     vec2 res = spat;
     if (pc.size.z > 0.5) {
         vec4 pcl = pc.reproj * vec4((vec2(p) + 0.5) / pc.size.xy * vec2(2.0, -2.0) + vec2(-1.0, 1.0), d, 1.0);

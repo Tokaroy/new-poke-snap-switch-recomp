@@ -128,20 +128,23 @@ void main() {
             int N = int(clamp(pixLen * 0.5, 8.0, 32.0));
             float g = max(max(abs(wR - wC), abs(wC - wL)), max(abs(wD - wC), abs(wC - wU)));   // slope-scaled bias (see contact.frag)
             vec2 win0 = (C0.xy / C0.w * vec2(0.5, -0.5) + 0.5) * pc.size.xy;
-            float occ = 0.0, firstT = 0.0; int hits = 0;
+            float occ = 0.0, wsum = 0.0;   // fractional occlusion: the weighted share of the ray's steps that end behind a surface (near steps count more), so a single noisy step moves it by 1/N, not by a whole level
             for (int i = 0; i < N; i++) {
                 float t = (float(i) + n1) / float(N);
+                float wt = 1.0 - 0.8 * t;
                 vec4 C = C0 + pc.dclip * (pc.q.y * t);
                 if (C.w < 1e-3) break;
                 vec2 win = (C.xy / C.w * vec2(0.5, -0.5) + 0.5) * pc.size.xy;
                 ivec2 tp = ivec2(floor(win + pc.size.zw));
                 if (any(lessThan(tp, ivec2(0))) || any(greaterThanEqual(tp, ivec2(pc.size.xy)))) break;
+                wsum += wt;
                 float sd = texelFetch(depthTex, tp, 0).r;
                 if (sd <= 0.0) continue;
                 float sw = 1.0 / (pc.ivp * vec4(ndcOf(vec2(tp), sd), 1.0)).w;
                 float diff = C.w - sw;
-                if (diff > bias + 2.5 * g * length(win - win0) && diff < thick) { if (hits++ == 0) firstT = t; if (hits >= 2) { occ = 1.0 - 0.75 * firstT; break; } }
+                if (diff > bias + 2.5 * g * length(win - win0) && diff < thick) occ += wt;
             }
+            occ = wsum > 0.0 ? occ / wsum : 0.0;
             contact = 1.0 - occ * facing;
         }
     }
