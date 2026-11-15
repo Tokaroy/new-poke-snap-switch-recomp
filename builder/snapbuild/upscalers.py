@@ -33,9 +33,11 @@ def _sha(path):
 
 def installed(entry, install_dir):
     """True when every file of the upscaler is present with its pinned hash."""
-    for f in entry['files']:
-        p = Path(install_dir) / f['dest']
-        if not p.is_file() or p.stat().st_size != f['size'] or _sha(p) != f['sha256']:
+    lic = entry['license']
+    required = [(f['dest'], f) for f in entry['files']] + [('licenses/upscalers/' + lic['filename'], lic)]   # the vendor license is part of the install
+    for dest, f in required:
+        p = Path(install_dir) / dest
+        if not p.is_file() or (f.get('size') is not None and p.stat().st_size != f['size']) or _sha(p) != f['sha256']:
             return False
     return True
 
@@ -80,27 +82,35 @@ def install(name, entry, install_dir, download_dir, opener=None, say=print):
     """Download, verify and install every file of one upscaler (the license is assumed accepted by the caller). Returns the list of dests."""
     install_dir, download_dir = Path(install_dir), Path(download_dir)
     done = []
-    if 'archive' in entry:
-        arc = _get_archive(name, entry, download_dir, opener, say)
-        with zipfile.ZipFile(arc) as z:
-            for f in entry['files']:
-                data = z.read(f['member'])
-                if len(data) != f['size'] or hashlib.sha256(data).hexdigest() != f['sha256']:
-                    raise fetch.FetchError(f'{name}: {f["member"]} does not match its pinned hash; nothing installed')
-                _install_file(data, install_dir / f['dest'], f['sha256'])
-                done.append(f['dest'])
-        arc.unlink(missing_ok=True)   # keep only the files we use
-    else:
-        for f in entry['files']:
-            tmp = download_dir / (Path(f['dest']).name + '.dl')
-            say(f'{name}: downloading {Path(f["dest"]).name} ({f["size"] / 2**20:.1f} MB) from {f["url"]}')
-            fetch.download(f['url'], tmp, f['sha256'], opener=opener, size_hint=f['size'])
-            _install_file(tmp, install_dir / f['dest'], f['sha256'])
-            tmp.unlink(missing_ok=True)
-            done.append(f['dest'])
+    # Fetch and verify everything first; nothing in install_dir changes until every file has passed, so a bad file never leaves a mixed install.
     lic = get_license(name, entry, download_dir, opener, say)   # the license text travels with the files
-    _install_file(lic, install_dir / 'licenses' / 'upscalers' / entry['license']['filename'], entry['license']['sha256'])
-    done.append('licenses/upscalers/' + entry['license']['filename'])
+    staged = []                                                  # (bytes or temp path, dest, sha) for every file, license last
+    tmps = []
+    try:
+        if 'archive' in entry:
+            arc = _get_archive(name, entry, download_dir, opener, say)
+            with zipfile.ZipFile(arc) as z:
+                for f in entry['files']:
+                    data = z.read(f['member'])
+                    if len(data) != f['size'] or hashlib.sha256(data).hexdigest() != f['sha256']:
+                        raise fetch.FetchError(f'{name}: {f["member"]} does not match its pinned hash; nothing installed')
+                    staged.append((data, f['dest'], f['sha256']))
+        else:
+            for f in entry['files']:
+                tmp = download_dir / (Path(f['dest']).name + '.dl')
+                tmps.append(tmp)
+                say(f'{name}: downloading {Path(f["dest"]).name} ({f["size"] / 2**20:.1f} MB) from {f["url"]}')
+                fetch.download(f['url'], tmp, f['sha256'], opener=opener, size_hint=f['size'])
+                staged.append((tmp, f['dest'], f['sha256']))
+        staged.append((lic, 'licenses/upscalers/' + entry['license']['filename'], entry['license']['sha256']))
+        for src, dest, sha in staged:
+            _install_file(src, install_dir / dest, sha)
+            done.append(dest)
+        if 'archive' in entry:
+            arc.unlink(missing_ok=True)   # keep only the files we use
+    finally:
+        for t in tmps:
+            t.unlink(missing_ok=True)
     return done
 
 

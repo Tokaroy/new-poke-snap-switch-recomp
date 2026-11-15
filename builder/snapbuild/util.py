@@ -48,7 +48,8 @@ def run(cmd, log, env=None, cwd=None, timeout=3600, what=None, check=True, echo_
     log.write(f'run: {what or Path(str(cmd[0])).name} ({len(cmd) - 1} args)')
     log.raw('  cmd: ' + ' '.join(str(c) for c in cmd))
     t0 = time.time()
-    p = subprocess.Popen([str(c) for c in cmd], env=env, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    # stdin is closed: a child that asks a question (Ghidra's launcher does when it finds no JDK) must fail, not wait for ever
+    p = subprocess.Popen([str(c) for c in cmd], env=env, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                          creationflags=BELOW_NORMAL | CREATE_NO_WINDOW)
     tail = []
 

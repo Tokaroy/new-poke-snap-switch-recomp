@@ -1,4 +1,4 @@
-"""Private generation cache. Keeps the function lists and generated C under %LOCALAPPDATA%\SnapRecomp\cache so a rebuild after
+"""Private generation cache. Keeps the function lists and generated C under %LOCALAPPDATA%\\SnapRecomp\\cache so a rebuild after
 a runtime update skips Ghidra and snap_gen. Never in a release zip, never next to the exe. Objects are always recompiled.
 
 Safety: eviction only happens inside a folder that holds our marker file; reparse points (junctions, symlinks) are refused

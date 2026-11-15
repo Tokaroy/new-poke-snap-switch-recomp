@@ -1,0 +1,31 @@
+# hdtex capture pass: runs on a copy of the player's own save; a course the save has not unlocked ends at the time limit
+# sweep2 route cave_e0 nav=R R R R R U entry=0 level=0 mode=ride (mk_routes2.py)
+wait ui=title timeout=200
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=500
+@f120 6 Right
+@f480 6 Right
+@f840 6 Right
+@f1200 6 Right
+@f1560 6 Right
+@f1920 6 Up
+@f2460 6 A
+wait ui=map_select:CourseSelect timeout=400
+@f180 6 A
+wait ride timeout=300
+repeat @f0 @f60000 24 4 A
+repeat @f0 @f60000 400 60 rx=0.25
+repeat @f200 @f60000 400 60 rx=-0.25
+wait ui=photo_submit:FolderSelect timeout=500
+repeat @f100 @f900 90 8 Down if=!focus=AllCheck
+@f1000 8 A
+@f1150 8 Plus
+@f1260 8 Up
+@f1350 8 A
+wait ui=evaluation timeout=60
+# 6) Evaluation: A taps through the comments and the score; the run ends after the evaluation closes.
+repeat @f240 @f60000 90 8 A
+wait ui=evaluation:Score timeout=120
+repeat @f60 @f60000 90 8 A
+wait ui=evaluation:End timeout=240
+end @f300

@@ -50,7 +50,7 @@ def find_vcvars():
     vswhere = Path(pf86) / 'Microsoft Visual Studio' / 'Installer' / 'vswhere.exe'
     if vswhere.exists():
         r = subprocess.run([str(vswhere), '-latest', '-products', '*', '-requires', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
-                            '-property', 'installationPath'], capture_output=True, text=True)
+                            '-property', 'installationPath', '-utf8'], capture_output=True, encoding='utf-8')
         p = r.stdout.strip().splitlines()
         if p:
             v = Path(p[0]) / 'VC' / 'Auxiliary' / 'Build' / 'vcvars64.bat'
@@ -65,8 +65,11 @@ def find_vcvars():
 
 def vc_env(vcvars):
     env = dict(os.environ)
-    out = subprocess.run(f'cmd /c ""{vcvars}" >nul && set"', capture_output=True, text=True, shell=True).stdout
-    for line in out.splitlines():
+    # cmd /u writes UTF-16, so a non-ASCII user name survives; a failing vcvars must stop the build here, not later in the link
+    r = subprocess.run(f'cmd /u /d /c ""{vcvars}" >nul && set"', capture_output=True, encoding='utf-16-le', shell=True)
+    if r.returncode != 0:
+        raise StepError(f'{vcvars} failed with exit code {r.returncode}; the MSVC and Windows SDK environment was not created.')
+    for line in r.stdout.splitlines():
         if '=' in line:
             k, v = line.split('=', 1)
             env[k] = v
@@ -111,9 +114,11 @@ def find_ghidra(arg, root):
 
 
 def find_jdk(arg, root):
-    cands = [arg, os.environ.get('JAVA_HOME')] + sorted((Path(root) / 'tools').glob('jdk-21*')) + sorted(managed().glob('jdk-21*'))
+    # Ghidra needs a JDK (javac.exe), not a JRE. A JAVA_HOME that points at a JRE is skipped, and the JDK this builder fetches comes
+    # before JAVA_HOME so a stray environment variable cannot break the build.
+    cands = [arg] + sorted((Path(root) / 'tools').glob('jdk-21*')) + sorted(managed().glob('jdk-21*')) + [os.environ.get('JAVA_HOME')]
     for c in cands:
-        if c and (Path(c) / 'bin' / 'java.exe').exists():
+        if c and (Path(c) / 'bin' / 'java.exe').exists() and (Path(c) / 'bin' / 'javac.exe').exists():
             return Path(c)
     return None
 

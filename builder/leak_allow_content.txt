@@ -2,3 +2,5 @@
 # Each entry is pinned to one file and one kind; anything else in that file still fails.
 shader_harness/System.IO.Compression.Native.dll|personal   # embedded Brotli dictionary: plain English words and URLs
 shader_harness/Gommon.dll|home-path                        # build path of a third-party developer left in the library by its author
+THIRD_PARTY_NOTICES.md|personal   # SMAA license text: its authors' public copyright lines, one with a gmail.com address
+THIRD_PARTY_NOTICES.md|email      # same lines (author addresses in the upstream license)

@@ -21,6 +21,67 @@ def add_inputs(ap):
     ap.add_argument('--romfs', required=True, help='folder with the extracted romfs of game version 2.0.1 (base game plus update)')
 
 
+def run_update(a):
+    import json
+    from snapbuild import update
+    state = Path(a.state_dir) if a.state_dir else update.default_state_dir()
+    work = Path(a.work) if a.work else None
+    try:
+        if a.action == 'check':
+            if a.startup:
+                r = update.startup_check(pipeline.BUILDER, state, a.config or (work / 'out' / 'config.json' if work else ''), work=work, url=a.release_url)
+                r = r if r is not None else {'checked': False, 'disabled': True, 'update_available': False}
+            else:
+                r = update.check(pipeline.BUILDER, state, work=work, url=a.release_url)
+            if a.json:
+                print(json.dumps(r))
+            elif r.get('error'):
+                print('Could not check: ' + r['error'])
+            elif r.get('update_available'):
+                est = r.get('estimate')
+                print(f'Version {r["latest"]} is available (you have {r["current"]}). Download {r["size_text"]}'
+                      + (f', rebuild about {est["low_min"]} to {est["high_min"]} minutes' if est else '') + '.')
+                print(update.clean_text(r.get('notes', '')))
+            else:
+                print(f'You are up to date (version {r["current"]}).')
+            return 0
+        if not work:
+            print('--work is required')
+            return 2
+        log = Log(work / 'update.log')
+        try:
+            if a.action == 'rollback':
+                r = update.rollback(work, state, log, wait_pid=a.wait_pid)
+                print(f'Rolled back: the build in {work / "out"} is version {r["now"]} again.')
+                return 0
+
+            def confirm(info):
+                if a.yes:
+                    return True
+                est = info.get('estimate')
+                print(f'Install version {info["version"]}?\nDownload {update.human_size(info["size"])}'
+                      + (f', rebuild about {est[0]} to {est[1]} minutes' if est else '') + '.\n' + update.clean_text(info['notes']))
+                if not sys.stdin or not sys.stdin.isatty():   # no terminal: nobody can answer, so the answer is no at once
+                    print('No terminal to answer on, so nothing was installed. Pass --yes to install.')
+                    return False
+                return fetch.ask_yes('Install it?')
+            r = update.apply(pipeline.BUILDER, work, state, url=a.release_url, log=log, confirm=confirm, wait_pid=a.wait_pid,
+                             progress=lambda d, t: print(f'\rdownloading {d * 100 // max(t, 1)}%', end='', flush=True))
+        finally:
+            log.close()
+        print()
+        if r.get('updated'):
+            print(f'Updated {r["from"]} -> {r["to"]}. The earlier build is kept for rollback.')
+        elif r.get('declined'):
+            print('Nothing was changed.')
+        else:
+            print(f'Already up to date (version {r["current"]}).')
+        return 0
+    except update.UpdateError as e:
+        print('Update stopped: ' + str(e))
+        return 1
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description='Builds SnapRecomp.exe from your own game files.')
     sub = ap.add_subparsers(dest='cmd', required=True)
@@ -41,6 +102,8 @@ def main(argv=None):
     b.add_argument('--harness', help='ShaderHarness.dll for the smoke run')
     b.add_argument('--ghost', help='developer use: hidden-desktop launcher script for the smoke run')
     b.add_argument('--smoke-timeout', type=int, default=420, help='seconds to wait for the title screen')
+    b.add_argument('--no-cache', dest='cache', action='store_false', help='do not reuse or store function lists and generated C in the private cache')
+    b.add_argument('--cache-dir', help='private cache folder (default %%LOCALAPPDATA%%\\SnapRecomp\\cache)')
     b.add_argument('--force', action='append', default=[], choices=pipeline.STEPS, help='rerun this step even if it is stamped done')
     b.add_argument('--compare-generated', help='developer use: folder (with main and sdk inside) whose generated C must be identical')
     f = sub.add_parser('fetch', help='download, verify and unpack the pinned tools (asks before every download)')
@@ -61,11 +124,42 @@ def main(argv=None):
     u.add_argument('--yes', action='store_true', help='download without asking (does NOT accept any license)')
     u.add_argument('--offline-dir', action='append', default=[], help='unused for now; downloads are cached in a temporary folder')
     u.add_argument('--list', action='store_true', help='show what is installed')
+    up = sub.add_parser('update', help='check for a newer builder release, install it (rebuilds here, switches only if the new build passes), or roll back')
+    up.add_argument('action', choices=('check', 'apply', 'rollback'))
+    up.add_argument('--work', help='the work folder of your build (holds out\\ and the record of the last build)')
+    up.add_argument('--state-dir', help='update state folder (default %%LOCALAPPDATA%%\\SnapRecomp\\updates)')
+    up.add_argument('--release-url', help='developer use: a release JSON (file:// or https) instead of the GitHub release list')
+    up.add_argument('--json', action='store_true', help='check: print the answer as one JSON line')
+    up.add_argument('--startup', action='store_true', help='check: the launcher\'s start-up check (at most once per 24 hours, nothing when switched off, silent on errors)')
+    up.add_argument('--config', help='--startup: the launcher\'s config.json (holds the update_check switch)')
+    up.add_argument('--yes', action='store_true', help='apply: install without the confirmation question')
+    up.add_argument('--wait-pid', type=int, help='wait for this process (the launcher) to exit first')
     b.add_argument('--upscalers', help='comma list of upscalers to fetch after the build (default: fsr); a license must be accepted with --accept-license')
     b.add_argument('--accept-license', action='append', default=[], help='upscaler whose vendor license you accept: fsr, dlss, xess (repeatable)')
+    hdtex_cli = None
+    hdtex_missing = ''
+    import importlib.util
+    if importlib.util.find_spec('snapbuild.hdtex_cli') is not None:   # absent from the v1 release package: no subcommand at all
+        hd = sub.add_parser('hdtex', help="HD AI textures: upscale your own game's textures on this PC with a local AI model (builder/HD-TEXTURES.md)")
+        try:
+            from snapbuild import hdtex_cli
+            hdtex_cli.add_args(hd)
+        except ImportError as e:   # numpy etc. are only needed by hdtex; build/update/fetch must not need them
+            hdtex_cli = None
+            hdtex_missing = str(e)
+            hd.add_argument('rest', nargs='*')
     a = ap.parse_args(argv)
     if a.cmd == 'build':
         a.upscalers = [x for x in a.upscalers.split(',') if x] if a.upscalers is not None else None
+
+    if a.cmd == 'update':
+        return run_update(a)
+
+    if a.cmd == 'hdtex':
+        if hdtex_cli is None:
+            print('hdtex needs the Python environment from "snap_builder.py pyenv" (' + hdtex_missing + ').')
+            return 1
+        return hdtex_cli.main(a, versioncheck.load_table(pipeline.BUILDER / 'versions.json'))
 
     if a.cmd == 'upscalers':
         from snapbuild import upscalers as up
@@ -150,7 +244,7 @@ def main(argv=None):
     finally:
         log.close()
     if smoke is not None and not smoke[0]:
-        print(f'Built {exe}, but the smoke run did not reach the title screen: {smoke[1]}')
+        print(f'Built {exe}, but the smoke run did not reach the title screen: {smoke[1]}\nThe previous output folder (if any) was left unchanged.')
         return 1
     print(f'Done: {exe}' + (f' ({smoke[1]})' if smoke else ''))
     return 0

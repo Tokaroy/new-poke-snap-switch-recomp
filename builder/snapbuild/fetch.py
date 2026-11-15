@@ -110,13 +110,18 @@ def download(url, dest, want_sha, opener=None, progress=None, size_hint=None):
     except Exception as e:
         part.unlink(missing_ok=True)
         raise FetchError(f'download failed: {url}: {e}') from e
-    if size_hint and n != size_hint:
+    try:
+        if size_hint and n != size_hint:
+            raise FetchError(f'{dest.name}: got {n} bytes, expected {size_hint}. The partial file was deleted.')
+        if h.hexdigest() != want_sha.lower():
+            raise FetchError(f'{dest.name}: SHA-256 mismatch. Expected {want_sha.lower()}, got {h.hexdigest()}. The file was deleted; nothing was installed.')
+        os.replace(part, dest)
+    except FetchError:
         part.unlink(missing_ok=True)
-        raise FetchError(f'{dest.name}: got {n} bytes, expected {size_hint}. The partial file was deleted.')
-    if h.hexdigest() != want_sha.lower():
+        raise
+    except Exception as e:
         part.unlink(missing_ok=True)
-        raise FetchError(f'{dest.name}: SHA-256 mismatch. Expected {want_sha.lower()}, got {h.hexdigest()}. The file was deleted; nothing was installed.')
-    os.replace(part, dest)
+        raise FetchError(f'download failed while installing {dest}: {e}') from e
     return dest
 
 
@@ -209,8 +214,69 @@ def install_pin(key, pin, archive, tools_dir, say=print):
     return target
 
 
-def ask_from_args(yes, stdin_is_tty=None):
-    """The `ask` callback for the command line: --yes answers yes; otherwise prompt on a terminal; no terminal means no."""
+PROMPT_TIMEOUT_S = 120
+
+
+def prompt_timeout():
+    """Seconds a terminal prompt waits for an answer (SNAP_PROMPT_TIMEOUT overrides; 0 = do not wait at all)."""
+    try:
+        return max(0.0, float(os.environ.get('SNAP_PROMPT_TIMEOUT', PROMPT_TIMEOUT_S)))
+    except ValueError:
+        return float(PROMPT_TIMEOUT_S)
+
+
+def timed_input(prompt, timeout=None):
+    """Read one line from the terminal. Returns None when nobody answers within `timeout` seconds or the input is closed.
+    A hidden console (a build started from a script or service that has a console but no person) is a terminal to isatty(),
+    so a plain input() would wait for ever there."""
+    import sys
+    import time
+    timeout = prompt_timeout() if timeout is None else timeout
+    print(prompt, end='', flush=True)
+    end = time.monotonic() + timeout
+    if os.name == 'nt':
+        import msvcrt
+        buf = []
+        while True:
+            if msvcrt.kbhit():
+                ch = msvcrt.getwche()
+                if ch in ('\r', '\n'):
+                    print()
+                    return ''.join(buf)
+                if ch == '\x03':
+                    raise KeyboardInterrupt
+                if ch == '\x08':
+                    if buf:
+                        buf.pop()
+                    continue
+                buf.append(ch)
+            elif time.monotonic() >= end:
+                print()
+                return None
+            else:
+                time.sleep(0.05)
+    import select
+    left = max(0.0, end - time.monotonic())
+    ready, _, _ = select.select([sys.stdin], [], [], left)
+    if not ready:
+        print()
+        return None
+    line = sys.stdin.readline()
+    return line.rstrip('\r\n') if line else None
+
+
+def ask_yes(q, timeout=None, reader=None):
+    """Ask a yes/no question on the terminal; no answer in time, or a closed input, is a no with a message that says why."""
+    ans = (reader or timed_input)(q + ' [y/N] ', timeout)
+    if ans is None:
+        print('No answer, so the answer is no (the builder never waits for ever). Run the command again and answer, or pass --yes to allow it.')
+        return False
+    return ans.strip().lower() in ('y', 'yes')
+
+
+def ask_from_args(yes, stdin_is_tty=None, reader=None):
+    """The `ask` callback for the command line: --yes answers yes; otherwise prompt on a terminal (with a time limit);
+    no terminal means no at once."""
     if yes:
         return lambda q: (print(q + ' yes (--yes)'), True)[1]
     import sys
@@ -220,10 +286,7 @@ def ask_from_args(yes, stdin_is_tty=None):
         if not tty:
             print(q + ' no (no terminal; pass --yes to allow downloads)')
             return False
-        try:
-            return input(q + ' [y/N] ').strip().lower() in ('y', 'yes')
-        except EOFError:
-            return False
+        return ask_yes(q, reader=reader)
     return ask
 
 

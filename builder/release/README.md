@@ -1,0 +1,81 @@
+# Snap Recomp Builder for Windows
+
+Works with your own copy of New Pokémon Snap 2.0.1.
+
+This builder turns your own copy of the game into a native Windows program. It reads the files you supply, translates the game's code on your PC, compiles it and links it with the prebuilt runtime in this zip. The result is `SnapRecomp.exe` in the `out` folder of your work folder.
+
+Building is done from a terminal (there is no builder window yet). The program it makes, `SnapRecomp.exe`, opens a launcher window when you double-click it.
+
+The zip holds no game data and does not help you get any. You need a legal copy of the game, version 2.0.1, and you extract the files yourself with your own tools.
+
+![The version check](screenshots/builder_check.png)
+
+## What you need
+
+| Need | Notes |
+|---|---|
+| Windows 10 or 11, 64-bit | The CPU needs AVX2 (any CPU since about 2015). |
+| A Vulkan 1.3 graphics driver | Needed to run the game and for the last build step. |
+| Python 3.14 | Only to start the builder. The builder installs its own pinned Python packages with `pyenv`. Python 3.14 is what was tested. |
+| Visual Studio Build Tools 2022 | The "Desktop development with C++" workload (Windows SDK included). Free from Microsoft. |
+| Your game files | `main` and `sdk` from the game's program files, and the patched RomFS folder, all from version 2.0.1. |
+| Disk and memory | About 15 GB free on the drive that holds the tools, the work folder and the caches (the tools are about 2 GB, the work folder about 3 GB, the shader cache about 7 GB). 16 GB of RAM for the Ghidra step, 8 GB without it. |
+| Internet, once | To download the pinned build tools and, if you choose, upscalers. |
+
+## Steps
+
+Open a terminal in the folder you unzipped. Every command below is one line.
+
+1. Check your files (about a second). It stops with a plain message if something is wrong, for example a RomFS without the 2.0.1 update:
+
+   ```
+   python builder\snap_builder.py check --main <main> --sdk <sdk> --romfs <romfs folder>
+   ```
+
+2. Download the build tools. It asks before each download, shows the size and checks the SHA-256 of every file against the pinned value (LLVM about 0.9 GB, Ghidra 0.6 GB, JDK 0.2 GB). Add `--yes` to answer yes to all:
+
+   ```
+   python builder\snap_builder.py fetch llvm ghidra switch_loader jdk
+   ```
+
+3. Make the Python environment from the pinned packages:
+
+   ```
+   python builder\snap_builder.py pyenv
+   ```
+
+4. Build into a new empty folder. The first build runs Ghidra to find the game's functions. Plan on 15 to 30 minutes for that step; the rest takes 10 to 20 minutes:
+
+   ```
+   python builder\snap_builder.py build --main <main> --sdk <sdk> --romfs <romfs folder> --work <new empty folder>
+   ```
+
+   The builder finds the tools and the Python from steps 2 and 3. The build ends with a smoke test: it starts the new `SnapRecomp.exe` on a scratch profile and waits for the title screen. If the check fails, nothing is switched and the log (`builder.log` in the work folder) says why.
+
+5. Double-click `<work folder>\out\SnapRecomp.exe`. It opens the launcher: Play, change the game folder, open the save folder, import or export a save, upscalers, HD textures, updates.
+
+   ![The launcher](screenshots/launcher.png)
+
+The first start translates the game's shaders and takes several minutes. Later starts are fast.
+
+## What it never does
+
+- It never copies, uploads or ships your game files. It reads them and writes only inside the work folder and its own caches (`%LOCALAPPDATA%\SnapRecomp`).
+- It never downloads anything without asking, and it checks every download against a published hash.
+- Upscalers (FSR, DLSS, XeSS) are not in this zip. The launcher can fetch them from their publishers after you read and accept each license.
+
+## HD textures (optional)
+
+The launcher's "HD textures" entry makes sharper textures from your own game files with an AI model that runs on your graphics card. The choices are Off, Sharp (quickest), HD, Ultra and Custom. First capture the textures your save has unlocked: the launcher plays each course hidden and muted and keeps what the game loads. Then pick a level. The launcher shows the texture count, the time, the disk space and the video memory the busiest course needs, and stops if your card cannot hold it. Each AI tool and model is downloaded from its author after you read and accept its license, and nothing leaves your PC. Off turns the pack off and deletes nothing. `builder\HD-TEXTURES.md` lists every level and the command-line options.
+
+## Updates
+
+The launcher checks once a day for a new release of this builder. The check runs in the background, so Play never waits for it. It only tells you what is new, the download size and about how long the rebuild takes. Nothing installs until you click Install. Turn the check off in the launcher under Updates.
+
+An update is signed. A bad signature, a changed file or an older version is deleted and changes nothing. The new build must pass the self-test and the smoke run before it replaces your working one, and "Go back to the previous version" restores the last one. Saves, settings and mods are never touched.
+
+## More
+
+`builder\README.md` has the reference: every option, the build steps, the cache and the update details. `THIRD_PARTY_NOTICES.md` and the `licenses` folder list the third-party code and its licenses.
+
+MIT license, like the rest of the project.

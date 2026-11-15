@@ -253,6 +253,41 @@ class FetchTests(unittest.TestCase):
         self.assertTrue(fetch.ask_from_args(True)('Download x?'))
         self.assertFalse(fetch.ask_from_args(False, stdin_is_tty=False)('Download x?'))   # no terminal and no --yes: refuse
 
+    def test_prompt_never_waits_for_ever(self):
+        # a hidden console is a terminal to isatty(); with nobody answering, the question times out as "no"
+        asked = []
+
+        def silent(prompt, timeout):
+            asked.append(timeout)
+            return None
+        self.assertFalse(fetch.ask_from_args(False, stdin_is_tty=True, reader=silent)('Download x?'))
+        self.assertEqual(len(asked), 1)
+        self.assertEqual(asked[0], None)   # the default limit applies (prompt_timeout)
+        self.assertTrue(fetch.ask_from_args(False, stdin_is_tty=True, reader=lambda p, t: 'Y')('Download x?'))
+        self.assertFalse(fetch.ask_from_args(False, stdin_is_tty=True, reader=lambda p, t: '')('Download x?'))
+
+    def test_timed_input_times_out_and_reads(self):
+        import time
+        from unittest import mock
+        fake = mock.MagicMock()
+        fake.kbhit.return_value = False
+        with mock.patch.dict(sys.modules, {'msvcrt': fake}), mock.patch('os.name', 'nt'):
+            t0 = time.monotonic()
+            self.assertIsNone(fetch.timed_input('q ', timeout=0.3))
+            self.assertLess(time.monotonic() - t0, 5)
+            keys = iter('yes\r')
+            fake.kbhit.side_effect = lambda: True
+            fake.getwche.side_effect = lambda: next(keys)
+            self.assertEqual(fetch.timed_input('q ', timeout=5), 'yes')
+
+    def test_prompt_timeout_env(self):
+        import os
+        from unittest import mock
+        with mock.patch.dict(os.environ, {'SNAP_PROMPT_TIMEOUT': '7'}):
+            self.assertEqual(fetch.prompt_timeout(), 7.0)
+        with mock.patch.dict(os.environ, {'SNAP_PROMPT_TIMEOUT': 'junk'}):
+            self.assertEqual(fetch.prompt_timeout(), float(fetch.PROMPT_TIMEOUT_S))
+
 
 def fake_wheel(path, dist, module_files, version='1.0'):
     """A tiny pure-Python wheel pip can install."""

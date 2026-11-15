@@ -6,16 +6,43 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
-from . import ghidra_maps, toolchain
+from . import cache as gcache, ghidra_maps, nso as nsomod, patches as gpatches, toolchain
 from . import versioncheck as vc
 from .util import BELOW_NORMAL, CREATE_NO_WINDOW, Stamps, StepError, files_digest, run, sha256_file, sha256_text
 
 REPO = Path(__file__).resolve().parents[2]   # builder/snapbuild/pipeline.py -> repo root (same layout in the release zip)
 BUILDER = REPO / 'builder'
 STEPS = ('elf', 'maps', 'gen_main', 'gen_sdk', 'compile_main', 'compile_sdk', 'link')
+KEEP_BUILDS = ('previous',)   # folders under <work>/builds kept after a successful switch
+LAUNCHER_KEYS = ('upscalers_offered', 'update_check')   # config.json keys the launcher sets; a rebuild carries them over
+# build arguments recorded in <work>/last_build.json so an update can run the same build again (prebuilt, force and compare_generated are left out)
+RECORD_ARGS = ('main', 'sdk', 'romfs', 'work', 'maps', 'llvm', 'python', 'vulkan_lib', 'ghidra', 'jdk', 'harness', 'ghost', 'cache_dir', 'jobs',
+               'smoke_timeout', 'cache', 'skip_smoke', 'upscalers', 'accept_license')
+
+
+def builder_version():
+    try:
+        return (BUILDER / 'VERSION').read_text(encoding='utf-8').strip()
+    except OSError:
+        return 'unknown'
+
+
+def write_last_build(work, opt, stamps, smoke_seconds):
+    """Record what this build used and how long each step took, for the updater (rebuild arguments and the time estimate)."""
+    args = {k: getattr(opt, k) for k in RECORD_ARGS if getattr(opt, k, None) not in (None, '', [], 0) or k in ('cache', 'skip_smoke')}
+    steps = {}
+    for s in STEPS:
+        try:
+            steps[s] = float(json.loads((stamps.dir / f'{s}.json').read_text(encoding='utf-8')).get('seconds', 0))
+        except (OSError, ValueError):
+            pass
+    doc = {'version': builder_version(), 'finished': time.strftime('%Y-%m-%d %H:%M:%S'), 'args': args, 'steps': steps,
+           'smoke_seconds': round(smoke_seconds, 1)}
+    (Path(work) / 'last_build.json').write_text(json.dumps(doc, indent=1), encoding='utf-8')
 LIFTER_FILES = ('ehlsda.py', 'elfimg.py', 'flags.py', 'gen.py', 'jumptables.py', 'lifter.py', 'module.py', 'patches.py', 'regs.py',
                 'simd_c.py', 'snap_common.py', 'snap_gen.py')
 
@@ -36,6 +63,8 @@ class Options:
         self.smoke_timeout = 420
         self.upscalers = None        # names to fetch after the link (default: the ones marked default in versions.json)
         self.accept_license = []     # upscaler names whose vendor license the user accepted on the command line
+        self.cache = True            # reuse function lists and generated C from %LOCALAPPDATA%\SnapRecomp\cache
+        self.cache_dir = None
         self.__dict__.update(kw)
 
 
@@ -72,10 +101,40 @@ def check_prebuilt(pre):
     if man.get('runtime_abi') != abi:
         raise StepError(f'the prebuilt folder is inconsistent: manifest says runtime ABI {man.get("runtime_abi")}, headers say {abi}. '
                         f'Use the prebuilt folder and the builder from the same release.')
+    again = 'Restore the prebuilt folder from the same release as the builder.'
     for o in man['objs']:
-        if not (pre / 'obj' / o['name']).exists():
+        p = pre / 'obj' / o['name']
+        if not p.is_file():
             raise StepError(f'prebuilt object {o["name"]} is missing: the prebuilt folder is incomplete.')
+        if sha256_file(p) != o.get('sha256'):
+            raise StepError(f'prebuilt object {o["name"]} does not match its manifest SHA-256. {again}')
+    for d in man.get('dlls', []):
+        rel = d.get('path') or 'bin/' + d['name']
+        p = pre / rel
+        if not p.is_file():
+            raise StepError(f'prebuilt file {rel} is missing: the prebuilt folder is incomplete.')
+        if sha256_file(p) != d.get('sha256'):
+            raise StepError(f'prebuilt file {rel} does not match its manifest SHA-256. {again}')
     return man
+
+
+def run_cached(cache_root, kind, key, folder, outputs, fn, log):
+    """Restore `folder` from the private cache when a complete entry for (kind, key) exists and holds every output; otherwise run fn
+    and store the folder. Cache trouble never fails a build: it is logged and the work runs. Returns True on a cache hit."""
+    if cache_root and kind:
+        try:
+            if gcache.restore(cache_root, kind, key, folder) and all(Path(o).exists() for o in outputs):
+                return True
+        except (gcache.CacheError, OSError) as e:
+            log.write(f'cache: restore failed ({e}); running the step')
+    fn()
+    if cache_root and kind and all(Path(o).exists() for o in outputs):
+        try:
+            gcache.store(cache_root, kind, key, folder)
+            log.write(f'cache: stored {kind}')
+        except (gcache.CacheError, OSError) as e:
+            log.write(f'cache: not stored ({e})')
+    return False
 
 
 def build(opt, log):
@@ -114,14 +173,25 @@ def build(opt, log):
     for s in opt.force:
         stamps.clear(s)
 
-    def step(name, key, outputs, fn):
+    cache_root = None
+    if opt.cache:
+        try:
+            cache_root = gcache.open_root(opt.cache_dir)
+            log.write(f'cache: {cache_root}')
+        except (gcache.CacheError, OSError) as e:
+            log.write(f'cache: not used ({e})')
+
+    def step(name, key, outputs, fn, cache_kind=None, cache_dir=None):
+        """Run fn unless the stamp matches. With cache_kind, a finished folder is restored from / stored to the private cache
+        (key = the stamp key, which holds no path of this work folder)."""
         if stamps.done(name, key, outputs):
             log.write(f'step {name}: up to date, skipped')
             return False
         log.write(f'step {name}')
         t0 = time.time()
         stamps.clear(name)
-        fn()
+        if run_cached(cache_root, cache_kind, key, cache_dir, outputs, fn, log):
+            log.write(f'step {name}: restored from the cache (skipped the work)')
         stamps.write(name, key, time.time() - t0)
         log.write(f'step {name} done in {time.time() - t0:.0f}s')
         return True
@@ -145,20 +215,37 @@ def build(opt, log):
             if not (src / n).exists():
                 raise StepError(f'--maps folder {src} has no {n}.')
         maps_key = sha256_text('maps-dir', *[sha256_file(src / n) for n in ghidra_maps.RESULT_FILES])
+        maps_cache = None   # the user's own lists: nothing to cache
 
         def do_maps():
             for n in ghidra_maps.RESULT_FILES:
                 shutil.copyfile(src / n, maps_dir / n)
     else:
-        maps_key = sha256_text('ghidra', main_digest, table.get('tools', {}).get('ghidra', {}).get('version', ''),
+        tl = table.get('tools', {})
+        maps_cache = 'maps'
+        maps_key = sha256_text('ghidra', main_digest, tl.get('ghidra', {}).get('version', ''), tl.get('switch_loader', {}).get('version', ''),
+                               tl.get('jdk', {}).get('version', ''), ghidra_maps.HEAP,
                                files_digest(sorted((repo / 'scripts' / 'ghidra').glob('*.java')) + [repo / 'scripts' / 'reconcile_functions.py']))
 
         def do_maps():
             ghidra = toolchain.find_ghidra(opt.ghidra, repo)
             jdk = toolchain.find_jdk(opt.jdk, repo)
             ghidra_maps.run_ghidra(ghidra, jdk, py, repo, work, opt.main, log)
-    step('maps', maps_key, [maps_dir / n for n in ghidra_maps.RESULT_FILES], do_maps)
+    step('maps', maps_key, [maps_dir / n for n in ghidra_maps.RESULT_FILES], do_maps, cache_kind=maps_cache, cache_dir=maps_dir)
     check_maps(maps_dir, table, log)
+
+    # ---- hash-pinned patches: checked against the exact module images before anything is generated (none are staged today)
+    log.write('step patch check')
+    images = {}
+    for role, src, dg in (('main', opt.main, main_digest), ('sdk', opt.sdk, sdk_digest)):
+        hd = nsomod.read_header(src)
+        images[role] = (nsomod.read_image(src, hd), hd.build_id, dg)
+    try:
+        patches_key = gpatches.check_dir(BUILDER / 'patches', images)
+    except gpatches.PatchError as e:
+        raise StepError('patch check failed: ' + str(e))
+    log.write('patch check passed' + (f' (patch set {patches_key[:12]})' if patches_key else ' (no patches staged)'))
+    images.clear()
 
     # ---- generate C and compile, per module
     gen_dir = work / 'generated'
@@ -172,12 +259,12 @@ def build(opt, log):
     compile_keys = {}
     report = {}
     for mod in ('main', 'sdk'):
-        gkey = sha256_text(elf_key, maps_files_key, lifter_key, abi, mod)
+        gkey = sha256_text(elf_key, maps_files_key, lifter_key, abi, mod, patches_key)
 
         def do_gen(mod=mod):
             run([py, '-I', repo / 'recomp' / 'snap_gen.py', '--module', mod, '--out', gen_dir, '--jobs', str(min(12, max(2, jobs + 2)))],
                 log, env=gen_env, timeout=40 * 60, what=f'snap_gen {mod}')
-        step(f'gen_{mod}', gkey, [gen_dir / mod / f'{mod}_table.c'], do_gen)
+        step(f'gen_{mod}', gkey, [gen_dir / mod / f'{mod}_table.c'], do_gen, cache_kind=f'gen-{mod}', cache_dir=gen_dir / mod)
         digest, n = tree_digest(gen_dir / mod)
         log.write(f'generated C {mod}: {n} files, tree digest {digest}')
         report[mod] = {'files': n, 'digest': digest}
@@ -202,10 +289,10 @@ def build(opt, log):
         if not same:
             raise StepError('the generated C differs from the reference folder (see the log).')
 
-    # ---- link
-    out = work / 'out'
-    out.mkdir(exist_ok=True)
-    exe = out / 'SnapRecomp.exe'
+    # ---- link (into the work folder; the user-facing folder is assembled and switched below)
+    linkdir = work / 'build' / 'link'
+    linkdir.mkdir(parents=True, exist_ok=True)
+    exe_link = linkdir / 'SnapRecomp.exe'
     link_key = sha256_text(compile_keys['main'], compile_keys['sdk'], sha256_file(pre / 'manifest.json'), vk.stat().st_size)
 
     def do_link():
@@ -222,49 +309,154 @@ def build(opt, log):
             run([llvm / 'llvm-rc.exe', '/FO', work / 'build' / 'snap_icon.res', rc.name], log, cwd=str(rc.parent), what='compile icon resource')
             res_file = [work / 'build' / 'snap_icon.res']
         cmd = [llvm / 'clang++.exe', '-fuse-ld=lld', '-Wl,/manifest:embed', '-Wl,/manifestinput:' + str(pre / 'res' / 'snap_utf8.manifest'),
-               '-o', exe] + objs + res_file + libs
+               '-o', exe_link] + objs + res_file + libs
         run(cmd, log, env=env, timeout=30 * 60, what='link SnapRecomp.exe')
-        for d in man.get('dlls', []):
-            if d.get('path', 'bin/').startswith('bin/'):
-                shutil.copyfile(pre / 'bin' / d['name'], out / d['name'])
-        if man.get('harness') and (pre / man['harness']).exists():   # self-contained shader harness next to the exe
-            if (out / man['harness']).exists():
-                shutil.rmtree(out / man['harness'])
-            shutil.copytree(pre / man['harness'], out / man['harness'])
-    step('link', link_key, [exe], do_link)
+    step('link', link_key, [exe_link], do_link)
 
-    # ---- config
-    cfg = out / 'config.json'
-    # romfs_root is read by the game; main_elf and sdk_elf are the game images the launcher passes as --main and --sdk
-    cfg.write_text(json.dumps({'romfs_root': str(Path(res.romfs_root).resolve()), 'main_elf': str(elf_dir / 'main.elf'),
-                               'sdk_elf': str(elf_dir / 'sdk.elf')}, indent=1), encoding='utf-8')
+    # ---- assemble a NEW output folder; the current one (out/) is replaced only after the self-test and the smoke run pass
+    out = work / 'out'
+    builds = work / 'builds'
+    build_id = time.strftime('%Y%m%d-%H%M%S') + '-' + link_key[:8]
+    stage = builds / build_id
+    builds.mkdir(exist_ok=True)
+    shutil.rmtree(stage, ignore_errors=True)
+    stage.mkdir()
+    exe = stage / 'SnapRecomp.exe'
+    shutil.copyfile(exe_link, exe)
+    for d in man.get('dlls', []):
+        if d.get('path', 'bin/').startswith('bin/'):
+            shutil.copyfile(pre / 'bin' / d['name'], stage / d['name'])
+    if man.get('harness') and (pre / man['harness']).exists():   # self-contained shader harness next to the exe
+        shutil.copytree(pre / man['harness'], stage / man['harness'])
+    for keep in ('upscalers', 'licenses', 'upscalers.json'):   # what the previous build had fetched stays (the user accepted those licenses)
+        old = out / keep
+        if old.exists():
+            (shutil.copytree if old.is_dir() else shutil.copyfile)(old, stage / keep)
+    cfg = stage / 'config.json'
+    # romfs_root is read by the game; main_elf and sdk_elf are the game images the launcher passes as --main and --sdk.
+    # builder_version, builder_dir, python and work let the launcher's updater find this builder again.
+    conf = {'romfs_root': str(Path(res.romfs_root).resolve()), 'main_elf': str(elf_dir / 'main.elf'), 'sdk_elf': str(elf_dir / 'sdk.elf'),
+            'builder_version': builder_version(), 'builder_dir': str(BUILDER), 'python': sys.executable, 'work': str(work.resolve())}
+    try:   # settings the launcher itself wrote into the old config.json survive a rebuild
+        old_conf = json.loads((out / 'config.json').read_text(encoding='utf-8'))
+        for k in LAUNCHER_KEYS:
+            if k in old_conf:
+                conf[k] = old_conf[k]
+    except (OSError, ValueError):
+        pass
+    cfg.write_text(json.dumps(conf, indent=1), encoding='utf-8')
     # the launcher (the exe started without arguments) checks the romfs against the published sentinels at every start
-    (out / 'launcher_data.json').write_text(json.dumps({'sentinels': table['romfs']['sentinels'], 'file_count': table['romfs']['file_count'],
-                                                                   'upscalers': table.get('upscalers', {})}), encoding='utf-8')
-    log.write(f'wrote {cfg}')
+    (stage / 'launcher_data.json').write_text(json.dumps({'sentinels': table['romfs']['sentinels'], 'file_count': table['romfs']['file_count'],
+                                                          'upscalers': table.get('upscalers', {})}), encoding='utf-8')
+    log.write(f'assembled {stage}')
     # Upscaler runtime files are never shipped by us: fetch what the user picked and accepted (a vendor license the user did not accept
     # is skipped, not an error: the game hides that upscaler). The launcher offers the same later.
     from . import fetch as _fetch, upscalers as _up
     want = [n for n in (opt.upscalers if opt.upscalers is not None else _up.default_names(table))]
-    todo = [n for n in want if n in opt.accept_license and not _up.installed(_up.pins(table)[n], out)]
-    skipped = [n for n in want if n not in opt.accept_license and not _up.installed(_up.pins(table)[n], out)]
+    todo = [n for n in want if n in opt.accept_license and not _up.installed(_up.pins(table)[n], stage)]
+    skipped = [n for n in want if n not in opt.accept_license and not _up.installed(_up.pins(table)[n], stage)]
     if skipped:
         log.write('upscalers not fetched (license not accepted with --accept-license): ' + ', '.join(skipped) + '. Use the launcher or '
                   '"snap_builder.py upscalers --install-dir <out folder>" later.')
     if todo:
         try:
-            res = _up.run(table, todo, out, work / 'downloads', set(todo), lambda q: False, say=log.write)
-            log.write('upscalers: ' + ', '.join(f'{k} {v}' for k, v in res.items()))
+            r = _up.run(table, todo, stage, work / 'downloads', set(todo), lambda q: False, say=log.write)
+            log.write('upscalers: ' + ', '.join(f'{k} {v}' for k, v in r.items()))
         except _fetch.FetchError as e:
             log.write('upscaler fetch failed (the build is fine, the game runs without it): ' + str(e))
     log.write(f'build finished in {time.time() - t_all:.0f}s: {exe}')
 
-    # ---- smoke run
+    # ---- self-test, then smoke run; only then does out/ switch
+    problems = selftest(stage, man, cfg)
+    if problems:
+        log.write('self-test FAILED:\n  ' + '\n  '.join(problems))
+        raise StepError(f'the new build did not pass its self-test (it stays in {stage}; {out} is unchanged):\n  ' + '\n  '.join(problems))
+    log.write('self-test passed')
+    smoke_seconds = 0.0
     if opt.skip_smoke:
         log.write('smoke run skipped (--skip-smoke)')
-        return exe, None
-    ok, info = smoke(opt, exe, cfg, work, table, log)
-    return exe, (ok, info)
+        ok, info = None, None
+    else:
+        t_smoke = time.time()
+        ok, info = smoke(opt, exe, cfg, work, table, log)
+        smoke_seconds = time.time() - t_smoke
+        if not ok:
+            log.write(f'the new build stays in {stage}; {out} is unchanged')
+            return stage / 'SnapRecomp.exe', (False, info)
+    promote(work, stage, build_id, log)
+    write_last_build(work, opt, stamps, smoke_seconds)
+    return out / 'SnapRecomp.exe', ((True, info) if ok else None)
+
+
+def selftest(stage, man, cfg):
+    """Cheap checks of an assembled build folder: a real x64 exe, the DLLs it needs (hash from the manifest), the harness, and a
+    config.json that points at files that exist. Returns a list of problems."""
+    probs = []
+    stage = Path(stage)
+    exe = stage / 'SnapRecomp.exe'
+    if not exe.exists() or exe.stat().st_size < 1_000_000:
+        return [f'{exe.name} is missing or too small']
+    with open(exe, 'rb') as f:
+        head = f.read(0x1000)
+    pe = int.from_bytes(head[0x3c:0x40], 'little')
+    if head[:2] != b'MZ' or head[pe:pe + 4] != b'PE\0\0' or int.from_bytes(head[pe + 4:pe + 6], 'little') != 0x8664:
+        probs.append('SnapRecomp.exe is not a 64-bit Windows program')
+    for d in man.get('dlls', []):
+        if d.get('path', 'bin/').startswith('bin/'):
+            f = stage / d['name']
+            if not f.exists():
+                probs.append(f'{d["name"]} is missing')
+            elif d.get('sha256') and sha256_file(f) != d['sha256']:
+                probs.append(f'{d["name"]} does not match the manifest hash')
+    h = man.get('harness')
+    if h and not (stage / h).exists():
+        probs.append(f'{h} is missing')
+    try:
+        c = json.loads(Path(cfg).read_text(encoding='utf-8'))
+    except ValueError:
+        return probs + ['config.json is not valid JSON']
+    for k in ('romfs_root', 'main_elf', 'sdk_elf'):
+        if not c.get(k) or not Path(c[k]).exists():
+            probs.append(f'config.json {k} points at a missing path')
+    if not (stage / 'launcher_data.json').exists():
+        probs.append('launcher_data.json is missing')
+    return probs
+
+
+def _replace_retry(src, dst, tries=15, delay=1.0):
+    """os.replace that waits a little for a just-stopped process (or a virus scanner) to let go of the folder."""
+    for i in range(tries):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if i == tries - 1:
+                raise
+            time.sleep(delay)
+
+
+def promote(work, stage, build_id, log):
+    """Switch out/ to the new build: the old out/ becomes builds/previous (one older build is kept), current.json records the id.
+    Both moves are renames on one volume. A running game from out/ blocks the rename: the message says so."""
+    work, stage = Path(work), Path(stage)
+    out, builds = work / 'out', work / 'builds'
+    prev = builds / 'previous'
+    try:
+        if out.exists():
+            shutil.rmtree(prev, ignore_errors=True)
+            _replace_retry(out, prev)
+        _replace_retry(stage, out)
+    except OSError as e:
+        if not out.exists() and prev.exists():   # put the old build back
+            os.replace(prev, out)
+        raise StepError(f'could not switch to the new build ({e}). Close the game and the folder {out} if they are open and run the builder again; '
+                        f'the new build is in {stage}.')
+    for d in builds.iterdir():   # nothing but the previous build stays
+        if d.name not in KEEP_BUILDS and d.is_dir():
+            shutil.rmtree(d, ignore_errors=True)
+    (work / 'current.json').write_text(json.dumps({'build': build_id, 'out': str(out), 'previous': str(prev) if prev.exists() else None,
+                                                   'switched': time.strftime('%Y-%m-%d %H:%M:%S')}, indent=1), encoding='utf-8')
+    log.write(f'switched {out} to build {build_id}' + (f' (the earlier build is in {prev})' if prev.exists() else ''))
 
 
 def check_maps(maps_dir, table, log):
@@ -331,6 +523,31 @@ def smoke(opt, exe, cfg, work, table, log):
     finally:
         if p.poll() is None:
             subprocess.run(['taskkill', '/PID', str(p.pid), '/T', '/F'], capture_output=True)
+        stop_processes_under(exe.parent, log)
         err.close()
     log.write(('smoke: PASS: ' if reached else 'smoke: FAIL: ') + why)
     return reached, why
+
+
+def stop_processes_under(folder, log, wait_s=30):
+    """Stop the processes this smoke run started from `folder` (the game, the shader harness; a hidden-desktop launcher may have
+    detached them from the process tree), by PID, and wait until none is left. Windows will not rename a folder a process still holds."""
+    ps = ("Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($env:SNAP_STOP_UNDER, "
+          "[StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { $_.ProcessId }")
+    env = dict(os.environ, SNAP_STOP_UNDER=str(Path(folder).resolve()) + os.sep)
+    t0 = time.time()
+    while True:
+        try:
+            r = subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-Command', ps], env=env, capture_output=True, text=True, timeout=60,
+                               creationflags=CREATE_NO_WINDOW)
+            pids = [int(x) for x in r.stdout.split() if x.isdigit() and int(x) != os.getpid()]
+        except (OSError, subprocess.SubprocessError):
+            return
+        if not pids:
+            return
+        for pid in pids:
+            subprocess.run(['taskkill', '/PID', str(pid), '/T', '/F'], capture_output=True)
+        if time.time() - t0 > wait_s:
+            log.write(f'smoke: processes still running from {folder}: {pids}')
+            return
+        time.sleep(1.0)

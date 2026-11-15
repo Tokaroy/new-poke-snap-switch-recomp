@@ -55,7 +55,7 @@ def entries(target):
                 yield p.relative_to(t).as_posix(), p.stat().st_size, (lambda p=p: p.read_bytes())
 
 
-def scan(target, romfs=None, terms=(), size_cap_mb=80, manifest=None, allow_names=(), allow_content=()):
+def scan(target, romfs=None, terms=(), size_cap_mb=80, manifest=None, allow_names=(), allow_content=(), strip_prefix=''):
     findings = []
     names, exts = romfs_names(romfs) if romfs else (set(), set())
     allow = {n.lower() for n in allow_names}
@@ -73,6 +73,8 @@ def scan(target, romfs=None, terms=(), size_cap_mb=80, manifest=None, allow_name
     all_rel = set()
     for rel, size, read in entries(target):
         n_files += 1
+        if strip_prefix and rel.lower().startswith(strip_prefix.lower()):
+            rel = rel[len(strip_prefix):]   # a release zip holds the prebuilt folder under prebuilt/
         low = rel.lower()
         all_rel.add(low)
         base = low.rsplit('/', 1)[-1]
@@ -144,6 +146,7 @@ def main(argv=None):
     ap.add_argument('--terms', help='file with forbidden terms, one per line (default: build/release/leak_terms.txt under the repo)')
     ap.add_argument('--size-cap-mb', type=int, default=80)
     ap.add_argument('--manifest', help='manifest.json listing the DLLs (default: manifest.json at the top of a folder target)')
+    ap.add_argument('--strip-prefix', default='', help='folder inside the target that holds the manifest layout (a release zip: prebuilt/)')
     ap.add_argument('--allow-names', help='file with game file names the runtime must reference by name (default: builder/leak_allow_names.txt)')
     a = ap.parse_args(argv)
     repo = Path(__file__).resolve().parents[1]
@@ -161,7 +164,7 @@ def main(argv=None):
     allow = [x for x in allow if x]
     cf = Path(__file__).resolve().parent / 'leak_allow_content.txt'
     allow_c = [l.split('#')[0].strip() for l in cf.read_text(encoding='utf-8').splitlines()] if cf.exists() else []
-    findings, n, nd = scan(a.target, a.romfs, terms, a.size_cap_mb, manifest, allow, [x for x in allow_c if x])
+    findings, n, nd = scan(a.target, a.romfs, terms, a.size_cap_mb, manifest, allow, [x for x in allow_c if x], a.strip_prefix)
     if not a.romfs:
         print('note: no --romfs given, so the game file name rule was not checked')
     print(f'scanned {n} files ({nd} DLLs, {len(terms)} forbidden terms)')

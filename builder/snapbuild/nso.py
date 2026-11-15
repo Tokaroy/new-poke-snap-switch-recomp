@@ -104,13 +104,10 @@ def read_header(path):
     return Nso(path, head)
 
 
-def image_digest(path, nso):
-    """SHA-256 over the three decompressed segments (text, rodata, data) in order.
-
-    Compressed and decompressed NSOs of the same module give the same value, whichever tool extracted them.
-    Raises NsoError for a truncated or damaged file (sizes or the header's own segment hashes do not match).
-    """
-    h = hashlib.sha256()
+def read_image(path, nso):
+    """The three decompressed segments (text, rodata, data) concatenated in order: the bytes image_digest hashes.
+    Raises NsoError for a truncated or damaged file (sizes or the header's own segment hashes do not match)."""
+    parts = []
     with open(path, 'rb') as f:
         f.seek(0, 2)
         fsize = f.tell()
@@ -128,7 +125,18 @@ def image_digest(path, nso):
                     raise NsoError('corrupt', f'the {SEGMENT_NAMES[i]} segment does not decompress: the file is damaged')
             if nso.flags >> (3 + i) & 1 and hashlib.sha256(raw).digest() != nso.seg_hashes[i]:
                 raise NsoError('corrupt', f'the {SEGMENT_NAMES[i]} segment does not match its own header hash: the file is damaged')
-            h.update(raw)
+            parts.append(raw)
+    return b''.join(parts)
+
+
+def image_digest(path, nso):
+    """SHA-256 over the three decompressed segments (text, rodata, data) in order.
+
+    Compressed and decompressed NSOs of the same module give the same value, whichever tool extracted them.
+    Raises NsoError for a truncated or damaged file (sizes or the header's own segment hashes do not match).
+    """
+    h = hashlib.sha256()
+    h.update(read_image(path, nso))
     return h.hexdigest()
 
 

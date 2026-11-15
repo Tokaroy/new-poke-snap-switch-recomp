@@ -1,0 +1,461 @@
+"""HD AI textures (snap_builder.py hdtex): containers, classifier, levels, planning, mods.json, state and a small
+end-to-end run with a stand-in engine. All data here is synthetic. The texconv tests run when SNAP_TEXCONV names a
+texconv.exe (or one is found in build/w/hdtex/dl); otherwise they are skipped."""
+import json
+import os
+import struct
+import sys
+import tempfile
+import types
+import unittest
+import zlib
+from pathlib import Path
+
+import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from snapbuild import hdtex as H, hdtex_classify as hc, hdtex_image as im, hdtex_nutexb as nb  # noqa: E402
+
+REPO = Path(__file__).resolve().parents[2]
+
+
+def find_texconv():
+    for p in (os.environ.get('SNAP_TEXCONV', ''), REPO / 'build/w/hdtex/dl/texconv.exe'):
+        if p and Path(p).is_file():
+            return Path(p)
+    return None
+
+
+TEXCONV = find_texconv()
+
+
+def footer(name='T_test', fmt=0x400, w=4, h=4, mips=1):
+    f = bytearray(nb.FOOTER)
+    f[0x40:0x44] = b' XNT'
+    f[0x44:0x44 + len(name)] = name.encode()
+    struct.pack_into('<11I', f, nb.FOOTER - 44, w, h, 1, fmt, 2, mips, 0x1000, 1, 0, nb.MAGIC, 2)
+    return bytes(f)
+
+
+TEMPLATE = nb.Tex(b'', footer(), 4, 4, 1, 0x400, 2, 1, 0x1000, 1, 0)
+
+
+def level_rows(fmt, w, h, mips, seed=0):
+    rng = np.random.default_rng(seed)
+    bpb, bw, bh = nb.FORMATS[fmt][:3]
+    lv, _ = nb.layout(w, h, bpb, bw, bh, mips)
+    return [rng.integers(0, 256, (hb, wb * bpb), dtype=np.uint8) for _, wb, hb, _, _ in lv]
+
+
+def make_nutexb(fmt, w, h, mips, seed=0):
+    rows = level_rows(fmt, w, h, mips, seed)
+    return nb.build(TEMPLATE, fmt, w, h, rows), rows
+
+
+class NutexbTests(unittest.TestCase):
+    def test_build_parse_roundtrip(self):
+        for fmt, w, h, mips in ((0x480, 256, 128, 9), (0x405, 64, 64, 7), (0x4e5, 1024, 512, 1), (0x280, 96, 40, 3)):
+            blob, rows = make_nutexb(fmt, w, h, mips)
+            t = nb.parse(blob)
+            self.assertEqual((t.w, t.h, t.d, t.fmt, t.mips, t.dim, t.layers), (w, h, 1, fmt, mips, 2, 1))
+            self.assertEqual(t.data_size, len(blob) - nb.FOOTER)
+            self.assertTrue(t.plain_2d)
+            self.assertEqual(sum(t.mip_sizes), t.data_size)
+            for m in range(mips):
+                np.testing.assert_array_equal(np.frombuffer(nb.level_blocks(t, m), np.uint8).reshape(rows[m].shape), rows[m])
+
+    def test_footer_offsets_match_the_game(self):
+        # Width at +0x84, mips at +0x98, data size at +0xa4, " XET" at +0xa8 (as in the game's own files).
+        blob, _ = make_nutexb(0x485, 1024, 1024, 11)
+        f = blob[-nb.FOOTER:]
+        self.assertEqual(struct.unpack_from('<4I', f, 0x84), (1024, 1024, 1, 0x485))
+        self.assertEqual(struct.unpack_from('<I', f, 0x98)[0], 11)
+        self.assertEqual(struct.unpack_from('<I', f, 0xa4)[0], len(blob) - nb.FOOTER)
+        self.assertEqual(f[0xa8:0xac], b' XET')
+        self.assertEqual(nb.name_of(nb.parse(blob)), 'T_test')
+
+    def test_footer_only_matches_parse(self):
+        blob, _ = make_nutexb(0x4a5, 128, 64, 8)
+        a, b = nb.parse(blob), H._footer_only(blob[-nb.FOOTER:], len(blob))
+        self.assertEqual((a.w, a.h, a.fmt, a.mips, a.tile), (b.w, b.h, b.fmt, b.mips, b.tile))
+
+    def test_bad_input(self):
+        with self.assertRaises(nb.NutexbError):
+            nb.parse(b'x' * 10)
+        with self.assertRaises(nb.NutexbError):
+            nb.parse(b'\0' * 300)
+
+    def test_dds_roundtrip(self):
+        d = Path(tempfile.mkdtemp()) / 'a.dds'
+        for dxgi, w, h in ((28, 32, 16), (71, 64, 64), (10, 8, 8)):
+            levels = []
+            for m in range(3):
+                pitch, n = nb._pitch(dxgi, max(w >> m, 1), max(h >> m, 1))
+                levels.append(bytes(np.arange(pitch * n, dtype=np.uint32).astype(np.uint8)))
+            nb.write_dds(d, dxgi, w, h, levels)
+            g, gw, gh, lv = nb.read_dds(d)
+            self.assertEqual((g, gw, gh), (dxgi, w, h))
+            self.assertEqual(lv, levels)
+
+
+def tex(fmt=0x485, w=512, h=512, mips=10):
+    return nb.Tex(b'', b'', w, h, 1, fmt, 2, mips, 0x1000, 1, 0)
+
+
+class ClassifyTests(unittest.TestCase):
+    def test_categories(self):
+        cases = {
+            ('nx/pack/characters/master/ch_626.drp/CH_626_00_0_A00_Body_dif.nutexb', 0x485): 'creature',
+            ('nx/pack/characters/master/ch_626.drp/CH_626_00_0_A00_Body_nor.nutexb', 0x280): 'normal',
+            ('nx/pack/characters/master/ch_626.drp/CH_626_00_0_A00_Body_par.nutexb', 0x480): 'mask',
+            ('nx/pack/characters/master/ch_626.drp/CH_626_00_0_A00_Body_emi.nutexb', 0x485): 'emissive',
+            ('nx/pack/levelcomposite/master/lc_001.drp/T_Ground_Grass01_col.nutexb', 0x485): 'scenery',
+            ('nx/pack/levelcomposite/master/lc_001.drp/T_Lightmap_000.nutexb', 0x4d7): 'lightmap',
+            ('common/ui/menu.drp/icon_camera.nutexb', 0x4a5): 'ui',
+            ('common/ui/menu.drp/p_silhouette_A.nutexb', 0x4a5): 'ui',
+            ('nx/pack/resident/master/fx.drp/FX_Spark01.nutexb', 0x4a5): 'effect',
+            ('nx/pack/resident/master/a.drp/T_Rock_mask.nutexb', 0x180): 'mask',
+            ('nx/pack/resident/master/a.drp/T_Sky_cubemap.nutexb', 0x485): 'skip',
+            ('nx/pack/levelcomposite/master/lc_999_z.drp/LV_A^SM_Ground1^42^groundShape^0^Shadow.nutexb', 0x4a5): 'mask',
+        }
+        for (rel, fmt), want in cases.items():
+            self.assertEqual(hc.classify(rel, tex(fmt)), want, rel)
+
+    def test_skips_small_cube_and_float(self):
+        rel = 'nx/pack/levelcomposite/master/lc_001.drp/T_A_col.nutexb'
+        self.assertEqual(hc.classify(rel, tex(w=8, h=8)), 'skip')
+        self.assertEqual(hc.classify(rel, tex(w=256, h=1)), 'skip')
+        self.assertEqual(hc.classify(rel, tex(fmt=0x435)), 'skip')
+        cube = tex()
+        cube.dim = 4
+        self.assertEqual(hc.classify(rel, cube), 'skip')
+
+    def test_species(self):
+        self.assertEqual(hc.species('nx/pack/characters/master/ch_998.drp/CH_998_00_0_A00_Body_dif.nutexb'), 'CH_998')
+        self.assertEqual(hc.species('common/ui/x.nutexb'), '')
+        self.assertEqual(H.species_id('25'), 'CH_025')
+        self.assertEqual(H.species_id('ch_626'), 'CH_626')
+        with self.assertRaises(ValueError):
+            H.species_id('pikachu')
+
+
+class LevelTests(unittest.TestCase):
+    def test_levels(self):
+        s, hd, u = (H.level_settings(x) for x in ('sharp', 'hd', 'ultra'))
+        self.assertEqual((s['scenery']['scale'], s['creature']['scale'], s['ui']['scale']), (2, 0, 2))
+        self.assertEqual((hd['scenery']['scale'], hd['creature']['scale'], hd['ui']['scale']), (4, 2, 2))
+        self.assertEqual((u['scenery']['scale'], u['creature']['scale'], u['ui']['scale']), (4, 4, 4))
+        self.assertLess(hd['creature']['strength'], hd['scenery']['strength'])   # fur: conservative
+        self.assertGreater(u['_boost'], 0)
+        self.assertEqual(hd['normal']['scale'], 0)
+
+    def test_custom(self):
+        c = H.level_settings('custom', ['creature.scale=4', 'scenery.model=texture-dat2', 'ui.denoise=0.5'], base='sharp')
+        self.assertEqual(c['creature']['scale'], 4)
+        self.assertEqual(c['scenery']['model'], 'texture-dat2')
+        self.assertEqual(c['ui']['denoise'], 0.5)
+        self.assertEqual(c['scenery']['scale'], 2)
+        for bad in ('creature.color=red', 'fish.scale=2', 'nonsense'):
+            with self.assertRaises(ValueError):
+                H.level_settings('custom', [bad])
+        self.assertEqual(H.LEVELS['hd']['creature']['scale'], 2)   # overrides never leak into the table
+
+    def test_sizes_and_formats(self):
+        self.assertEqual(H.target_size(512, 256, 4, 4096), (2048, 1024))
+        self.assertEqual(H.target_size(2048, 2048, 4, 4096), (4096, 4096))
+        self.assertEqual(H.target_size(4096, 64, 2, 4096), (4096, 64))
+        self.assertEqual(H.target_size(100, 30, 2, 4096), (200, 60))
+        self.assertEqual(H.out_format(0x4a5, 'scenery', True), 0x4e5)
+        self.assertEqual(H.out_format(0x4a0, 'creature', True), 0x4e0)
+        self.assertEqual(H.out_format(0x485, 'scenery', True), 0x485)
+        self.assertEqual(H.out_format(0x485, 'scenery', 'all'), 0x4e5)
+        self.assertEqual(H.out_format(0x4a5, 'scenery', False), 0x4a5)
+        self.assertEqual(H.out_format(0x280, 'normal', 'all'), 0x280)
+        self.assertEqual(H.nutexb_bytes(0x485, 4, 4, 1), 512 + nb.FOOTER)   # one 512-byte GOB
+
+
+def write_cache(root, files):
+    root = Path(root)
+    lines = []
+    for rel, blob in files.items():
+        p = root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(blob)
+        lines.append(f'{rel}\t{len(blob)}\t{zlib.crc32(blob):08x}\t0')
+    (root / 'index.tsv').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+
+
+class PlanTests(unittest.TestCase):
+    def setUp(self):
+        self.t = Path(tempfile.mkdtemp())
+        self.cache = self.t / 'cache'
+        write_cache(self.cache, {
+            'nx/pack/characters/master/ch_998.drp/CH_998_00_0_A00_Body_dif.nutexb': make_nutexb(0x485, 64, 64, 7)[0],
+            'nx/pack/levelcomposite/master/lc_001.drp/T_Ground_col.nutexb': make_nutexb(0x4a5, 128, 128, 8)[0],
+            'nx/pack/levelcomposite/master/lc_001.drp/T_Ground_nor.nutexb': make_nutexb(0x280, 128, 128, 8)[0],
+            'common/ui/menu.drp/icon_a.nutexb': make_nutexb(0x405, 64, 32, 1)[0],
+        })
+
+    def test_plan_hd(self):
+        items, counts = H.plan(self.cache, H.level_settings('hd'), {'nomos2-plksr': 'a', 'texture-dat2': 'c', 'spanimation2': 'b'}, bc7=True)
+        self.assertEqual(counts, {'creature': 1, 'scenery': 1, 'normal': 1, 'ui': 1})
+        by = {i.cat: i for i in items}
+        self.assertEqual(set(by), {'creature', 'scenery', 'ui'})          # HD leaves normal maps alone
+        self.assertEqual((by['scenery'].out_w, by['scenery'].out_fmt, by['scenery'].out_mips), (512, 0x4e5, 10))
+        self.assertEqual((by['creature'].out_w, by['creature'].out_fmt), (128, 0x485))
+        self.assertEqual((by['ui'].out_w, by['ui'].out_h, by['ui'].out_mips), (128, 64, 1))
+        est = H.estimate(items)
+        self.assertEqual(est['disk'], sum(i.out_bytes for i in items))
+        self.assertGreater(est['vram_peak'], est['vram_peak_orig'])
+
+    def test_keys_follow_model_and_level(self):
+        a, _ = H.plan(self.cache, H.level_settings('hd'), {'nomos2-plksr': 'a'})
+        b, _ = H.plan(self.cache, H.level_settings('hd'), {'nomos2-plksr': 'a'})
+        c, _ = H.plan(self.cache, H.level_settings('hd'), {'nomos2-plksr': 'CHANGED'})
+        d, _ = H.plan(self.cache, H.level_settings('ultra'), {'nomos2-plksr': 'a'})
+        key = lambda xs, cat: next(i.key for i in xs if i.cat == cat)   # noqa: E731
+        self.assertEqual(key(a, 'scenery'), key(b, 'scenery'))
+        self.assertNotEqual(key(a, 'scenery'), key(c, 'scenery'))
+        self.assertNotEqual(key(a, 'scenery'), key(d, 'scenery'))
+
+    def test_exclude_and_only(self):
+        items, _ = H.plan(self.cache, H.level_settings('hd'), {}, exclude=['998'])
+        self.assertNotIn('creature', {i.cat for i in items})
+        items, _ = H.plan(self.cache, H.level_settings('hd'), {}, only='common/ui')
+        self.assertEqual([i.cat for i in items], ['ui'])
+
+    def test_sharp_leaves_creatures(self):
+        items, _ = H.plan(self.cache, H.level_settings('sharp'), {})
+        self.assertNotIn('creature', {i.cat for i in items})
+
+
+class ModsJsonTests(unittest.TestCase):
+    def test_on_off_never_deletes(self):
+        d = Path(tempfile.mkdtemp())
+        self.assertFalse(H.set_enabled(d, False))
+        self.assertFalse((d / 'mods.json').exists())
+        (d / 'mods.json').write_text(json.dumps({'packs': [{'id': 'mine', 'enabled': True}]}))
+        (d / H.PACK_ID).mkdir()
+        (d / H.PACK_ID / 'x.nutexb').write_bytes(b'1')
+        self.assertTrue(H.set_enabled(d, True))
+        packs = json.loads((d / 'mods.json').read_text())['packs']
+        self.assertEqual([p['id'] for p in packs], ['mine', H.PACK_ID])      # a hand-made pack keeps priority
+        H.set_enabled(d, False)
+        packs = json.loads((d / 'mods.json').read_text())['packs']
+        self.assertEqual(packs[1], {'id': H.PACK_ID, 'enabled': False})
+        self.assertTrue(packs[0]['enabled'])
+        self.assertTrue((d / H.PACK_ID / 'x.nutexb').exists())
+
+
+class StateTests(unittest.TestCase):
+    def test_retire_and_restore(self):
+        t = Path(tempfile.mkdtemp())
+        pack, work = t / 'pack', t / 'work'
+        rel = 'a.drp/x.nutexb'
+        (pack / 'a.drp').mkdir(parents=True)
+        (pack / rel).write_bytes(b'hd')
+        (pack / 'a.drp/hand_made.nutexb').write_bytes(b'not ours')
+        st = {'outputs': {rel: {'key': 'k1', 'bytes': 2, 'cat': 'ui'}}}
+        self.assertEqual(H.retire_stale(pack, work, st, keep=set(), say=lambda *_: None), 1)
+        self.assertFalse((pack / rel).exists())
+        self.assertTrue((pack / 'a.drp/hand_made.nutexb').exists())        # files we did not write are never touched
+        it = types.SimpleNamespace(rel=rel, key='k2')
+        self.assertFalse(H.restore_retired(pack, work, st, it))              # different settings: not reused
+        it.key = 'k1'
+        self.assertTrue(H.restore_retired(pack, work, st, it))
+        self.assertEqual((pack / rel).read_bytes(), b'hd')
+        self.assertIn(rel, st['outputs'])
+
+    def test_batches(self):
+        its = [types.SimpleNamespace(out_w=1024, out_h=1024) for _ in range(10)]
+        got = [len(b) for _, b in H.batches(its, 4, 3.0)]
+        self.assertEqual(got, [2, 2, 2, 2, 2])
+        big = [types.SimpleNamespace(out_w=8192, out_h=8192)]
+        self.assertEqual([len(b) for _, b in H.batches(big, 4, 3.0)], [1])
+        self.assertEqual(sum(len(b) for _, b in H.batches(its, 3, 100)), 10)
+
+    def test_locks(self):
+        d = Path(tempfile.mkdtemp())
+        (d / 'run2.lock').write_text('run_boot pid=1 hifps dlg60')
+        self.assertEqual(H.busy_locks(d), [])
+        (d / 'run0.lock').write_text('run_boot pid=2 cp_ride florio')
+        self.assertEqual(len(H.busy_locks(d)), 1)
+        self.assertEqual(H.wait_for_locks('', print), 0.0)
+        calls = []
+
+        def sleep(_):
+            calls.append(1)
+            (d / 'run0.lock').unlink()
+        H.wait_for_locks(d, lambda *_: None, sleep=sleep)
+        self.assertEqual(len(calls), 1)
+
+
+class ImageTests(unittest.TestCase):
+    def test_srgb_roundtrip(self):
+        x = np.linspace(0, 1, 101, dtype=np.float32)
+        np.testing.assert_allclose(im.lin_to_srgb(im.srgb_to_lin(x)), x, atol=1e-5)
+
+    def test_resize_keeps_flat_and_tiling(self):
+        flat = np.full((16, 16, 3), 0.25, np.float32)
+        np.testing.assert_allclose(im.resize(flat, 64, 64), 0.25, atol=1e-5)
+        y, x = np.mgrid[0:32, 0:32]
+        tile = (0.5 + 0.4 * np.sin(2 * np.pi * x / 32) * np.cos(2 * np.pi * y / 32)).astype(np.float32)[..., None]
+        self.assertTrue(im.tiles_seamlessly(tile))
+        self.assertFalse(im.tiles_seamlessly((x / 31.0).astype(np.float32)[..., None]))
+        big = im.resize(tile, 128, 128, wrap=True)
+        self.assertLess(abs(float(big[0].mean() - big[-1].mean())), 0.05)   # edges still meet
+
+    def test_pad(self):
+        a = np.arange(16, dtype=np.float32).reshape(4, 4, 1)
+        p = im.pad(a, 2, True)
+        self.assertEqual(p.shape, (8, 8, 1))
+        self.assertEqual(p[0, 2, 0], a[2, 0, 0])                            # wrap: the row two above row 0 is row 2
+
+    def test_mips(self):
+        img = np.random.default_rng(0).random((64, 32, 4)).astype(np.float32)
+        ch = im.mip_chain(img, im.mip_count(32, 64), 'color')
+        self.assertEqual([c.shape[:2] for c in ch], [(64, 32), (32, 16), (16, 8), (8, 4), (4, 2), (2, 1), (1, 1)])
+
+    def test_alpha_coverage_kept(self):
+        rng = np.random.default_rng(1)
+        img = np.zeros((64, 64, 4), np.float32)
+        img[..., 3] = (rng.random((64, 64)) > 0.7).astype(np.float32)        # sparse foliage cut-out
+        want = im.coverage(img[..., 3], 0.5)
+        for lv in im.mip_chain(img, 5, 'color', alpha_cutoff=0.5)[1:]:
+            self.assertAlmostEqual(im.coverage(lv[..., 3], 0.5), want, delta=0.08)
+
+    def test_normals(self):
+        rng = np.random.default_rng(2)
+        rg = rng.random((8, 8, 2)).astype(np.float32) * 0.8 + 0.1
+        n = im.normal_from_rg(rg)
+        np.testing.assert_allclose(np.linalg.norm(n, axis=-1), 1, atol=1e-4)
+        np.testing.assert_allclose(im.rg_from_normal(n), rg, atol=1e-4)
+        r = im.renormalize(n * 0.7)
+        np.testing.assert_allclose(np.linalg.norm(r, axis=-1), 1, atol=1e-4)
+        for m in im.mip_chain(np.concatenate([n, np.ones((8, 8, 1), np.float32)], -1), 3, 'normal')[1:]:
+            np.testing.assert_allclose(np.linalg.norm(m[..., :3], axis=-1), 1, atol=1e-3)
+
+    def test_log_space(self):
+        x = np.array([0, 0.5, 4, 60000], np.float32)
+        np.testing.assert_allclose(im.from_log(im.to_log(x)), x, rtol=1e-4)
+
+    def test_blend_detail(self):
+        base = np.full((4, 4, 3), 0.5, np.float32)
+        ai = np.full((4, 4, 3), 0.9, np.float32)
+        np.testing.assert_allclose(im.blend_detail(base, ai, 0.0), base)
+        np.testing.assert_allclose(im.blend_detail(base, ai, 1.0), ai, atol=1e-6)
+
+
+class SetupTests(unittest.TestCase):
+    def test_offline_files_are_never_moved_or_deleted(self):
+        import hashlib
+        import zipfile
+        from snapbuild import hdtex_setup as S
+        t = Path(tempfile.mkdtemp())
+        off, tdir = t / 'offline', t / 'tools'
+        off.mkdir()
+        (off / 'm.onnx').write_bytes(b'model bytes')
+        with zipfile.ZipFile(off / 'pack.zip', 'w') as z:
+            z.writestr('ONNX/inner.onnx', b'inner model')
+        sha = lambda b: hashlib.sha256(b).hexdigest()   # noqa: E731
+        lic = {'name': 'MIT', 'url': 'https://example.invalid/license'}
+        pins = {'models': {
+            'plain': {'title': 'plain', 'engine': 'ort', 'scale': 4, 'filename': 'm.onnx', 'url': 'https://example.invalid/m.onnx',
+                      'sha256': sha(b'model bytes'), 'size': 11, 'license': lic},
+            'zipped': {'title': 'zipped', 'engine': 'ort', 'scale': 2, 'filename': 'inner.onnx', 'member': 'ONNX/inner.onnx',
+                       'member_sha256': sha(b'inner model'), 'license': lic,
+                       'archive': {'filename': 'pack.zip', 'url': 'https://example.invalid/pack.zip',
+                                   'sha256': sha((off / 'pack.zip').read_bytes()), 'size': (off / 'pack.zip').stat().st_size}}}}
+        no = lambda q: False   # noqa: E731  (any download question is refused: everything must come from --offline-dir)
+        for mid, want in (('plain', b'model bytes'), ('zipped', b'inner model')):
+            got = S.ensure_model(pins, mid, tdir, {'model:' + mid}, no, [off], say=lambda *_: None)
+            self.assertEqual(Path(got).read_bytes(), want)
+        self.assertTrue((off / 'm.onnx').exists())
+        self.assertTrue((off / 'pack.zip').exists())
+        self.assertIn('model:plain', json.loads(S.receipt_path(tdir).read_text()))
+
+    def test_license_refused(self):
+        from snapbuild import fetch, hdtex_setup as S
+        pins = {'models': {'x': {'title': 'x', 'engine': 'ort', 'scale': 4, 'filename': 'x.onnx', 'url': 'https://example.invalid/x',
+                                 'sha256': '0' * 64, 'license': {'name': 'CC BY-NC', 'personal_use_only': True}}}}
+        with self.assertRaises(fetch.FetchError):
+            S.ensure_model(pins, 'x', Path(tempfile.mkdtemp()), set(), lambda q: False, (), say=lambda *_: None)
+
+    def test_yes_never_accepts_a_license(self):
+        from snapbuild import hdtex_setup as S, hdtex_cli as C
+        tdir = Path(tempfile.mkdtemp())
+        self.assertFalse(S.accept('model:x', 'x', {'name': 'CC BY 4.0'}, tdir, set(), C._ask(True), say=lambda *_: None))
+        self.assertTrue(S.accept('model:x', 'x', {'name': 'CC BY 4.0'}, tdir, {'model:x'}, C._ask(True), say=lambda *_: None))
+        self.assertIn('model:x', S.accepted_before(tdir))   # recorded once accepted
+
+    def test_needed_licenses(self):
+        from snapbuild import hdtex as H, hdtex_cli as C
+        pins = H.load_pins()
+        keys = [x['key'] for x in C.needed_licenses(pins, ['nomos2-plksr', 'x4plus'], Path(tempfile.mkdtemp()))]
+        self.assertEqual(keys, ['texconv', 'directml', 'ncnn', 'model:nomos2-plksr', 'model:x4plus'])
+        self.assertEqual([x['key'] for x in C.needed_licenses(pins, [], Path(tempfile.mkdtemp()))], ['texconv'])
+
+
+class NearestEngine:
+    """Stand-in for an AI model: nearest-neighbor 2x."""
+    scale = 2
+    providers = ['test']
+
+    def upscale(self, rgb):
+        return np.repeat(np.repeat(rgb, 2, 0), 2, 1)
+
+    def upscale_many(self, items):
+        return {k: self.upscale(v) for k, v in items}
+
+
+@unittest.skipIf(TEXCONV is None, 'texconv.exe not available (set SNAP_TEXCONV)')
+class RunTests(unittest.TestCase):
+    def test_end_to_end(self):
+        t = Path(tempfile.mkdtemp())
+        cache = t / 'cache'
+        rels = {'scen': 'nx/pack/levelcomposite/master/lc_001.drp/T_Ground_col.nutexb',
+                'cre': 'nx/pack/characters/master/ch_998.drp/CH_998_00_0_A00_Body_dif.nutexb',
+                'nor': 'nx/pack/levelcomposite/master/lc_001.drp/T_Ground_nor.nutexb',
+                'lm': 'nx/pack/levelcomposite/master/lc_001.drp/T_Lightmap_000.nutexb'}
+        # Valid BC blocks: let texconv encode real images, then wrap them in nutexbs.
+        src = t / 'src'
+        src.mkdir()
+        rng = np.random.default_rng(3)
+        imgs = {'scen': (0x4a5, 29, 64), 'cre': (0x485, 29, 32), 'nor': (0x280, 28, 32), 'lm': (0x4d7, 10, 32)}
+        files = {}
+        for k, (fmt, in_dx, n) in imgs.items():
+            if in_dx == 10:
+                px = (rng.random((n, n, 4)) * 4).astype(np.float16)
+            else:
+                px = (rng.random((n, n, 4)) * 255).astype(np.uint8)
+                px[..., 3] = 255
+            nb.write_dds(src / f'{k}.dds', in_dx, n, n, [px.tobytes()])
+            H.texconv(TEXCONV, [src / f'{k}.dds'], t / f'enc_{k}', nb.FORMATS[fmt][5], ('-m', '1'))
+            g, w, h, lv = nb.read_dds(t / f'enc_{k}' / f'{k}.dds')
+            files[rels[k]] = nb.build(TEMPLATE, fmt, w, h, [nb.rows(lv[0], g, w, h)])
+        write_cache(cache, files)
+        settings = H.level_settings('custom', ['scenery.model=fake', 'creature.model=fake', 'normal.scale=2', 'lightmap.scale=2'],
+                                    base='hd')
+        items, _ = H.plan(cache, settings, {'fake': '1'}, bc7=True)
+        self.assertEqual(len(items), 4)
+        mods = t / 'mods'
+        o = H.RunOptions(cache=cache, work=t / 'work', pack=mods / H.PACK_ID, texconv=TEXCONV, make_engine=lambda m: NearestEngine(),
+                         model_scale=lambda m: 2, ab_orig=True, level='custom', settings=settings)
+        rep = H.run(items, o, say=lambda *_: None)
+        self.assertEqual((rep['built'], rep['failed']), (4, 0))
+        out = nb.parse((mods / H.PACK_ID / rels['scen']).read_bytes())
+        self.assertEqual((out.w, out.h, out.fmt, out.mips), (256, 256, 0x4e5, 1))
+        out = nb.parse((mods / H.PACK_ID / rels['cre']).read_bytes())
+        self.assertEqual((out.w, out.fmt), (64, 0x485))
+        self.assertEqual(nb.parse((mods / H.PACK_ID / rels['lm']).read_bytes()).fmt, 0x4d7)
+        self.assertEqual(nb.parse((mods / H.PACK_ID / rels['nor']).read_bytes()).fmt, 0x280)
+        orig = t / 'work' / 'ab-orig' / rels['scen']
+        self.assertTrue(orig.is_file())
+        o2 = nb.parse(orig.read_bytes())
+        self.assertEqual((o2.w, o2.fmt), (64, 0x4e5))                     # original, in the replacement's format
+        rep = H.run(items, o, say=lambda *_: None)
+        self.assertEqual((rep['built'], rep['up_to_date']), (0, 4))         # incremental: nothing rebuilt
+
+
+if __name__ == '__main__':
+    unittest.main()

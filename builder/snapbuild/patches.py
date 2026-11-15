@@ -5,6 +5,9 @@ import json
 from pathlib import Path
 
 
+REVIEWED = 'reviewed.json'   # the reviewed list: {"patches": ["name.json", ...]}; shipped next to the patch files
+
+
 class PatchError(Exception):
     pass
 
@@ -41,8 +44,30 @@ def check(patch, image, build_id=None, image_sha256=None):
 
 def check_expected_set(patch_dir, reviewed_names):
     """The staged patch files must equal the reviewed list exactly (no extra, none missing)."""
-    have = sorted(p.name for p in Path(patch_dir).glob('*.json'))
+    have = sorted(p.name for p in Path(patch_dir).glob('*.json') if p.name != REVIEWED)
     want = sorted(reviewed_names)
     if have != want:
         raise PatchError(f'patch list differs from the reviewed list: extra {sorted(set(have) - set(want))}, missing {sorted(set(want) - set(have))}')
     return True
+
+
+def check_dir(patch_dir, images):
+    """Check every staged patch before generation. images: {module: (image bytes, build id, image sha256)}.
+    The staged files must equal the reviewed list; each patch names its module and must match that image exactly.
+    Returns a digest over the patch files (it goes into the generation key), or '' when there are none."""
+    patch_dir = Path(patch_dir)
+    rl = patch_dir / REVIEWED
+    reviewed = json.loads(rl.read_text(encoding='utf-8')).get('patches', []) if rl.exists() else []
+    if not patch_dir.exists() and not reviewed:
+        return ''
+    check_expected_set(patch_dir, reviewed)
+    h = hashlib.sha256()
+    for n in sorted(reviewed):
+        p = load(patch_dir / n)
+        mod = p.get('module', 'main')
+        if mod not in images:
+            raise PatchError(f'patch {n}: unknown module {mod!r}')
+        img, bid, sha = images[mod]
+        check(p, img, build_id=bid, image_sha256=sha)
+        h.update(n.encode() + b'\0' + p['_file_sha256'].encode())
+    return h.hexdigest() if reviewed else ''
