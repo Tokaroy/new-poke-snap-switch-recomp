@@ -155,6 +155,39 @@ Captured from the native build running on Windows. They show the running game on
   </tr>
 </table>
 
+### Comparisons
+
+All frames are from separate runs of the same build at a 4K window, captured at the same point on the ride. The camera matches; the Pokémon move on their own. Zoom strips are 2x crops of the full 4K frame.
+
+**Original look vs Enhanced.** Original is the game's own 1080p image scaled to 4K. Enhanced adds supersampling, SMAA, CAS sharpening and 16x anisotropic filtering.
+
+<img src="docs/screenshots/compare/look-florio.webp" alt="Florio at 4K, split screen: Original look on the left, Enhanced on the right" width="100%">
+<img src="docs/screenshots/compare/look-florio-zoom.webp" alt="Florio foliage at 2x: stair-stepped leaf edges in Original, clean edges in Enhanced" width="100%">
+<sub>Florio: Enhanced removes the stair steps on leaf edges and sharpens the ground.</sub>
+
+<details>
+<summary>Blushing Beach and the lab</summary>
+
+<img src="docs/screenshots/compare/look-beach.webp" alt="Blushing Beach at 4K, split screen: Original on the left, Enhanced on the right" width="100%">
+<img src="docs/screenshots/compare/look-beach-zoom.webp" alt="Beach flowers at 2x, Original and Enhanced" width="100%">
+<sub>Blushing Beach: clean leaf and petal edges with Enhanced.</sub>
+
+<img src="docs/screenshots/compare/look-lab.webp" alt="The lab at 4K, split screen: Original on the left, Enhanced on the right" width="100%">
+<img src="docs/screenshots/compare/look-lab-zoom.webp" alt="Lab rope fence and doorframe at 2x, Original and Enhanced" width="100%">
+<sub>The lab: thin lines like the rope fence stay solid with Enhanced.</sub>
+
+</details>
+
+**Anti-aliasing at native 4K.** The game's own AA, SSAA + SMAA (the Enhanced default) and DLAA.
+
+<img src="docs/screenshots/compare/aa-native.webp" alt="Florio at 4K with the game's AA, SSAA plus SMAA, and DLAA" width="100%">
+<img src="docs/screenshots/compare/aa-native-zoom.webp" alt="Foliage at 2x with the game's AA, SSAA plus SMAA, and DLAA" width="100%">
+
+**Upscalers.** DLSS, FSR and XeSS in Quality mode: 1440p internal, 4K output.
+
+<img src="docs/screenshots/compare/upscalers.webp" alt="Florio at 4K output with DLSS, FSR and XeSS Quality" width="100%">
+<img src="docs/screenshots/compare/upscalers-zoom.webp" alt="Grass at 2x with DLSS, FSR and XeSS Quality" width="100%">
+
 ## Build it yourself
 
 Snap Recomp Builder turns your own copy of New Pokémon Snap 2.0.1 into `SnapRecomp.exe`. Download `SnapRecomp-Builder-v1.0.0-win-x64.zip` from the [latest release](https://github.com/finalpantasy/new-poke-snap-switch-recomp/releases/latest). It holds only our MIT code and prebuilt runtime objects, no game data.
