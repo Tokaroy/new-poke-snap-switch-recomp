@@ -457,6 +457,12 @@ def process_lightmap(it, px, wrap):
 
 # ---- state and pack -------------------------------------------------------------------------------------------------------
 
+def pending(items, work, pack):
+    """The items a build would still make: not in the work state with the same key, or missing from the pack."""
+    out = load_state(work)['outputs']
+    return [it for it in items if not ((r := out.get(it.rel)) and r['key'] == it.key and (Path(pack) / it.rel).is_file())]
+
+
 def load_state(work):
     p = Path(work) / 'state.json'
     if p.exists():

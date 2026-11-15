@@ -27,15 +27,15 @@ Custom keys per category (`scenery`, `creature`, `ui`): `scale` (0, 2 or 4), `mo
 
 Before it starts, the builder prints how many textures it will make, how long it expects to take, the disk space, and the video memory the busiest course will need. It stops if that does not fit your card (`--force` builds anyway). `--dry-run` prints the plan and stops.
 
-On the test PC (RTX 4090) one course (Florio, about 6,000 captured textures) gave these numbers. Time grows with each course you capture.
+On the test PC (RTX 4090), one course (Florio, about 6,000 captured textures) gave these numbers. Time grows with each course you capture.
 
 | Level | Textures | Time | Disk | Video memory, busiest course |
 |---|---|---|---|---|
-| Sharp | TBD | TBD | TBD | TBD |
-| HD | TBD | TBD | TBD | TBD |
+| Sharp | 3,163 | about 23 min (estimate) | 2.8 GB | 2.6 GB |
+| HD | 3,350 | 114 min (measured, with other work on the same card) | 4.0 GB | 3.6 GB |
 | Ultra | 5,515 | about 172 min (estimate) | 13.4 GB | 12.0 GB |
 
-Ultra takes about three hours per course because Pokémon and menus go to 4x with the slower, finer model. Check the estimate `--dry-run` prints for your PC before you pick it.
+The HD build was timed while other programs were using the graphics card, so it took about twice the 55 minutes `--dry-run` printed. Before it starts, the builder times each model on your card and prints a corrected estimate. Ultra takes about three hours per course because Pokémon and menus go to 4x with the slower, finer model. A rebuild only makes what changed, and the estimate counts only those textures.
 
 ## What each kind of texture gets
 

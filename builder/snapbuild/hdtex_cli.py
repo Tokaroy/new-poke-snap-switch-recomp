@@ -70,6 +70,9 @@ def show_plan(items, counts, est, say):
     say(f'{len(items)} textures to upscale (captured: {sum(counts.values())}; ' + ', '.join(f'{k} {v}' for k, v in sorted(counts.items())) + ')')
     for c, v in sorted(est['by_cat'].items()):
         say(f'  {c:9} {v["n"]:5}  {gb(v["bytes"]):>9}  about {v["seconds"] / 60:.0f} min')
+    if est.get('left', len(items)) < len(items):
+        say(f'All {len(items)} are already built.' if not est['left'] else
+            f'{len(items) - est["left"]} of {len(items)} are already built; the time below is for the other {est["left"]}.')
     say(f'Estimate: about {est["seconds"] / 60:.0f} min, {gb(est["disk"])} on disk, '
         f'{gb(est["vram_peak"])} of textures at the busiest course (originals {gb(est["vram_peak_orig"])}; an upper bound)')
 
@@ -291,12 +294,18 @@ def _main(a, table, say, emit):
             emit({'plan': {'level': a.level, 'textures': 0, 'captured': 0, 'fits': True, 'empty_cache': True}})
         return 1
     est = H.estimate(items)
-    show_plan(items, counts, est, say)
+    left = H.pending(items, work, mods / H.PACK_ID)   # a rebuild only makes what changed: time only those
+    el = H.estimate(left)
+    est['seconds'], est['left'] = el['seconds'], len(left)
+    for c, v in est['by_cat'].items():
+        v['seconds'] = el['by_cat'].get(c, {}).get('seconds', 0.0)
     ok, msg = H.vram_check(est, a.vram_reserve_gb)
-    say('VRAM: ' + msg)
+    if not os.environ.get('SNAP_HDTEX_CHILD'):   # the HD textures Python run below would print it a second time
+        show_plan(items, counts, est, say)
+        say('VRAM: ' + msg)
     if emit and a.dry_run:
         emit({'plan': {'level': a.level, 'textures': len(items), 'captured': sum(counts.values()), 'counts': counts,
-                       'by_category': est['by_cat'], 'seconds': round(est['seconds']), 'disk_bytes': est['disk'],
+                       'by_category': est['by_cat'], 'seconds': round(est['seconds']), 'to_build': est['left'], 'disk_bytes': est['disk'],
                        'vram_peak_bytes': est['vram_peak'], 'vram_peak_orig_bytes': est['vram_peak_orig'], 'fits': ok,
                        'vram': msg, 'models': used, 'licenses': needed_licenses(pins, used, tdir)}})
     if not ok and not a.force:
@@ -341,10 +350,10 @@ def _main(a, table, say, emit):
         say(f'Not enough disk space: the pack needs about {gb(est["disk"])}, {gb(free)} is free.')
         return 1
     make = make_engine_factory(pins, tdir, tc, work)
-    if used and items:
+    if used and left:
         say('Measuring this GPU:')
         f = probe_speed(make, used, say)
-        est = H.estimate(items, probe=f)
+        est = H.estimate(left, probe=f)
         say(f'Corrected estimate: about {est["seconds"] / 60:.0f} min')
     o = H.RunOptions(cache=cache, work=work, pack=mods / H.PACK_ID, texconv=tc, make_engine=make,
                      model_scale=lambda m: pins['models'][m]['scale'], lock_dir=a.pause_locks or '', ab_orig=a.ab_originals,

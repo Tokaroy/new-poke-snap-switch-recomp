@@ -147,6 +147,18 @@ def main(argv=None):
         except ImportError as e:   # numpy etc. are only needed by hdtex; build/update/fetch must not need them
             hdtex_cli = None
             hdtex_missing = str(e)
+            # The launcher runs the builder with the Python that ran the build, which may lack numpy: run hdtex with the
+            # builder's own Python (tools\python, made by the build) or the HD textures one (tools\hdtex-python) instead.
+            import os
+            import subprocess
+            args = list(sys.argv[1:] if argv is None else argv)
+            td = fetch.default_tools_dir()
+            for py in (td / 'python' / 'python.exe', td / 'hdtex-python' / 'python.exe'):
+                if args[:1] == ['hdtex'] and py.is_file() and not os.environ.get('SNAP_HDTEX_REEXEC'):
+                    return subprocess.call([str(py), '-I', str(Path(__file__).resolve())] + args, env=dict(os.environ, SNAP_HDTEX_REEXEC='1'))
+            if args[:1] == ['hdtex']:
+                print('hdtex needs the Python environment from "snap_builder.py pyenv" (' + hdtex_missing + ').')
+                return 1
             hd.add_argument('rest', nargs='*')
     a = ap.parse_args(argv)
     if a.cmd == 'build':
