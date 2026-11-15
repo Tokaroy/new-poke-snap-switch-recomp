@@ -47,7 +47,7 @@ def compile_stub(llvm_bin, out_exe, version, env):
     if r.returncode != 0:
         raise SystemExit('llvm-rc failed:\n' + r.stdout + r.stderr)
     cmd = [str(clang), '-std=c++17', '-O2', '-municode', f'-DSETUP_VERSION="{version}"', '-ffile-prefix-map=' + str(ROOT) + '=.',
-           '-fuse-ld=lld', str(src), str(res), '-o', str(out_exe), '-Wl,/SUBSYSTEM:WINDOWS', '-lcomctl32', '-lshell32', '-lole32', '-lcomdlg32',
+           '-fuse-ld=lld', str(src), str(res), '-o', str(out_exe), '-Wl,/SUBSYSTEM:WINDOWS', '-lcomctl32', '-lshell32', '-lole32', '-lcomdlg32', '-lgdiplus',
            '-luser32', '-lgdi32', '-ladvapi32', '-luuid', '-Wl,/DEBUG:NONE']
     r = subprocess.run(cmd, env=env, capture_output=True, text=True)
     if r.returncode != 0:
