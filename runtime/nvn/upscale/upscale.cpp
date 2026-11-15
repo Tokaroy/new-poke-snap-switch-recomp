@@ -247,6 +247,8 @@ struct State {
   double dtEma = 1.0 / 60.0;  // smoothed present interval (s); the hold counts below are 60 fps presents, scaled by HoldScale()
   int64_t lastPresentNs = 0;
   bool evaluated = false;     // this present
+  bool lateDraw = false;      // this present drew into the scene targets after the upscale point (UpscaleOnDraw)
+  uint64_t lateDraws = 0;     // presents with late scene draws
   bool jitUsed = false;
   float jx = 0, jy = 0;
   uint32_t jframe = 0;
@@ -673,7 +675,7 @@ void UpscaleSceneJitter(float* jx, float* jy) {
 }
 
 TextureImpl* UpscaleSubstitute(const ReplayCtx& cx, TextureImpl* t) {
-  if (!U.evaluated || U.phase != 2 || !t || t != U.sceneColor || !U.shown || !IsDisplay(cx.rt[0])) return nullptr;
+  if (!U.evaluated || U.lateDraw || U.phase != 2 || !t || t != U.sceneColor || !U.shown || !IsDisplay(cx.rt[0])) return nullptr;
   return U.shown;
 }
 
@@ -707,6 +709,22 @@ void UpscaleBeforeSubmit(int n, CmdList* const* lists) {
 }
 
 void UpscaleOnDraw(ReplayCtx& cx, const uint8_t* const* vsUbo, const uint64_t* vsRange, int n) {
+  // [eyes 2026-11-14] Late scene draws. Some scenes (the Research Lab dialogs with Professor Mirror) bind the window texture in the
+  // middle of the scene and then draw more into the scene colour / depth (Mirror's irises and goggle glass, sometimes the whole
+  // room). The upscale ran at that first window bind, so the tonemap was handed an upscaled image without those draws: white eyes,
+  // no lens tint, or a black 3D scene, flashing as the shutter hold made a few frames native. A draw into the scene targets after
+  // the upscale point now cancels this present's substitution (the tonemap reads the complete scene colour) and holds the
+  // following presents native and unjittered while it keeps happening. SNAP_UPSCALE_LATE=0 restores the old behaviour.
+  if (U.on && U.phase == 2 && ((cx.rt[8] && cx.rt[8] == U.sceneDepth) || (cx.rt[0] && cx.rt[0] == U.sceneColor))) {
+    static const bool off = [] { const char* e = getenv("SNAP_UPSCALE_LATE"); return e && e[0] == '0'; }();
+    if (!off) {
+      if (!U.lateDraw && front::LogLevel()) Logf("p%d scene draw after the upscale point: this present shows the native scene%s", g_presentCount, U.evaluated ? " (upscale dropped)" : "");
+      if (!U.lateDraw) U.lateDraws++;
+      U.lateDraw = true;
+      U.hold = std::max(U.hold, HoldScale(6));
+    }
+    return;
+  }
   if (!U.on || U.phase != 1 || !cx.rt[8] || cx.rt[8] != U.sceneDepth) return;
   const int probe = front::Probe();
   static int probeFrom = -1;
@@ -743,7 +761,7 @@ void UpscaleOnPresent() {
   if (U.evaluated) U.lastEvalPresent = g_presentCount;
   else if (g_presentCount - U.lastEvalPresent > 4 + 2 * AbPeriod()) U.reset = true;   // a longer gap (menus, photo select, loads) starts a new history
   U.prevHeld = !U.evaluated && (U.frameHold || U.phase == 0);
-  U.phase = 0; U.evaluated = false;
+  U.phase = 0; U.evaluated = false; U.lateDraw = false;
   if (U.hold > 0 && !U.submitPhoto) U.hold--;
   // Shutter look-ahead: the photo pass often runs at the start of a present, before that present's scene, and downscales the
   // display texture, i.e. the PREVIOUS present. Florio route: A at f6000+24k, photo pass at p6003+24k (3 presents later), so

@@ -41,6 +41,8 @@ pub struct Variant {
 pub struct PlacedModel {
     pub inst: level::ModelInstance,
     pub level: String,
+    pub level_idx: usize,
+    pub inst_idx: usize,
     pub source: Option<PathBuf>,
     pub mesh: Option<std::sync::Arc<ModelMesh>>,
     pub error: Option<String>,
@@ -49,6 +51,8 @@ pub struct PlacedModel {
 
 pub struct LoadedCourse {
     pub course: String,
+    /// Archive path of the pack under the data root, e.g. `nx/Pack/LevelComposite/master/LC_001_A.drp`.
+    pub archive: String,
     pub variant: u32,
     pub variants: Vec<Variant>,
     pub levels: Vec<Level>,
@@ -178,8 +182,8 @@ impl DataRoot {
         }
         let mut cache: HashMap<PathBuf, Result<std::sync::Arc<ModelMesh>, String>> = HashMap::new();
         let mut models = vec![];
-        for l in &levels {
-            for inst in &l.models {
+        for (level_idx, l) in levels.iter().enumerate() {
+            for (inst_idx, inst) in l.models.iter().enumerate() {
                 let cands = [format!("{}_LightmapUV.nusrcmdlb", inst.name), format!("{}.nusrcmdlb", inst.name)];
                 let mut src = cands.iter().map(|n| c.dir.join(n)).find(|p| p.is_file());
                 if src.is_none() {
@@ -196,11 +200,21 @@ impl DataRoot {
                     None => (None, Some("model file not found".to_string())),
                 };
                 let visible = default_visible(&inst.name);
-                models.push(PlacedModel { inst: inst.clone(), level: l.name.clone(), source: src, mesh, error, visible });
+                models.push(PlacedModel {
+                    inst: inst.clone(),
+                    level: l.name.clone(),
+                    level_idx,
+                    inst_idx,
+                    source: src,
+                    mesh,
+                    error,
+                    visible,
+                });
             }
         }
         Ok(LoadedCourse {
             course: c.name.clone(),
+            archive: format!("{PACK_SUBDIR}/{}.drp", c.name),
             variant: v.no,
             variants,
             levels,

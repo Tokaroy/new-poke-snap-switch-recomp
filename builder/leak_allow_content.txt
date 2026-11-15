@@ -1,0 +1,4 @@
+# Known false positives inside third-party binaries: <path inside the package>|<finding kind>  # why
+# Each entry is pinned to one file and one kind; anything else in that file still fails.
+shader_harness/System.IO.Compression.Native.dll|personal   # embedded Brotli dictionary: plain English words and URLs
+shader_harness/Gommon.dll|home-path                        # build path of a third-party developer left in the library by its author

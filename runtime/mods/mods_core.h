@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace mods {
@@ -40,6 +41,8 @@ class Index {
   std::vector<Pack> packs;
   std::unordered_map<std::string, Override> map;
   std::vector<std::string> conflicts;   // "key: pack A beats pack B"
+  std::vector<std::pair<std::string, int>> rom_layers;   // (<pack>/romfs folder, pack index) of enabled packs, priority order:
+                                                          // whole files that shadow rom:/ (e.g. an archive with added entries)
   bool empty() const { return map.empty(); }
   void add(int pack, const std::string& archive, const std::string& stem, uint32_t extcrc, const std::string& file);
   // `name` is the entry name as stored in the chunk; the plain name and the name minus a ".<ext>" suffix whose crc is

@@ -64,6 +64,17 @@ impl<'a> Table<'a> {
         }
     }
 
+    pub fn vtable_pos(&self) -> usize {
+        self.vt
+    }
+    pub fn vtable_size(&self) -> usize {
+        self.vsize
+    }
+    /// Inline size of the table (vtable entry 1), including the 4-byte vtable offset.
+    pub fn inline_size(&self) -> usize {
+        self.buf.u16_at(self.vt + 2).unwrap_or(4) as usize
+    }
+
     pub fn has(&self, slot: usize) -> bool {
         self.field(slot).is_some()
     }

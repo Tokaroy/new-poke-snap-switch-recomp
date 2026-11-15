@@ -1,21 +1,25 @@
 // SPDX-License-Identifier: MIT
-// AMD FSR 3.1 upscaling through the FidelityFX API (FidelityFX SDK v1.1.4 = FSR 3.1.4, MIT): the signed prebuilt
-// amd_fidelityfx_vk.dll is loaded at run time from the folder of the exe (local copy in tools\amd\, git-ignored, copied by
-// host/build_snap.py). The API headers (MIT) are used from tools\amd\ when present (SNAP_HAVE_FFX_API, set by the build);
-// without them this backend reports itself unavailable and the front end falls back.
+// AMD FSR upscaling through the FidelityFX API (FidelityFX SDK 2.4.0, commit 7539ae8): the signed
+// upscalers\amd_fidelityfx_upscaler_vk.dll next to the exe is loaded by absolute path at run time. The builder or the launcher
+// downloads it from AMD's repository after the user accepts AMD's license; it is never part of our release zip. The API
+// headers (MIT) come from tools\amd\ffx_sdk_v2.4.0 when present (SNAP_HAVE_FFX_API, set by the build); without them, or without
+// the DLL, this backend reports itself unavailable and the front end falls back (the FSR option is then hidden).
+// Provider: the DLL offers several (FSR 3.1.x on any Vulkan GPU, 4.x only where the hardware qualifies). The default is the
+// newest 3.x provider, so a GPU that could run FSR 4 is never switched to it silently; SNAP_FSR4=1 prefers a 4.x provider.
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #include <windows.h>
 
+#include <cstdlib>
 #include <cstring>
 
 #include "upscaler.h"
 
 #if defined(SNAP_HAVE_FFX_API)
-#include <ffx_api/ffx_api.h>
-#include <ffx_api/ffx_upscale.h>
-#include <ffx_api/vk/ffx_api_vk.h>
+#include <ffx_api.h>
+#include <ffx_upscale.h>
+#include <vk/ffx_api_vk.h>
 
 namespace snap_upscale::fsr {
 namespace {
@@ -26,6 +30,8 @@ struct State {
   bool tried = false, loaded = false, failed = false;
   DeviceCtx dc;
   ffxContext ctx = nullptr;
+  uint64_t provider = 0; const char* providerName = "";
+  bool providerChosen = false;
   uint32_t ow = 0, oh = 0, mw = 0, mh = 0, flags = 0;
   uint64_t evals = 0;
 } F;
@@ -65,21 +71,57 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL ProcAddr(VkDevice dev, const char* name
 }
 }  // namespace
 
+// Lists the providers for this device (ffxQuery GET_VERSIONS) and picks one: the newest "3." by default, a "4." with SNAP_FSR4=1
+// when one is offered. Keeps provider 0 (the DLL's own default) only when the query fails.
+void ChooseProvider(VkDeviceContext* dctx) {
+  F.providerChosen = true;
+  if (!F.query) return;
+  uint64_t count = 0;
+  ffxQueryDescGetVersions gv{};
+  gv.header.type = FFX_API_QUERY_DESC_TYPE_GET_VERSIONS;
+  gv.createDescType = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
+  gv.device = dctx;
+  gv.outputCount = &count;
+  if (F.query(nullptr, &gv.header) != FFX_API_RETURN_OK || count == 0 || count > 16) { Logf("fsr: provider query failed: using the DLL default"); return; }
+  uint64_t ids[16] = {}; const char* names[16] = {};
+  uint64_t cap = count;
+  gv.outputCount = &cap; gv.versionIds = ids; gv.versionNames = names;
+  if (F.query(nullptr, &gv.header) != FFX_API_RETURN_OK) { Logf("fsr: provider list failed: using the DLL default"); return; }
+  const bool want4 = getenv("SNAP_FSR4") && getenv("SNAP_FSR4")[0] == '1';
+  int pick = -1, pick3 = -1, pick4 = -1;
+  for (uint64_t i = 0; i < cap; i++) {
+    Logf("fsr: provider %llu: %s", (unsigned long long)ids[i], names[i] ? names[i] : "?");
+    if (!names[i]) continue;
+    if (names[i][0] == '3' && pick3 < 0) pick3 = (int)i;   // the list is newest first
+    if (names[i][0] == '4' && pick4 < 0) pick4 = (int)i;
+  }
+  pick = (want4 && pick4 >= 0) ? pick4 : pick3;
+  if (pick < 0) { Logf("fsr: no FSR 3.x provider offered on this device: FSR unavailable"); F.failed = true; return; }
+  F.provider = ids[pick];
+  static char keep[64];
+  strncpy(keep, names[pick] ? names[pick] : "", sizeof keep - 1);
+  F.providerName = keep;
+  Logf("fsr: using provider %s", keep);
+}
+
 bool Load() {
   if (F.tried) return F.loaded;
   F.tried = true;
-  char path[MAX_PATH + 32] = {};
-  DWORD len = GetModuleFileNameA(nullptr, path, MAX_PATH);
-  while (len && path[len - 1] != '\\') len--;
-  strcpy(path + len, "amd_fidelityfx_vk.dll");
-  F.lib = LoadLibraryA(path);
-  if (!F.lib) { Logf("fsr: cannot load %s: FSR unavailable", path); return false; }
+  wchar_t wpath[MAX_PATH + 48] = {};
+  DWORD len = GetModuleFileNameW(nullptr, wpath, MAX_PATH);
+  while (len && wpath[len - 1] != L'\\') len--;
+  wcscpy(wpath + len, L"upscalers\\amd_fidelityfx_upscaler_vk.dll");
+  char path[MAX_PATH * 3] = {};
+  WideCharToMultiByte(CP_UTF8, 0, wpath, -1, path, (int)sizeof path, nullptr, nullptr);
+  if (GetFileAttributesW(wpath) == INVALID_FILE_ATTRIBUTES) { Logf("fsr: %s is not installed: FSR unavailable (fetch it with the builder or the launcher)", path); return false; }
+  F.lib = LoadLibraryExW(wpath, nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);   // absolute path only: never the working directory or PATH
+  if (!F.lib) { Logf("fsr: cannot load %s (error %lu): FSR unavailable", path, GetLastError()); return false; }
   F.create = (PfnFfxCreateContext)(void*)GetProcAddress(F.lib, "ffxCreateContext");
   F.destroy = (PfnFfxDestroyContext)(void*)GetProcAddress(F.lib, "ffxDestroyContext");
   F.dispatch = (PfnFfxDispatch)(void*)GetProcAddress(F.lib, "ffxDispatch");
   F.query = (PfnFfxQuery)(void*)GetProcAddress(F.lib, "ffxQuery");
   if (!F.create || !F.destroy || !F.dispatch) { Logf("fsr: %s lacks the FidelityFX API entry points: FSR unavailable", path); return false; }
-  Logf("fsr: %s (FidelityFX API)", path);
+  Logf("fsr: %s (FidelityFX SDK 2.4.0 API)", path);
   return F.loaded = true;
 }
 
@@ -101,10 +143,20 @@ bool Evaluate(const Eval& e) {
   if (!F.ctx) {
     ffxCreateBackendVKDesc be{};
     be.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK;
-    be.vkDevice = F.dc.device; be.vkPhysicalDevice = F.dc.phys; be.vkDeviceProcAddr = ProcAddr;
+    be.deviceContext.vkDevice = F.dc.device; be.deviceContext.vkPhysicalDevice = F.dc.phys; be.deviceContext.vkDeviceProcAddr = ProcAddr;
+    if (!F.providerChosen) ChooseProvider(&be.deviceContext);
+    if (F.failed) return false;
+    ffxOverrideVersion ov{};
+    ov.header.type = FFX_API_DESC_TYPE_OVERRIDE_VERSION;
+    ov.versionId = F.provider;
+    ffxCreateContextDescUpscaleVersion ver{};
+    ver.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE_VERSION;
+    ver.version = FFX_UPSCALER_VERSION;
+    be.header.pNext = F.provider ? &ov.header : nullptr;
+    ver.header.pNext = &be.header;
     ffxCreateContextDescUpscale cd{};
     cd.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
-    cd.header.pNext = &be.header;
+    cd.header.pNext = &ver.header;
     cd.flags = flags;
     cd.maxRenderSize = {e.w, e.h};
     cd.maxUpscaleSize = {e.ow, e.oh};
@@ -113,7 +165,7 @@ bool Evaluate(const Eval& e) {
     if (r != FFX_API_RETURN_OK || !F.ctx) { Logf("fsr: context creation failed (%u): FSR off for this run", r); F.failed = true; F.ctx = nullptr; return false; }
     F.ow = e.ow; F.oh = e.oh; F.mw = e.w; F.mh = e.h; F.flags = flags;
     reset = true;
-    Logf("fsr: FSR 3.1 context %ux%u -> %ux%u, %s colour", e.w, e.h, e.ow, e.oh, e.hdr ? "HDR" : "LDR");
+    Logf("fsr: FSR %s context %ux%u -> %ux%u, %s colour", F.provider ? F.providerName : "(default provider)", e.w, e.h, e.ow, e.oh, e.hdr ? "HDR" : "LDR");
   }
   ffxDispatchDescUpscale d{};
   d.header.type = FFX_API_DISPATCH_DESC_TYPE_UPSCALE;

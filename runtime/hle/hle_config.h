@@ -40,6 +40,7 @@ bool load_config(const std::string& path = "");
 // Picks the save profile for this run and points save_root at it (profiles.h). Called once by the host after load_config; does nothing
 // when SNAP_SAVE_DIR or save_root is set (unless SNAP_PROFILES_DIR is set too).
 void activate_profiles();
+std::string tool_save_root(const std::string& profile, std::string* label);   // import/export target (see hle_config.cpp)
 void apply_defaults();                                 // derived paths from data_root; called by load_config
 #ifdef _WIN32
 std::string appdata_utf8();                            // %APPDATA% as UTF-8 (wide API; a non-ASCII user name is safe)

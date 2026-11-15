@@ -3,6 +3,8 @@
 //! the window and the headless `--shot` mode.
 
 use crate::course::LoadedCourse;
+use crate::edit::Sel;
+use crate::pick::{Ground, GroundModel};
 use bytemuck::{Pod, Zeroable};
 use egui_wgpu::wgpu;
 use glam::{Mat4, Quat, Vec3};
@@ -35,11 +37,13 @@ pub struct Layers {
     pub paths: bool,
     pub spawns: bool,
     pub spawn_links: bool,
+    /// Rail point handles (pickable, for bending the ride).
+    pub rail_points: bool,
 }
 
 impl Default for Layers {
     fn default() -> Self {
-        Self { geometry: true, rail: true, paths: true, spawns: true, spawn_links: true }
+        Self { geometry: true, rail: true, paths: true, spawns: true, spawn_links: true, rail_points: false }
     }
 }
 
@@ -146,10 +150,12 @@ fn push_marker(out_v: &mut Vec<Vertex>, out_i: &mut Vec<u32>, c: Vec3, r: f32, c
     }
 }
 
-pub fn build_scene(c: &LoadedCourse, layers: Layers, selected_spawn: Option<(usize, usize)>) -> CpuScene {
+/// Course geometry (lit triangles) plus the same triangles for CPU picking.
+pub fn build_geometry(c: &LoadedCourse, layers: Layers) -> (CpuScene, Ground) {
     let mut s = CpuScene { geo_min: [f32::MAX; 3], geo_max: [f32::MIN; 3], ..Default::default() };
+    let mut g = Ground::default();
     if layers.geometry {
-        for m in c.models.iter().filter(|m| m.visible) {
+        for (mi, m) in c.models.iter().enumerate().filter(|(_, m)| m.visible && m.inst.alive) {
             let Some(mesh) = &m.mesh else { continue };
             let q = Quat::from_array(m.inst.rot);
             let q = if q.length_squared() < 1e-6 { Quat::IDENTITY } else { q.normalize() };
@@ -157,8 +163,14 @@ pub fn build_scene(c: &LoadedCourse, layers: Layers, selected_spawn: Option<(usi
             let nm = glam::Mat3::from_mat4(xf).inverse().transpose();
             let col = model_color(&m.inst.name);
             let base = s.tris.len() as u32;
+            let gbase = g.pos.len() as u32;
+            let tri_start = g.idx.len() / 3;
+            let (mut mn, mut mx) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
             for (p, n) in mesh.positions.iter().zip(&mesh.normals) {
                 let w = xf.transform_point3(Vec3::from(*p));
+                mn = mn.min(w);
+                mx = mx.max(w);
+                g.pos.push(w);
                 for k in 0..3 {
                     s.geo_min[k] = s.geo_min[k].min(w[k]);
                     s.geo_max[k] = s.geo_max[k].max(w[k]);
@@ -170,8 +182,42 @@ pub fn build_scene(c: &LoadedCourse, layers: Layers, selected_spawn: Option<(usi
                 s.tris.push(Vertex { pos: w.to_array(), nrm: nn.to_array(), col });
             }
             s.tri_idx.extend(mesh.indices.iter().map(|i| base + i));
+            g.idx.extend(mesh.indices.iter().map(|i| gbase + i));
+            if !mesh.positions.is_empty() {
+                g.models.push(GroundModel { model: mi, tri_start, tri_end: g.idx.len() / 3, min: mn, max: mx });
+            }
         }
         s.triangles = s.tri_idx.len() / 3;
+    }
+    (s, g)
+}
+
+fn push_line(s: &mut CpuScene, a: Vec3, b: Vec3, col: [f32; 3]) {
+    s.lines.push(Vertex { pos: a.to_array(), nrm: [0.0; 3], col });
+    s.lines.push(Vertex { pos: b.to_array(), nrm: [0.0; 3], col });
+}
+
+fn push_aabb(s: &mut CpuScene, mn: Vec3, mx: Vec3, col: [f32; 3]) {
+    let c = |i: u32| Vec3::new(if i & 1 != 0 { mx.x } else { mn.x }, if i & 2 != 0 { mx.y } else { mn.y }, if i & 4 != 0 { mx.z } else { mn.z });
+    for (a, b) in [(0, 1), (2, 3), (4, 5), (6, 7), (0, 2), (1, 3), (4, 6), (5, 7), (0, 4), (1, 5), (2, 6), (3, 7)] {
+        push_line(s, c(a), c(b), col);
+    }
+}
+
+/// Rail, paths, spawn markers and the selection highlight. Cheap; rebuilt after every edit.
+pub fn build_overlay(c: &LoadedCourse, layers: Layers, sel: Option<Sel>, ground: &Ground) -> CpuScene {
+    let mut s = CpuScene::default();
+    let selected_spawn = match sel {
+        Some(Sel::Spawn(l, i)) => Some((l, i)),
+        _ => None,
+    };
+    if let Some(Sel::Model(m)) = sel {
+        if let Some((mn, mx)) = ground.model_bounds(m) {
+            push_aabb(&mut s, mn, mx, [1.0, 1.0, 1.0]);
+        } else if let Some(pm) = c.models.get(m) {
+            let p = Vec3::from(pm.inst.pos);
+            push_aabb(&mut s, p - Vec3::ONE, p + Vec3::ONE, [1.0, 1.0, 1.0]);
+        }
     }
     let rail_entity = c.levels.iter().find_map(|l| l.rail);
     for l in &c.levels {
@@ -181,10 +227,21 @@ pub fn build_scene(c: &LoadedCourse, layers: Layers, selected_spawn: Option<(usi
                 if !layers.rail {
                     continue;
                 }
+                let sel_pt = match sel {
+                    Some(Sel::Rail(_, a, b)) => Some((a, b)),
+                    _ => None,
+                };
                 for (si, seg) in p.segments.iter().enumerate() {
                     let col = if si == 0 { [1.0, 0.85, 0.1] } else { [1.0, 0.55, 0.1] };
                     for w in seg.windows(2) {
                         push_box(&mut s.overlay, &mut s.overlay_idx, Vec3::from(w[0]), Vec3::from(w[1]), 0.18, col);
+                    }
+                    if layers.rail_points || sel_pt.is_some() {
+                        for (i, pt) in seg.iter().enumerate() {
+                            let on = sel_pt == Some((si, i));
+                            let (size, pc) = if on { (0.7, [1.0, 1.0, 1.0]) } else { (0.35, [1.0, 0.4, 0.1]) };
+                            push_marker(&mut s.overlay, &mut s.overlay_idx, Vec3::from(*pt), size, pc);
+                        }
                     }
                 }
             } else if layers.paths {
@@ -201,6 +258,9 @@ pub fn build_scene(c: &LoadedCourse, layers: Layers, selected_spawn: Option<(usi
     if layers.spawns {
         for (li, l) in c.levels.iter().enumerate() {
             for (si, sp) in l.spawns.iter().enumerate() {
+                if !sp.alive || (!sp.pos_from_path && sp.pos == [0.0; 3]) {
+                    continue; // placed by the game, not by this file
+                }
                 let sel = selected_spawn == Some((li, si));
                 let col = if sel { [1.0, 1.0, 1.0] } else { species_color(&sp.label) };
                 let pos = Vec3::from(sp.pos) + Vec3::Y * 0.6;
@@ -465,7 +525,7 @@ impl Viewport {
         true
     }
 
-    pub fn render(&self, device: &wgpu::Device, queue: &wgpu::Queue, scene: Option<&GpuScene>, cam: &OrbitCamera, fog_dist: f32) {
+    pub fn render(&self, device: &wgpu::Device, queue: &wgpu::Queue, scenes: &[&GpuScene], cam: &OrbitCamera, fog_dist: f32) {
         let (Some(msaa), Some(depth), Some(color)) = (&self.msaa_tex, &self.depth, &self.color_view) else { return };
         let aspect = self.size[0] as f32 / self.size[1] as f32;
         let eye = cam.eye();
@@ -498,18 +558,22 @@ impl Viewport {
                 multiview_mask: None,
             });
             rp.set_bind_group(0, &self.bind, &[]);
-            if let Some(s) = scene {
+            for s in scenes {
                 if let (Some(vb), Some(ib)) = (&s.tri_vb, &s.tri_ib) {
                     rp.set_pipeline(&self.tri_pipe);
                     rp.set_vertex_buffer(0, vb.slice(..));
                     rp.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
                     rp.draw_indexed(0..s.tri_n, 0, 0..1);
                 }
+            }
+            for s in scenes {
                 if let Some(vb) = &s.line_vb {
                     rp.set_pipeline(&self.line_pipe);
                     rp.set_vertex_buffer(0, vb.slice(..));
                     rp.draw(0..s.line_n, 0..1);
                 }
+            }
+            for s in scenes {
                 if let (Some(vb), Some(ib)) = (&s.ov_vb, &s.ov_ib) {
                     rp.set_pipeline(&self.tri_pipe);
                     rp.set_vertex_buffer(0, vb.slice(..));

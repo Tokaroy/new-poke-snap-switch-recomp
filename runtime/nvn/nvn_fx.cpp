@@ -42,6 +42,7 @@ struct State {
   TextureImpl* color = nullptr;
   FxCam cam;
   FxCaster caster;
+  bool ranFrame = false;
   bool midTried = false, midRan = false; int sceneDraws = 0, prevDraws = 0;
   int castSeen = -100;     // present of the last caster capture (first cast draw per present)
   int activePresent = -1; bool active = false;
@@ -273,7 +274,11 @@ void FxBeforeSubmit(int n, CmdList* const* lists) {
   if (Log()) fprintf(stderr, "fx: p%d photo submit: Fx held\n", g_presentCount);
 }
 
+void FxNoteRan() { F.ranFrame = true; }
+
 void FxOnPresent() {
+  if (F.phase && AbP() > 0 && Log()) fprintf(stderr, "fx: AB p%d scene %s\n", g_presentCount, F.frameHold ? "OFF (held)" : (F.ranFrame ? "ON (effect drew)" : "ON (eligible, effect skipped)"));   // g_presentCount is already the number the frame dump uses
+  F.ranFrame = false;
   if (!Active() && F.phase == 0 && !F.hold) return;
   if (F.phase) F.prevDraws = F.sceneDraws;
   F.phase = 0; F.depth = nullptr; F.color = nullptr; F.cam.valid = false;

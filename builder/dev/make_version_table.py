@@ -18,14 +18,7 @@ VERSIONS = [('1.0.0 (v0)', 'v0'), ('1.1.0 (v65536)', 'v65536'), ('1.2.0 (v131072
 
 
 TODO = 'TODO'
-TOOLS = {
-    'llvm': {'version_major': 23, 'tested': '23.1.5', 'url': TODO, 'sha256': TODO, 'note': 'archive hash of the copy used so far: 62fdada7f6fa2b73856486dfbbdba3d2c1882991621615bcb55c60207611c6d4 (llvm.tar.xz)'},
-    'ghidra': {'version': '12.1.2 PUBLIC 20260605', 'url': TODO, 'sha256': 'b62e81a0390618466c019c60d8c2f796ced2509c4c1aea4a37644a77272cf99d', 'note': 'hash of the local zip; URL still to pin'},
-    'switch_loader': {'version': '1.6.1-0f38957 for Ghidra 12.1.2', 'url': TODO, 'sha256': TODO},
-    'jdk': {'version': 'temurin 21.0.9+10', 'url': TODO, 'sha256': '1c67df516e9795c0b09f5714bfe151da2e3cc988082042f5bbb60d75e4e63fb5', 'note': 'hash of the local zip; URL still to pin'},
-    'vulkan_sdk': {'version': TODO, 'url': TODO, 'sha256': TODO, 'note': 'vulkan-1.lib; headers are shipped in the prebuilt folder later'},
-    'python_packages': {'capstone': '5.0.7', 'pyelftools': '0.33', 'numpy': '2.5.4', 'lz4': '4.4.5', 'hashes': TODO},
-}
+from tool_pins import TOOLS   # the pinned tools, with their sources (builder/dev/tool_pins.py)
 
 
 def nso_values(path):

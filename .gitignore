@@ -3,6 +3,7 @@ extracted/
 analysis/
 tools/*
 !tools/level-editor/
+!tools/studio/
 tools/level-editor/target/
 tools/level-editor/shots/
 *.nsp
@@ -62,3 +63,6 @@ bin/
 /.out
 /audio.json
 /.claude/
+
+pipeline_keys*.bin
+pipeline_cache.bin

@@ -1,5 +1,6 @@
 // Launcher mode of the game exe (host/launcher.cpp).
 #pragma once
+#include <filesystem>
 #include <string>
 
 namespace hle { struct Json; }
@@ -14,5 +15,8 @@ struct Result {
 
 // Call with no command-line arguments. Returns false when there is no config.json next to the exe (nothing happened).
 bool prepare(Result& r);
+
+// Offers the upscaler downloads (host/launcher_upscalers.cpp). first_start = only the pre-selected one (FSR). Returns the number installed.
+int offer_upscalers(const std::filesystem::path& exe_dir, const hle::Json& data, bool first_start);
 
 }  // namespace snap_launcher

@@ -135,6 +135,12 @@ void Pre(ReplayCtx& cx) {
   float jx, jy; FxJitter(&jx, &jy);
   pc.size[0] = (float)c->HW(); pc.size[1] = (float)c->HH(); pc.size[2] = jx; pc.size[3] = jy;
   pc.q[0] = EnvF("SNAP_CONTACT_LEN", 0.4f); pc.q[1] = EnvF("SNAP_CONTACT_THICK", 0.15f); pc.q[2] = EnvF("SNAP_CONTACT_FADE", 45.f); pc.q[3] = (float)(g_presentCount & 1023);
+  if (getenv("SNAP_CONTACT_PRESETS")) {   // tuning aid: cycle strength / ray length / thickness every 150 presents (the preset is logged on change)
+    static const float kP[6][3] = {{0.5f, 0.4f, 0.15f}, {0.7f, 0.8f, 0.3f}, {0.85f, 1.2f, 0.4f}, {1.0f, 0.8f, 0.3f}, {0.85f, 1.6f, 0.5f}, {1.0f, 1.2f, 0.4f}};
+    const int k = (g_presentCount / 150) % 6; static int lastK = -1;
+    pc.light[3] = kP[k][0] + (dbgMode >= 2 ? 10.f * (float)dbgMode : 0.f); pc.q[0] = kP[k][1]; pc.q[1] = kP[k][2];
+    if (k != lastK) { lastK = k; fprintf(stderr, "contact: p%d preset %d strength %.2f len %.2f thick %.2f\n", g_presentCount, k, kP[k][0], kP[k][1], kP[k][2]); }
+  }
   static int logged; if (logged++ < 3) fprintf(stderr, "contact: p%d light toward (%.3f %.3f %.3f) map %u, %ux%u jitter (%.2f %.2f)\n", g_presentCount, L[0], L[1], L[2], cs->mapSize, c->HW(), c->HH(), jx, jy);
   VkImageLayout prev;
   VkImageView dv = FxDepthRead(cx, z, &prev);
@@ -144,6 +150,7 @@ void Pre(ReplayCtx& cx) {
     VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; w.dstSet = set; w.dstBinding = 0; w.descriptorCount = 1; w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.pImageInfo = &ii;
     vkUpdateDescriptorSets(cx.h->device, 1, &w, 0, nullptr);
     FxDrawFullscreen(cx, c, dbgMode == 7 && g.pipeDbg ? g.pipeDbg : g.pipe, g.pl, set, &pc, sizeof pc);
+    FxNoteRan();
   }
   FxDepthDone(cx, z, prev);
 }

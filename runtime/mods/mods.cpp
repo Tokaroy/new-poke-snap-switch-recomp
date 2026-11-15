@@ -52,6 +52,7 @@ void init() {
   mods::load(root, g_index, warn);
   for (auto& w : warn) fprintf(stderr, "[mods] warning: %s\n", w.c_str());
   for (auto& c : g_index.conflicts) fprintf(stderr, "[mods] conflict: %s\n", c.c_str());
+  for (auto& l : g_index.rom_layers) fprintf(stderr, "[mods] rom layer %s <- %s\n", l.first.c_str(), g_index.packs[l.second].id.c_str());
   if (g_index.empty()) {
     if (!g_index.packs.empty()) fprintf(stderr, "[mods] root %s: %zu packs, no overrides\n", root.c_str(), g_index.packs.size());
     g_state = 1;
@@ -305,6 +306,7 @@ extern "C" void rt_mod_entry(Cpu* c) {
 extern void (*g_snap_fs_tap_open)(uint64_t id, const char* path);
 extern void (*g_snap_fs_tap_close)(uint64_t id);
 extern void (*g_snap_fs_tap_read)(uint64_t id, const void* buf, size_t n);
+extern std::vector<std::string> (*g_snap_fs_extra_rom_layers)();   // runtime/hle/fs_core.cpp, read by MountRom
 
 namespace {
 std::mutex g_tap_mu;
@@ -337,6 +339,8 @@ struct Installer {
   Installer() {
     std::call_once(g_once, init);
     if (g_state.load() == 2) { g_snap_fs_tap_open = tap_open; g_snap_fs_tap_close = tap_close; g_snap_fs_tap_read = tap_read; }
+    if (!g_index.rom_layers.empty())
+      g_snap_fs_extra_rom_layers = [] { std::vector<std::string> v; for (auto& l : g_index.rom_layers) v.push_back(l.first); return v; };
   }
 } g_installer;
 }  // namespace

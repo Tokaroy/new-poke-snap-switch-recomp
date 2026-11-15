@@ -114,6 +114,7 @@ struct Svc {
   std::mutex km;
   FILE* keysFile = nullptr;
   std::vector<PipeDesc> known;
+  std::unordered_set<uint64_t> recorded;   // HashDesc of every key already in the user's list (guarded by km): a request for one is never appended again
   // progress of the current precompile run
   std::atomic<int> state{SHADERPRECOMPILE_IDLE};
   std::atomic<uint32_t> total{0}, done{0}, failed{0};
@@ -288,6 +289,7 @@ void LoadKeys() {
         if (compressedRt) continue;
         if (seen.insert(HashDesc(pd)).second) S->known.push_back(pd);
       }
+      S->recorded = seen;
       f.close();
       const uint64_t goodLen = sizeof(FileHdr) + nGood * sizeof(PipeDesc);
       std::error_code ec;
@@ -306,6 +308,41 @@ void LoadKeys() {
   } else {
     S->keysFile = fopen(path.c_str(), "ab");
   }
+}
+// Optional seed key list (SNAP_PIPELINE_SEED=<file>, else <exe dir>\pipeline_keys_seed.bin; SNAP_PIPELINE_SEED=0 turns it off): pipelines recorded
+// elsewhere (e.g. a sweep of every course) are added to the startup precompile, so the first visit to a course finds its pipelines ready instead
+// of compiling them while playing (draws skipped, compile hitches). Same header check as the user list; never written to, never appended to the
+// user list; keys already known are skipped.
+void AddSeedKeys() {
+  std::string path;
+  if (const char* e = getenv("SNAP_PIPELINE_SEED")) { if (!strcmp(e, "0")) return; path = e; }
+  if (path.empty()) {
+    char buf[MAX_PATH] = {};
+    DWORD n = GetModuleFileNameA(nullptr, buf, MAX_PATH);
+    std::string exe(buf, n);
+    size_t sl = exe.find_last_of("\/");
+    path = (sl == std::string::npos ? std::string() : exe.substr(0, sl + 1)) + "pipeline_keys_seed.bin";
+  }
+  std::ifstream f(path, std::ios::binary);
+  FileHdr got{};
+  const FileHdr want = MakeHdr(S->h, kMagicKeys, false);
+  if (!f || !f.read((char*)&got, sizeof got)) return;
+  if (!HdrMatches(got, want)) { Log("pipeline seed: %s is from another build / translator, ignored", path.c_str()); return; }
+  std::unordered_set<uint64_t> seen;
+  for (const PipeDesc& k : S->known) seen.insert(HashDesc(k));
+  PipeDesc pd;
+  size_t added = 0, total = 0;
+  while (f.read((char*)&pd, sizeof pd)) {
+    bool ok = pd.nattr >= 0 && pd.nattr <= 16 && pd.nstream >= 0 && pd.nstream <= 16 && pd.nColor >= 0 && pd.nColor <= 8;
+    for (int s = 0; s < 5 && ok; s++) ok = pd.stage[s][15] == 0;
+    if (!ok) break;
+    total++;
+    bool compressedRt = false;
+    for (int i = 0; i < pd.nColor; i++) if (pd.colorFmt[i] >= 131 && pd.colorFmt[i] <= 184) compressedRt = true;
+    if (compressedRt) continue;
+    if (seen.insert(HashDesc(pd)).second) { S->known.push_back(pd); added++; }
+  }
+  Log("pipeline seed: %s: %zu record(s), %zu new", path.c_str(), total, added);
 }
 void RecordKey(const PipeDesc& pd) {
   std::lock_guard<std::mutex> lk(S->km);
@@ -536,6 +573,7 @@ void PipelineServiceInit(Host* h) {
   }
   LoadCache(h);
   LoadKeys();
+  AddSeedKeys();
   S->lastSaveNs = snap_perf::now_ns();
   S->housekeeper = std::thread(Housekeeping);
   S->up = true;
@@ -624,9 +662,15 @@ VkPipeline PipelineAcquire(Host* h, const PipeDesc& pd, ProgramImpl* p, bool* pe
   {
     // recorded earlier (a previous run) pipelines are already in the map from BeginRun; reaching here means it is genuinely new
     (void)known;
-    RecordKey(pd);
-    std::lock_guard<std::mutex> lk(S->km);
-    S->known.push_back(pd);
+    bool dup;
+    { std::lock_guard<std::mutex> lk(S->km); dup = !S->recorded.insert(hsh).second; }
+    // Requests that arrive before BeginRun has filled the map (the first presents) used to append a copy of a key already in the list every run
+    // (4,010 records for 339 distinct ones); LoadKeys deduplicated them, so only the file grew.
+    if (!dup) {
+      RecordKey(pd);
+      std::lock_guard<std::mutex> lk(S->km);
+      S->known.push_back(pd);
+    }
   }
   if (S->async && !mustHave) {
     EnsureWorkers(std::max(S->activeLimit.load(), WorkerCountFor(S->mode.load())));

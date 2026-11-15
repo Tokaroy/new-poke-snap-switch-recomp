@@ -19,8 +19,12 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <vector>
 
+#include "hle/hle_config.h"
+#include "hle/profiles.h"
 #include "hle/json_lite.h"
+#include "hle/save_port.h"
 #include "launcher.h"
 
 namespace fs = std::filesystem;
@@ -105,14 +109,14 @@ std::string check_romfs(const std::string& root, const hle::Json& data) {
          std::to_string(want.size()) + " check files are missing or changed.\n" + root + "\n\nUse \"Change game folder\" to pick the right folder.";
 }
 
-static std::string pick_folder(const std::string& start) {
+static std::string pick_folder(const std::string& start, const wchar_t* title = L"Pick the folder with the extracted game romfs") {
   std::string out;
   IFileOpenDialog* dlg = nullptr;
   if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_ALL, IID_PPV_ARGS(&dlg)))) return out;
   DWORD opts = 0;
   dlg->GetOptions(&opts);
   dlg->SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
-  dlg->SetTitle(L"Pick the folder with the extracted game romfs");
+  dlg->SetTitle(title);
   if (!start.empty()) {
     IShellItem* si = nullptr;
     if (SUCCEEDED(SHCreateItemFromParsingName(W(start).c_str(), nullptr, IID_PPV_ARGS(&si)))) { dlg->SetFolder(si); si->Release(); }
@@ -129,6 +133,102 @@ static std::string pick_folder(const std::string& start) {
   return out;
 }
 
+static std::string pick_zip() {
+  std::string out;
+  IFileOpenDialog* dlg = nullptr;
+  if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_ALL, IID_PPV_ARGS(&dlg)))) return out;
+  DWORD opts = 0;
+  dlg->GetOptions(&opts);
+  dlg->SetOptions(opts | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST);
+  COMDLG_FILTERSPEC ft[1] = {{L"Save backup (.zip)", L"*.zip"}};
+  dlg->SetFileTypes(1, ft);
+  dlg->SetTitle(L"Pick the save backup (.zip)");
+  if (SUCCEEDED(dlg->Show(nullptr))) {
+    IShellItem* item = nullptr;
+    if (SUCCEEDED(dlg->GetResult(&item))) {
+      PWSTR p = nullptr;
+      if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &p))) { out = U8(p); CoTaskMemFree(p); }
+      item->Release();
+    }
+  }
+  dlg->Release();
+  return out;
+}
+
+// A task dialog of command links. Returns the index of the link picked, -1 on cancel.
+static int choose(const std::wstring& title, const std::wstring& content, const std::vector<std::wstring>& links) {
+  using TDI = HRESULT(WINAPI*)(const TASKDIALOGCONFIG*, int*, int*, BOOL*);
+  HMODULE cc = LoadLibraryW(L"comctl32.dll");
+  TDI td = cc ? (TDI)GetProcAddress(cc, "TaskDialogIndirect") : nullptr;
+  if (!td) return -1;
+  std::vector<TASKDIALOG_BUTTON> b;
+  for (size_t i = 0; i < links.size(); ++i) b.push_back({(int)(3000 + i), links[i].c_str()});
+  TASKDIALOGCONFIG c{};
+  c.cbSize = sizeof c;
+  c.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION;
+  c.dwCommonButtons = TDCBF_CANCEL_BUTTON;
+  c.pszWindowTitle = L"Snap Recomp";
+  c.pszMainInstruction = title.c_str();
+  c.pszContent = content.c_str();
+  c.pButtons = b.data();
+  c.cButtons = (UINT)b.size();
+  int sel = 0;
+  if (FAILED(td(&c, &sel, nullptr, nullptr))) return -1;
+  return sel >= 3000 && sel < 3000 + (int)links.size() ? sel - 3000 : -1;
+}
+
+// Loads the game's own config (the launcher's config.json is the same file) so the save folder is the one the game will use.
+static bool save_target(const fs::path& cfg_path, std::string* root, std::string* label) {
+  hle::load_config(U8(cfg_path.wstring()));
+  *root = hle::saveport::target_save_root("", label);
+  if (root->empty()) { message("Snap Recomp", "No save folder could be chosen: " + *label, MB_ICONWARNING); return false; }
+  return true;
+}
+
+static void import_save_flow(const fs::path& cfg_path) {
+  std::string root, label;
+  if (!save_target(cfg_path, &root, &label)) return;
+  auto cands = hle::saveport::detect_emulator_saves();
+  std::vector<std::wstring> links;
+  const size_t shown = std::min<size_t>(cands.size(), 6);
+  for (size_t i = 0; i < shown; ++i) {
+    std::string when = hle::profiles::format_time(cands[i].mtime);
+    links.push_back(W(cands[i].label + "\nSaved " + when + (cands[i].old_version ? " (older game version)" : "")));
+  }
+  links.push_back(L"Pick a folder of save files...\nA JKSV or Checkpoint backup folder, or an emulator save folder");
+  links.push_back(L"Pick a .zip backup...\nA JKSV backup zip");
+  int sel = choose(L"Import a save into " + W(label),
+                   shown ? L"Found saves from emulators on this PC. Your current save is kept as a backup." : L"Your current save is kept as a backup.", links);
+  if (sel < 0) return;
+  std::string path;
+  if ((size_t)sel < shown) path = cands[(size_t)sel].path;
+  else if ((size_t)sel == shown) path = pick_folder("", L"Pick the folder with the save files");
+  else path = pick_zip();
+  if (path.empty()) return;
+  HCURSOR old = SetCursor(LoadCursor(nullptr, IDC_WAIT));
+  hle::saveport::Report r;
+  std::string err;
+  bool running = false;
+  bool ok = hle::saveport::import_save(path, root, hle::saveport::game_uid_dir(), &r, &err, &running);
+  SetCursor(old);
+  if (ok) message("Snap Recomp", hle::saveport::format_report(r, true), r.warnings.empty() ? MB_ICONINFORMATION : MB_ICONWARNING);
+  else message("Snap Recomp", "The save was not imported.\n\n" + err, MB_ICONWARNING);
+}
+
+static void export_save_flow(const fs::path& cfg_path) {
+  std::string root, label;
+  if (!save_target(cfg_path, &root, &label)) return;
+  std::string dest = pick_folder("", L"Pick the folder to export the save to");
+  if (dest.empty()) return;
+  HCURSOR old = SetCursor(LoadCursor(nullptr, IDC_WAIT));
+  hle::saveport::Report r;
+  std::string err;
+  bool ok = hle::saveport::export_save(root, "", dest, &r, &err);
+  SetCursor(old);
+  if (ok) message("Snap Recomp", hle::saveport::format_report(r, false), MB_ICONINFORMATION);
+  else message("Snap Recomp", "The save was not exported.\n\n" + err, MB_ICONWARNING);
+}
+
 static std::string save_folder(const hle::Json& cfg) {
   if (const char* e = std::getenv("SNAP_SAVE_DIR")) if (*e) return e;
   if (const hle::Json* s = cfg.get("save_root")) if (!s->str().empty()) return s->str();
@@ -138,13 +238,13 @@ static std::string save_folder(const hle::Json& cfg) {
   return out;
 }
 
-// Dialog result: 1 Play, 2 Change game folder, 3 Open save folder, 0 Quit.
+// Dialog result: 1 Play, 2 Change game folder, 3 Open save folder, 4 Upscalers, 5 Import save, 6 Export save, 0 Quit.
 static int ask() {
   using TDI = HRESULT(WINAPI*)(const TASKDIALOGCONFIG*, int*, int*, BOOL*);
   HMODULE cc = LoadLibraryW(L"comctl32.dll");
   TDI td = cc ? (TDI)GetProcAddress(cc, "TaskDialogIndirect") : nullptr;
   if (!td) return 1;   // no task dialog (old system): just play
-  TASKDIALOG_BUTTON b[3] = {{1001, L"Play"}, {1002, L"Change game folder..."}, {1003, L"Open save folder"}};
+  TASKDIALOG_BUTTON b[6] = {{1001, L"Play"}, {1002, L"Change game folder..."}, {1003, L"Open save folder"}, {1005, L"Import save...\nFrom a console backup (JKSV, Checkpoint) or an emulator"}, {1006, L"Export save...\nCopy your save out for a save manager or an emulator"}, {1004, L"Upscalers: FSR, DLSS, XeSS..."}};
   TASKDIALOGCONFIG c{};
   c.cbSize = sizeof c;
   c.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION;
@@ -153,11 +253,11 @@ static int ask() {
   c.pszMainInstruction = L"Snap Recomp";
   c.pszContent = L"Works with your own copy of the game.";
   c.pButtons = b;
-  c.cButtons = 3;
+  c.cButtons = 6;
   c.nDefaultButton = 1001;
   int sel = 0;
   if (FAILED(td(&c, &sel, nullptr, nullptr))) return 1;
-  return sel == 1001 ? 1 : sel == 1002 ? 2 : sel == 1003 ? 3 : 0;
+  return sel == 1001 ? 1 : sel == 1002 ? 2 : sel == 1003 ? 3 : sel == 1004 ? 4 : sel == 1005 ? 5 : sel == 1006 ? 6 : 0;
 }
 
 bool prepare(Result& r) {
@@ -176,10 +276,23 @@ bool prepare(Result& r) {
   read_json(exe_dir / L"launcher_data.json", data);   // optional
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   const bool autoplay = std::getenv("SNAP_LAUNCHER_AUTOPLAY") != nullptr;
+  // First start: offer FSR (pre-selected, never accepted for the user). A test run skips this unless SNAP_UPSCALER_AUTOACCEPT is set.
+  if (!cfg.get("upscalers_offered") && (!autoplay || std::getenv("SNAP_UPSCALER_AUTOACCEPT"))) {
+    offer_upscalers(exe_dir, data, true);
+    cfg.set("upscalers_offered", hle::Json::boolean_(true));
+    std::string text;
+    hle::json_dump(cfg, text);
+    std::ofstream f(cfg_path, std::ios::binary | std::ios::trunc);
+    f << text << "\n";
+  }
+  if (std::getenv("SNAP_LAUNCHER_FETCH_ONLY")) return true;   // test switch: only the upscaler offer, never start the game
   for (;;) {
     std::string romfs = cfg.get("romfs_root") ? cfg.get("romfs_root")->str() : "";
     int choice = autoplay ? 1 : ask();
     if (choice == 0) return true;   // quit
+    if (choice == 4) { offer_upscalers(exe_dir, data, false); continue; }
+    if (choice == 5) { import_save_flow(cfg_path); continue; }
+    if (choice == 6) { export_save_flow(cfg_path); continue; }
     if (choice == 3) {
       std::string sf = save_folder(cfg);
       std::error_code e3;
@@ -220,7 +333,9 @@ bool prepare(Result& r) {
   // logs: %LOCALAPPDATA%\SnapRecomp\logs (stderr to a file; the trace file for the boot log)
   wchar_t* la = nullptr;
   fs::path logs;
-  if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &la))) { logs = fs::path(la) / L"SnapRecomp" / L"logs"; CoTaskMemFree(la); }
+  wchar_t env_la[MAX_PATH] = {};   // the LOCALAPPDATA variable first (the same folder the shader cache uses; a test run can redirect it)
+  if (GetEnvironmentVariableW(L"LOCALAPPDATA", env_la, MAX_PATH) && env_la[0]) logs = fs::path(env_la) / L"SnapRecomp" / L"logs";
+  else if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &la))) { logs = fs::path(la) / L"SnapRecomp" / L"logs"; CoTaskMemFree(la); }
   if (!logs.empty()) {
     fs::create_directories(logs, ec);
     FILE* f = nullptr;

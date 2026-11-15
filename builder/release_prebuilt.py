@@ -13,6 +13,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -22,7 +23,6 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'recomp'))
 LLVM = ROOT / 'tools' / 'llvm' / 'bin'
 SDL = ROOT / 'tools' / 'dl_sdl3' / 'x' / 'SDL3-3.4.20'
-FFX_DLL = ROOT / 'tools' / 'amd' / 'ffx_sdk_v1.1.4' / 'PrebuiltSignedDLL' / 'amd_fidelityfx_vk.dll'
 HEADERS = ('cpu.h', 'simd.h', 'simd_fp.h')
 
 
@@ -81,13 +81,21 @@ def main():
     subprocess.check_call([sys.executable, '-I', str(ROOT / 'host' / 'make_icon.py'), '--out', str(out / 'res')],
                           env=dict(os.environ, SNAP_ICON_SRC='none'))
     shutil.copyfile(SDL / 'lib' / 'x64' / 'SDL3.lib', out / 'lib' / 'SDL3.lib')
-    dll_src = {'SDL3.dll': SDL / 'lib' / 'x64' / 'SDL3.dll', 'amd_fidelityfx_vk.dll': FFX_DLL}
+    # vulkan-1.lib: a small import library for the Vulkan loader (vulkan-1.dll ships with every graphics driver), so the builder
+    # needs no Vulkan SDK. It lists exactly the vk* functions the prebuilt objects call.
+    nm = subprocess.run([str(LLVM / 'llvm-nm.exe'), '-u', '--no-demangle'] + [str(o) for o in sorted((out / 'obj').glob('*.obj'))],
+                        capture_output=True, text=True).stdout
+    vk = sorted({m for m in re.findall(r'^\s*U\s+(?:__imp_)?(vk[A-Za-z0-9_]+)\s*$', nm, re.M)})
+    if len(vk) < 50:
+        sys.exit(f'only {len(vk)} Vulkan functions found in the objects: llvm-nm output changed?')
+    (out / 'res' / 'vulkan-1.def').write_text('LIBRARY vulkan-1.dll\nEXPORTS\n' + ''.join(f'    {n}\n' for n in vk), encoding='ascii')
+    subprocess.check_call([str(LLVM / 'llvm-lib.exe'), '/nologo', '/machine:x64', '/def:' + str(out / 'res' / 'vulkan-1.def'),
+                           '/out:' + str(out / 'lib' / 'vulkan-1.lib')])
+    print(f'vulkan-1.lib: {len(vk)} functions')
+    dll_src = {'SDL3.dll': SDL / 'lib' / 'x64' / 'SDL3.dll'}   # no AMD, NVIDIA or Intel binary: the upscaler files are fetched on the user's PC
     for n, p in dll_src.items():
         shutil.copyfile(p, out / 'bin' / n)
     shutil.copyfile(SDL / 'LICENSE.txt', out / 'licenses' / 'SDL3-LICENSE.txt')
-    ffx_lic = FFX_DLL.parents[1] / 'LICENSE.txt'
-    if ffx_lic.exists():
-        shutil.copyfile(ffx_lic, out / 'licenses' / 'FidelityFX-LICENSE.txt')
     r = subprocess.run([sys.executable, '-I', str(ROOT / 'builder' / 'release_harness.py'), '--out', str(out)], creationflags=0x4000)
     if r.returncode:
         return r.returncode
@@ -100,7 +108,7 @@ def main():
         'objs': [{'name': o.name, 'sha256': sha(out / 'obj' / o.name)} for o in objs],
         'libs': ['SDL3.lib'],
         'dlls': [{'name': n, 'path': 'bin/' + n, 'sha256': sha(out / 'bin' / n), 'license': lic} for n, lic in
-                 (('SDL3.dll', 'zlib (licenses/SDL3-LICENSE.txt)'), ('amd_fidelityfx_vk.dll', 'MIT (licenses/FidelityFX-LICENSE.txt)'))],
+                 (('SDL3.dll', 'zlib (licenses/SDL3-LICENSE.txt)'),)],
         'harness': 'shader_harness',
     }
     hroot = out / 'shader_harness'

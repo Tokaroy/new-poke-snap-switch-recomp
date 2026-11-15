@@ -1,0 +1,13 @@
+# fixture: unlock_all
+# shiny mod negative frame: look at the sky (no Pokemon in view) while taking shots; the pop-up thumbnails must carry no badge. SNAP_SHINY=1 SNAP_SHINY_ODDS=1
+wait ui=title timeout=150
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=200
+@f90 6 A
+wait ui=map_select:CourseSelect timeout=30
+@f180 6 A
+wait ride timeout=240
+repeat @f0 @f60000 70 60 ry=-1.0
+repeat @f120 @f60000 100 4 A
+@f1500 4 A
+end @f200

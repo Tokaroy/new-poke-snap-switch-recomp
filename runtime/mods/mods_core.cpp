@@ -184,11 +184,15 @@ void load(const std::string& root, Index& out, std::vector<std::string>& warn) {
     out.packs.push_back(p);
     if (!en) continue;
     int idx = (int)out.packs.size() - 1;
+    // <pack>/romfs/<path>: whole files laid over rom:/ (MountRom puts these folders first). Used for archives with added
+    // entries (scripts/hd/drp_add_entries.py); loose entry files below still override entries inside them.
+    if (fs::is_directory(fs::path(p.dir) / "romfs", ec)) out.rom_layers.push_back({(fs::path(p.dir) / "romfs").string(), idx});
     for (auto it = fs::recursive_directory_iterator(p.dir, fs::directory_options::skip_permission_denied, ec); it != fs::recursive_directory_iterator(); it.increment(ec)) {
       if (ec) break;
       if (!it->is_regular_file(ec)) continue;
       std::string rel = fs::relative(it->path(), p.dir, ec).generic_string();
       if (rel == "pack.json" || lower(rel).find(".drp/") == std::string::npos) continue;   // only paths below an archive folder
+      if (lower(rel).compare(0, 6, "romfs/") == 0) continue;                                // whole-file layer, not entries
       std::string a, s;
       uint32_t x;
       if (!parse_pack_path(rel, &a, &s, &x)) { warn.push_back(p.id + ": ignored " + rel + " (expected <archive>.drp/<entry>.<ext>)"); continue; }

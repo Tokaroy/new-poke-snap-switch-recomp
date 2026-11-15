@@ -74,10 +74,29 @@ extern thread_local uint8_t tl_role;
 extern std::atomic<uint64_t> g_role_ns[R_COUNT][WT_COUNT];
 extern std::atomic<uint64_t> g_fs_bytes;
 void ledger_register();
+unsigned long ledger_tid();
 inline void wait_add(Wt w, uint64_t ns) {
     if (!tl_ledger.reg) ledger_register();
     tl_ledger.ns[w].fetch_add(ns, std::memory_order_relaxed);
     g_role_ns[tl_role][w].fetch_add(ns, std::memory_order_relaxed);
+}
+// perf pass 13: critical-path recorder (SNAP_CRIT=<from>-<to> present numbers, with SNAP_PERF_SHARED / SNAP_PERF). One record per
+// blocked interval (who waited, how long, who woke it and when) plus a mark per present; dumped to <base>_crit.csv at the window end.
+struct CritRec {
+    uint64_t t0, t1, wake_ns;
+    uint32_t tid, waker_tid, key, h[3];
+    uint8_t type, kind;   // type 0 = wait of Wt kind, 1 = present mark (key = present number)
+};
+extern bool g_crit_on;
+extern std::atomic<bool> g_crit_active;
+void crit_push(const CritRec& r);
+inline void crit_wait(Wt w, uint64_t t1, uint64_t ns, uint32_t waker_tid, uint64_t wake_ns, uint64_t key, const uint32_t* h) {
+    if (!g_crit_active.load(std::memory_order_relaxed)) return;
+    CritRec r{};
+    r.t0 = t1 - ns; r.t1 = t1; r.wake_ns = wake_ns; r.tid = ledger_tid(); r.waker_tid = waker_tid; r.key = (uint32_t)key;
+    if (h) { r.h[0] = h[0]; r.h[1] = h[1]; r.h[2] = h[2]; }
+    r.type = 0; r.kind = (uint8_t)w;
+    crit_push(r);
 }
 inline void set_role(Role r) { tl_role = r; }
 inline bool key_thread() { return tl_role != R_OTHER; }
@@ -92,6 +111,12 @@ extern std::atomic<uint64_t> g_ns[C_COUNT], g_calls[C_COUNT], g_val[V_COUNT];
 inline void add(Ctr c, uint64_t ns) {
     g_ns[c].fetch_add(ns, std::memory_order_relaxed);
     g_calls[c].fetch_add(1, std::memory_order_relaxed);
+    if (ns >= 30000 && g_crit_active.load(std::memory_order_relaxed)) {   // SNAP_CRIT: a timed scope (30 us or longer) on this thread (type 2, kind = counter)
+        CritRec r{};
+        const uint64_t t1 = now_ns();
+        r.t0 = t1 - ns; r.t1 = t1; r.tid = ledger_tid(); r.type = 2; r.kind = (uint8_t)c;
+        crit_push(r);
+    }
 }
 inline void count(Val v, uint64_t n = 1) { if (on) g_val[v].fetch_add(n, std::memory_order_relaxed); }
 

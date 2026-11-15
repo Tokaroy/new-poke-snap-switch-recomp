@@ -16,6 +16,9 @@ files = {p.name: re.sub(r'//[^\n]*', '', p.read_text(encoding='utf-8', errors='r
 names = []
 for fn, t in files.items():
     for m in re.finditer(r'\bX\((\w+)\)', t):
+        line_start = t.rfind('\n', 0, m.start()) + 1
+        if re.match(r'\s*#\s*define\s+$', t[line_start:m.start()]):
+            continue
         if m.group(1) not in names:
             names.append(m.group(1))
 alias = {'CommandHandle': 'U64', 'TextureHandle': 'U64', 'Boolean': 'U8', 'GenericProc': 'U64'}

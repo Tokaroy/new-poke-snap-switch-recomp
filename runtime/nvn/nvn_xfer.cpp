@@ -178,7 +178,7 @@ void DoCopyTextureToBuffer(ReplayCtx& cx, const Cmd& c) {
     LogError("CopyTextureToBuffer: destination 0x%llx is not in a CPU-visible pool", (unsigned long long)c.a[0]);
     return;
   }
-  if (ShinyActive()) ShinyCopySrc(t);   // shiny mod: is this photo copy a shiny photo
+  if (ShinyActive()) ShinyCopySrc(t, static_cast<const uint8_t*>(pool->storage) + off);   // shiny mod: is this photo copy a shiny photo
   if (HdPhotoOn()) HdPhotoCopyToBuffer(t, static_cast<const uint8_t*>(pool->storage) + off);   // HD photos: the album photo buffer
   if (!t->uploaded) UploadStaticTexture(cx, t);
   else RefreshDynamicTexture(cx, t);
@@ -266,6 +266,7 @@ void DoCopyTextureToTexture(ReplayCtx& cx, const Cmd& c) {
   memcpy(&dr, b, sizeof dr); memcpy(&dv, b + sizeof dr, sizeof dv);
   uint32_t sl, sy, dl, dy; ViewSub(sv, c.i[0] & 1, &sl, &sy); ViewSub(dv, c.i[0] & 2, &dl, &dy);
   if (XferLog()) fprintf(stderr, "[xfer] CopyTextureToTexture src=%p f%x %dx%d scale %.2f (uploaded=%d) region(%d,%d,%d %dx%dx%d) -> dst=%p f%x %dx%d scale %.2f region(%d,%d,%d %dx%dx%d) flags=%d\n", (void*)s, s->b.format, s->b.width, s->b.height, s->scale, (int)s->uploaded, sr.x, sr.y, sr.z, sr.w, sr.h, sr.d, (void*)d, d->b.format, d->b.width, d->b.height, d->scale, dr.x, dr.y, dr.z, dr.w, dr.h, dr.d, c.i[1]);
+  if (HdPhotoOn()) HdPhotoCopyRegion(cx, s, d, sr.x, sr.y, sr.w, std::max(sr.h, 1));   // HD photos: the shutter photo made by a copy
   // guest regions -> image texels of each side (render scale), then fitted to the images
   sr = ToImage(s, sl, sr); dr = ToImage(d, dl, dr);
   if (!FitBox(s, sl, sr, "CopyTextureToTexture (source)") || !FitBox(d, dl, dr, "CopyTextureToTexture (destination)")) return;

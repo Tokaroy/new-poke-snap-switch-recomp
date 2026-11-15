@@ -3,3 +3,10 @@
 /shots/
 *.png
 *.ron
+/mods_out/
+build_out.txt
+build_err.txt
+selftest_out.txt
+selftest_err.txt
+shot_out.txt
+shot_err.txt

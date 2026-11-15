@@ -260,6 +260,7 @@ static void test_fs_rom() {
 }
 
 // ---- fs: overlay (mod loader hook)
+extern std::vector<std::string> (*g_snap_fs_extra_rom_layers)();
 static void test_fs_overlay() {
   g_test = "fs.overlay";
   stdfs::path mod = g_tmp / "mod";
@@ -292,6 +293,19 @@ static void test_fs_overlay() {
   CHECK(names.count("TextResource_en.drp"));
   CHECK_EQ((long long)names.size(), (long long)got);  // a file in two layers is listed once
   local.close_directory(d);
+
+  stdfs::path extra = g_tmp / "extra_mod";
+  stdfs::create_directories(extra / "common" / "Text" / "master");
+  { std::ofstream f(extra / "common" / "Text" / "master" / "TextResource_en.drp", std::ios::binary); f << "PACK"; }
+  g_snap_fs_extra_rom_layers = [] { return std::vector<std::string>{(g_tmp / "extra_mod").string()}; };
+  fs::Fs layered;
+  layered.set_rom_layers({mod.string(), (g_root / "extracted" / "romfs-v262144").string()});
+  CHECK_EQ(layered.mount_rom("rom"), 0u);
+  CHECK_EQ(layered.open_file(&f, "rom:/common/Text/master/TextResource_en.drp", fs::kModeRead), 0u);
+  layered.get_file_size(f, &sz);
+  CHECK_EQ(sz, 4);  // enabled pack layers precede configured and base layers
+  layered.close_file(f);
+  g_snap_fs_extra_rom_layers = nullptr;
 }
 
 // ---- save data
@@ -2284,6 +2298,8 @@ static void test_save_rename_parent() {
 }
 #endif
 
+#include "save_port_tests.h"
+
 int main(int argc, char** argv) {
   if (argc > 1) g_root = argv[1];
   else g_root = stdfs::path(__FILE__).parent_path().parent_path().parent_path();
@@ -2330,6 +2346,20 @@ int main(int argc, char** argv) {
       {"profiles.trash_pending", test_trash_pending},
       {"save.rename_parent", test_save_rename_parent},
       {"save.list_digits", test_save_list_digits},
+#endif
+      {"saveport.folder", sp_test::test_folder},
+      {"saveport.zip", sp_test::test_zip_and_nested},
+      {"saveport.nested", sp_test::test_nested_folder},
+      {"saveport.ryujinx", sp_test::test_ryujinx_layout},
+      {"saveport.yuzu", sp_test::test_yuzu_layout},
+      {"saveport.rejects", sp_test::test_rejects},
+      {"saveport.old_version", sp_test::test_old_version_warns},
+      {"saveport.backup", sp_test::test_backup_preserved},
+      {"saveport.export", sp_test::test_export},
+      {"saveport.detect", sp_test::test_detect},
+#ifdef _WIN32
+      {"saveport.running", sp_test::test_refuse_running},
+      {"saveport.real_table", sp_test::test_real_table},
 #endif
       {"padfx", test_padfx},
       {"services", test_services},

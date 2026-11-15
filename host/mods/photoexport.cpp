@@ -33,7 +33,8 @@
 
 using namespace loader;
 
-extern "C" void snap_shiny_photo_encoded(const uint8_t *jpg, size_t n);   // host/mods/shiny.cpp
+extern "C" void snap_shiny_photo_encoded(uint64_t enc, const uint8_t *jpg, size_t n);
+extern "C" void snap_shiny_pixels(uint64_t enc, uint64_t data, const int *dim);   // host/mods/shiny.cpp
 extern "C" void snap_hdphoto_pixels(uint64_t enc, uint64_t data, const int *dim);                   // runtime/nvn/nvn_hdphoto.cpp (HD photos; no-op when off)
 extern "C" void snap_hdphoto_encoded(uint64_t enc, const uint8_t *jpg, size_t n);
 
@@ -171,6 +172,7 @@ bool enabled() {
 
 // Source pixel format: the game passes 14 (R,G,B,A bytes); that is the only one converted. Photos are 1080x720, thumbnails 240x200 and 204x136.
 void h_setpixel(Cpu *c) {
+    snap_shiny_pixels(c->x[0], c->x[1], (const int *)c->x[3]);
     snap_hdphoto_pixels(c->x[0], c->x[1], (const int *)c->x[3]);   // HD photos: which buffer this encoder compresses
     if (!enabled()) {
         uint64_t o = lookup(kSetPixel);
@@ -202,7 +204,7 @@ void h_encode(Cpu *c) {
     uint64_t args[7] = {c->x[0], c->x[1], c->x[2], c->x[3], c->x[4], c->x[5], c->x[6]};
     uint64_t orig = lookup(kEncode);
     uint64_t res = orig ? call_guest_nested(c, orig, {args[0], args[1], args[2], args[3], args[4], args[5], args[6]}) : 0;
-    if ((uint32_t)res == 0 && psize && out) snap_shiny_photo_encoded((const uint8_t *)out, (size_t)*(const uint64_t *)psize);   // shiny mod (host/mods/shiny.cpp; off unless SNAP_SHINY=1)
+    if ((uint32_t)res == 0 && psize && out) snap_shiny_photo_encoded(self, (const uint8_t *)out, (size_t)*(const uint64_t *)psize);   // shiny mod (host/mods/shiny.cpp; off unless SNAP_SHINY=1)
     if ((uint32_t)res == 0 && psize && out) snap_hdphoto_encoded(self, (const uint8_t *)out, (size_t)*(const uint64_t *)psize);   // HD photos: the album JPEG names the HD copy
     if (!enabled()) { c->x[0] = res; return; }
     PixInfo p{};

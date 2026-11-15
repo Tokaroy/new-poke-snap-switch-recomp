@@ -37,4 +37,5 @@ repeat @f60 @f60000 90 8 A
 wait ui=evaluation:End timeout=240
 repeat @f0 @f60000 40 4 A
 wait ui=album_save:PhotoDetail timeout=150
-end @f300
+@f150 8 A
+end @f450

@@ -4,6 +4,7 @@
 // Run from the project root (the default ELF paths are relative to it). Output goes to stderr.
 #include <windows.h>
 #include "launcher.h"
+#include <filesystem>
 #include <tlhelp32.h>
 #include <shobjidl.h>
 #include <dbghelp.h>
@@ -23,6 +24,7 @@
 #include "hle/hle.h"
 #include "hle/hle_config.h"
 #include "hle/input_core.h"
+#include "hle/save_port.h"
 #include "audio/audio_out.h"
 #include "nvn/nvn_host.h"
 #include "window_opts.h"
@@ -931,6 +933,26 @@ int main(int argc, char **argv) {
     if (!cpu_has_v3()) { fprintf(stderr, "boot: this build needs an x86-64-v3 CPU (AVX2, BMI2, FMA); this CPU lacks it\n"); return 2; }
     static char errbuf[1 << 16];
     setvbuf(stderr, errbuf, _IOLBF, sizeof errbuf);   // MSVC stderr is unbuffered (one write per character when redirected): a log burst stalls the game threads
+    {   // save import / export (hle/save_port.cpp): --import-save <folder|zip> | --export-save <folder> [--profile <name>]; no game is started
+        std::string cmd, path, profile;
+        for (int i = 1; i < argc; i++) {
+            std::string a = argv[i];
+            if (a == "--import-save" && i + 1 < argc) { cmd = "import"; path = argv[++i]; }
+            else if (a == "--export-save" && i + 1 < argc) { cmd = "export"; path = argv[++i]; }
+            else if (a == "--profile" && i + 1 < argc) profile = argv[++i];
+        }
+        if (!cmd.empty()) {
+            if (!getenv("SNAP_HLE_CONFIG")) {   // a release build keeps its settings in config.json next to the exe
+                wchar_t mp[MAX_PATH * 2] = {};
+                GetModuleFileNameW(nullptr, mp, (DWORD)(sizeof mp / sizeof mp[0]));
+                std::filesystem::path cj = std::filesystem::path(mp).parent_path() / L"config.json";
+                std::error_code ec;
+                if (std::filesystem::exists(cj, ec)) _wputenv_s(L"SNAP_HLE_CONFIG", cj.c_str());
+            }
+            hle::load_config("");
+            return hle::saveport::run_cli(cmd, path, profile);
+        }
+    }
     {   // launcher mode (builder release): no arguments and a config.json next to the exe (host/launcher.cpp)
         snap_launcher::Result lr;
         if (argc == 1 && snap_launcher::prepare(lr)) {

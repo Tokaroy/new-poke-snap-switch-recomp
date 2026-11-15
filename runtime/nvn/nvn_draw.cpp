@@ -112,6 +112,7 @@ struct DrawState {
 static float ShadowDistK();
 static bool ShadowDynTexture(const TextureImpl* t);
 static const TextureImpl* g_dynShadowTex = nullptr;
+bool ModelDrawAdjust(ReplayCtx& cx, const Cmd& c, Cmd& adj);   // nvn_model.cpp: refined model packs (docs/hd-models.md)
 namespace {
 
 constexpr uint64_t kMaxUboRange = 65536;   // translated shaders declare vec4[4096]
@@ -588,7 +589,7 @@ ResolvedTex ResolveHandle(ReplayCtx& cx, DrawState& d, uint64_t handle, bool ima
   if (!image && !up && ShinyActive()) {   // shiny mod (nvn_shiny.cpp)
     ShinyDraw sd; sd.vb0 = d.vbAddr[0]; sd.vb1 = d.vbAddr[1];
     for (int i = 0; i < 8; i++) { sd.uboPool[i] = d.ubo[0][i].pool; sd.uboOff[i] = d.ubo[0][i].off; sd.uboRange[i] = d.ubo[0][i].range; }
-    sd.rtW = cx.rt[0] ? cx.rt[0]->b.width : 0; sd.rtH = cx.rt[0] ? cx.rt[0]->b.height : 0; sd.prog = d.prog ? (int)d.prog->id : -1; sd.rt0 = cx.rt[0];
+    sd.rtW = cx.rt[0] ? cx.rt[0]->b.width : 0; sd.rtH = cx.rt[0] ? cx.rt[0]->b.height : 0; sd.prog = d.prog ? (int)d.prog->id : -1; sd.rt0 = cx.rt[0]; if (cx.scHave & 1) { for (int k = 0; k < 4; k++) sd.sc[k] = cx.scGuest[0][k]; sd.scValid = sd.sc[2] > 0 && sd.sc[3] > 0; }
     { PoolImpl* vp = nullptr; uint64_t vo = 0; if (d.vbAddr[0] && r.t->host && r.t->host->ResolveAddress(d.vbAddr[0], &vp, &vo) && vp && vp->storage) sd.vbf = reinterpret_cast<const float*>(static_cast<const uint8_t*>(vp->storage) + vo); }
     r.t = ShinySubstitute(r.t, sd);
   }
@@ -970,12 +971,12 @@ static void RtFillInfo(snap_rt::DrawInfo& ri, const DrawState& d, const ProgramI
     ri.cbHash = x; }
 }
 
-// Debug (NVN_DRAW_CENSUS=<file> [NVN_DRAW_CENSUS_FROM=<present>]): per present, the set of fragment programs drawn into targets of
-// 1280+ px width, tagged I (the game issued the draw) and D (it reached vkCmdDraw). One line per present that differs from the one
+// Debug (NVN_DRAW_CENSUS=<file> [NVN_DRAW_CENSUS_FROM=<present>]): per present, the set of (vertex/fragment program, colour target size)
+// drawn, tagged I (the game issued the draw) and D (it reached vkCmdDraw). One line per present that differs from the one
 // before: "+" keys that appeared, "-" keys that vanished. Finds draws that come and go between frames (worker eyes, 2026-11-14).
 static void DrawCensus(const ReplayCtx& cx, const ProgramImpl* p, char tag) {
   static const char* path = getenv("NVN_DRAW_CENSUS");
-  if (!path || !p || !cx.rt[0] || cx.rt[0]->b.width < 1280) return;
+  if (!path || !p || !cx.rt[0]) return;
   static const int from = getenv("NVN_DRAW_CENSUS_FROM") ? atoi(getenv("NVN_DRAW_CENSUS_FROM")) : 0;
   if (g_presentCount < from) return;
   static std::mutex mu; static FILE* f = fopen(path, "w"); static int present = -1;
@@ -994,7 +995,9 @@ static void DrawCensus(const ReplayCtx& cx, const ProgramImpl* p, char tag) {
   cur.insert(k);
 }
 
-void DoDraw(ReplayCtx& cx, const Cmd& c) {
+void DoDraw(ReplayCtx& cx, const Cmd& c0) {
+  Cmd adjC;
+  const Cmd& c = ModelDrawAdjust(cx, c0, adjC) ? adjC : c0;
   Host* h = cx.h;
   DrawState& d = *cx.ds;
   ProgramImpl* p = d.prog;
@@ -1174,9 +1177,62 @@ void DoDraw(ReplayCtx& cx, const Cmd& c) {
     UpscaleOnDraw(cx, vu, vr, 2);
     { const BufBind& u9 = d.ubo[0][9]; FxOnDraw(cx, vu, vr, (u9.pool && u9.pool->storage) ? (const uint8_t*)u9.pool->storage + u9.off : nullptr, u9.range); } }   // [fx] camera and shadow caster capture (nvn_fx.cpp)
   if (FxMidPass(cx, (d.color.blendEn & 1) != 0, DsGet(d.ds, DS_DW, 1) != 0)) FxReemitViewState(cx);   // [fx] opaque-only effects at the first blended scene draw
+  if (ShinyActive() && cx.rt[0] && !cx.bcDst[0] && texWrites.size() == 1 && !texWrites[0].image && texWrites[0].r.t && texWrites[0].r.t->b.width >= 1280) ShinyCaptureDraw(cx.rt[0]);   // shiny mod: capture pass into a photo target
   if (HdPhotoOn() && cx.rt[0] && !cx.bcDst[0] && texWrites.size() == 1 && !texWrites[0].image && texWrites[0].r.t) {   // HD photos: a 2160x1440 copy of each capture (nvn_hdphoto.cpp)
     const BufBind& u4 = d.ubo[1][1];   // c4 = guest uniform buffer 1 (cbuf slot - 3)
-    HdPhotoCapture(cx, p, texWrites[0].r.t, cx.rt[0], (u4.pool && u4.pool->storage && u4.range >= 8) ? reinterpret_cast<const float*>(static_cast<const uint8_t*>(u4.pool->storage) + u4.off) : nullptr);
+    // CaptureVS: position = attribute 0, texture coordinate = attribute 2. The texture coordinates at the target's edges give the
+    // scene region the capture samples (the shutter takes the centered 3:2 part; the album re-render samples another region).
+    float uv[4]; const float* uvp = nullptr;
+    const TextureBuilder& rb = cx.rt[0]->b;
+    if (d.nattr > 2 && c.i[2] >= 3 && ((rb.width == 360 && rb.height == 240) || (rb.width == 1080 && rb.height == 720))) {
+      const int sp = (d.attr[0].v >> 9) & 15, st = (d.attr[2].v >> 9) & 15;
+      const uint32_t op = d.attr[0].v >> 13, ot = d.attr[2].v >> 13;
+      PoolImpl *pp = nullptr, *tp = nullptr, *ip = nullptr; uint64_t po = 0, to = 0, io = 0;
+      const int n = std::min(c.i[2], 6);
+      int vi[6] = {}; bool okIdx = true;
+      if (indexed) {   // the game draws the capture quad indexed (4 vertices)
+        const int isz = c.i[1] == IDX_U32 ? 4 : c.i[1] == IDX_U16 ? 2 : 1;
+        okIdx = h->ResolveAddress(c.a[0], &ip, &io) && ip && ip->storage && io + (uint64_t)(c.i[4] + n) * isz <= ip->size;
+        if (okIdx) {
+          const uint8_t* ib = static_cast<const uint8_t*>(ip->storage) + io + (uint64_t)c.i[4] * isz;
+          for (int k = 0; k < n; k++) vi[k] = isz == 4 ? (int)((const uint32_t*)ib)[k] : isz == 2 ? (int)((const uint16_t*)ib)[k] : (int)ib[k];
+          for (int k = 0; k < n; k++) { vi[k] += c.i[3]; okIdx = okIdx && vi[k] >= 0 && vi[k] < 65536; }   // base vertex
+        }
+      } else {
+        for (int k = 0; k < n; k++) vi[k] = c.i[1] + k;
+        okIdx = c.i[1] >= 0;
+      }
+      int vmax = 0; for (int k = 0; k < n; k++) vmax = std::max(vmax, vi[k]);
+      if (okIdx && h->ResolveAddress(d.vbAddr[sp], &pp, &po) && pp && pp->storage && h->ResolveAddress(d.vbAddr[st], &tp, &to) && tp && tp->storage &&
+          po + (uint64_t)(vmax + 1) * d.stream[sp].stride + op + 8 <= pp->size && to + (uint64_t)(vmax + 1) * d.stream[st].stride + ot + 8 <= tp->size) {
+        float P[6][2], T[6][2];
+        for (int k = 0; k < n; k++) {
+          memcpy(P[k], static_cast<const uint8_t*>(pp->storage) + po + (uint64_t)vi[k] * d.stream[sp].stride + op, 8);
+          memcpy(T[k], static_cast<const uint8_t*>(tp->storage) + to + (uint64_t)vi[k] * d.stream[st].stride + ot, 8);
+        }
+        bool ok = true;
+        for (int ax = 0; ax < 2 && ok; ax++) {   // texture coordinate along each axis is linear in position: evaluate it at -1 and +1
+          int lo = 0, hi = 0;
+          for (int k = 1; k < n; k++) { if (P[k][ax] < P[lo][ax]) lo = k; if (P[k][ax] > P[hi][ax]) hi = k; }
+          const float dx = P[hi][ax] - P[lo][ax];
+          if (!(dx > 1e-3f) || !std::isfinite(T[lo][ax]) || !std::isfinite(T[hi][ax])) { ok = false; break; }
+          const float a = (T[hi][ax] - T[lo][ax]) / dx;
+          const float e0 = T[lo][ax] + a * (-1.0f - P[lo][ax]), e1 = T[lo][ax] + a * (1.0f - P[lo][ax]);
+          uv[ax] = std::min(e0, e1); uv[ax + 2] = std::max(e0, e1);
+        }
+        if (ok) uvp = uv;
+      }
+    }
+    static const bool hdLog = getenv("SNAP_HD_PHOTOS_LOG") != nullptr;
+    static int hdLogN = 0;
+    if (hdLog && !uvp && hdLogN < 8 && ((rb.width == 360 && rb.height == 240) || (rb.width == 1080 && rb.height == 720))) {   // diagnosis
+      hdLogN++;
+      fprintf(stderr, "[hdphoto] capture draw vertices unread: indexed %d nattr %d first %d n %d", (int)indexed, d.nattr, c.i[indexed ? 4 : 1], c.i[2]);
+      for (int i = 0; i < d.nattr && i < 4; i++) fprintf(stderr, " a%d(f%u s%u o%u str%u addr %llx)", i, d.attr[i].v & 0x1FF, (d.attr[i].v >> 9) & 15, d.attr[i].v >> 13,
+                                                         d.stream[(d.attr[i].v >> 9) & 15].stride, (unsigned long long)d.vbAddr[(d.attr[i].v >> 9) & 15]);
+      fprintf(stderr, "\n");
+    }
+    HdPhotoCapture(cx, p, texWrites[0].r.t, cx.rt[0], (u4.pool && u4.pool->storage && u4.range >= 8) ? reinterpret_cast<const float*>(static_cast<const uint8_t*>(u4.pool->storage) + u4.off) : nullptr, uvp);
   }
   if (!cx.rendering) BeginRendering(cx, rt);
 
@@ -1322,6 +1378,7 @@ void DoCopyBufferToTexture(ReplayCtx& cx, const Cmd& c) {
   PoolImpl* pool = nullptr; uint64_t off = 0;
   if (!h->ResolveAddress(c.a[0], &pool, &off)) { LogError("CopyBufferToTexture: source 0x%llx is not in any memory pool", (unsigned long long)c.a[0]); return; }
   if (!PoolBacked(pool)) return;   // [audit F6] acquire
+  if (ShinyActive()) ShinyBufUpload(t, pool->storage ? static_cast<const uint8_t*>(pool->storage) + off : nullptr);
   if (HdPhotoOn()) HdPhotoUploadFrom(t, pool->storage ? static_cast<const uint8_t*>(pool->storage) + off : nullptr);   // HD photos: a decoded album photo
   static const bool kTexDump = getenv("NVN_TEX_DUMP") != nullptr;   // load pass: read once
   if (pool->storage && kTexDump) {

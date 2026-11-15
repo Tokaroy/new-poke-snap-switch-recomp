@@ -32,6 +32,9 @@ extern "C" __attribute__((weak)) void os_io_end(void) {}
 
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 
+// Set by runtime/mods/mods.cpp at start-up when an enabled pack has a romfs/ folder: those folders, highest priority first.
+std::vector<std::string> (*g_snap_fs_extra_rom_layers)() = nullptr;
+
 namespace hle::fs {
 
 namespace stdfs = std::filesystem;
@@ -629,7 +632,12 @@ uint32_t Fs::mount_rom(const std::string& name) {
   auto m = std::make_shared<Mount>();
   m->kind = Mount::Rom;
   std::error_code ec;
-  for (auto& d : p_->rom_layers) {
+  // Enabled mod packs with a romfs/ folder (whole-file overrides, e.g. an archive with added entries) go first. Null when no such
+  // pack is enabled, so the default layer list is unchanged.
+  std::vector<std::string> layers;
+  if (g_snap_fs_extra_rom_layers) layers = g_snap_fs_extra_rom_layers();
+  layers.insert(layers.end(), p_->rom_layers.begin(), p_->rom_layers.end());
+  for (auto& d : layers) {
     stdfs::path p = to_path(d);
     if (stdfs::is_directory(p, ec)) m->layers.push_back(p);
     else log("fs: rom layer %s does not exist; skipped", d.c_str());

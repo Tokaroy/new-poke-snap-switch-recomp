@@ -329,6 +329,35 @@ extern "C" int snap_ui_pick_profile(const profiles::PickItem* items, int count);
 extern "C" int snap_ui_pick_profile_none(const profiles::PickItem*, int) { return -1; }
 #pragma comment(linker, "/alternatename:snap_ui_pick_profile=snap_ui_pick_profile_none")
 
+// The save folder an import or export targets (runtime/hle/save_port.cpp): SNAP_SAVE_DIR / save_root when set, else the profile the game would
+// start with (`profile` empty: SNAP_PROFILE, else the last used one), after the same legacy migration the game start does.
+std::string tool_save_root(const std::string& profile, std::string* label) {
+  Config& c = config();
+  const char* pd = std::getenv("SNAP_PROFILES_DIR");
+  const bool has_pd = pd && *pd;
+  if (g_save_explicit && !has_pd) { if (label) *label = "save folder"; return c.save_root; }
+  std::string root = has_pd ? std::string(pd) : join(c.data_root, "profiles");
+  std::string legacy = has_pd ? std::string() : join(c.data_root, "save");
+  if (const char* e = std::getenv("SNAP_LEGACY_SAVE_DIR")) legacy = e;
+  std::string want = profile;
+  if (want.empty()) if (const char* e = std::getenv("SNAP_PROFILE")) want = e;
+  {   // an existing profile store is only read (startup would also stamp "last played"); a missing one is set up as a game start does
+    profiles::Store s(root);
+    s.load();
+    if (!s.list().empty()) {
+      const profiles::Profile* p = want.empty() ? s.find(s.last_used()) : s.find(want);
+      if (!p && want.empty()) p = &s.list().front();
+      if (!p) { if (label) *label = "no profile named \"" + want + "\""; return std::string(); }
+      if (label) *label = "profile \"" + p->name + "\"";
+      return s.save_dir(p->id);
+    }
+  }
+  profiles::Active a = profiles::startup(root, legacy, want, nullptr, false);
+  if (a.save_dir.empty()) { if (label) *label = a.note; return std::string(); }
+  if (label) *label = a.on ? "profile \"" + a.name + "\"" : std::string("save folder");
+  return a.save_dir;
+}
+
 void activate_profiles() {
   Config& c = config();
   const char* pd = std::getenv("SNAP_PROFILES_DIR");

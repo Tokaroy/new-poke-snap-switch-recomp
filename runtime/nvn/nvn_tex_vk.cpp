@@ -45,13 +45,10 @@ void Fnv(const uint8_t* p, size_t n, uint64_t& h1, uint64_t& h2) {
 
 int g_presentCount = 0;
 uint64_t g_replaySeq = 1;
-static uint64_t HashBytes(const void* p, uint64_t n) {   // 64-bit word mix; cheap enough to run per replay on 1 MB
-  const uint8_t* b = static_cast<const uint8_t*>(p);
-  uint64_t h = 0x9E3779B97F4A7C15ull ^ n, i = 0;
-  for (; i + 8 <= n; i += 8) { uint64_t w; memcpy(&w, b + i, 8); h = (h ^ w) * 0x100000001b3ull; h ^= h >> 29; }
-  for (; i < n; i++) h = (h ^ b[i]) * 0x100000001b3ull;
-  return h;
-}
+namespace { uint64_t FastHash(const uint8_t* p, uint64_t n); }
+// Change detection of CPU-written textures, once per replay per texture. [perf pass 13] The old 64-bit word mix was one dependent
+// multiply per 8 bytes (about 1.4 B/cycle); FastHash is the 8-lane AVX2 accumulate the upload prefetch already trusts.
+static uint64_t HashBytes(const void* p, uint64_t n) { return FastHash(static_cast<const uint8_t*>(p), n); }
 // Guest source bytes of a pool-resident texture the CPU may rewrite after creation (nullptr otherwise).
 static const uint8_t* DynamicSource(const TextureImpl* t, uint64_t* bytes) {
   const TextureBuilder& b = t->b;

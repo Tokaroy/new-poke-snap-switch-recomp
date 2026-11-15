@@ -1,6 +1,7 @@
 # fixture: post_tutorial
 # HD photos check (analysis/core/hd_photos.md): florio_eval plus POST-dump frames of photo select (large preview) and the Score screen.
-# Run: SNAP_HD_PHOTOS=1 NVN_FRAME_DUMP_POST=1 NVN_FRAME_DUMP_FULL=1 powershell -File hostun_boot.ps1 -Route hd_eval -ShotAt 9999 -ShotMax 40
+# Run: SNAP_HD_PHOTOS=1 NVN_FRAME_DUMP_POST=1 NVN_FRAME_DUMP_FULL=1 powershell -File host
+un_boot.ps1 -Route hd_eval -ShotAt 9999 -ShotMax 40
 # Florio photo run to the professor's score, driven by game state ("wait" lines, host\README.md "Waiting on game state";
 # 2026-11-13, replaces the present-timed version that missed photo select in 3 of 4 runs).
 # Run: powershell -File host\run_boot.ps1 -Route florio_eval -Timeout 590 -ShotAt 280 -ShotEvery 6 -ShotMax 60
@@ -56,4 +57,14 @@ wait ui=evaluation:Score timeout=120
 @f20 50 shot=25
 repeat @f60 @f60000 90 8 A
 wait ui=evaluation:End timeout=240
-end @f300
+# 7) Save to Album: A taps to the first photo's detail, one A saves it (each toggle is committed), POST-dump frames, then B out.
+repeat @f0 @f60000 40 4 A
+wait ui=album_save:PhotoDetail timeout=150
+@f150 8 A
+@f300 120 shot=40
+@f600 6 B
+wait ui=album_save:PhotoSelect timeout=60
+@f200 6 B
+@f500 6 Down
+@f700 6 A
+end @f1500

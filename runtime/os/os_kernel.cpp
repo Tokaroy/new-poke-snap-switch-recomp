@@ -245,6 +245,7 @@ static Thread *adopt_helper() {
         register_thread(t);
     }
     t_self = t;
+    t->host_tid = GetCurrentThreadId();
     t_helper.t = t;
     return t;
 }
@@ -301,11 +302,23 @@ Thread *keyq_pop_best(uint64_t key) {
 }
 bool keyq_empty(uint64_t key) { return !g_keyq.count(key); }
 static const char *tname(const Thread *t);
+static thread_local uint64_t tl_last_wake_ns;   // SNAP_CRIT: when this thread last woke another (type 3 record: how long G stays held after)
+static void crit_g_hold() {
+    if (tl_last_wake_ns && snap_perf::g_crit_active.load(std::memory_order_relaxed)) {
+        snap_perf::CritRec r{};
+        r.t0 = tl_last_wake_ns; r.t1 = snap_perf::now_ns(); r.tid = GetCurrentThreadId(); r.type = 3;
+        snap_perf::crit_push(r);
+    }
+    tl_last_wake_ns = 0;
+}
 void wake(Thread *t, uint32_t result) {
     if (snap_perf::on) {   // copy, not a pointer: the waker may be destroyed before the wait is reported (review finding 15)
         Thread *w = t_self;
         snprintf(t->waker_name, sizeof t->waker_name, "%s", tname(w));
         t->waker_prio = w ? w->eff_prio : -1;
+        t->waker_tid = GetCurrentThreadId();
+        t->wake_ns = snap_perf::now_ns();
+        tl_last_wake_ns = t->wake_ns;
     }
     t->woken = true;
     t->wresult = result;
@@ -341,6 +354,7 @@ static void note_wait(Thread *t, int kind, uint64_t ns) {
     default: return;
     }
     snap_perf::wait_add(w, ns);
+    snap_perf::crit_wait(w, snap_perf::now_ns(), ns, t->waker_tid, t->wake_ns, t->wkey, nullptr);
     if (ns >= snap_perf::g_wait_event_ns && is_frame_thread()) {
         char det[200];
         snprintf(det, sizeof det, "%s addr=%#llx key=%#llx woken_by=%.24s/p%d %s", kn, (unsigned long long)t->waddr,
@@ -350,7 +364,8 @@ static void note_wait(Thread *t, int kind, uint64_t ns) {
         snap_perf::event(kind, (double)ns / 1e6, det);
     }
 }
-static thread_local char t_core_snap[320];   // core holders when this thread started waiting for a core
+static thread_local char t_core_snap[320];
+static thread_local uint32_t t_core_h[3];   // SNAP_CRIT: host tids of the core holders when this thread started waiting for a core
 static void snap_core_holders(Thread *t);
 
 static bool wait_woken_raw(Thread *t, Lock &lk, Deadline d) {
@@ -368,6 +383,8 @@ bool wait_woken(Thread *t, Lock &lk, Deadline d) {
     const int kind = t->wkind;
     t->waker_name[0] = 0;
     t->waker_prio = -1;
+    t->waker_tid = 0;
+    t->wake_ns = 0;
     const uint64_t t0 = snap_perf::now_ns();
     bool r = wait_woken_raw(t, lk, d);
     note_wait(t, kind, snap_perf::now_ns() - t0);
@@ -589,6 +606,7 @@ static void snap_core_holders(Thread *t) {   // under G
                      g_core_wait.size(), g_overflow);
     for (int c = 0; c < ncores() && n < (int)sizeof t_core_snap - 48; c++) {
         Thread *o = g_cores[c];
+        if (o && c < 3) t_core_h[c] = o->host_tid;
         if (o) n += snprintf(t_core_snap + n, sizeof t_core_snap - n, " %.20s/p%d/%llums", tname(o), o->eff_prio,
                              (unsigned long long)((now - o->core_since) / 1000));
     }
@@ -597,10 +615,12 @@ void acquire_core(Thread *t, Lock &lk) {
     if (t->is_host || t->free_core || ncores() < 0 || t->core >= 0 || t->block_depth > 0) return;
     if (!snap_perf::on) return acquire_core_raw(t, lk);
     t_core_snap[0] = 0;
+    t_core_h[0] = t_core_h[1] = t_core_h[2] = 0;
     const uint64_t t0 = snap_perf::now_ns();
     acquire_core_raw(t, lk);
     const uint64_t ns = snap_perf::now_ns() - t0;
     snap_perf::wait_add(snap_perf::WT_CORE, ns);
+    snap_perf::crit_wait(snap_perf::WT_CORE, snap_perf::now_ns(), ns, 0, 0, 0, t_core_h);
     const bool ft = is_frame_thread();
     if (t_core_snap[0] && ns >= snap_perf::g_wait_event_ns * (ft ? 1 : 4))
         snap_perf::event(!ft ? "core_wait" : snap_perf::tl_role == snap_perf::R_MAIN ? "mt_core_wait" : "gt_core_wait", (double)ns / 1e6, t_core_snap);
@@ -737,6 +757,7 @@ uint32_t k_arbitrate_unlock(Thread *me, uint64_t addr) {
     Lock lk(G);
     if ((gword(addr).load(std::memory_order_acquire) & ~LOCK_WAITERS) != me->handle) return R_INVALID_STATE;
     unlock_locked(me, addr);
+    if (snap_perf::on) crit_g_hold();
     return R_OK;
 }
 
@@ -798,6 +819,7 @@ void k_signal_key(uint64_t key, int count) {
         }
     }
     if (keyq_empty(k)) gword(key).store(0, std::memory_order_release);
+    if (snap_perf::on) crit_g_hold();
 }
 
 // ---- user-side lock and condition variable over guest words
@@ -910,6 +932,7 @@ static bool free_core_name(uint64_t tt) {
 static unsigned __stdcall host_entry(void *arg) {
     Thread *t = (Thread *)arg;
     t_self = t;
+    t->host_tid = GetCurrentThreadId();
     set_host_name(t->tt);
     t->free_core = free_core_name(t->tt);
     Cpu *c = t->cpu;
@@ -1010,6 +1033,7 @@ void sleep_ns(Thread *t, int64_t ns) {
         precise_sleep(ns);
         const uint64_t d = snap_perf::now_ns() - t0;
         snap_perf::wait_add(snap_perf::WT_SLEEP, d);
+        snap_perf::crit_wait(snap_perf::WT_SLEEP, snap_perf::now_ns(), d, 0, 0, 0, nullptr);
         if (d >= snap_perf::g_wait_event_ns && is_frame_thread()) {
             char det[64];
             snprintf(det, sizeof det, "sleep requested %.3f ms", (double)ns / 1e6);
@@ -1225,6 +1249,7 @@ extern "C" void os_adopt_main_thread(Cpu *c, uint64_t tt, int prio) {
     c->thread = t;
     c->excl_addr = ~0ull;
     t_self = t;
+    t->host_tid = GetCurrentThreadId();
     t_helper.t = nullptr;
     Lock lk(G);
     acquire_core(t, lk);

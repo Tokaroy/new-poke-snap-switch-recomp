@@ -57,7 +57,7 @@ int g_nthr;
 alignas(16) uint8_t g_stack[kStackCopy];
 const int *g_frame;          // present counter (nvn::g_presentCount), may be null
 char g_path[MAX_PATH];
-unsigned g_period_us = 1000, g_write_s = 20;
+unsigned g_period_us = 1000, g_write_s = 20, g_late_ms = 0;   // g_late_ms: SNAP_SAMPLE_LATE_MS, 0 = off
 uint64_t g_min_cyc = 100000;   // SNAP_SAMPLE_MIN_KCYC (thousands of cycles of work since the last sample; ~30 us at 3.5 GHz)
 HANDLE g_flush_req, g_flush_done;
 DWORD g_self_tid;
@@ -177,7 +177,7 @@ void refresh_threads() {
 }
 
 uint64_t g_t_qtc, g_t_susp, g_t_unwind, g_t_refresh, g_t_write, g_n_sampled;   // sampler cost by phase (rdtsc), in the header
-void sample_one(Thr &t, uint16_t bucket) {
+void sample_one(Thr &t, uint16_t bucket, uint8_t late) {
     uint64_t cyc = 0;
     const uint64_t r0 = __rdtsc();
     if (!QueryThreadCycleTime(t.h, &cyc)) return;
@@ -214,6 +214,7 @@ void sample_one(Thr &t, uint16_t bucket) {
     memset(&e, 0, sizeof e);
     e.tid = t.tid;
     e.bucket = bucket;
+    e.flags = (uint8_t)(late << 1);
     if (n) e.depth = (uint8_t)unwind(ctx, ctx.Rsp, n, e.pc);
     else { e.pc[0] = ctx.Rip; e.depth = 1; }
     const uint8_t *ip = (const uint8_t *)(uintptr_t)ctx.Rip;
@@ -294,7 +295,17 @@ DWORD WINAPI sampler_main(void *) {
         if (now - last_refresh >= 500) { const uint64_t f0 = __rdtsc(); refresh_threads(); g_t_refresh += __rdtsc() - f0; last_refresh = now; }
         const int fr = g_frame ? *(volatile const int *)g_frame : 0;
         const uint16_t bucket = (uint16_t)(fr < 0 ? 0 : (fr / kBucketPresents > 65535 ? 65535 : fr / kBucketPresents));
-        for (int i = 0; i < g_nthr; i++) if (g_thr[i].h) sample_one(g_thr[i], bucket);
+        // perf pass 14: flag bit 2 = this tick is at least SNAP_SAMPLE_LATE_MS into the current frame (the frame is a heavy one);
+        // cpu_profile.py --late / --early splits the profile on it.
+        static int last_fr = -1;
+        static double fr_since = 0;
+        LARGE_INTEGER qf, qc;
+        QueryPerformanceFrequency(&qf);
+        QueryPerformanceCounter(&qc);
+        const double qnow = 1000.0 * (double)qc.QuadPart / (double)qf.QuadPart;
+        if (fr != last_fr) { last_fr = fr; fr_since = qnow; }
+        const uint8_t late = g_late_ms && qnow - fr_since >= g_late_ms;
+        for (int i = 0; i < g_nthr; i++) if (g_thr[i].h) sample_one(g_thr[i], bucket, late);
         g_ticks++;
         QueryThreadCycleTime(self, &c1);
         g_self_cyc += c1 - c0;
@@ -310,6 +321,7 @@ void snap_sampler_start(const int *frame) {
     if (!strcmp(v, "1")) snprintf(g_path, sizeof g_path, "analysis\\perf\\sample_%lu.prof", GetCurrentProcessId());
     else snprintf(g_path, sizeof g_path, "%s.prof", v);
     if (const char *p = getenv("SNAP_SAMPLE_US")) { int u = atoi(p); g_period_us = u < 100 ? 100 : (u > 100000 ? 100000 : (unsigned)u); }
+    if (const char *p = getenv("SNAP_SAMPLE_LATE_MS")) g_late_ms = (unsigned)atoi(p);
     if (const char *p = getenv("SNAP_SAMPLE_WRITE_S")) { int s = atoi(p); g_write_s = s < 2 ? 2 : (unsigned)s; }
     if (const char *p = getenv("SNAP_SAMPLE_MIN_KCYC")) g_min_cyc = (uint64_t)strtoull(p, nullptr, 10) * 1000;
     g_tab = (Entry *)VirtualAlloc(nullptr, sizeof(Entry) * kTableSize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);

@@ -1,0 +1,15 @@
+# fixture: post_tutorial
+# Level editor A/B check (2026-11-14): start Florio, ride hands-off, dump 4-frame bursts at rail progress 6, 15 and 30.
+# Run twice with SNAP_INPUT_SCRIPT pointing here: once with SNAP_MODS_DIR = the exported pack's parent folder, once without.
+# powershell -File host\run_boot.ps1 -SaveFixture post_tutorial -ShotAt 99999 -ShotMax 40 -Timeout 420
+repeat @f300 @f30000 120 8 A
+wait ui=map_select timeout=240
+repeat @f60 @f30000 120 8 A
+wait ride timeout=240
+wait ride>=6 timeout=60
+@f0 30 shot=10
+wait ride>=15 timeout=60
+@f0 30 shot=10
+wait ride>=30 timeout=60
+@f0 30 shot=10
+end @f60

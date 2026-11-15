@@ -6,6 +6,9 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <mutex>
+#include <unordered_map>
+#include <utility>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -31,27 +34,58 @@ bool shiny_on() {
 }
 }  // namespace
 
-extern "C" void snap_shiny_photo_encoded(const uint8_t* jpg, size_t n) {
+extern "C" int snap_shiny_buf_flag(const uint8_t* pix, char* out, int n);   // runtime/nvn/nvn_shiny.cpp
+extern "C" void snap_shiny_buf_painted(const uint8_t* buf);
+namespace { std::mutex g_encMu; std::unordered_map<uint64_t, std::pair<const uint8_t*, std::pair<int, int>>> g_encPix; }
+extern "C" void snap_shiny_pixels(uint64_t enc, uint64_t data, const int* dim) {   // JpegEncoder::SetPixelData: which buffer this encoder compresses
+  if (!shiny_on()) return;
+  std::lock_guard<std::mutex> lk(g_encMu);
+  g_encPix[enc] = {reinterpret_cast<const uint8_t*>(data), {dim ? dim[0] : 0, dim ? dim[1] : 0}};
+}
+extern "C" void snap_shiny_photo_encoded(uint64_t enc, const uint8_t* jpg, size_t n) {
   if (!shiny_on() || !jpg || !n || n > (1u << 26)) return;
   char sp[64] = {};
-  static const int window = [] { const char* e = getenv("SNAP_SHINY_WINDOW"); return e && atoi(e) > 0 ? atoi(e) : 60; }();   // SNAP_SHINY_WINDOW: debug override, presents between the flagged GPU copy and the JPEG encode
-  if (!snap_shiny_copy_flag(window, sp, sizeof sp)) return;
+  const uint8_t* pix = nullptr; int pw = 0, ph = 0;
+  { std::lock_guard<std::mutex> lk(g_encMu); auto it = g_encPix.find(enc); if (it != g_encPix.end()) { pix = it->second.first; pw = it->second.second.first; ph = it->second.second.second; } }
+  using Clock = std::chrono::steady_clock;
+  static std::mutex tm; static bool lastShiny = false; static std::string lastSp; static Clock::time_point lastT{};
+  struct Th { uint32_t crc; size_t n; Clock::time_point t; };
+  static std::vector<Th> pend;   // album thumbnails (240x200, 204x136) are encoded a moment before or after their 1080x720 photo
+  const auto nowT = Clock::now();
   const uint32_t crc = crc32(jpg, n);
-  note_crc(crc);   // badge it at once
-  std::string dir;
-  if (const char* d = getenv("SNAP_SHINY_DIR")) dir = d;
-  else if (const char* a = getenv("APPDATA")) dir = std::string(a) + "\\SnapRecomp\\mods\\shiny-pokemon";
-  if (!dir.empty()) {
-    SYSTEMTIME t; GetLocalTime(&t);
-    if (FILE* f = fopen((dir + "\\shiny_photos.jsonl").c_str(), "ab")) {
-      fprintf(f, "{\"jpeg_crc32\": \"%08x\", \"jpeg_bytes\": %zu, \"species\": \"%s\", \"time\": \"%04d-%02d-%02d %02d:%02d:%02d\"}\n", crc, n, sp, t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
-      fclose(f);
+  auto record = [&](uint32_t c, size_t bytes, const char* species) {
+    note_crc(c);   // badge it at once
+    std::string dir;
+    if (const char* d0 = getenv("SNAP_SAVE_DIR")) dir = d0;   // test runs redirect the save: the sidecar stays with it, never in the owner folder
+    else if (const char* d = getenv("SNAP_SHINY_DIR")) dir = d;
+    else if (const char* a2 = getenv("APPDATA")) dir = std::string(a2) + "\\SnapRecomp\\mods\\shiny-pokemon";
+    if (!dir.empty()) {
+      SYSTEMTIME t; GetLocalTime(&t);
+      if (FILE* f = fopen((dir + "\\shiny_photos.jsonl").c_str(), "ab")) {
+        fprintf(f, "{\"jpeg_crc32\": \"%08x\", \"jpeg_bytes\": %zu, \"species\": \"%s\", \"time\": \"%04d-%02d-%02d %02d:%02d:%02d\"}\n", c, bytes, species, t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
+        fclose(f);
+      }
     }
+  };
+  if (pw == 1080 && ph == 720) {
+    const int flagged = pix ? snap_shiny_buf_flag(pix, sp, sizeof sp) : 0;
+    { static int ne = 0; if (ne++ < 120) fprintf(stderr, "[shiny] photo encoded: %zu bytes crc32 %08x %s%s\n", n, crc, flagged ? "FLAGGED " : "not flagged ", flagged ? sp : ""); }
+    std::lock_guard<std::mutex> lk(tm);
+    lastShiny = flagged != 0; lastSp = sp; lastT = nowT;
+    if (!flagged) { pend.clear(); return; }
+    record(crc, n, sp);
+    fprintf(stderr, "[shiny] photo saved with a shiny %s in view: jpeg crc32 %08x\n", sp, crc);
+    for (const Th& th : pend) if (nowT - th.t < std::chrono::seconds(6)) { record(th.crc, th.n, sp); fprintf(stderr, "[shiny] album thumbnail linked to the shiny photo: jpeg crc32 %08x\n", th.crc); }
+    pend.clear();
+    static Clock::time_point last{};
+    if (nowT - last > std::chrono::milliseconds(2500)) { last = nowT; snap_shiny_fx_trigger(sp); }   // a capture also encodes thumbnails: one effect
+  } else if (pw >= 100 && ph >= 100) {
+    std::lock_guard<std::mutex> lk(tm);
+    const bool after = lastShiny && nowT - lastT < std::chrono::seconds(6);
+    { static int nt = 0; if (nt++ < 40) fprintf(stderr, "[shiny] thumbnail encoded %dx%d: %zu bytes crc32 %08x %s\n", pw, ph, n, crc, after ? "FLAGGED (follows a shiny photo)" : "pending"); }
+    if (after) record(crc, n, lastSp.c_str());
+    else { while (pend.size() >= 6) pend.erase(pend.begin()); pend.push_back({crc, n, nowT}); }
   }
-  fprintf(stderr, "[shiny] photo saved with a shiny %s in view: jpeg crc32 %08x\n", sp, crc);
-  static std::chrono::steady_clock::time_point last{};
-  const auto now = std::chrono::steady_clock::now();
-  if (now - last > std::chrono::milliseconds(2500)) { last = now; snap_shiny_fx_trigger(sp); }   // a capture also encodes thumbnails: one effect
 }
 
 // ---- Badge on shiny photos (M3): the game decodes every photo it shows (photo select, evaluation, album, thumbnails) with
@@ -91,7 +125,8 @@ void note_crc(uint32_t crc) { std::lock_guard<std::mutex> lk(g_crcMu); if (!g_lo
 void load_sidecar() {
   g_loaded = true;
   std::string dir;
-  if (const char* d = getenv("SNAP_SHINY_DIR")) dir = d;
+  if (const char* d0 = getenv("SNAP_SAVE_DIR")) dir = d0;   // test runs redirect the save: the sidecar stays with it, never in the owner folder
+  else if (const char* d = getenv("SNAP_SHINY_DIR")) dir = d;
   else if (const char* a = getenv("APPDATA")) dir = std::string(a) + "\\SnapRecomp\\mods\\shiny-pokemon";
   FILE* f = dir.empty() ? nullptr : fopen((dir + "\\shiny_photos.jsonl").c_str(), "rb");
   if (!f) return;
@@ -135,22 +170,22 @@ void blend(uint8_t* px, float a, int r, int g, int b) {
   px[0] = (uint8_t)(px[0] + (r - px[0]) * a); px[1] = (uint8_t)(px[1] + (g - px[1]) * a); px[2] = (uint8_t)(px[2] + (b - px[2]) * a);
 }
 
-void paint_badge(uint8_t* buf, int w, int h, size_t stride) {
-  const float s = std::max(8.0f, std::min(w, h) * 0.085f);   // star outer radius
-  struct St { float cx, cy, R; int pts; } sts[4] = {{s * 1.55f, s * 1.55f, s, 5}, {s * 3.0f, s * 0.75f, s * 0.38f, 4}, {s * 0.7f, s * 3.1f, s * 0.34f, 4}, {s * 3.1f, s * 2.7f, s * 0.26f, 4}};
-  for (auto& st : sts) {
-    const float inner = st.pts == 5 ? 0.45f : 0.2f, ow = std::max(1.5f, s * 0.14f);
-    const int x0 = std::max(0, (int)(st.cx - st.R - ow * 2 - 2)), x1 = std::min(w - 1, (int)(st.cx + st.R + ow * 2 + 2));
-    const int y0 = std::max(0, (int)(st.cy - st.R - ow * 2 - 2)), y1 = std::min(h - 1, (int)(st.cy + st.R + ow * 2 + 2));
-    for (int y = y0; y <= y1; y++)
-      for (int x = x0; x <= x1; x++) {
-        const float sd = star_sd(x + 0.5f, y + 0.5f, st.cx, st.cy, st.R, st.R * inner, st.pts);
-        uint8_t* px = buf + (size_t)y * stride + (size_t)x * 4;
-        blend(px, 0.85f * std::clamp(0.5f - (sd - ow * 1.6f), 0.0f, 1.0f), 217, 116, 58);   // orange rim
-        blend(px, std::clamp(0.5f - (sd - ow * 0.7f), 0.0f, 1.0f), 255, 250, 238);           // white ring
-        blend(px, std::clamp(0.5f - sd, 0.0f, 1.0f), 248, 213, 71);                          // gold fill (the game's selected yellow)
-      }
-  }
+void paint_badge(uint8_t* buf, int w, int h, size_t stride) {   // iridescent seal with a sparkle trio, top-right (same art as runtime/ui/ui_shiny.cpp)
+  const float R = std::max(10.0f, h * 0.085f), cx = w - R * 1.4f, cy = R * 1.4f;
+  const int x0 = std::max(0, (int)(cx - R * 1.3f)), x1 = std::min(w - 1, (int)(cx + R * 1.3f)), y0 = std::max(0, (int)(cy - R * 1.3f)), y1 = std::min(h - 1, (int)(cy + R * 1.3f));
+  struct Sp { float x, y, r; } sp[3] = {{cx - R * 0.1f, cy + R * 0.05f, R * 0.62f}, {cx + R * 0.42f, cy - R * 0.45f, R * 0.30f}, {cx + R * 0.38f, cy + R * 0.50f, R * 0.22f}};
+  for (int y = y0; y <= y1; y++)
+    for (int x = x0; x <= x1; x++) {
+      const float px = x + 0.5f, py = y + 0.5f, dx = px - cx, dy = py - cy, d = std::sqrt(dx * dx + dy * dy);
+      uint8_t* q = buf + (size_t)y * stride + (size_t)x * 4;
+      blend(q, 0.3f * std::clamp(1.0f - (std::sqrt((dx - R * 0.06f) * (dx - R * 0.06f) + (dy - R * 0.1f) * (dy - R * 0.1f)) - R * 1.12f), 0.0f, 1.0f), 0, 0, 0);   // shadow
+      blend(q, std::clamp(R * 1.1f - d + 0.5f, 0.0f, 1.0f), 255, 255, 255);                                          // white rim
+      const float t = std::clamp(0.5f + 0.5f * (dx + dy) / (R * 1.4142f), 0.0f, 1.0f);                                 // pink (top-left) to cyan (bottom-right)
+      blend(q, std::clamp(R * 0.92f - d + 0.5f, 0.0f, 1.0f), (int)(255 + (110 - 255) * t), (int)(140 + (225 - 140) * t), (int)(205 + (255 - 205) * t));
+      float best = 1e9f;
+      for (auto& k : sp) best = std::min(best, star_sd(px, py, k.x, k.y, k.r, k.r * 0.28f, 4));
+      blend(q, std::clamp(0.5f - best, 0.0f, 1.0f), 255, 255, 255);
+    }
 }
 
 void h_decode(Cpu* c) {
@@ -175,6 +210,7 @@ void h_decode(Cpu* c) {
   if (align > 1) stride = (stride + align - 1) / align * align;
   if (fmt != 14 || stride * (size_t)h > a[1]) { static int n = 0; if (n++ < 4) fprintf(stderr, "[shiny] photo badge skipped: format %d %dx%d stride %zu buffer %llu\n", fmt, w, h, stride, (unsigned long long)a[1]); return; }
   paint_badge(reinterpret_cast<uint8_t*>(a[0]), w, h, stride);
+  snap_shiny_buf_painted(reinterpret_cast<const uint8_t*>(a[0]));   // the overlay must not draw a second badge on textures made from this buffer
   static int n = 0;
   if (n++ < 12) fprintf(stderr, "[shiny] photo badge drawn on a decoded shiny photo (crc %08x, %dx%d)\n", crc, w, h);
 }

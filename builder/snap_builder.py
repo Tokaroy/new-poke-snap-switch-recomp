@@ -6,11 +6,12 @@
 See builder/README.md. Exit code 0 = success, 1 = a step failed or the files are the wrong version, 2 = bad arguments.
 """
 import argparse
+import shutil
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from snapbuild import pipeline, versioncheck  # noqa: E402
+from snapbuild import fetch, pipeline, pyenv, versioncheck  # noqa: E402
 from snapbuild.util import Log, StepError  # noqa: E402
 
 
@@ -42,7 +43,78 @@ def main(argv=None):
     b.add_argument('--smoke-timeout', type=int, default=420, help='seconds to wait for the title screen')
     b.add_argument('--force', action='append', default=[], choices=pipeline.STEPS, help='rerun this step even if it is stamped done')
     b.add_argument('--compare-generated', help='developer use: folder (with main and sdk inside) whose generated C must be identical')
+    f = sub.add_parser('fetch', help='download, verify and unpack the pinned tools (asks before every download)')
+    f.add_argument('tools', nargs='*', help='tool names (llvm ghidra switch_loader jdk python_embed); none = all of them')
+    f.add_argument('--yes', action='store_true', help='answer yes to every download question')
+    f.add_argument('--tools-dir', help='where to unpack (default %%LOCALAPPDATA%%\\SnapRecomp\\tools)')
+    f.add_argument('--offline-dir', action='append', default=[], help='folder with already downloaded files (hash checked, no network)')
+    f.add_argument('--list', action='store_true', help='only list the pins and whether each one is complete')
+    p = sub.add_parser('pyenv', help='build the Python environment (capstone, pyelftools, numpy, lz4) from the pinned wheel hashes')
+    p.add_argument('--yes', action='store_true', help='answer yes to every download question')
+    p.add_argument('--tools-dir', help='where to build (default %%LOCALAPPDATA%%\\SnapRecomp\\tools)')
+    p.add_argument('--offline-dir', action='append', default=[], help='folder with already downloaded files (hash checked, no network)')
+    p.add_argument('--base-python', help='make a venv of this installed Python 3.14 instead of using the pinned embeddable Python')
+    u = sub.add_parser('upscalers', help='fetch AMD FSR, NVIDIA DLSS or Intel XeSS from the vendor and install it next to SnapRecomp.exe')
+    u.add_argument('names', nargs='*', help='fsr dlss xess (none = the defaults: fsr)')
+    u.add_argument('--install-dir', required=True, help='the folder with SnapRecomp.exe (the "out" folder of a build)')
+    u.add_argument('--accept-license', action='append', default=[], help='name of an upscaler whose vendor license you have read and accept (repeatable); without it you are asked')
+    u.add_argument('--yes', action='store_true', help='download without asking (does NOT accept any license)')
+    u.add_argument('--offline-dir', action='append', default=[], help='unused for now; downloads are cached in a temporary folder')
+    u.add_argument('--list', action='store_true', help='show what is installed')
+    b.add_argument('--upscalers', help='comma list of upscalers to fetch after the build (default: fsr); a license must be accepted with --accept-license')
+    b.add_argument('--accept-license', action='append', default=[], help='upscaler whose vendor license you accept: fsr, dlss, xess (repeatable)')
     a = ap.parse_args(argv)
+    if a.cmd == 'build':
+        a.upscalers = [x for x in a.upscalers.split(',') if x] if a.upscalers is not None else None
+
+    if a.cmd == 'upscalers':
+        from snapbuild import upscalers as up
+        table = versioncheck.load_table(pipeline.BUILDER / 'versions.json')
+        inst = Path(a.install_dir)
+        if a.list:
+            for k, ok in up.status(table, inst).items():
+                print(f'{k:6} {"installed" if ok else "not installed"}')
+            return 0
+        names = a.names or up.default_names(table)
+        def show(nm, p):
+            print('\n--- ' + up.pins(table)[nm]['vendor'] + ' license for ' + up.pins(table)[nm]['title'] + ' ---')
+            enc = sys.stdout.encoding or 'utf-8'
+            print(Path(p).read_text(encoding='utf-8', errors='replace')[:1500].encode(enc, 'replace').decode(enc) + '\n[... full text: ' + str(p) + ']\n')
+        try:
+            ask = fetch.ask_from_args(False)
+            if a.yes:
+                ask = lambda q: (print(q + ' (answer needed: pass --accept-license <name> to accept)'), False)[1]
+            res = up.run(table, names, inst, inst / 'downloads', set(a.accept_license), ask, show_license=show)
+            shutil.rmtree(inst / 'downloads', ignore_errors=True)
+        except fetch.FetchError as e:
+            print('Stopped: ' + str(e))
+            return 1
+        print('Done: ' + ', '.join(f'{k} {v}' for k, v in res.items()))
+        return 0
+
+    if a.cmd in ('fetch', 'pyenv'):
+        table = versioncheck.load_table(pipeline.BUILDER / 'versions.json')
+        tools_dir = Path(a.tools_dir) if a.tools_dir else fetch.default_tools_dir()
+        dl = tools_dir / 'downloads'
+        if a.cmd == 'fetch' and a.list:
+            for k, pin in fetch.list_pins(table):
+                print(f'{k:24} {"pinned" if fetch.is_pinned(pin) else "INCOMPLETE"}  {pin.get("filename", "")}  {pin.get("sha256", "")[:16]}')
+            return 0
+        try:
+            ask = fetch.ask_from_args(a.yes)
+            if a.cmd == 'fetch':
+                got = fetch.fetch_tools(table, a.tools, tools_dir, dl, ask, a.offline_dir)
+                print('Done: ' + ', '.join(f'{k} -> {v}' for k, v in got.items()))
+            else:
+                if a.base_python:
+                    py = pyenv.build_with_venv(table, a.base_python, tools_dir / 'venv', dl, ask, a.offline_dir)
+                else:
+                    py = pyenv.build_embedded(table, tools_dir / 'python', dl, dl, ask, a.offline_dir)
+                print('Done: ' + str(py))
+            return 0
+        except fetch.FetchError as e:
+            print('Stopped: ' + str(e))
+            return 1
 
     if a.cmd == 'check':
         table = versioncheck.load_table(pipeline.BUILDER / 'versions.json')

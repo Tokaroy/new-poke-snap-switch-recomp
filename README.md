@@ -238,6 +238,15 @@ A value set by hand always wins over a menu choice and over `SNAP_VISUALS`.
 
 </details>
 
+## Saves: import and export
+
+Bring a save in, or take yours out, with the launcher buttons "Import save..." and "Export save...", or from the command line. Import writes the files as a new save generation, so the save you had stays as a backup. It refuses while the game is running.
+
+- **Import from:** a folder of the game's save files, or a .zip of one. Backups from a save manager such as JKSV or Checkpoint work, and so do the save folders of Ryujinx and the yuzu family of emulators. One level of nesting is fine: a dated backup folder, or Ryujinx's `0` folder (its `1` folder is ignored). The launcher also lists emulator saves it finds on this PC, newest first.
+- **Checks:** all 15 save files must be present with the right names and sizes. A save from another game, an incomplete copy or a damaged zip is refused with a message, and nothing changes. A save from an older game version imports with a warning, since the game upgrades it on the first load.
+- **Export:** copies the current save's files into a folder you pick (into a dated subfolder when that folder is not empty). Restore the result with a save manager, or copy its files into an emulator's save folder for this game.
+- **Command line:** `snap_boot.exe --import-save <folder or .zip> [--profile <name>]` and `snap_boot.exe --export-save <folder>`. The exit code is 0 for success, 1 for a failure and 2 when the game is running.
+
 ## Testing
 
 <details>

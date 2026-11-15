@@ -173,7 +173,7 @@ void film_apply(uint64_t this_, const char *site, bool only72) {
 // Found 2026-11-12 (dev tracer, florio_photos): the render camera (builder 0x295170, eye at obj+0xd0) is placed by the camera controller
 // update 0x38b710, which samples the NEO-ONE rail object R = *(controller+0x68) through 0x4bf670: R+0x30 = the rail curve (its length is
 // curve+0x3c), R+0x70 = progress along it (a float, about 0.9 per second on Florio), the position is curve(R+0x70 / length). The progress
-// is advanced once per frame by the rail update 0x4c0090: `R+0x70 += dt * speed * slope factor` at main+0x4c2de8..0x4c2df0
+// is advanced once per frame by the rail update 0x4c0090: `R+0x70 += dt * speed * slope factor` at main+0x4c1de8..0x4c1df0
 // (`ldr s1,[x19,#0x70]; fadd s1,s12,s1; str s1,[x19,#0x70]`, x19 = R). MAIN_INLINE_HOOKS runs rt_gm_neo_speed right after that store. It
 // remembers the progress it left last time per rail object, takes this frame's increment (new - last) and stores last + increment * speed.
 // Nothing else is touched: the animation clock, Pokemon scripts and the camera's own timers keep real time, so only the ride covers

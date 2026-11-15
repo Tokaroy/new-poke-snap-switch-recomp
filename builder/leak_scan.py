@@ -25,6 +25,7 @@ from pathlib import Path
 
 BAD_EXT = {'.nso', '.nca', '.xci', '.nsp', '.nsz', '.xcz', '.keys', '.spv', '.profdata', '.tsv', '.nro', '.nrr', '.elf', '.drp',
            '.wem', '.lmb', '.nutexb', '.bfstm', '.bwav'}
+BAD_NAMES = {'pipeline_keys.bin', 'pipeline_keys_seed.bin', 'pipeline_cache.bin'}   # shader-pipeline key lists and driver cache: game-derived, harvested on the user's own PC
 HOME_RE = re.compile(rb'(?i)[A-Za-z]:[\\/]{1,2}users[\\/]{1,2}[^\\/\x00\s"\']{1,40}|(?<![A-Za-z])users[\\/]{1,2}[A-Za-z0-9_.-]{2,40}[\\/]')
 HOME_RE16 = re.compile(rb'(?i)u\x00s\x00e\x00r\x00s\x00[\\/]\x00[A-Za-z0-9_.-]\x00[A-Za-z0-9_.-]\x00')
 EMAIL_RE = re.compile(rb'[A-Za-z0-9._%+-]{2,64}@[A-Za-z0-9-]{2,63}(?:\.[A-Za-z0-9-]{1,63})*\.(?:com|org|net|io|dev|edu|gov|co|me|info|us|xyz|app|ai)(?![A-Za-z])')
@@ -54,10 +55,11 @@ def entries(target):
                 yield p.relative_to(t).as_posix(), p.stat().st_size, (lambda p=p: p.read_bytes())
 
 
-def scan(target, romfs=None, terms=(), size_cap_mb=80, manifest=None, allow_names=()):
+def scan(target, romfs=None, terms=(), size_cap_mb=80, manifest=None, allow_names=(), allow_content=()):
     findings = []
     names, exts = romfs_names(romfs) if romfs else (set(), set())
     allow = {n.lower() for n in allow_names}
+    allow_c = {(a.split('|')[0].strip().lower(), a.split('|')[1].strip()) for a in allow_content if '|' in a}
     name_re = None
     if exts:
         name_re = re.compile(rb'[A-Za-z0-9_\-\. ()\[\]]{1,200}\.(?:' + '|'.join(re.escape(e) for e in sorted(exts)).encode() + rb')(?![A-Za-z0-9])', re.I)
@@ -68,13 +70,19 @@ def scan(target, romfs=None, terms=(), size_cap_mb=80, manifest=None, allow_name
     listed = {(d.get('path') or 'bin/' + d['name']).lower(): d['sha256'] for d in (manifest or {}).get('dlls', [])}
     n_files = 0
     dlls = []
+    all_rel = set()
     for rel, size, read in entries(target):
         n_files += 1
         low = rel.lower()
+        all_rel.add(low)
         base = low.rsplit('/', 1)[-1]
         ext = Path(low).suffix
+        if base in BAD_NAMES:
+            findings.append((rel, 'extension', f'{base} is game-derived and must not be released'))
         if ext in BAD_EXT:
             findings.append((rel, 'extension', f'{ext} files must not be released'))
+        if re.search(r'(^|/)(amd_fidelityfx|nvngx|_nvngx|libxess|sl\.(dlss|common|interposer)|xess)', low):
+            findings.append((rel, 'vendor-binary', 'AMD, NVIDIA and Intel upscaler files are fetched on the user PC, never shipped'))
         if 'pokemon' in low.replace('é', 'e') or 'pokémon' in low:
             findings.append((rel, 'name', 'the product name must not contain the game title in a file name'))
         if base in names:
@@ -116,6 +124,13 @@ def scan(target, romfs=None, terms=(), size_cap_mb=80, manifest=None, allow_name
             if b'noreply' not in e and not e.endswith((b'.png', b'.dll', b'.so', b'.h')) and b'@' in e:
                 findings.append((rel, 'email', f'contains an e-mail address: {e[:3].decode("latin-1")}...'))
                 break
+    findings = [f for f in findings if (f[0].lower(), f[1]) not in allow_c]
+    for d in (manifest or {}).get('dlls', []):   # a DLL that names a license file must ship it (redistribution notices travel with the binary)
+        m = re.search(r'\((licenses/[^)\s]+)\)', d.get('license', ''))
+        if m and m.group(1).lower() not in all_rel:
+            findings.append((d.get('path') or d['name'], 'license', f'manifest names {m.group(1)} but it is not in the package'))
+        if not d.get('license'):
+            findings.append((d.get('path') or d['name'], 'license', 'DLL has no license entry in manifest.json'))
     unlisted = sorted(set(listed) - {d.lower() for d in dlls})
     for u in unlisted:
         findings.append((u, 'dll', 'listed in manifest.json but not present in the package'))
@@ -144,7 +159,9 @@ def main(argv=None):
     af = Path(a.allow_names) if a.allow_names else Path(__file__).resolve().parent / 'leak_allow_names.txt'
     allow = [l.split('#')[0].strip() for l in af.read_text(encoding='utf-8').splitlines()] if af.exists() else []
     allow = [x for x in allow if x]
-    findings, n, nd = scan(a.target, a.romfs, terms, a.size_cap_mb, manifest, allow)
+    cf = Path(__file__).resolve().parent / 'leak_allow_content.txt'
+    allow_c = [l.split('#')[0].strip() for l in cf.read_text(encoding='utf-8').splitlines()] if cf.exists() else []
+    findings, n, nd = scan(a.target, a.romfs, terms, a.size_cap_mb, manifest, allow, [x for x in allow_c if x])
     if not a.romfs:
         print('note: no --romfs given, so the game file name rule was not checked')
     print(f'scanned {n} files ({nd} DLLs, {len(terms)} forbidden terms)')

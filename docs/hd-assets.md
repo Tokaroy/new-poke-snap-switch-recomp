@@ -165,7 +165,38 @@ Batch 3 (2026-11-13, owner asked for metal, plastic-like and organic): species p
 
 Batch 2 lesson: every batch-2 body lacks a normal sampler, so in game only the albedo strands/cavity and the `_par` roughness change; skins (Charizard, Bulbasaur, Machamp, Gengar) will look almost unchanged until the material-swap work lets a normal load. Painted vein or crackle lines fainter than about 5 L do not trace as lines; use the paint-proportional `skin` high-pass on them instead of `fin_membrane`.
 
-Not done: in-game check of any of these; the normal sign is still assumed OpenGL; the first-pass `material_author.py` stays for its helpers and the old species table only.
+### In-game review at 4K (2026-11-14, worker hdpoke)
+
+Packs: `scripts/hd/make_species_pack.py <species> --root build/mods_hdpk --max-edge 4096` (x4_mat, original nutexb format and sRGB flag, full mip chain, 4096 cap), one folder per species for all 38 specs, plus `build/mods_hdpk/mods.json` enabling all of them (982 MB). Routes `host/routes/hdrev_<course>.txt` (generator `scripts/hd/review/mkroutes.py`): menu navigation by `wait ui=` lines, start the course, ride with no shutter and no camera input, `end @f9000`. Runner `scripts/hd/review/run_hd.ps1`: `SNAP_RENDER_SCALE=2` at 3840x2160, `NVN_FRAME_DUMP_FULL=1`, `SNAP_NEO_SPEED=3`, `SNAP_MODS_AB=1` and `NVN_FRAME_DUMP_AT` pairs (N, N+1) every 100-120 presents from the expected ride start, so each pair is one original and one HD frame one present apart (the HD one is picked by more fine detail where the two differ, `scripts/hd/review/crop.py`).
+
+What did not work: pausing the ride to get a frozen scene (the pause menu blurs and dims the 3D view); a 1-present pair is not frozen either (wind, idle animation and the rail move a few pixels), so a pixel diff cannot localize the Pokemon and crops were picked by eye from thumbnail grids. Each 4K BMP dump stalls about 3.5 s. `wait ride_end` fires at rail stops mid-course (Florio day stopped at progress 43, beach at 50), so the routes now just ride until the timeout. My course guesses were partly wrong: `R x5 U` and `R x5 U U` both reached Outaway Cave (Gengar, Goodra, Carbink, Beartic textures load there but none came on screen), `R U` is Mightywide River (none of the 006 species).
+
+Grades (contact sheet `analysis/hd/review/hd_pokemon_ingame_4k.png`, left original, right HD, consecutive frames):
+
+| species | where seen | grade |
+|---|---|---|
+| Aipom | Jungle, head about 400 px | good: finer fur on purple and cream, colours unchanged |
+| Torterra | Florio night, shell fills the frame | good: crisper shell grain, subtle |
+| Dodrio | Florio day, mid range and point blank | good at mid range; too strong at point blank (the `_par` G fur cavity and baked cavity read as darker, streaky down). Fixed per the rules: `down`/`lower_body` `cav` halved, `alb_amp` x0.6, `bake_ao` 0.3 -> 0.15 (mean `_par` G drop 6.9 -> 4.1); the fixed version is NOT re-checked in game |
+| Pichu, Grookey, Vivillon, Bouffalant, Machamp | Florio day, beach | no visible change at the sizes seen (150-400 px; Bouffalant close but its afro barely changes) |
+| the other 29 | | not on screen in these rides (Wurmple, Magikarp, Snorlax, Heracross, Scorbunny and Bidoof load in Florio; Pikachu and Eevee load at night; the volcano, snow and ruins species need routes that reach those courses) |
+
+Offline check of how much each pack changes (`scripts/hd/review/texstat.py`, 4096 x4_mat vs a Lanczos upscale of the original): albedo RMS 0.2 to 3 levels, mean within 0.5, so the visible in-game change comes almost only from `_par` (fur species lower G by 7 to 11 on average, metals/plastics move R by 20 to 40). That is why most species read as unchanged until a normal map loads.
+
+Installed (2026-11-14, owner's game not running): `%APPDATA%\SnapRecomp\mods\hd-pokemon` (86 MB: `CH_011_00_0_A00_Body_dif`, `CH_087_00_0_A00_BodyA_dif/_par`, `CH_087_00_0_A00_BodyB_dif/_par`), enabled in that folder's `mods.json` (inserted after `hd_pikachu`; the old file is in `build/hd/owner_mods.json.20261114.bak`). Everything else stays in `build/mods_hdpk` and the cache.
+
+### Material swap: options (2026-11-14)
+
+A body with no normal sampler can get one; `docs/pokemon-materials.md` "Material swap mod: result" proved it on Dodrio with a test pattern. Options, cheapest first:
+
+1. **Data-only material mod (exists: `scripts/hd/make_material_mod.py`).** Re-point the `.matinstb`/`.numatb` to the twin shader that samples `normalTexture` and add the slot. Cost: minutes per species, no code. Risk: the normal rides on a decoy entry (a variant-1 texture), so that variant shows a normal map as colour; only 302 of 490 no-normal materials have an exact-delta twin; `sssNormalMapWeight` comes from the shader default. Gotcha found today: `--entry-name` must include `.nutexb`, otherwise the loader ignores the file (`[mods] warning: ... expected <archive>.drp/<entry>.<ext>`) and the shader samples the decoy's own texture as a normal.
+2. **Loader serves new entry names** (`runtime/mods/mods.cpp`, add index entries to the DRP): removes the decoys. Cost: moderate (archive index layout). Risk: moderate. Not started.
+3. **Host-side shader remap at pipeline build** (`nvn_draw`/`nvn_shader`: when program X binds, use twin Y and bind a host-loaded normal at sampler b32). Cost: high, touches files other workers own. Risk: descriptor layout per draw; still needs a twin or a translator patch for the 188 without one.
+4. **Translator patch** (inject a normal fetch into the translated SPIR-V of the no-normal shader). Highest cost, covers every material.
+
+Prototype (option 1, off by default): `build/mods_matswap/hd-pokemon-matswap` for Bidoof, Dodrio and Magikarp with their authored `Body_nor` (x4_mat, 4096; BC7 for Bidoof, BC5 for the others from the template), decoys `CH_032_00_1_A00_Body_par`, `CH_007_00_1_A00_Body_dif`, `CH_015_00_1_A00_Body_dif`. The switch is the pack's entry in `mods.json`; it is not installed. No runtime code changed. In-game result: run `1-20261114_090505` (Florio day, 4K) loaded the swapped `.matinstb`/`.numatb` for all three (`[mods] hit` lines, no crash, no shader errors), but that build of the pack had the decoy files without the `.nutexb` suffix, so the loader skipped them and the twin shader read the decoy's own texture as its normal. The pack was rebuilt with the suffix; the rerun with the authored normals did not get a run slot (the owner was at the PC and slots were closed), so how the authored normals look in game is still open.
+
+Not done: in-game check of the other 29 species and of the re-toned Dodrio; routes for volcano, snow and ruins; the normal sign is still assumed OpenGL; the first-pass `material_author.py` stays for its helpers and the old species table only.
 
 ## Material re-texture (pilot, 2026-11-12; superseded by the rules and second pass above)
 
@@ -186,3 +217,69 @@ Species, results (sheets `analysis/hd/mat_pichu.png`, `mat_pikachu.png`, `mat_ma
 - Squirtle, rock, feather, plant, slime classes: not done.
 
 Not done: in-game check of normal sign and strength on more than Pichu; 4096 in game (waits for B1); fur on shells/eyes; a per-region flow better than the gravity guess; SD or Real-ESRGAN base under the procedural detail; a viewer toggle beyond the manifest entry.
+
+## Studio review (2026-11-14)
+
+A local page where the owner compares each candidate with the original and approves, rejects or marks it "needs work". Everything it shows is game data and stays under `build/studio/` (git-ignored); the repo holds only the code (`scripts/studio/`, `tools/studio/`, three.js vendored in `tools/studio/vendor/`).
+
+Open it: run the launch entry `studio` (or `python -E -P tools/studio/serve.py`), then go to http://127.0.0.1:8791/. The server binds to 127.0.0.1 only. Views: original left, candidate right, shared orbit and zoom, turntable, five lights, lit/albedo/normals/roughness/wireframe, close-up and mid-range, triangle counts.
+
+Add a texture candidate (one command after the maps are in the cache as `<tex>.<suffix>.png`, as `solr` or `x4_mat` are):
+
+```
+python -E -P scripts/studio/export_studio.py add --species p097 --source-chat hd-textures --tex-suffix solr --label "Sol repaint (solr)" --notes "what changed"
+python -E -P scripts/studio/export_studio.py all          # rebuild every entry in scripts/studio/candidates.json
+```
+
+`--species` is a Pokemon number (`p097`) or a `build_cache.py` alias (`florio_rock`). The exporter writes `build/studio/assets/<name>/{original,tex}/model.gltf` plus PNG maps (albedo, normal, ORM from `_par`: R occlusion, G roughness; emissive), and updates `build/studio/manifest.json`. Maps a variant lacks fall back to the original; a normal map the original material does not bind is added and flagged in the notes line. Re-adding an entry (same species, chat and kind) updates it, so rerun it after each new pass.
+
+Read decisions: `build/studio/decisions.json` is a list of `{species, variant, verdict, comment, timestamp}`; verdict is `approve`, `reject` or `needs-work`, and the latest entry per species and variant wins. Act on `approve` before packing; read the comment on `needs-work` and `reject` and answer it in the next pass.
+
+## Paused (2026-11-14): resume note for HD textures
+
+The owner put HD textures and models on hold in favor of performance and bug fixes. Nothing went into the owner's `hd-pokemon` pack; its mods.json backup is `build/hd/owner_mods.json.20261114.bak`. Studio entries stay in place.
+
+**Fur lesson.** The owner rejected every fur pass so far (Bouffalant, Pichu, Bidoof, Dodrio) as "super thick and chunky". Those passes used locks 12-26 texels wide at 1024. Fur must be fine and soft: strands about 2 texels wide at 4096, a normal tilt of 4-9 degrees on average, strands that follow the body, and the original colors. Start with one species and 2 or 3 strength variants, then wait for the owner's pick before doing the rest. `build/w/hd2/hd2_finefur.py` does this. Its flow comes from the studio's original glTF: a 3D down-and-back growth vector, projected on each triangle and mapped into UV.
+
+Run it as `python -E -P build/w/hd2/hd2_finefur.py build/studio/assets/pichu/original/model.gltf MI_CH_006_00_0_A00_Body build/hd/cache/p006_00/textures CH_006_00_0_A00_Body fur_fine_b`. The strand fields have two octaves:
+- fine: noise blur 0.7, length ±14 texels, high-pass sigma 6;
+- soft: blur 2.2, length ±36 texels, high-pass 16.
+
+| Preset | Fine normal | Soft normal | Albedo shade | Roughness | AO | Mean tilt |
+|---|---|---|---|---|---|---|
+| `fur_fine_a` | 0.10 | 0 | ±2.5% | ±6 | 0.04 | 4.3° |
+| `fur_fine_b` | 0.16 | 0.05 | ±4% | ±9 | 0.06 | 6.2° |
+| `fur_fine_c` | 0.24 | 0.08 | ±5.5% | ±12 | 0.08 | 8.9° |
+
+**State by species** (studio verdicts in `build/studio/decisions.json`):
+
+| Species | Candidate | State |
+|---|---|---|
+| Pichu (p006) | `tex-fur_fine_a/b/c` | In the studio, waiting for the owner's pick. The body has a normal slot in game. |
+| Bouffalant (p097), Bidoof (p032), Dodrio (p007) | solr / x4_mat fur | Rejected. Redo with the Pichu pick. |
+| Grookey (p112), p073 | x4_mat fur | Not judged. Same lock scale as the rejected passes, so expect a redo. |
+| Magikarp (p015), Heracross (p003) | solr scales / chitin | Not judged. The body has no normal slot in game, so it needs the twin-shader swap (`build/w/hd2/mods5/hdsol4`). Neither appears on Florio. |
+| Torterra (p087), p016 | x4_mat | Not judged. |
+| Vivillon, Machamp | none | Parked. |
+
+**Pipeline used for the Sol candidates.**
+1. Sol paints 2048 maps (`build/w/hd2/sol/<species>/`).
+2. `hd2_upsol.py` runs Real-ESRGAN x4plus, scales down to 4096 with AREA, and locks the low frequencies to the Lanczos source (`.solx`).
+3. `hd2_restore.py` puts back Sol's grain that ESRGAN smoothed away (`.solr`).
+4. `hd2_detail.py` adds the optional detail pass.
+
+The maps land in `build/hd/cache/p<num>_00/textures/` as `<tex>.<suffix>.png`.
+
+**Ride stop with rom-layer archives.** Every run with a pack `romfs/` layer stalled before the ride (runs 3-5). The same packs without the layer started fine. The likely cause was that new archive entries were named without their extension (`..._Body_nor` instead of `..._Body_nor.nutexb`). `scripts/hd/drp_add_entries.py` now keeps the extension and puts new textures ahead of the numatb and matinstb in each `MI_*.drl` group. The repacked archives under `build/w/hd2/mods*/hdmat*/romfs` were rebuilt with `build/w/hd2/hd2_refix.py`. This is not confirmed in game yet. To confirm it, run:
+
+```
+powershell -NoProfile -File build/w/hd2/hd2_queue.ps1 -Route hdrev_florio_a -Start 6150 -Mods <repo>\build\w\hd2\mods5 -Out <repo>\build\w\hd2\run7.out
+```
+
+The fix is confirmed when the log shows `wait 'ride' met`. If the ride still stalls, run `mods6` (the same textures with no rom layer) to confirm the archives are the cause.
+
+**Where things live.**
+- Test packs: `build/w/hd2/mods3` to `mods6`.
+- Scripts: `build/w/hd2/hd2_*.py` and `hd2_*.ps1`.
+- Contact sheets: `build/w/hd2/hd2_ab_run6.png` and `hd2_sol_it4.png`.
+- Studio assets: `build/studio/`.

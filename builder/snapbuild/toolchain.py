@@ -10,6 +10,12 @@ from pathlib import Path
 from .util import StepError, cpu_count, total_ram_gb
 
 
+def managed():
+    """The folder `snap_builder.py fetch` and `pyenv` unpack into (checked after the repo's own tools folder)."""
+    from .fetch import default_tools_dir
+    return default_tools_dir()
+
+
 def _first_existing(cands):
     for c in cands:
         if c and Path(c).exists():
@@ -21,13 +27,13 @@ def find_llvm(arg, root):
     """Folder holding clang.exe, clang++.exe, lld-link or ld.lld, llvm-ar.exe (and llvm-rc.exe)."""
     cands = [arg, os.environ.get('SNAP_LLVM_BIN')]
     on_path = shutil.which('clang.exe')
-    cands += [Path(on_path).parent if on_path else None, Path(root) / 'tools' / 'llvm' / 'bin']
+    cands += [Path(on_path).parent if on_path else None, Path(root) / 'tools' / 'llvm' / 'bin', managed() / 'llvm' / 'bin']
     for c in cands:
         if c and all((Path(c) / n).exists() for n in ('clang.exe', 'clang++.exe', 'llvm-ar.exe')) \
                 and ((Path(c) / 'lld-link.exe').exists() or (Path(c) / 'ld.lld.exe').exists()):
             return Path(c)
     raise StepError('clang with lld not found. Install LLVM (clang, clang++, lld, llvm-ar) and pass its bin folder with --llvm, '
-                    'or set SNAP_LLVM_BIN. (Automatic download comes in a later release.)')
+                    'or set SNAP_LLVM_BIN, or run: python builder/snap_builder.py fetch llvm')
 
 
 def clang_version(llvm):
@@ -69,7 +75,8 @@ def vc_env(vcvars):
 
 def find_python(arg, root):
     """A Python with capstone, pyelftools and numpy (the lifter needs them)."""
-    cands = [arg, Path(root) / 'tools' / 'venv-recomp' / 'Scripts' / 'python.exe', Path(root) / 'tools' / 'venv' / 'Scripts' / 'python.exe']
+    cands = [arg, Path(root) / 'tools' / 'venv-recomp' / 'Scripts' / 'python.exe', Path(root) / 'tools' / 'venv' / 'Scripts' / 'python.exe',
+             managed() / 'venv' / 'Scripts' / 'python.exe', managed() / 'python' / 'python.exe']
     import sys
     cands.append(sys.executable)
     for c in cands:
@@ -78,11 +85,13 @@ def find_python(arg, root):
             if r.returncode == 0:
                 return Path(c)
     raise StepError('no Python with capstone, pyelftools and numpy was found. Install them (pip install capstone pyelftools numpy lz4) '
-                    'and pass that Python with --python. (A managed environment comes in a later release.)')
+                    'and pass that Python with --python, or run: python builder/snap_builder.py pyenv')
 
 
-def find_vulkan_lib(arg, root):
+def find_vulkan_lib(arg, root, prebuilt=None):
     cands = [arg]
+    if prebuilt:   # the prebuilt folder ships a small import library for the Vulkan loader: no SDK needed
+        cands.append(Path(prebuilt) / 'lib' / 'vulkan-1.lib')
     if os.environ.get('VULKAN_SDK'):
         cands.append(Path(os.environ['VULKAN_SDK']) / 'Lib' / 'vulkan-1.lib')
     cands.append(Path(root) / 'tools' / 'vulkan_sdk' / 'Lib' / 'vulkan-1.lib')
@@ -94,7 +103,7 @@ def find_vulkan_lib(arg, root):
 
 def find_ghidra(arg, root):
     cands = [arg, os.environ.get('GHIDRA_DIR')]
-    cands += sorted((Path(root) / 'tools').glob('ghidra_*_PUBLIC'))
+    cands += sorted((Path(root) / 'tools').glob('ghidra_*_PUBLIC')) + sorted(managed().glob('ghidra_*_PUBLIC'))
     for c in cands:
         if c and (Path(c) / 'support' / 'analyzeHeadless.bat').exists():
             return Path(c)
@@ -102,7 +111,7 @@ def find_ghidra(arg, root):
 
 
 def find_jdk(arg, root):
-    cands = [arg, os.environ.get('JAVA_HOME')] + sorted((Path(root) / 'tools').glob('jdk-21*'))
+    cands = [arg, os.environ.get('JAVA_HOME')] + sorted((Path(root) / 'tools').glob('jdk-21*')) + sorted(managed().glob('jdk-21*'))
     for c in cands:
         if c and (Path(c) / 'bin' / 'java.exe').exists():
             return Path(c)

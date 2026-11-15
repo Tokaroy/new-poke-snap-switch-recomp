@@ -13,4 +13,5 @@ wait ui=myphoto:ModeSelect timeout=60
 wait ui=myphoto:Album timeout=60
 @f450 8 A
 @f750 8 A
-end 1300
+@f300 8 A
+end @f900

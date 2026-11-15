@@ -1,0 +1,110 @@
+{
+ "entries": [
+  {
+   "species": "p097",
+   "source_chat": "hd-textures+models",
+   "tex_suffix": "solr",
+   "label": "Sol repaint (solr) / PN-refined mesh",
+   "mesh_pack": "build/w/models/pack/mdl-proto",
+   "notes": "Textures: Sol-repainted albedo, normal and par, Real-ESRGAN edges with Sol grain restored (stage 3, 4096). The original body has no normal slot, so the normal only shows here. Mesh: PN-triangle refinement, 2 levels."
+  },
+  {
+   "species": "p007",
+   "source_chat": "hd-textures+models",
+   "tex_suffix": "x4_mat",
+   "label": "Authored material (x4_mat) / PN-refined mesh",
+   "mesh_pack": "build/w/models/pack/mdl-proto",
+   "notes": "Textures: procedural material pass (fur, down, barbs), 4096; the point-blank tone-down is not re-checked in game. Mesh: PN-triangle refinement, 2 levels. Original has no body normal slot."
+  },
+  {
+   "species": "p032",
+   "source_chat": "hd-textures+models",
+   "tex_suffix": "x4_mat",
+   "label": "Authored material (x4_mat) / PN-refined mesh",
+   "mesh_pack": "build/w/models/pack/mdl-proto",
+   "notes": "Textures: short fur along the painted grain, 4096. Mesh: PN-triangle refinement."
+  },
+  {
+   "species": "p087",
+   "source_chat": "hd-textures+models",
+   "tex_suffix": "x4_mat",
+   "label": "Authored material (x4_mat) / PN-refined mesh",
+   "mesh_pack": "build/w/models/pack/mdl-proto",
+   "notes": "Textures: shell scutes and skin, 4096. Mesh: PN-triangle refinement."
+  },
+  {
+   "species": "florio_rock",
+   "name": "Florio rock",
+   "source_chat": "models",
+   "mesh_pack": "build/w/models/pack/mdl-proto",
+   "label": "PN-refined mesh",
+   "notes": "Environment mesh SM_ENV_001_1_Rock1_LightmapUV, PN-triangle refinement. Lightmap UVs not shown here."
+  },
+  {
+   "species": "p006",
+   "source_chat": "hd-textures",
+   "tex_suffix": "solr",
+   "label": "Sol repaint (solr)",
+   "notes": "Sol-repainted fur, Real-ESRGAN edges with Sol grain restored, 4096 albedo, normal and par."
+  },
+  {
+   "species": "p015",
+   "source_chat": "hd-textures",
+   "tex_suffix": "solr",
+   "label": "Sol repaint (solr)",
+   "notes": "Sol-repainted scales, 4096. The body has no normal slot in game; the normal shows here only."
+  },
+  {
+   "species": "p003",
+   "source_chat": "hd-textures",
+   "tex_suffix": "solr",
+   "label": "Sol repaint (solr)",
+   "notes": "Sol-repainted chitin, 4096. The body has no normal slot in game; the normal shows here only."
+  },
+  {
+   "species": "p112",
+   "source_chat": "hd-textures",
+   "tex_suffix": "x4_mat",
+   "label": "Authored material (x4_mat)",
+   "notes": "Short fur along the painted strokes, 4096. Not a Sol repaint (none exists for Grookey yet)."
+  },
+  {
+   "species": "p073",
+   "source_chat": "hd-textures",
+   "tex_suffix": "x4_mat",
+   "label": "Authored material (x4_mat)",
+   "notes": "Teal fur, soft belly, 4096. Not a Sol repaint."
+  },
+  {
+   "species": "p016",
+   "source_chat": "hd-textures",
+   "tex_suffix": "x4_mat",
+   "label": "Authored material (x4_mat)",
+   "notes": "Wrinkle crackle and belly folds, 4096. Not a Sol repaint."
+  },
+  {
+   "species": "p006",
+   "source_chat": "hd-textures",
+   "tex_suffix": "fur_fine_a",
+   "label": "fur_fine_a: fine soft fur, subtlest",
+   "tag": "fur_fine_a",
+   "notes": "Fine strands about 2 texels wide at 4096, flowing down and back from the face. Normal tilt mean 4 deg. Original colors kept; strand shading in albedo +/-2.5%, slight roughness and occlusion variation. Replaces the rejected chunky-lock pass."
+  },
+  {
+   "species": "p006",
+   "source_chat": "hd-textures",
+   "tex_suffix": "fur_fine_b",
+   "label": "fur_fine_b: fine soft fur, medium",
+   "tag": "fur_fine_b",
+   "notes": "Same fine strands plus a soft second octave so mid range reads as a directional sheen. Normal tilt mean 6 deg. Albedo strand shading +/-4%."
+  },
+  {
+   "species": "p006",
+   "source_chat": "hd-textures",
+   "tex_suffix": "fur_fine_c",
+   "label": "fur_fine_c: fine soft fur, strongest",
+   "tag": "fur_fine_c",
+   "notes": "Same as b, stronger. Normal tilt mean 9 deg. Albedo strand shading +/-5.5%. Still fine strands, no clumps."
+  }
+ ]
+}

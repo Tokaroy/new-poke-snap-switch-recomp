@@ -1,0 +1,11 @@
+[
+ {"species":"Aipom (jungle)","orig":"build/hd/review_crops/aipom_orig.png","hd":"build/hd/review_crops/aipom_hd.png","grade":"good","note":"finer fur on purple and cream, colors same"},
+ {"species":"Torterra (Florio night)","orig":"build/hd/review_crops/torterra50_orig.png","hd":"build/hd/review_crops/torterra50_hd.png","crop":[150,0,700],"grade":"good","note":"crisper shell grain, subtle"},
+ {"species":"Dodrio (Florio, mid range)","orig":"build/hd/review_crops/dodrio68_orig.png","hd":"build/hd/review_crops/dodrio68_hd.png","grade":"good","note":"slightly finer down"},
+ {"species":"Dodrio (point blank)","orig":"build/hd/review_crops/dodrio_close_wide_orig.png","hd":"build/hd/review_crops/dodrio_close_wide_hd.png","crop":[700,300,600],"grade":"too strong","note":"darker streaky down; toned down, recheck pending"},
+ {"species":"Pichu (Florio)","orig":"build/hd/review_crops/pichu_orig.png","hd":"build/hd/review_crops/pichu_hd.png","grade":"no visible change","note":"about 250 px tall; pose differs by 1 frame"},
+ {"species":"Grookey (Florio)","orig":"build/hd/review_crops/grookey_orig.png","hd":"build/hd/review_crops/grookey_hd.png","grade":"no visible change","note":"small on screen"},
+ {"species":"Bouffalant (Florio)","orig":"build/hd/review_crops/bouffalant_orig.png","hd":"build/hd/review_crops/bouffalant_hd.png","crop":[0,0,800],"grade":"no visible change","note":"close, but the afro barely changes"},
+ {"species":"Vivillon (Florio)","orig":"build/hd/review_crops/vivillon_orig.png","hd":"build/hd/review_crops/vivillon_hd.png","grade":"no visible change","note":"wings flap between frames"},
+ {"species":"Machamp (beach)","orig":"build/hd/review_crops/machamp_orig.png","hd":"build/hd/review_crops/machamp_hd.png","grade":"no visible change","note":"about 350 px tall"}
+]

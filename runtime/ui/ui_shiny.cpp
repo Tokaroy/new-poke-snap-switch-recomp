@@ -106,7 +106,7 @@ extern "C" int snap_shiny_badge_rects(float* out4, int max);   // runtime/nvn/nv
 namespace snap::ui {
 bool shiny_badges_active() { float r[4]; return snap_shiny_badge_rects(r, 1) > 0; }
 
-// Gold star badge on every sampled shiny photo (photo select list, pop-up, score screen, album save). The rects are the sprite quads of
+// Sparkle-seal badge on every sampled shiny photo (photo select list, pop-up, score screen, album save). The rects are the sprite quads of
 // the game's own UI in 1920x1080 space, scaled to the window. Looks like the game's yellow selection tags: white ring, gold disc, star.
 void draw_shiny_badges(ImVec2 size) {
   float r[64 * 4];
@@ -119,13 +119,26 @@ void draw_shiny_badges(ImVec2 size) {
     const float x0 = r[i * 4] * sx, y0 = r[i * 4 + 1] * sy, x1 = r[i * 4 + 2] * sx, y1 = r[i * 4 + 3] * sy;
     const float rad = std::clamp((y1 - y0) * 0.13f, 9.0f * sy, 34.0f * sy);
     const ImVec2 c(x1 - rad * 1.25f, y0 + rad * 1.25f);
-    const float pulse = 1.0f + 0.06f * (float)std::sin(now * 4.0);
-    dl->AddCircleFilled(ImVec2(c.x + 1.5f, c.y + 2.0f), rad * 1.12f, IM_COL32(0, 0, 0, 70), 28);               // soft shadow
-    dl->AddCircleFilled(c, rad * 1.1f, IM_COL32(255, 250, 238, 255), 28);                                         // white ring
-    dl->AddCircleFilled(c, rad * 0.9f, IM_COL32(248, 213, 71, 255), 28);                                          // gold disc
-    star(dl, c, rad * 0.68f * pulse, 0.45f, IM_COL32(255, 255, 255, 255), 5);                                      // star
-    star(dl, ImVec2(c.x - rad * 1.05f, c.y + rad * 0.15f), rad * 0.32f, 0.2f, IM_COL32(255, 232, 120, 235), 4);    // sparkles
-    star(dl, ImVec2(c.x + rad * 0.2f, c.y + rad * 1.05f), rad * 0.24f, 0.2f, IM_COL32(255, 232, 120, 200), 4);
+    const float pulse = 1.0f + 0.05f * (float)std::sin(now * 3.0);
+    dl->AddCircleFilled(ImVec2(c.x + 1.5f, c.y + 2.0f), rad * 1.12f, IM_COL32(0, 0, 0, 70), 32);               // soft shadow
+    dl->AddCircleFilled(c, rad * 1.1f, IM_COL32(255, 255, 255, 255), 32);                                         // white rim
+    {   // iridescent seal: pink (top-left) to cyan (bottom-right), one vertex colour per rim point
+      const int N = 32; const ImVec2 uv = ImGui::GetFontTexUvWhitePixel();
+      auto col = [](float t) { return IM_COL32((int)(255 + (110 - 255) * t), (int)(140 + (225 - 140) * t), (int)(205 + (255 - 205) * t), 255); };
+      dl->PrimReserve(N * 3, N + 1);
+      const ImDrawIdx base = (ImDrawIdx)dl->_VtxCurrentIdx;
+      dl->PrimWriteVtx(c, uv, col(0.5f));
+      for (int k = 0; k < N; k++) {
+        const float a = 6.2831853f * k / N;
+        const float ux = std::cos(a), uy = std::sin(a);
+        dl->PrimWriteVtx(ImVec2(c.x + ux * rad * 0.92f, c.y + uy * rad * 0.92f), uv, col(std::clamp(0.5f + 0.5f * (ux + uy) * 0.7071f, 0.0f, 1.0f)));
+      }
+      for (int k = 0; k < N; k++) { dl->PrimWriteIdx(base); dl->PrimWriteIdx((ImDrawIdx)(base + 1 + k)); dl->PrimWriteIdx((ImDrawIdx)(base + 1 + (k + 1) % N)); }
+    }
+    dl->PathArcTo(c, rad * 0.78f, 3.6f, 5.0f, 12); dl->PathStroke(IM_COL32(255, 255, 255, 190), 0, std::max(1.0f, rad * 0.08f));   // sheen arc
+    star(dl, ImVec2(c.x - rad * 0.1f, c.y + rad * 0.05f), rad * 0.62f * pulse, 0.28f, IM_COL32(255, 255, 255, 255), 4);        // sparkle trio
+    star(dl, ImVec2(c.x + rad * 0.42f, c.y - rad * 0.45f), rad * 0.30f * (2.0f - pulse), 0.28f, IM_COL32(255, 255, 255, 255), 4);
+    star(dl, ImVec2(c.x + rad * 0.38f, c.y + rad * 0.50f), rad * 0.22f * pulse, 0.28f, IM_COL32(255, 255, 255, 235), 4);
   }
 }
 }  // namespace snap::ui

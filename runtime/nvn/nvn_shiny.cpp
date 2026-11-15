@@ -93,6 +93,20 @@ std::vector<PendThumb> g_pendThumb;
 std::map<const void*, std::string> g_thumbSp;
 bool g_selFlag = false; int g_selFrame = -100000;   // the photo last shown large in photo select: flagged?
 const double kMinPx = 300.0;
+struct PendRt { const void* rt; int present; };
+std::vector<PendRt> g_pendRt;                           // 1080x720 capture targets waiting for their coverage decision
+std::map<const void*, std::string> g_rtSp;              // flagged target -> species
+std::set<const void*> g_known;                          // textures with an explicit shiny/normal decision (capture chain or upload from a buffer)
+struct BufInfo { bool shiny; std::string sp; };
+std::map<const uint8_t*, BufInfo> g_bufInfo;            // guest photo buffers filled by a GPU copy: was the source shiny
+struct LastCopy { bool valid = false; const uint8_t* dst = nullptr; int frame = -1000000; BufInfo info{false, ""}; };
+LastCopy g_lastCopy;
+std::set<const uint8_t*> g_painted;                     // decoded album buffers that already carry the badge (host/mods/shiny.cpp)
+bool Decide(int shot, std::string* best, double* px) {
+  double bp = 0; std::string b;
+  for (int f = shot - 1; f <= shot + 1; f++) { auto it = g_cov.find(f); if (it == g_cov.end()) continue; for (auto& kv : it->second) if (kv.second > bp) { bp = kv.second; b = kv.first; } }
+  *best = b; *px = bp; return bp >= kMinPx;
+}
 void FxOnce(const std::string& sp) {
   static std::atomic<int> lastFx{-100000};
   if (g_presentCount - lastFx.load() > 150) { lastFx.store(g_presentCount); snap_shiny_fx_trigger(sp.c_str()); }
@@ -113,12 +127,20 @@ void PollLocked() {   // g_pm held
   for (size_t i = 0; i < g_pendThumb.size();) {
     PendThumb pt = g_pendThumb[i];
     if (g_presentCount < pt.shot + 3) { i++; continue; }
-    std::string best; double bestPx = 0;
-    for (int f = pt.shot - 1; f <= pt.shot + 1; f++) { auto it = g_cov.find(f); if (it == g_cov.end()) continue; for (auto& kv : it->second) if (kv.second > bestPx) { bestPx = kv.second; best = kv.first; } }
+    std::string best; double bestPx = 0; Decide(pt.shot, &best, &bestPx);
     g_pendThumb.erase(g_pendThumb.begin() + i);
     const bool shiny = bestPx >= kMinPx;
     if (shiny) { g_thumbs.insert(pt.dst); g_thumbSp[pt.dst] = best; FxOnce(best); } else { g_thumbs.erase(pt.dst); g_thumbSp.erase(pt.dst); }
     static int n = 0; if (n++ < 400) fprintf(stderr, "[shiny] thumbnail %p shot at present %d: %s (%s %.0f px at 1080x720)\n", pt.dst, pt.shot, shiny ? "SHINY subject" : "no shiny subject", best.empty() ? "-" : best.c_str(), bestPx);
+  }
+  for (size_t i = 0; i < g_pendRt.size();) {
+    const PendRt pr = g_pendRt[i];
+    if (g_presentCount < pr.present + 3) { i++; continue; }
+    std::string best; double px = 0; const bool shiny = Decide(pr.present, &best, &px);
+    g_pendRt.erase(g_pendRt.begin() + i);
+    g_known.insert(pr.rt);
+    if (shiny) { g_rtShiny[pr.rt] = g_presentCount; g_rtSp[pr.rt] = best; } else { g_rtShiny.erase(pr.rt); g_rtSp.erase(pr.rt); }
+    static int n = 0; if (n++ < 60) fprintf(stderr, "[shiny] capture target %p shot at present %d: %s (%s %.0f px)\n", pr.rt, pr.present, shiny ? "SHINY subject" : "no shiny subject", best.empty() ? "-" : best.c_str(), px);
   }
 }
 bool Flagged(const void* t) { std::lock_guard<std::mutex> g(g_pm); return g_thumbs.count(t) || g_rtShiny.count(t); }
@@ -203,18 +225,31 @@ void ShinyBufferFinalize(uint64_t va, uint64_t size) {
 
 TextureImpl* ShinySubstitute(TextureImpl* t, const ShinyDraw& d) {
   const Cfg& c = C();
+  if (d.rtW == 1920 && d.vbf) {   // a full-screen sprite (dim veil behind a popup, fade) covers every badge collected earlier in this frame
+    float vx0 = 1e9f, vy0 = 1e9f, vx1 = -1e9f, vy1 = -1e9f;
+    for (int i = 0; i < 4; i++) { const float x = d.vbf[14 * i], y = d.vbf[14 * i + 1]; vx0 = std::min(vx0, x); vx1 = std::max(vx1, x); vy0 = std::min(vy0, y); vy1 = std::max(vy1, y); }
+    if (vx1 - vx0 >= 1800.0f && vy1 - vy0 >= 1000.0f) {
+      std::lock_guard<std::mutex> g(g_pm);
+      { static int nv = 0; if (!g_badges.empty() && nv++ < 80) fprintf(stderr, "[shiny] full-screen sprite at present %d: clearing %zu badge(s)\n", g_presentCount, g_badges.size()); }
+      for (size_t i = 0; i < g_badges.size();) { if (g_badges[i].frame == g_presentCount) g_badges.erase(g_badges.begin() + i); else i++; }
+    }
+  }
   bool selBig = false;   // photo select's large preview (a 360x240 thumbnail drawn wide) names the selected photo; the Score polaroid shows it
   if (d.rtW == 1920 && d.vbf && t->b.width == 360 && t->b.height == 240) {
     const float w = std::fabs(d.vbf[14 * 2] - d.vbf[0]), w2 = std::fabs(d.vbf[14 * 1] - d.vbf[0]), ww = std::max(w, w2);
     if (ww > 600) { std::lock_guard<std::mutex> g(g_pm); g_selFlag = g_thumbs.count(t) != 0; g_selFrame = g_presentCount; selBig = true; }
   }
   bool flaggedDraw = Flagged(t);
-  if (d.rtW == 1920 && t->b.width == 1080 && t->b.height == 720) { std::lock_guard<std::mutex> g(g_pm); flaggedDraw = g_selFlag && g_presentCount - g_selFrame < 6000; }
+  if (d.rtW == 1920 && t->b.width == 1080 && t->b.height == 720) { std::lock_guard<std::mutex> g(g_pm); if (!g_known.count(t)) flaggedDraw = g_selFlag && g_presentCount - g_selFrame < 6000; }
   (void)selBig;
   if (d.rtW == 1920 && d.vbf && (t->b.width == 360 || t->b.width == 1080) && flaggedDraw) {   // a flagged photo is being drawn as a sprite
     float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
     for (int i = 0; i < 4; i++) { const float x = d.vbf[14 * i], y = d.vbf[14 * i + 1]; x0 = std::min(x0, x); x1 = std::max(x1, x); y0 = std::min(y0, y); y1 = std::max(y1, y); }
-    if (x1 - x0 > 40 && y1 - y0 > 24 && x1 - x0 < 1900 && y1 - y0 < 1060) {
+    bool clipped = false;   // the game clips scrolling strips (photo select / album film strip) with a scissor: a badge whose corner is outside it is not on screen
+    if (d.scValid) { const float bx = x1 - 20.0f, by = y0 + 20.0f; clipped = bx < d.sc[0] || bx > d.sc[0] + d.sc[2] || by < d.sc[1] || by > d.sc[1] + d.sc[3]; }
+    { static int nc = 0; if (g_presentCount > 17000 && g_presentCount % 4 == 0 && nc++ < 400) fprintf(stderr, "[shiny] badge candidate %.0f,%.0f-%.0f,%.0f on %p scissor %d,%d %dx%d valid %d: %s at present %d\n", x0, y0, x1, y1, (const void*)t, d.sc[0], d.sc[1], d.sc[2], d.sc[3], (int)d.scValid, clipped ? "CLIPPED" : "kept", g_presentCount); }
+    const float rw = x1 - x0, rh = y1 - y0, asp = rh > 0 ? rw / rh : 0;   // photo sprites are 3:2 and at least thumbnail sized; film-strip holes and filler quads sample the same texture
+    if (!clipped && rw > 90 && rh > 60 && asp > 1.25f && asp < 1.9f && rw < 1900 && rh < 1060) {
       std::lock_guard<std::mutex> g(g_pm);
       for (auto& b : g_badges) if (b.frame >= g_presentCount - 1 && std::fabs(b.r[0] - x0) < 1 && std::fabs(b.r[1] - y0) < 1 && std::fabs(b.r[2] - x1) < 1) { b.frame = g_presentCount; goto have; }
       if (g_badges.size() > 256) g_badges.erase(g_badges.begin(), g_badges.begin() + 128);
@@ -336,11 +371,34 @@ void ShinyCopyTex(const TextureImpl* s, const TextureImpl* d) {
 }
 void ShinyRtClear(const TextureImpl* rt) { std::lock_guard<std::mutex> g(g_pm); g_rtShiny.erase(rt); }
 void ShinyTexGone(const TextureImpl* t) { std::lock_guard<std::mutex> g(g_pm); g_thumbs.erase(t); g_rtShiny.erase(t); }
-void ShinyCopySrc(const TextureImpl* t) {   // a GPU->guest copy of a photo-sized image (the album photo before JpegEncoder)
+void ShinyCaptureDraw(const TextureImpl* rt) {   // a capture pass into a 1080x720 target: decide its flag from the shutter's coverage
+  if (rt->b.width != 1080 || rt->b.height != 720) return;
+  std::lock_guard<std::mutex> g(g_pm);
+  for (auto& p : g_pendRt) if (p.rt == rt && g_presentCount - p.present <= 2) return;
+  g_pendRt.push_back({rt, g_presentCount});
+}
+void ShinyCopySrc(const TextureImpl* t, const uint8_t* dst) {   // a GPU->guest copy of a photo-sized image (the album photo before JpegEncoder)
   if (t->b.width < 640) return;
+  { std::lock_guard<std::mutex> g(g_pm); PollLocked(); }
   const bool f = Flagged(t);
-  static int n = 0; if (n++ < 40) fprintf(stderr, "[shiny] photo copy from %p %dx%d at present %d: %s\n", (const void*)t, t->b.width, t->b.height, g_presentCount, f ? "flagged SHINY" : "not flagged");
+  std::string sp;
+  { std::lock_guard<std::mutex> g(g_pm);
+    auto it = g_rtSp.find(t);
+    if (it != g_rtSp.end()) sp = it->second; else { std::lock_guard<std::mutex> g2(g_spMu); sp = g_lastSpecies; }
+    if (t->b.width == 1080) { g_lastCopy.valid = true; g_lastCopy.dst = dst; g_lastCopy.frame = g_presentCount; g_lastCopy.info = {f, sp}; }
+    if (dst) { g_bufInfo[dst] = {f, sp}; if (g_bufInfo.size() > 256) g_bufInfo.erase(g_bufInfo.begin()); g_painted.erase(dst); } }
+  static int n = 0; if (n++ < 60) fprintf(stderr, "[shiny] photo copy from %p %dx%d to buffer %p at present %d: %s (selected-photo flag %d, %d presents ago)\n", (const void*)t, t->b.width, t->b.height, (const void*)dst, g_presentCount, f ? "flagged SHINY" : "not flagged", (int)g_selFlag, g_presentCount - g_selFrame);
   g_copyFrame.store(f ? g_presentCount : -1, std::memory_order_relaxed);
+}
+void ShinyBufUpload(const TextureImpl* t, const uint8_t* src) {   // CopyBufferToTexture: a texture made from a photo buffer shows that photo
+  if (!src || t->b.width < 300) return;
+  std::lock_guard<std::mutex> g(g_pm);
+  auto it = g_bufInfo.find(src);
+  if (g_painted.count(src)) { g_rtShiny.erase(t); g_known.insert(t); return; }   // the badge is in the pixels already
+  if (it == g_bufInfo.end()) return;
+  g_known.insert(t);
+  if (it->second.shiny) { g_rtShiny[t] = g_presentCount; g_rtSp[t] = it->second.sp; } else g_rtShiny.erase(t);
+  static int n = 0; if (n++ < 40) fprintf(stderr, "[shiny] texture %p %dx%d made from photo buffer %p: %s\n", (const void*)t, t->b.width, t->b.height, (const void*)src, it->second.shiny ? "SHINY" : "normal");
 }
 }  // namespace nvn
 
@@ -357,3 +415,22 @@ extern "C" int snap_shiny_copy_flag(int frames, char* out, int n) {
   if (out && n > 0) { std::lock_guard<std::mutex> g(nvn::g_spMu); snprintf(out, (size_t)n, "%s", nvn::g_lastSpecies.c_str()); }
   return 1;
 }
+
+extern "C" int snap_shiny_buf_flag(const uint8_t* pix, char* out, int n) {   // host/mods/shiny.cpp: was this photo buffer copied from a shiny capture
+  std::lock_guard<std::mutex> g(nvn::g_pm);
+  // exact buffer, else a buffer that contains the pointer (4 bytes per pixel, 1080x720), else the last photo copy if it is recent and unconsumed
+  const nvn::BufInfo* bi = nullptr; const char* how = "exact";
+  auto it = nvn::g_bufInfo.find(pix);
+  if (it != nvn::g_bufInfo.end()) bi = &it->second;
+  else {
+    auto up = nvn::g_bufInfo.upper_bound(pix);
+    if (up != nvn::g_bufInfo.begin()) { --up; if (pix >= up->first && pix < up->first + 1080 * 720 * 4) { bi = &up->second; how = "inside"; } }
+  }
+  if (!bi && nvn::g_lastCopy.valid && nvn::g_presentCount - nvn::g_lastCopy.frame < 900) { bi = &nvn::g_lastCopy.info; how = "last copy"; }
+  static int nlog = 0; if (nlog++ < 40) fprintf(stderr, "[shiny] encode buffer %p: %s (%s), last copy %p flagged %d at present %d (now %d)\n", (const void*)pix, bi ? "matched" : "no match", bi ? how : "-", (const void*)nvn::g_lastCopy.dst, (int)nvn::g_lastCopy.info.shiny, nvn::g_lastCopy.frame, nvn::g_presentCount);
+  if (bi && how[0] == 'l') nvn::g_lastCopy.valid = false;
+  if (!bi || !bi->shiny) return 0;
+  if (out && n > 0) snprintf(out, (size_t)n, "%s", bi->sp.c_str());
+  return 1;
+}
+extern "C" void snap_shiny_buf_painted(const uint8_t* buf) { std::lock_guard<std::mutex> g(nvn::g_pm); nvn::g_painted.insert(buf); if (nvn::g_painted.size() > 256) nvn::g_painted.erase(nvn::g_painted.begin()); nvn::g_bufInfo.erase(buf); }

@@ -34,6 +34,8 @@ class Options:
         self.force = []
         self.compare_generated = None
         self.smoke_timeout = 420
+        self.upscalers = None        # names to fetch after the link (default: the ones marked default in versions.json)
+        self.accept_license = []     # upscaler names whose vendor license the user accepted on the command line
         self.__dict__.update(kw)
 
 
@@ -92,8 +94,8 @@ def build(opt, log):
     llvm = toolchain.find_llvm(opt.llvm, repo)
     py = toolchain.find_python(opt.python, repo)
     vcvars = toolchain.find_vcvars()
-    vk = toolchain.find_vulkan_lib(opt.vulkan_lib, repo)
     pre = find_prebuilt(opt.prebuilt)
+    vk = toolchain.find_vulkan_lib(opt.vulkan_lib, repo, pre)
     man = check_prebuilt(pre)
     log.write(f'tools: clang {toolchain.clang_version(llvm)} in {llvm}; python {py}; prebuilt {pre} (runtime ABI {man["runtime_abi"]})')
     want_llvm = table.get('tools', {}).get('llvm', {}).get('version_major')
@@ -210,7 +212,7 @@ def build(opt, log):
         env = toolchain.vc_env(vcvars)
         objs = [pre / 'obj' / o['name'] for o in man['objs']]
         libs = [work / 'build' / 'main' / 'lib' / 'snap_main.lib', work / 'build' / 'sdk' / 'lib' / 'snap_sdk.lib', vk]
-        libs += [f'-l{n}' for n in ('user32', 'gdi32', 'bcrypt', 'ole32', 'avrt', 'shell32', 'advapi32', 'winmm', 'oleaut32', 'dbghelp', 'dwmapi')]
+        libs += [f'-l{n}' for n in ('user32', 'gdi32', 'bcrypt', 'ole32', 'avrt', 'shell32', 'advapi32', 'winmm', 'oleaut32', 'dbghelp', 'dwmapi', 'winhttp', 'comctl32')]
         for lf in man.get('libs', []):
             libs.append(pre / 'lib' / lf)
         res_file = []
@@ -237,8 +239,24 @@ def build(opt, log):
     cfg.write_text(json.dumps({'romfs_root': str(Path(res.romfs_root).resolve()), 'main_elf': str(elf_dir / 'main.elf'),
                                'sdk_elf': str(elf_dir / 'sdk.elf')}, indent=1), encoding='utf-8')
     # the launcher (the exe started without arguments) checks the romfs against the published sentinels at every start
-    (out / 'launcher_data.json').write_text(json.dumps({'sentinels': table['romfs']['sentinels'], 'file_count': table['romfs']['file_count']}), encoding='utf-8')
+    (out / 'launcher_data.json').write_text(json.dumps({'sentinels': table['romfs']['sentinels'], 'file_count': table['romfs']['file_count'],
+                                                                   'upscalers': table.get('upscalers', {})}), encoding='utf-8')
     log.write(f'wrote {cfg}')
+    # Upscaler runtime files are never shipped by us: fetch what the user picked and accepted (a vendor license the user did not accept
+    # is skipped, not an error: the game hides that upscaler). The launcher offers the same later.
+    from . import fetch as _fetch, upscalers as _up
+    want = [n for n in (opt.upscalers if opt.upscalers is not None else _up.default_names(table))]
+    todo = [n for n in want if n in opt.accept_license and not _up.installed(_up.pins(table)[n], out)]
+    skipped = [n for n in want if n not in opt.accept_license and not _up.installed(_up.pins(table)[n], out)]
+    if skipped:
+        log.write('upscalers not fetched (license not accepted with --accept-license): ' + ', '.join(skipped) + '. Use the launcher or '
+                  '"snap_builder.py upscalers --install-dir <out folder>" later.')
+    if todo:
+        try:
+            res = _up.run(table, todo, out, work / 'downloads', set(todo), lambda q: False, say=log.write)
+            log.write('upscalers: ' + ', '.join(f'{k} {v}' for k, v in res.items()))
+        except _fetch.FetchError as e:
+            log.write('upscaler fetch failed (the build is fine, the game runs without it): ' + str(e))
     log.write(f'build finished in {time.time() - t_all:.0f}s: {exe}')
 
     # ---- smoke run
@@ -266,6 +284,7 @@ def check_maps(maps_dir, table, log):
 def smoke(opt, exe, cfg, work, table, log):
     """Start the exe on a scratch profile, wait for the title screen marker, stop it. Returns (reached, message)."""
     sm = work / 'smoke'
+    shutil.rmtree(sm / 'localappdata', ignore_errors=True)   # a fresh %LOCALAPPDATA%: the first launch must translate shaders itself
     for sub in ('save', 'mods', 'shadercache', 'localappdata', 'appdata'):
         (sm / sub).mkdir(parents=True, exist_ok=True)
     trace = sm / 'trace.log'

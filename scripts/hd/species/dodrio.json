@@ -6,7 +6,8 @@
   "Painted design: orange-brown body (1) and three heads (12, 13, 21, two discs each; the dark dot is the eye hole in the mesh, not paint) painted as short downy strokes; black lower body (2) the same, darker; six pink tail plumes (6-11) painted as long vertical barb streaks; black crest feathers (15, 19, 27, 32, 36, 40) with long streaks; tan legs and feet (14) with a fine painted reticulate scale pattern and yellow claws; dark leathery necks (23, 30, 38) with a painted cell pattern; cream beaks (16, 20, 26, 31, 35, 41) with faint marbling; red tongues (17-28 strip) and mouth parts (29-42).",
   "So: down on the body and heads (short, soft, along the painted strokes), slightly longer on the black lower body; tail plumes and crest feathers as fine barbs along the painted streaks (long, thin, low relief); legs and necks keep their painted reticulation as the only micro relief (skin grain, no new cells); beaks smooth with a little gloss; claws, tongues and mouth untouched.",
   "Body shader 3116720224 has no normal sampler: in game only _dif and _par load; relief is faint baked cavity in _dif plus AO in _par G; Body_nor is cache-only.",
-  "2026-11-14 in-game review (4K, SNAP_MODS_AB): at point-blank range the down read darker and streaky; down/lower_body cav halved, alb_amp x0.6, bake_ao 0.3 -> 0.15."
+  "2026-11-14 in-game review (4K, SNAP_MODS_AB): at point-blank range the down read darker and streaky; down/lower_body cav halved, alb_amp x0.6, bake_ao 0.3 -> 0.15.",
+  "Round 2 (11-14): round 1 looked too dark and streaky up close (baked AO 0.15 plus albedo strand streaks, with no normal in game). Dodrio is a bird: body down and plumes are feathers, so fur_locks with wide soft tips (down 15x8 texels, plumes 26x7) read as overlapping feather tips at mid range; albedo streaks cut to a third, baked AO to 0.04, because the twin shader now shows the real normal."
  ],
  "sets": [
   {
@@ -20,7 +21,7 @@
     "par": true,
     "nor": false
    },
-   "bake_ao": 0.15,
+   "bake_ao": 0.04,
    "flows": {
     "fur": [
      0.0,
@@ -155,7 +156,7 @@
       }
      ],
      "feather": 1.5,
-     "treatment": "fur",
+     "treatment": "fur_locks",
      "params": {
       "stroke_source": "dif.L",
       "len_texels": 10.0,
@@ -163,10 +164,16 @@
       "painted_mix": 0.65,
       "clump_texels": 5.0,
       "clump_w": 0.3,
-      "amp": 0.04,
-      "alb_amp": 0.018,
+      "amp": 0.12,
+      "alb_amp": 0.008,
       "cav": 0.2,
-      "seed": 11
+      "seed": 11,
+      "lock_len": 26.0,
+      "lock_w": 7.0,
+      "density": 0.9,
+      "strand_w": 0.35,
+      "tip_light": 0.015,
+      "root_dark": 0.02
      },
      "par": {
       "rough_to": 0.72,
@@ -188,7 +195,7 @@
       }
      ],
      "feather": 1.5,
-     "treatment": "fur",
+     "treatment": "fur_locks",
      "params": {
       "stroke_source": "dif.L",
       "len_texels": 9.0,
@@ -196,10 +203,16 @@
       "painted_mix": 0.65,
       "clump_texels": 4.0,
       "clump_w": 0.3,
-      "amp": 0.04,
-      "alb_amp": 0.02,
+      "amp": 0.11,
+      "alb_amp": 0.008,
       "cav": 0.2,
-      "seed": 12
+      "seed": 12,
+      "lock_len": 20.0,
+      "lock_w": 6.0,
+      "density": 0.9,
+      "strand_w": 0.35,
+      "tip_light": 0.015,
+      "root_dark": 0.02
      }
     },
     {
@@ -212,17 +225,23 @@
       }
      ],
      "feather": 1.5,
-     "treatment": "fur",
+     "treatment": "fur_locks",
      "params": {
       "stroke_source": "dif.L",
       "len_texels": 6.0,
       "width_texels": 0.5,
       "painted_mix": 0.55,
       "clump_texels": 4.0,
-      "amp": 0.05,
-      "alb_amp": 0.018,
-      "cav": 0.15,
-      "seed": 13
+      "amp": 0.12,
+      "alb_amp": 0.006,
+      "cav": 0.25,
+      "seed": 13,
+      "lock_len": 17.0,
+      "lock_w": 8.5,
+      "density": 0.85,
+      "strand_w": 0.3,
+      "tip_light": 0.02,
+      "root_dark": 0.02
      },
      "par": {
       "rough_to": 0.78,
@@ -245,22 +264,23 @@
       }
      ],
      "feather": 1.5,
-     "treatment": "fur",
+     "treatment": "fur_locks",
      "params": {
       "stroke_source": "dif.L",
       "len_texels": 5.0,
       "width_texels": 0.5,
       "painted_mix": 0.55,
       "clump_texels": 3.5,
-      "amp": 0.05,
-      "alb_amp": 0.015,
-      "cav": 0.15,
+      "amp": 0.12,
+      "alb_amp": 0.006,
+      "cav": 0.25,
       "seed": 14,
-      "edge": {
-       "texels": 8,
-       "len_mul": 1.4,
-       "amp_mul": 0.7
-      }
+      "lock_len": 15.0,
+      "lock_w": 8.0,
+      "density": 0.85,
+      "strand_w": 0.3,
+      "tip_light": 0.02,
+      "root_dark": 0.02
      },
      "par": {
       "rough_to": 0.76,

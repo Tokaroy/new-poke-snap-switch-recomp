@@ -1,0 +1,25 @@
+# fixture: post_tutorial
+# Level editor full-ride check (2026-11-14): Florio leg 1 from the lab hub to photo select. Frame bursts at rail progress 6, 15,
+# 30 and 100; exactly 10 photos (film 72 -> 62); then the rest of the ride, the course end and photo select.
+# Pass: "wait 'ui=photo_submit:FolderSelect' met" and "end of route reached". Run once with the pack (SNAP_MODS_DIR) and once
+# without, then compare the "ride>=" times and the film count (SNAP_ROUTE_LOG=1 logs it).
+# powershell -File host\run_boot.ps1 -SaveFixture post_tutorial -ShotAt 99999 -ShotMax 40 -Timeout 560
+repeat @f300 @f30000 120 8 A
+wait ui=map_select timeout=240
+repeat @f60 @f30000 120 8 A
+wait ride timeout=240
+wait ride>=6 timeout=60
+@f0 30 shot=10
+wait ride>=15 timeout=60
+@f0 30 shot=10
+wait ride>=30 timeout=60
+@f0 30 shot=10
+repeat @f90 @f6000 120 4 A
+wait film<=62 timeout=120
+wait ride>=100 timeout=200
+@f0 30 shot=10
+wait ride_end timeout=200
+repeat @f120 @f60000 90 8 A
+wait ui=photo_submit:FolderSelect timeout=300
+@f0 30 shot=10
+end @f60

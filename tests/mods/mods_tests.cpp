@@ -65,6 +65,8 @@ int main() {
   write(root / "packB" / "readme.txt", "ignored");
   write(root / "packC" / "pack.json", "{}");
   write(root / "packC" / "common/UI/x.drp/off.msbt", "OFF");
+  write(root / "packA" / "romfs/common/UI/x.drp", "WHOLE");     // whole-file layer: not an entry override
+  write(root / "packC" / "romfs/common/UI/y.drp", "OFF");       // disabled pack: no layer
   write(root / "mods.json", "{\"packs\":[{\"id\":\"packB\"},{\"id\":\"packA\",\"enabled\":true},{\"id\":\"packC\",\"enabled\":false},{\"id\":\"missing\"}]}");
   {
     Index i2;
@@ -76,14 +78,25 @@ int main() {
     CHECK(e && i2.packs[e->pack].id == "packB");
     CHECK(!i2.find("common/ui/x.drp", "off", ext_crc("msbt")));
     CHECK(w.size() == 1);        // "missing" folder
+    CHECK(i2.rom_layers.size() == 1 && i2.packs[i2.rom_layers[0].second].id == "packA");
+    CHECK(fs::path(i2.rom_layers[0].first) == root / "packA" / "romfs");
   }
   fs::remove(root / "mods.json");
   {
     Index i3;
     std::vector<std::string> w;
-    load(root.string(), i3, w);   // no mods.json: name order, all with pack.json
-    const Override* e = i3.find("common/ui/x.drp", "icon", ext_crc("nutexb"));
-    CHECK(e && i3.packs[e->pack].id == "packA" && i3.map.size() == 3);
+    load(root.string(), i3, w);   // no mods.json: packs are opt-in, except native-options
+    CHECK(!i3.find("common/ui/x.drp", "icon", ext_crc("nutexb")));
+    CHECK(i3.packs.empty() && i3.map.empty() && i3.rom_layers.empty());
+  }
+  write(root / "native-options" / "pack.json", "{}");
+  write(root / "native-options" / "common/UI/x.drp/pc.msbt", "PC");
+  {
+    Index i4;
+    std::vector<std::string> w;
+    load(root.string(), i4, w);
+    const Override* e = i4.find("common/ui/x.drp", "pc", ext_crc("msbt"));
+    CHECK(e && i4.packs[e->pack].id == "native-options" && i4.map.size() == 1);
   }
   fs::remove_all(root);
 

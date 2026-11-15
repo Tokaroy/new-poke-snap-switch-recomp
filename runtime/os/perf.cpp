@@ -5,6 +5,7 @@
 #include <tlhelp32.h>
 
 #include <cstdio>
+#include <algorithm>
 #include <array>
 #include <map>
 #include <mutex>
@@ -24,6 +25,48 @@ static const char* kWtName[WT_COUNT] = {"core", "lock", "cvar", "key", "multi", 
 static uint64_t g_prev_role[R_COUNT][WT_COUNT], g_prev_fs_bytes;
 static std::mutex g_led_mu;
 static std::map<unsigned long, Ledger*> g_ledgers;
+unsigned long ledger_tid() { return GetCurrentThreadId(); }
+bool g_crit_on = false;
+std::atomic<bool> g_crit_active{false};
+static CritRec* g_crit_buf;
+static std::atomic<uint32_t> g_crit_n{0};
+static const uint32_t kCritCap = 1u << 21;
+static uint64_t g_crit_from, g_crit_to;
+static std::string g_crit_base;
+void crit_push(const CritRec& r) {
+    const uint32_t i = g_crit_n.fetch_add(1, std::memory_order_relaxed);
+    if (i < kCritCap) g_crit_buf[i] = r;
+}
+static void crit_dump(uint64_t t0) {
+    FILE* f = fopen((g_crit_base + "_crit.csv").c_str(), "w");
+    if (!f) return;
+    const uint32_t n = std::min<uint32_t>(g_crit_n.load(), kCritCap);
+    std::map<uint32_t, std::string> names;
+    auto nm = [&](uint32_t tid) {
+        auto it = names.find(tid);
+        if (it != names.end()) return;
+        char b[64] = "-";
+        if (HANDLE th = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, tid)) {
+            using Fn = HRESULT(WINAPI*)(HANDLE, PWSTR*);
+            static Fn gd = (Fn)(void*)GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "GetThreadDescription");
+            wchar_t* d = nullptr;
+            if (gd && SUCCEEDED(gd(th, &d)) && d) { if (*d) snprintf(b, sizeof b, "%ls", d); LocalFree(d); }
+            CloseHandle(th);
+        }
+        for (char* c = b; *c; c++) if (*c == ',') *c = ';';
+        names[tid] = b;
+    };
+    fprintf(f, "type,tid,t0_us,t1_us,kind,waker,wake_us,key,h0,h1,h2\n");
+    for (uint32_t i = 0; i < n; i++) {
+        const CritRec& r = g_crit_buf[i];
+        nm(r.tid);
+        if (r.waker_tid) nm(r.waker_tid);
+        auto us = [&](uint64_t v) { return v ? (double)((int64_t)(v - t0)) / 1e3 : 0.0; };
+        fprintf(f, "%d,%u,%.1f,%.1f,%d,%u,%.1f,%u,%u,%u,%u\n", r.type, r.tid, us(r.t0), us(r.t1), r.kind, r.waker_tid, us(r.wake_ns), r.key, r.h[0], r.h[1], r.h[2]);
+    }
+    for (auto& [tid, s] : names) fprintf(f, "N,%u,%s\n", tid, s.c_str());
+    fclose(f);
+}
 void ledger_register() {
     tl_ledger.tid = GetCurrentThreadId();
     std::lock_guard<std::mutex> lk(g_led_mu);
@@ -146,6 +189,12 @@ static void init() {
     g_events = fopen((b + "_events.csv").c_str(), "w");
     if (!g_frames || !g_threads || !g_events) return;
     g_t0 = g_last_mark = now_ns();
+    if (const char* c = std::getenv("SNAP_CRIT")) {
+        unsigned long a = 0, bb = 0;
+        if (sscanf(c, "%lu-%lu", &a, &bb) == 2 && bb > a && (g_crit_buf = (CritRec*)calloc(kCritCap, sizeof(CritRec)))) {
+            g_crit_on = true; g_crit_from = a; g_crit_to = bb; g_crit_base = b;
+        }
+    }
     fprintf(g_frames, "frame,t_s,dt_ms,tid,cpu_mcycles,gpu_busy_ms,gpu_span_ms,gpu_cbs");
     for (int i = 0; i < C_COUNT; i++) fprintf(g_frames, ",%s_ms,%s_n", kCtrName[i], kCtrName[i]);
     for (int i = 0; i < V_COUNT; i++) fprintf(g_frames, ",%s", kValName[i]);
@@ -172,6 +221,17 @@ void frame_mark(uint64_t present_no, double gpu_busy_ms, double gpu_span_ms, int
     if (!g_frames) return;
     if (tl_role == R_OTHER) tl_role = R_PRESENT;
     const uint64_t now = now_ns();
+    if (g_crit_on) {
+        if (present_no >= g_crit_from && present_no <= g_crit_to) {
+            g_crit_active.store(true);
+            CritRec r{};
+            r.t0 = r.t1 = now; r.tid = GetCurrentThreadId(); r.type = 1; r.key = (uint32_t)present_no;
+            crit_push(r);
+        } else if (present_no > g_crit_to && g_crit_active.exchange(false)) {
+            crit_dump(g_t0);
+            g_crit_on = false;
+        }
+    }
     ULONG64 cyc = 0;
     QueryThreadCycleTime(GetCurrentThread(), &cyc);
     std::lock_guard<std::mutex> lk(g_ev_mu);

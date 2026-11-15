@@ -26,14 +26,28 @@ Nothing you supply is copied, uploaded or shipped. The builder reads your files 
 |---|---|
 | Windows 10 or 11, 64-bit | The PC needs AVX2 (any CPU since about 2015). |
 | Vulkan 1.3 graphics driver | To run the game. Needed for the smoke test at the end of the build. |
-| LLVM 23 (clang and lld) | Pass its `bin` folder with `--llvm`. |
+| LLVM 23 (clang and lld) | Pass its `bin` folder with `--llvm`, or let `fetch` download it (see "Fetching the tools"). |
 | Visual Studio Build Tools 2022 | The C++ tools and the Windows SDK. Free from Microsoft. The final link needs their system libraries. |
-| Vulkan SDK | Provides `vulkan-1.lib`. Set `VULKAN_SDK` or pass `--vulkan-lib`. |
-| Python 3.11 or newer | With `capstone`, `pyelftools`, `numpy` and `lz4`. Pass it with `--python`. |
+| Python 3.14 | With `capstone`, `pyelftools`, `numpy` and `lz4`. Pass it with `--python`, or let `pyenv` build one. |
 | Function lists, or Ghidra | See "Function lists" below. |
 | Disk and memory | About 3 GB of free disk for the work folder. 8 GB of RAM is the minimum for the build. The Ghidra step needs 16 GB or more (12 GB heap). |
 
-Downloading and checking these tools automatically is planned. For now every tool is a local path.
+## Fetching the tools
+
+Every tool the build needs is pinned in `builder/versions.json` with its download URL, its SHA-256 and a note saying where that hash was published (the release page or the publisher's checksum file). Two commands use the pins:
+
+```
+python builder/snap_builder.py fetch --list
+python builder/snap_builder.py fetch llvm ghidra switch_loader jdk
+python builder/snap_builder.py pyenv
+```
+
+- `fetch` asks before every download, shows the URL and the size, checks the SHA-256 while the file arrives, and deletes the file if it does not match. `--yes` answers yes to every question. Without a terminal and without `--yes` it downloads nothing.
+- Files you already have are used without asking when their hash matches. `--offline-dir <folder>` points at a folder of downloaded files, so a PC without internet can use them.
+- Tools unpack into `%LOCALAPPDATA%\SnapRecomp\tools` (change it with `--tools-dir`). The builder looks there after its own `tools` folder.
+- `pyenv` builds a Python with `capstone`, `pyelftools`, `numpy` and `lz4` from pinned wheels. pip runs with `--require-hashes`, `--no-deps` and `--no-index`, so it installs only the pinned files. It uses the pinned python.org embeddable Python, or `--base-python <python.exe>` makes a venv of Python 3.14 you already have.
+- The download sizes are large: LLVM is about 0.9 GB, Ghidra 0.6 GB and the JDK 0.2 GB. Ghidra, its Switch loader and the JDK are only needed when you do not pass `--maps`.
+- No Vulkan SDK is needed. The prebuilt folder carries a small import library for the Vulkan loader, which comes with your graphics driver.
 
 ## Use
 
@@ -49,9 +63,9 @@ Build:
 python builder/snap_builder.py build --main <main> --sdk <sdk> --romfs <romfs folder> --work <new empty folder> --maps <folder with the two function lists>
 ```
 
-Useful options: `--jobs N` (parallel compiles), `--llvm`, `--python`, `--vulkan-lib`, `--prebuilt`, `--skip-smoke`, `--harness` (the shader harness DLL used by the smoke run), `--force <step>` (rerun one step).
+Useful options: `--jobs N` (parallel compiles), `--llvm`, `--python`, `--prebuilt`, `--skip-smoke`, `--force <step>` (rerun one step).
 
-The work folder holds everything the build makes: the converted modules, the function lists, the generated C, the compiled libraries, the log (`builder.log`) and `out/`. `out/SnapRecomp.exe` is the result, with its DLLs and a `config.json` that records the RomFS folder.
+The work folder holds everything the build makes: the converted modules, the function lists, the generated C, the compiled libraries, the log (`builder.log`) and `out/`. `out/SnapRecomp.exe` is the result, with its DLLs, the `shader_harness` folder and a `config.json` that records the RomFS folder.
 
 ## Steps
 
@@ -64,8 +78,18 @@ Each step records what it used. If you run the builder again with the same work 
 5. Generate C for `main` and `sdk` (`recomp/snap_gen.py`, about half a minute).
 6. Compile the generated C in parallel with clang.
 7. Link the generated code, the prebuilt runtime objects in `prebuilt/` and the system libraries into `SnapRecomp.exe`.
-8. Write `config.json`.
-9. Smoke run: start the game on a scratch profile and wait for the title screen.
+8. Write `config.json` and the published file check the launcher uses.
+9. Smoke run: start `SnapRecomp.exe` the way a double-click does, on a scratch profile, and wait for the title screen.
+
+## Starting the game
+
+Double-click `SnapRecomp.exe` in the `out` folder. With no command-line arguments, and a `config.json` next to it, the program is its own launcher:
+
+- It checks the RomFS folder from `config.json` against the published file check every time it starts. If the drive is missing or the folder is wrong, it says so in plain words.
+- A small window offers Play, "Change game folder..." and "Open save folder".
+- Play passes the converted game files and the RomFS path to the game, with no arguments from you.
+- The first launch translates the game's shaders with the `shader_harness` program next to the exe (a self-contained build of the MIT-licensed Ryubing shader translator; its notice is in `shader_harness`). Translated shaders go to `%LOCALAPPDATA%\SnapRecomp\nvn_cache`, so the first start takes several minutes and later starts are fast. The log shows a progress line every 100 shaders.
+- Logs go to `%LOCALAPPDATA%\SnapRecomp\logs`. The icon is an original fallback icon, not the game's.
 
 ## Function lists
 
@@ -78,9 +102,33 @@ The Ghidra path is written but has not been run end to end yet.
 
 ## What is in the prebuilt folder
 
-Our own runtime, host code, mods, the settings overlay and the upscaler glue, compiled to plain object files. No game bytes are in them. `builder/release_prebuilt.py` makes the folder, and `builder/leak_scan.py` checks it before release: no module or key files, no game file names, no personal names or home-folder paths, a size cap per file, and every DLL listed with its hash.
+Our own runtime, host code, the launcher, mods, the settings overlay and the upscaler glue, compiled to plain object files, plus the self-contained shader harness. No game bytes are in them. `builder/release_prebuilt.py` makes the folder, and `builder/leak_scan.py` checks it before release: no module or key files, no game file names, no personal names or home-folder paths, a size cap per file, and every DLL listed with its hash.
 
 The builder and the prebuilt folder always come from the same release. A number in `runtime/cpu.h` (`SNAP_RUNTIME_ABI`) ties them together, and a mismatch stops the build.
+
+## Third-party binaries in the prebuilt folder
+
+- `SDL3.dll`: zlib license, text in `licenses/SDL3-LICENSE.txt`.
+- `shader_harness`: MIT, with its notice (`NOTICE.txt`) next to it.
+
+`manifest.json` lists every DLL with its SHA-256 and license file, and `leak_scan.py` fails a package where a named license file is missing, and any package that contains an AMD, NVIDIA or Intel upscaler file.
+
+## Upscalers (FSR, DLSS, XeSS)
+
+The release carries no AMD, NVIDIA or Intel files. You pick the upscalers you want and the builder or the launcher downloads them from the vendor:
+
+```
+python builder/snap_builder.py upscalers --install-dir <out folder>                 (FSR, the default)
+python builder/snap_builder.py upscalers fsr dlss xess --install-dir <out folder> --accept-license fsr --accept-license dlss
+python builder/snap_builder.py build ... --upscalers fsr,dlss --accept-license fsr --accept-license dlss
+```
+
+In the launcher, "Upscalers: FSR, DLSS, XeSS..." does the same with dialogs. FSR is offered at the first start. DLSS and XeSS are offered but not ticked.
+
+- The vendor's license is downloaded first and shown. You accept it yourself: the builder never accepts for you (`--accept-license <name>` means you read it and accept). Without acceptance nothing is downloaded or installed.
+- Each file comes from the official URL and is checked against the SHA-256 in `versions.json`, with a note where the value came from. AMD and NVIDIA publish no hashes, so those values were computed from the official files. A file that does not match is deleted.
+- Files land next to `SnapRecomp.exe`: `upscalers\amd_fidelityfx_upscaler_vk.dll` (FSR 3.1; FSR 4 only on hardware where AMD's driver offers it, with `SNAP_FSR4=1`), `nvngx_dlss.dll` (NVIDIA RTX cards) and `libxess.dll`. Licenses go to `licenses\upscalers`.
+- If a file is missing the game still runs: that upscaler is hidden in the options and the next one is used.
 
 ## Tests
 

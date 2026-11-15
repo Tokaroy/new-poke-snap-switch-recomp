@@ -29,7 +29,9 @@ class LeakScanTests(unittest.TestCase):
         self.dll = b'MZ fake dll'
         (self.pkg / 'bin' / 'lib.dll').write_bytes(self.dll)
         (self.pkg / 'obj' / 'a.obj').write_bytes(b'clean object bytes')
-        self.manifest = {'dlls': [{'name': 'lib.dll', 'sha256': sha(self.dll)}]}
+        self.manifest = {'dlls': [{'name': 'lib.dll', 'sha256': sha(self.dll), 'license': 'MIT (licenses/lib-LICENSE.txt)'}]}
+        (self.pkg / 'licenses').mkdir()
+        (self.pkg / 'licenses' / 'lib-LICENSE.txt').write_bytes(b'MIT text')
         (self.pkg / 'manifest.json').write_text(json.dumps(self.manifest))
 
     def tearDown(self):
@@ -104,7 +106,7 @@ class LeakScanTests(unittest.TestCase):
     def test_big_listed_dll_is_fine(self):
         big = b'MZ' + b'0' * (3 * 2**20)
         (self.pkg / 'bin' / 'lib.dll').write_bytes(big)
-        man = {'dlls': [{'name': 'lib.dll', 'sha256': sha(big)}]}
+        man = {'dlls': [{'name': 'lib.dll', 'sha256': sha(big), 'license': 'MIT'}]}
         self.assertEqual(self.scan(size_cap_mb=1, manifest=man)[0], [])
 
     def test_game_title_in_file_name(self):
@@ -113,6 +115,31 @@ class LeakScanTests(unittest.TestCase):
         f = [x for x in self.scan()[0] if x[1] == 'name']
         self.assertEqual(len(f), 2)
 
+    def test_allow_content_is_pinned_to_file_and_kind(self):
+        (self.pkg / 'notes.txt').write_bytes(b'this mentions Zork once')
+        (self.pkg / 'other.txt').write_bytes(b'this mentions Zork too')
+        self.assertEqual(len([x for x in self.scan()[0] if x[1] == 'personal']), 2)
+        f = self.scan(allow_content=['notes.txt|personal'])[0]
+        self.assertEqual([x[0] for x in f if x[1] == 'personal'], ['other.txt'])
+        f = self.scan(allow_content=['notes.txt|home-path'])[0]   # another kind: still flagged
+        self.assertEqual(len([x for x in f if x[1] == 'personal']), 2)
+
+    def test_dll_license_file_must_ship(self):
+        (self.pkg / 'licenses' / 'lib-LICENSE.txt').unlink()
+        f = [x for x in self.scan()[0] if x[1] == 'license']
+        self.assertEqual(len(f), 1)
+        self.assertIn('lib-LICENSE.txt', f[0][2])
+
+    def test_dll_without_license_entry(self):
+        man = {'dlls': [{'name': 'lib.dll', 'sha256': sha(self.dll)}]}
+        self.assertEqual(len([x for x in self.scan(manifest=man)[0] if x[1] == 'license']), 1)
+
+    def test_vendor_upscaler_binaries_are_never_shipped(self):
+        for n in ('amd_fidelityfx_upscaler_vk.dll', 'nvngx_dlss.dll', 'libxess.dll'):
+            (self.pkg / 'bin' / n).write_bytes(b'MZ x')
+        f = [x for x in self.scan()[0] if x[1] == 'vendor-binary']
+        self.assertEqual(len(f), 3)
+
     def test_zip_target(self):
         z = self.d / 'rel.zip'
         with zipfile.ZipFile(z, 'w') as zf:
@@ -120,7 +147,7 @@ class LeakScanTests(unittest.TestCase):
             zf.writestr('keys/prod.keys', 'secret')
             zf.writestr('lib.dll', self.dll)
         f = self.scan(target=z)[0]
-        self.assertEqual({x[1] for x in f}, {'extension'})
+        self.assertEqual({x[1] for x in f}, {'extension', 'dll', 'license'})   # lib.dll sits outside bin/ and no manifest is in the zip
 
 
 if __name__ == '__main__':

@@ -24,6 +24,7 @@
 namespace nvn {
 void CmdVecGive(std::vector<Cmd>& v);
 void CmdVecTake(std::vector<Cmd>& out, size_t want);   // [cpuprof] nvn_life.cpp: recycled command vectors
+void ModelNoteEvalDepth(const TextureImpl* t);           // nvn_model.cpp: the photo evaluation pass draws original meshes
 static std::atomic<size_t> g_cmdHint{0};   // [cpuprof] largest recording seen on any buffer, capped (BeginRecording reserve hint)
 namespace {
 
@@ -260,6 +261,7 @@ Boolean TextureInitialize(void* tex, const void* b) {
     uint64_t chain[8] = {}; const int nChain = GuestCallChain(chain, 8);
     if (!tag) for (int i = 0; i < nChain; i++) if (chain[i] == kGuestMain + kEvalDepthRet) tag = kTagEvalDepth;   // call-site tag
     t->scale = g_scale.For(*tb, tag);
+    if (tag == kTagEvalDepth) ModelNoteEvalDepth(t);   // nvn_model.cpp: the evaluation pass draws original meshes
     { uint64_t rel[8]; for (int i = 0; i < nChain; i++) rel[i] = chain[i] - kGuestMain; UpscaleTagTexture(t, rel, nChain, tag); }   // [upscale]
     if (g_scale.scale != 1.0f || g_scale.shadowRes) { static const bool lg = getenv("SNAP_SCALE_LOG") != nullptr; if (lg && (tb->width >= 192 || t->scale != 1.0f)) {
       char cs[160] = ""; for (int i = 0, n = 0; i < nChain && n < (int)sizeof cs - 16; i++) n += snprintf(cs + n, sizeof cs - n, " %llx", (unsigned long long)(chain[i] - kGuestMain));

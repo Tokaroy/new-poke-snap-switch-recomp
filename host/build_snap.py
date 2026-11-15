@@ -72,7 +72,7 @@ def main():
         cov.write_bytes(bak)   # the coverage table is the HLE owner's; only the stub file is ours
     shutil.copyfile(ROOT / 'generated' / 'hle_unimplemented.cpp', ROOT / 'generated' / 'unimplemented.cpp')
 
-    srcs = [(ROOT / 'host' / f, 17) for f in ('loader.cpp', 'hooks.cpp', 'boot.cpp', 'abi_audio.cpp', 'window_opts.cpp', 'pgo.cpp', 'launcher.cpp')]
+    srcs = [(ROOT / 'host' / f, 17) for f in ('loader.cpp', 'hooks.cpp', 'boot.cpp', 'abi_audio.cpp', 'window_opts.cpp', 'pgo.cpp', 'launcher.cpp', 'launcher_upscalers.cpp')]
     srcs += [(p, 20) for p in sorted((ROOT / 'runtime' / 'os').glob('*.cpp'))]
     srcs += [(p, 20) for p in sorted((ROOT / 'host' / 'mods').glob('*.cpp'))]   # draw-distance mods 26 and 27 (host/mods/lodanim.cpp)
     for d in ('hle', 'audio', 'nvn', 'mods'):
@@ -97,9 +97,9 @@ def main():
     if sdl_ok:
         cflags += ['-DHLE_WITH_SDL3', '-I', str(sdl / 'include')]
     # FSR 3.1: the FidelityFX API headers (MIT) from the local SDK copy; without them the FSR backend reports itself unavailable
-    ffx = ROOT / 'tools' / 'amd' / 'ffx_sdk_v1.1.4' / 'ffx-api' / 'include'
-    if (ffx / 'ffx_api' / 'ffx_api.h').exists():
-        cflags += ['-DSNAP_HAVE_FFX_API', '-I', str(ffx)]
+    ffx = ROOT / 'tools' / 'amd' / 'ffx_sdk_v2.4.0' / 'Kits' / 'FidelityFX'   # SDK 2.4.0 headers (MIT), pinned in builder/versions.json
+    if (ffx / 'api' / 'include' / 'ffx_api.h').exists() and (ffx / 'upscalers' / 'include' / 'ffx_upscale.h').exists():
+        cflags += ['-DSNAP_HAVE_FFX_API', '-I', str(ffx / 'api' / 'include'), '-I', str(ffx / 'upscalers' / 'include')]
     cg = []   # code-generation switches, also passed to the link
     if args.pgo_gen:
         cg += ['-fprofile-generate']
@@ -162,7 +162,7 @@ def main():
     if subprocess.run([sys.executable, '-I', str(ROOT / 'host' / 'make_icon.py'), '--out', str(ROOT / 'build')]).returncode == 0:
         if subprocess.run([str(LLVM / 'llvm-rc.exe'), '/FO', str(ROOT / 'build' / 'snap_icon.res'), str(ROOT / 'build' / 'snap_icon.rc')], cwd=str(ROOT / 'build')).returncode == 0:
             res = [str(ROOT / 'build' / 'snap_icon.res')]
-    libs = [args.main_lib, args.sdk_lib, str(VK / 'Lib' / 'vulkan-1.lib'), '-luser32', '-lgdi32', '-lbcrypt', '-lole32', '-lavrt', '-lshell32', '-ladvapi32', '-lwinmm', '-loleaut32', '-ldbghelp', '-ldwmapi']
+    libs = [args.main_lib, args.sdk_lib, str(VK / 'Lib' / 'vulkan-1.lib'), '-luser32', '-lgdi32', '-lbcrypt', '-lole32', '-lavrt', '-lshell32', '-ladvapi32', '-lwinmm', '-loleaut32', '-ldbghelp', '-ldwmapi', '-lwinhttp', '-lcomctl32']
     if sdl_ok:
         libs.append(str(sdl / 'lib' / 'x64' / 'SDL3.lib'))
         shutil.copyfile(sdl / 'lib' / 'x64' / 'SDL3.dll', out / 'SDL3.dll')
@@ -175,10 +175,14 @@ def main():
         return 1
     # upscaler libraries (local, git-ignored copies under tools\; loaded at run time, never committed or linked)
     for dll in (ROOT / 'tools' / 'nvidia' / 'dlss_v310.9.16' / 'bin' / 'nvngx_dlss.dll',
-                ROOT / 'tools' / 'amd' / 'ffx_sdk_v1.1.4' / 'PrebuiltSignedDLL' / 'amd_fidelityfx_vk.dll',
                 ROOT / 'tools' / 'intel' / 'xess_3.0.2' / 'bin' / 'libxess.dll'):
         if dll.exists() and (not (out / dll.name).exists() or (out / dll.name).stat().st_size != dll.stat().st_size):
             shutil.copyfile(dll, out / dll.name)
+    fsr = ROOT / 'tools' / 'amd' / 'ffx_sdk_v2.4.0' / 'Kits' / 'FidelityFX' / 'signedbin' / 'amd_fidelityfx_upscaler_vk.dll'   # dev copy of the fetched DLL
+    if fsr.exists():
+        (out / 'upscalers').mkdir(exist_ok=True)
+        if not (out / 'upscalers' / fsr.name).exists() or (out / 'upscalers' / fsr.name).stat().st_size != fsr.stat().st_size:
+            shutil.copyfile(fsr, out / 'upscalers' / fsr.name)
     print(f'built {exe} ({exe.stat().st_size / 1e6:.1f} MB) in {time.time() - t0:.1f}s')
     return 0
 

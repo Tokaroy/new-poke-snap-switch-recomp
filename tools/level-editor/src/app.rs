@@ -1,16 +1,46 @@
-//! Editor UI (egui). Read only in milestone 1: pick a course pack and leg, list its parts, show geometry, the
-//! NEO-ONE rail, other paths and spawn points in the 3D view.
+//! Editor UI (egui). Two layers over one data model: the beginner view (select, drag along the ground, face the rail,
+//! plain-language checks, one-button export) and the advanced view (raw offsets, hashes, quaternions, every model
+//! instance, level parts). Every change goes through `edit::History`, so it can be undone and only the edited floats
+//! change in the exported files.
 
 use crate::course::{CourseEntry, DataRoot, LoadedCourse, Variant};
+use crate::edit::{self, History, Issue, Sel, Writes};
 use crate::level::kind_name;
+use crate::pick::{self, Ground};
 use crate::render::{self, GpuScene, Layers, OrbitCamera, Viewport};
 use egui_wgpu::wgpu;
 use glam::Vec3;
+use std::path::PathBuf;
 
 pub struct Gpu<'a> {
     pub device: &'a wgpu::Device,
     pub queue: &'a wgpu::Queue,
     pub egui: &'a mut egui_wgpu::Renderer,
+}
+
+enum Action {
+    Select(Option<Sel>),
+    Focus(Vec3),
+    MoveTo(Sel, Vec3),
+    SetYaw(Sel, f32),
+    SetScale(usize, Vec3),
+    DropToGround(Sel),
+    FaceRail(Sel),
+    /// Copy a selection; at the given point, or beside the original when None.
+    Copy(Sel, Option<Vec3>),
+    Remove(Sel),
+    ResetRail,
+    Undo,
+    Redo,
+    Export(PathBuf),
+    OpenCourse(usize),
+    LoadVariant(u32),
+    Rebuild,
+}
+
+struct Drag {
+    sel: Sel,
+    height: f32,
 }
 
 pub struct EditorApp {
@@ -19,23 +49,44 @@ pub struct EditorApp {
     filter: String,
     selected_course: Option<usize>,
     variants: Vec<Variant>,
-    loaded: Option<LoadedCourse>,
+    pub loaded: Option<LoadedCourse>,
     load_error: Option<String>,
     layers: Layers,
     cam: OrbitCamera,
     viewport: Option<Viewport>,
     tex_id: Option<egui::TextureId>,
-    gpu_scene: Option<GpuScene>,
-    scene_dirty: bool,
+    geo_gpu: Option<GpuScene>,
+    ov_gpu: Option<GpuScene>,
+    pub ground: Ground,
+    geo_dirty: bool,
+    ov_dirty: bool,
     scene_tris: usize,
     fog_dist: f32,
-    selected_spawn: Option<(usize, usize)>,
+    pub sel: Option<Sel>,
+    pub history: History,
+    pub advanced: bool,
+    lock_scenery: bool,
+    drag: Option<Drag>,
+    status: String,
+    issues: Vec<Issue>,
+    issues_version: Option<u64>,
+    pack_name: String,
+    export_dir: String,
+    export_msg: Option<(bool, String)>,
+    pending_switch: Option<(Option<usize>, u32)>,
     pub expand_all: bool,
+    /// Rail points on each side that follow a dragged rail point.
+    pub rail_soft: usize,
+}
+
+fn col32(c: [f32; 3]) -> egui::Color32 {
+    egui::Color32::from_rgb((c[0] * 255.0) as u8, (c[1] * 255.0) as u8, (c[2] * 255.0) as u8)
 }
 
 impl EditorApp {
     pub fn new(data: Result<DataRoot, String>) -> Self {
         let courses = data.as_ref().map(|d| d.courses()).unwrap_or_default();
+        let export_dir = std::env::current_dir().map(|d| d.join("mods_out").display().to_string()).unwrap_or("mods_out".into());
         Self {
             data,
             courses,
@@ -48,12 +99,27 @@ impl EditorApp {
             cam: OrbitCamera { target: Vec3::ZERO, yaw: 0.6, pitch: 0.8, dist: 100.0 },
             viewport: None,
             tex_id: None,
-            gpu_scene: None,
-            scene_dirty: true,
+            geo_gpu: None,
+            ov_gpu: None,
+            ground: Ground::default(),
+            geo_dirty: true,
+            ov_dirty: true,
             scene_tris: 0,
             fog_dist: 400.0,
-            selected_spawn: None,
+            sel: None,
+            history: History::default(),
+            advanced: false,
+            lock_scenery: true,
+            drag: None,
+            status: String::new(),
+            issues: vec![],
+            issues_version: None,
+            pack_name: String::new(),
+            export_dir,
+            export_msg: None,
+            pending_switch: None,
             expand_all: false,
+            rail_soft: edit::RAIL_SOFT,
         }
     }
 
@@ -87,12 +153,22 @@ impl EditorApp {
             Ok(c) => {
                 self.load_error = None;
                 self.frame_course(&c);
+                self.pack_name = format!("{}-leg{}-edit", c.course, c.variant);
                 self.loaded = Some(c);
-                self.selected_spawn = None;
-                self.scene_dirty = true;
+                self.sel = None;
+                self.history = History::default();
+                self.issues_version = None;
+                self.export_msg = None;
+                self.geo_dirty = true;
+                self.ov_dirty = true;
+                self.status = "Click a Pokémon marker to select it, then drag it to move it.".into();
             }
             Err(e) => self.load_error = Some(e),
         }
+    }
+
+    fn unsaved(&self) -> usize {
+        self.loaded.as_ref().map(|c| c.levels.iter().filter(|l| l.dirty).count()).unwrap_or(0)
     }
 
     fn frame_course(&mut self, c: &LoadedCourse) {
@@ -113,53 +189,425 @@ impl EditorApp {
         self.fog_dist = (max - min).length() * 3.0;
     }
 
-    fn focus(&mut self, p: [f32; 3]) {
-        self.cam.target = Vec3::from(p);
-        self.cam.dist = 18.0;
+    fn label(&self, s: Sel) -> String {
+        let Some(c) = &self.loaded else { return String::new() };
+        match s {
+            Sel::Spawn(l, i) => c.levels.get(l).and_then(|l| l.spawns.get(i)).map(|s| s.label.clone()).unwrap_or_default(),
+            Sel::Model(m) => c.models.get(m).map(|m| m.inst.name.clone()).unwrap_or_default(),
+            Sel::Rail(_, 0, i) => format!("Rail point {i}"),
+            Sel::Rail(_, s, i) => format!("Rail point {i} (part {s})"),
+        }
+    }
+
+    fn skip_model(s: Sel) -> Option<usize> {
+        match s {
+            Sel::Model(m) => Some(m),
+            _ => None,
+        }
+    }
+
+    /// Applies writes from an edit helper, reporting failures in the status line.
+    fn apply(&mut self, label: String, key: Option<&str>, w: Result<Writes, String>) {
+        let Some(c) = &mut self.loaded else { return };
+        match w {
+            Ok(w) => {
+                self.history.apply(c, &label, key, w);
+                self.ov_dirty = true;
+                self.status = label;
+            }
+            Err(e) => self.status = e,
+        }
+    }
+
+    pub fn move_sel_to(&mut self, s: Sel, target: Vec3, key: Option<&str>) {
+        let Some(c) = &self.loaded else { return };
+        let Some(cur) = edit::position(c, s) else { return };
+        let d = target - cur;
+        if d.length_squared() < 1e-10 {
+            return;
+        }
+        let w = match s {
+            Sel::Rail(l, a, b) => edit::move_rail(c, l, a, b, d, self.rail_soft),
+            _ => edit::move_by(c, s, d),
+        };
+        let label = if matches!(s, Sel::Rail(..)) { "Bend the rail".to_string() } else { format!("Move {}", self.label(s)) };
+        if matches!(s, Sel::Model(_)) {
+            self.geo_dirty = true;
+        }
+        self.apply(label, key, w);
+    }
+
+    fn run(&mut self, a: Action) {
+        match a {
+            Action::Select(s) => {
+                self.sel = s;
+                self.ov_dirty = true;
+                if let Some(s) = s {
+                    let mode = self.loaded.as_ref().map(|c| edit::move_mode(c, s));
+                    self.status = match mode {
+                        Some(Ok(m)) => format!("{}: dragging it {m}", self.label(s)),
+                        Some(Err(e)) => format!("{}: {e}", self.label(s)),
+                        None => String::new(),
+                    };
+                }
+            }
+            Action::Focus(p) => {
+                self.cam.target = p;
+                self.cam.dist = 18.0;
+            }
+            Action::MoveTo(s, p) => self.move_sel_to(s, p, Some("move")),
+            Action::SetYaw(s, y) => {
+                let Some(c) = &self.loaded else { return };
+                let w = edit::set_yaw(c, s, y).ok_or("rotation is not stored for this one".to_string());
+                let label = format!("Turn {}", self.label(s));
+                if matches!(s, Sel::Model(_)) {
+                    self.geo_dirty = true;
+                }
+                self.apply(label, Some("yaw"), w);
+            }
+            Action::SetScale(m, v) => {
+                let Some(c) = &self.loaded else { return };
+                let w = edit::set_scale(c, m, v).ok_or("scale is not stored for this model".to_string());
+                let label = format!("Resize {}", self.label(Sel::Model(m)));
+                self.geo_dirty = true;
+                self.apply(label, Some("scale"), w);
+            }
+            Action::DropToGround(Sel::Rail(..)) => self.status = "The rail rides above the ground; drag the point instead".into(),
+            Action::DropToGround(s) => {
+                let Some(c) = &self.loaded else { return };
+                let Some(cur) = edit::position(c, s) else { return };
+                match self.ground.below(cur, Self::skip_model(s)) {
+                    Some(g) => {
+                        self.move_sel_to(s, Vec3::new(cur.x, g.y, cur.z), None);
+                        self.history.end_interaction();
+                    }
+                    None => self.status = "No ground below this point (is the scenery layer on?)".into(),
+                }
+            }
+            Action::FaceRail(s) => {
+                let Some(c) = &self.loaded else { return };
+                let Some(cur) = edit::position(c, s) else { return };
+                match edit::yaw_facing_rail(c, cur) {
+                    Some(y) => {
+                        self.run(Action::SetYaw(s, y));
+                        self.history.end_interaction();
+                    }
+                    None => self.status = "No rail found".into(),
+                }
+            }
+            Action::Copy(s, at) => {
+                let Some(c) = &self.loaded else { return };
+                let Some(cur) = edit::position(c, s) else { return };
+                let at = at.unwrap_or_else(|| {
+                    // beside the original, at the same height above the ground
+                    let side = cur + Vec3::new(3.0, 0.0, 3.0);
+                    match (self.ground.below(cur, Self::skip_model(s)), self.ground.below(side, Self::skip_model(s))) {
+                        (Some(g0), Some(g1)) if matches!(s, Sel::Spawn(..)) => Vec3::new(side.x, g1.y + (cur.y - g0.y), side.z),
+                        _ => side,
+                    }
+                });
+                let label = format!("Copy {}", self.label(s));
+                let Some(c) = &mut self.loaded else { return };
+                match edit::add_copy(c, s, Some(at)) {
+                    Ok((ns, w)) => {
+                        self.apply(label, None, Ok(w));
+                        self.history.end_interaction();
+                        self.sel = Some(ns);
+                        self.geo_dirty = true;
+                        self.ov_dirty = true;
+                        self.status = format!("{}: drag it where you want it", self.status);
+                    }
+                    Err(e) => self.status = e,
+                }
+            }
+            Action::Remove(s) => {
+                let Some(c) = &self.loaded else { return };
+                let w = edit::remove(c, s);
+                let label = format!("Remove {}", self.label(s));
+                if w.is_ok() {
+                    self.sel = None;
+                }
+                self.geo_dirty = true;
+                self.apply(label, None, w);
+                self.history.end_interaction();
+            }
+            Action::ResetRail => {
+                let Some(c) = &self.loaded else { return };
+                let w = edit::reset_rail(c);
+                self.apply("Reset the rail".into(), None, w);
+                self.history.end_interaction();
+            }
+            Action::Undo => {
+                if let Some(c) = &mut self.loaded {
+                    self.status = match self.history.undo(c) {
+                        Some(l) => format!("Undid: {l}"),
+                        None => "Nothing to undo".into(),
+                    };
+                    self.ov_dirty = true;
+                    self.geo_dirty = true;
+                }
+            }
+            Action::Redo => {
+                if let Some(c) = &mut self.loaded {
+                    self.status = match self.history.redo(c) {
+                        Some(l) => format!("Redid: {l}"),
+                        None => "Nothing to redo".into(),
+                    };
+                    self.ov_dirty = true;
+                    self.geo_dirty = true;
+                }
+            }
+            Action::Export(root) => {
+                let Some(c) = &self.loaded else { return };
+                let desc = format!("Edited {} leg {} made with the Snap level editor ({} changes)", c.course, c.variant, self.history.steps());
+                self.export_msg = Some(match edit::export(c, &root, &self.pack_name, &desc, false) {
+                    Ok(files) => (
+                        true,
+                        format!(
+                            "Exported {} file(s) to {}. The pack is switched on in mods.json and loads at the next game start; set \"enabled\": false there (or delete the pack folder) to go back to the original course.",
+                            files.len(),
+                            root.join(edit::sanitize_pack(&self.pack_name)).display()
+                        ),
+                    ),
+                    Err(e) => (false, e),
+                });
+            }
+            Action::OpenCourse(i) => {
+                if self.unsaved() > 0 {
+                    self.pending_switch = Some((Some(i), 0));
+                } else {
+                    self.select_course(i);
+                    let first = self.variants.first().map(|v| v.no).unwrap_or(1);
+                    self.load_variant(first);
+                }
+            }
+            Action::LoadVariant(no) => {
+                if self.unsaved() > 0 {
+                    self.pending_switch = Some((None, no));
+                } else {
+                    self.load_variant(no);
+                }
+            }
+            Action::Rebuild => {
+                self.geo_dirty = true;
+                self.ov_dirty = true;
+            }
+        }
+    }
+
+    pub fn select(&mut self, s: Option<Sel>, focus: bool) {
+        self.run(Action::Select(s));
+        if let (true, Some(p)) = (focus, s.and_then(|s| self.loaded.as_ref().and_then(|c| edit::position(c, s)))) {
+            self.run(Action::Focus(p));
+            self.cam.dist = 30.0;
+        }
+    }
+
+    /// Command-line move (same path as a drag in the UI).
+    pub fn move_by(&mut self, s: Sel, d: Vec3) -> Result<(), String> {
+        let c = self.loaded.as_ref().ok_or("no course loaded")?;
+        let w = edit::move_by(c, s, d)?;
+        let label = format!("Move {}", self.label(s));
+        self.apply(label, None, Ok(w));
+        Ok(())
+    }
+
+    pub fn copy_to(&mut self, s: Sel, at: Vec3) -> Result<Sel, String> {
+        self.run(Action::Copy(s, Some(at)));
+        match self.sel {
+            Some(ns) if ns != s => Ok(ns),
+            _ => Err(self.status.clone()),
+        }
+    }
+
+    /// Command-line rail bend (same path as dragging rail point `i` of the first rail part).
+    pub fn bend_rail(&mut self, i: usize, d: Vec3, soft: usize) -> Result<String, String> {
+        let c = self.loaded.as_ref().ok_or("no course loaded")?;
+        let (l, _) = edit::rail_ref(c).ok_or("this course has no rail")?;
+        let w = edit::move_rail(c, l, 0, i, d, soft)?;
+        let n = w.len() / 3;
+        self.apply("Bend the rail".into(), None, Ok(w));
+        self.history.end_interaction();
+        self.layers.rail_points = true;
+        self.select(Some(Sel::Rail(l, 0, i)), true);
+        let c = self.loaded.as_ref().unwrap();
+        let st = edit::rail_stats(c).ok_or("no rail")?;
+        let issues: Vec<String> = edit::checks(c, &self.ground).into_iter().filter(|i| matches!(i.sel, Sel::Rail(..))).map(|i| i.text).collect();
+        Ok(format!(
+            "{n} rail points moved; ride length {:.2} (original {:.2}, {:+.1}%, about {:+.1} s); rail checks: {}",
+            st.length,
+            st.orig_length,
+            (st.length / st.orig_length - 1.0) * 100.0,
+            st.seconds_change(),
+            if issues.is_empty() { "none".into() } else { issues.join("; ") }
+        ))
+    }
+
+    pub fn move_model_by(&mut self, m: usize, d: Vec3) -> Result<(), String> {
+        let c = self.loaded.as_ref().ok_or("no course loaded")?;
+        let w = edit::move_by(c, Sel::Model(m), d)?;
+        let label = format!("Move {}", self.label(Sel::Model(m)));
+        self.geo_dirty = true;
+        self.apply(label, None, Ok(w));
+        Ok(())
+    }
+
+    pub fn export_to(&mut self, root: PathBuf, pack: &str) -> Result<String, String> {
+        self.pack_name = pack.to_string();
+        self.run(Action::Export(root));
+        match &self.export_msg {
+            Some((true, m)) => Ok(m.clone()),
+            Some((false, e)) => Err(e.clone()),
+            None => Err("export did not run".into()),
+        }
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui, gpu: &mut Gpu) {
-        egui::Panel::top("top").show(ui, |ui| self.top_bar(ui));
-        egui::Panel::left("courses").default_size(190.0).show(ui, |ui| self.course_list(ui));
-        egui::Panel::right("parts").default_size(380.0).show(ui, |ui| self.parts(ui));
-        egui::CentralPanel::default().show(ui, |ui| self.viewport_ui(ui, gpu));
+        let mut acts = vec![];
+        self.shortcuts(ui, &mut acts);
+        egui::Panel::top("top").show(ui, |ui| self.top_bar(ui, &mut acts));
+        egui::Panel::left("courses").default_size(180.0).show(ui, |ui| self.course_list(ui, &mut acts));
+        egui::Panel::right("parts").default_size(400.0).show(ui, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                self.inspector(ui, &mut acts);
+                ui.separator();
+                self.checks_ui(ui, &mut acts);
+                self.export_ui(ui, &mut acts);
+                ui.separator();
+                self.parts(ui, &mut acts);
+            });
+        });
+        egui::CentralPanel::default().show(ui, |ui| self.viewport_ui(ui, gpu, &mut acts));
+        self.switch_dialog(ui);
+        for a in acts {
+            self.run(a);
+        }
+        if ui.input(|i| i.pointer.any_released()) {
+            self.history.end_interaction();
+        }
     }
 
-    fn top_bar(&mut self, ui: &mut egui::Ui) {
+    fn shortcuts(&mut self, ui: &mut egui::Ui, acts: &mut Vec<Action>) {
+        if ui.ctx().memory(|m| m.focused().is_some()) {
+            return;
+        }
+        use egui::{Key, Modifiers};
+        let sel = self.sel;
+        let pos = sel.and_then(|s| self.loaded.as_ref().and_then(|c| edit::position(c, s)));
+        ui.input_mut(|i| {
+            if i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z) || i.consume_key(Modifiers::COMMAND, Key::Y) {
+                acts.push(Action::Redo);
+            } else if i.consume_key(Modifiers::COMMAND, Key::Z) {
+                acts.push(Action::Undo);
+            }
+            if i.consume_key(Modifiers::NONE, Key::Escape) {
+                acts.push(Action::Select(None));
+            }
+            if let Some(s) = sel {
+                if i.consume_key(Modifiers::NONE, Key::G) {
+                    acts.push(Action::DropToGround(s));
+                }
+                if i.consume_key(Modifiers::NONE, Key::R) {
+                    acts.push(Action::FaceRail(s));
+                }
+                if i.consume_key(Modifiers::COMMAND, Key::D) {
+                    acts.push(Action::Copy(s, None));
+                }
+                if i.consume_key(Modifiers::NONE, Key::Delete) {
+                    acts.push(Action::Remove(s));
+                }
+                if i.consume_key(Modifiers::NONE, Key::F) {
+                    if let Some(p) = pos {
+                        acts.push(Action::Focus(p));
+                    }
+                }
+            }
+        });
+    }
+
+    fn top_bar(&mut self, ui: &mut egui::Ui, acts: &mut Vec<Action>) {
         ui.horizontal(|ui| {
             ui.heading("Snap level editor");
-            ui.label("milestone 1: read-only course viewer");
             ui.separator();
-            match &self.data {
-                Ok(d) => ui.label(format!("data: {}", d.root.display())),
-                Err(e) => ui.colored_label(egui::Color32::LIGHT_RED, e),
-            };
+            ui.selectable_value(&mut self.advanced, false, "Beginner").on_hover_text("The essentials: select, move, turn, check, export");
+            ui.selectable_value(&mut self.advanced, true, "Advanced").on_hover_text("Adds raw values, offsets, hashes and every part of the course");
+            ui.separator();
+            let u = ui.add_enabled(self.history.undo_label().is_some(), egui::Button::new("Undo"));
+            if u.on_hover_text(self.history.undo_label().map(|l| format!("Undo {l} (Ctrl+Z)")).unwrap_or_default()).clicked() {
+                acts.push(Action::Undo);
+            }
+            let r = ui.add_enabled(self.history.redo_label().is_some(), egui::Button::new("Redo"));
+            if r.on_hover_text(self.history.redo_label().map(|l| format!("Redo {l} (Ctrl+Y)")).unwrap_or_default()).clicked() {
+                acts.push(Action::Redo);
+            }
+            let n = self.unsaved();
+            if n > 0 {
+                ui.colored_label(egui::Color32::from_rgb(255, 200, 80), format!("{} edits in {n} file(s), not exported", self.history.steps()));
+            }
+            if self.advanced {
+                ui.separator();
+                match &self.data {
+                    Ok(d) => ui.weak(format!("data: {}", d.root.display())),
+                    Err(e) => ui.colored_label(egui::Color32::LIGHT_RED, e),
+                };
+            }
         });
         if let Some(idx) = self.selected_course {
             ui.horizontal(|ui| {
-                ui.label(format!("course pack {}", self.courses[idx].name));
+                ui.label(format!("Course {}", self.courses[idx].name));
                 let cur = self.loaded.as_ref().map(|c| c.variant);
-                let nos: Vec<u32> = self.variants.iter().map(|v| v.no).collect();
-                for no in nos {
-                    if ui.selectable_label(cur == Some(no), format!("leg {no}")).clicked() {
-                        self.load_variant(no);
+                for v in &self.variants {
+                    if ui.selectable_label(cur == Some(v.no), format!("leg {}", v.no)).clicked() && cur != Some(v.no) {
+                        acts.push(Action::LoadVariant(v.no));
                     }
                 }
                 if let Some(c) = &self.loaded {
-                    ui.label(format!("loaded in {} ms", c.load_ms));
+                    ui.weak(format!("loaded in {} ms", c.load_ms));
                 }
                 if let Some(e) = &self.load_error {
                     ui.colored_label(egui::Color32::LIGHT_RED, e);
                 }
             });
+        } else if let Err(e) = &self.data {
+            ui.colored_label(egui::Color32::LIGHT_RED, e);
         }
     }
 
-    fn course_list(&mut self, ui: &mut egui::Ui) {
-        ui.label(format!("{} course packs", self.courses.len()));
-        ui.text_edit_singleline(&mut self.filter);
+    fn switch_dialog(&mut self, ui: &mut egui::Ui) {
+        let Some((course, variant)) = self.pending_switch else { return };
+        let mut choice = None;
+        egui::Window::new("Unsaved edits").collapsible(false).resizable(false).show(ui.ctx(), |ui| {
+            ui.label("This course has edits that are not exported. Switching course throws them away.");
+            ui.horizontal(|ui| {
+                if ui.button("Discard edits and switch").clicked() {
+                    choice = Some(true);
+                }
+                if ui.button("Keep editing").clicked() {
+                    choice = Some(false);
+                }
+            });
+        });
+        match choice {
+            Some(true) => {
+                self.pending_switch = None;
+                match course {
+                    Some(i) => {
+                        self.select_course(i);
+                        let first = self.variants.first().map(|v| v.no).unwrap_or(1);
+                        self.load_variant(first);
+                    }
+                    None => self.load_variant(variant),
+                }
+            }
+            Some(false) => self.pending_switch = None,
+            None => {}
+        }
+    }
+
+    fn course_list(&mut self, ui: &mut egui::Ui, acts: &mut Vec<Action>) {
+        ui.label(format!("{} courses", self.courses.len()));
+        ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text("filter, e.g. LC_001"));
         let f = self.filter.to_lowercase();
-        let mut clicked = None;
         egui::ScrollArea::vertical().show(ui, |ui| {
             for (i, c) in self.courses.iter().enumerate() {
                 if !f.is_empty() && !c.name.to_lowercase().contains(&f) {
@@ -170,155 +618,479 @@ impl EditorApp {
                 if sel && self.expand_all {
                     r.scroll_to_me(Some(egui::Align::Center));
                 }
-                if r.clicked() {
-                    clicked = Some(i);
+                if r.clicked() && !sel {
+                    acts.push(Action::OpenCourse(i));
                 }
             }
         });
-        if let Some(i) = clicked {
-            self.select_course(i);
-            let first = self.variants.first().map(|v| v.no).unwrap_or(1);
-            self.load_variant(first);
+    }
+
+    fn inspector(&mut self, ui: &mut egui::Ui, acts: &mut Vec<Action>) {
+        let Some(c) = &self.loaded else {
+            ui.heading("Start here");
+            ui.label("Pick a course on the left. Each course opens as a copy you can change; the original game files are never edited.");
+            return;
+        };
+        let Some(s) = self.sel else {
+            ui.heading("Nothing selected");
+            ui.label("Click a Pokémon marker in the 3D view (or a name in the list below) to select it.");
+            ui.label("Drag a selected Pokémon to slide it along the ground. Ctrl+Z undoes, Ctrl+Y redoes.");
+            ui.separator();
+            ui.heading("Add a Pokémon");
+            ui.label("Click one to put a copy on the ground in the middle of the view. Then drag it where you want it.");
+            // one source spawn per species that has its own spawn point (route-following ones cannot be copied yet)
+            let mut seen = std::collections::BTreeMap::new();
+            for (li, l) in c.levels.iter().enumerate() {
+                for (si, sp) in l.spawns.iter().enumerate() {
+                    // CH_000 and CH_001 entries are flowers, branches and other props
+                    let pokemon = sp.label.starts_with("CH_") && !sp.label.starts_with("CH_000") && !sp.label.starts_with("CH_001");
+                    if sp.alive && sp.alive_off.is_none() && !sp.pos_from_path && sp.pos_off.is_some() && sp.pos != [0.0; 3] && pokemon {
+                        seen.entry(sp.label.clone()).or_insert(Sel::Spawn(li, si));
+                    }
+                }
+            }
+            let target = self.ground.below(self.cam.target + Vec3::Y * 50.0, None).unwrap_or(self.cam.target);
+            ui.horizontal_wrapped(|ui| {
+                for (label, src) in &seen {
+                    let b = egui::Button::new(egui::RichText::new(label).color(col32(render::species_color(label))));
+                    if ui.add(b).on_hover_text("Copies this species, with its behavior, from the course").clicked() {
+                        acts.push(Action::Copy(*src, Some(target)));
+                    }
+                }
+            });
+            ui.weak("Scenery: select a model and press Make a copy (Ctrl+D).");
+            return;
+        };
+        let pos = edit::position(c, s).unwrap_or(Vec3::ZERO);
+        match s {
+            Sel::Spawn(li, si) => {
+                let sp = &c.levels[li].spawns[si];
+                ui.heading(egui::RichText::new(&sp.label).color(col32(render::species_color(&sp.label))));
+                ui.label(if sp.label.starts_with("CH_0") && !sp.label.starts_with("CH_000") {
+                    "Pokémon spawn"
+                } else {
+                    "Spawn (scenery object or Pokémon)"
+                });
+            }
+            Sel::Model(m) => {
+                ui.heading(&c.models[m].inst.name);
+                ui.label("Scenery model");
+            }
+            Sel::Rail(..) => {
+                ui.heading(self.label(s));
+                ui.label("A point of the camera rail. Drag it to bend the ride; the points next to it follow so the ride stays smooth.");
+                ui.add(egui::Slider::new(&mut self.rail_soft, 0..=8).text("points that follow on each side"));
+                if let Some(st) = edit::rail_stats(c) {
+                    ui.label(st.summary());
+                }
+            }
+        }
+        let is_rail = matches!(s, Sel::Rail(..));
+        let mode = edit::move_mode(c, s);
+        match &mode {
+            Ok(m) => ui.weak(format!("Moving it {m}.")),
+            Err(e) => ui.colored_label(egui::Color32::from_rgb(255, 200, 80), format!("Cannot move: {e}.")),
+        };
+        let movable = mode.is_ok();
+        ui.add_enabled_ui(movable, |ui| {
+            let mut p = pos;
+            let mut changed = false;
+            ui.horizontal(|ui| {
+                ui.label("Position");
+                for (k, n) in ["X", "Y", "Z"].iter().enumerate() {
+                    ui.label(*n);
+                    changed |= ui.add(egui::DragValue::new(&mut p[k]).speed(0.05).fixed_decimals(2)).changed();
+                }
+            });
+            if changed {
+                acts.push(Action::MoveTo(s, p));
+            }
+        });
+        let rot = edit::rot_of(c, s);
+        if let Some(rot) = rot {
+            let mut deg = edit::yaw_of(rot).to_degrees();
+            if ui.add(egui::Slider::new(&mut deg, -180.0..=180.0).text("Facing").suffix("°")).changed() {
+                acts.push(Action::SetYaw(s, deg.to_radians()));
+            }
+        } else if !is_rail {
+            ui.weak("Facing: not stored for this one");
+        }
+        if let Sel::Model(m) = s {
+            let pm = &c.models[m];
+            if pm.inst.scale_off.is_some() {
+                let mut sc = pm.inst.scale;
+                if self.advanced {
+                    let mut ch = false;
+                    ui.horizontal(|ui| {
+                        ui.label("Scale");
+                        for v in sc.iter_mut() {
+                            ch |= ui.add(egui::DragValue::new(v).speed(0.01).range(0.01..=100.0)).changed();
+                        }
+                    });
+                    if ch {
+                        acts.push(Action::SetScale(m, Vec3::from(sc)));
+                    }
+                } else {
+                    let mut u = sc[0];
+                    if ui.add(egui::Slider::new(&mut u, 0.1..=5.0).text("Size").logarithmic(true)).changed() {
+                        let f = if sc[0].abs() > 1e-6 { u / sc[0] } else { 1.0 };
+                        acts.push(Action::SetScale(m, Vec3::from(sc) * f));
+                    }
+                }
+            }
+        }
+        ui.horizontal(|ui| {
+            if is_rail {
+                if ui.button("Reset the rail").on_hover_text("Puts every rail point back where the game has it (one undo step)").clicked() {
+                    acts.push(Action::ResetRail);
+                }
+            } else {
+                if ui.add_enabled(movable, egui::Button::new("Drop to ground")).on_hover_text("G").clicked() {
+                    acts.push(Action::DropToGround(s));
+                }
+                if ui.add_enabled(rot.is_some(), egui::Button::new("Face the rail")).on_hover_text("R").clicked() {
+                    acts.push(Action::FaceRail(s));
+                }
+            }
+            if ui.button("Show me").on_hover_text("F").clicked() {
+                acts.push(Action::Focus(pos));
+            }
+            if ui.button("Deselect").on_hover_text("Esc").clicked() {
+                acts.push(Action::Select(None));
+            }
+        });
+        if !is_rail { ui.horizontal(|ui| {
+            if ui.add_enabled(movable, egui::Button::new("Make a copy")).on_hover_text("Ctrl+D: a copy appears beside it").clicked() {
+                acts.push(Action::Copy(s, None));
+            }
+            let added = edit::is_added(c, s);
+            if ui
+                .add_enabled(added, egui::Button::new("Remove"))
+                .on_hover_text("Delete")
+                .on_disabled_hover_text("Only things you added can be removed for now")
+                .clicked()
+            {
+                acts.push(Action::Remove(s));
+            }
+        }); }
+        if self.advanced {
+            egui::CollapsingHeader::new("Raw values").default_open(true).show(ui, |ui| match s {
+                Sel::Spawn(li, si) => {
+                    let l = &c.levels[li];
+                    let sp = &l.spawns[si];
+                    let off = |o: Option<usize>| o.map(|o| format!("0x{o:x}")).unwrap_or("absent".into());
+                    ui.monospace(format!("level      {}", l.name));
+                    ui.monospace(format!("entity     {:08x}", sp.entity));
+                    ui.monospace(format!("templates  {}", sp.templates.iter().map(|h| format!("{h:08x}")).collect::<Vec<_>>().join(" ")));
+                    ui.monospace(format!("path       {}", sp.path.map(|p| format!("{p:08x}")).unwrap_or("none".into())));
+                    ui.monospace(format!("pos        {:?}{}", sp.pos, if sp.pos_from_path { " (path start)" } else { "" }));
+                    ui.monospace(format!("rot xyzw   {:?}", sp.rot));
+                    ui.monospace(format!("pos offset {}", off(sp.pos_off)));
+                    ui.monospace(format!("rot offset {}", off(sp.rot_off)));
+                    for t in &sp.templates {
+                        if let Some(tp) = l.templates.get(t) {
+                            ui.monospace(format!("template   {} {} {}", tp.ch_name, tp.skeleton, tp.anim));
+                        }
+                    }
+                }
+                Sel::Model(m) => {
+                    let pm = &c.models[m];
+                    let off = |o: Option<usize>| o.map(|o| format!("0x{o:x}")).unwrap_or("absent".into());
+                    ui.monospace(format!("level      {}", pm.level));
+                    ui.monospace(format!("file       {}", pm.source.as_ref().map(|p| p.display().to_string()).unwrap_or("not found".into())));
+                    ui.monospace(format!("pos        {:?}", pm.inst.pos));
+                    ui.monospace(format!("rot xyzw   {:?}", pm.inst.rot));
+                    ui.monospace(format!("scale      {:?}", pm.inst.scale));
+                    ui.monospace(format!("offsets    pos {} rot {} scale {}", off(pm.inst.pos_off), off(pm.inst.rot_off), off(pm.inst.scale_off)));
+                }
+                Sel::Rail(li, si, i) => {
+                    if let Some((_, pi)) = edit::rail_ref(c) {
+                        let p = &c.levels[li].paths[pi];
+                        ui.monospace(format!("level      {}", c.levels[li].name));
+                        ui.monospace(format!("path       {:08x} segment {si} point {i} of {}", p.entity, p.segments[si].len()));
+                        ui.monospace(format!("pos        {:?}", p.segments[si][i]));
+                        ui.monospace(format!("offset     0x{:x}", p.offs[si][i]));
+                        if let Some(o) = edit::rail_original(c) {
+                            ui.monospace(format!("original   {:?}", o[si][i]));
+                        }
+                    }
+                }
+            });
         }
     }
 
-    fn parts(&mut self, ui: &mut egui::Ui) {
-        let Some(c) = &mut self.loaded else {
-            ui.label("Pick a course pack on the left.");
-            return;
-        };
-        let open = self.expand_all;
-        let mut focus = None;
-        let mut new_sel = None;
-        let mut dirty = false;
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            ui.heading(format!("{} leg {}", c.course, c.variant));
-            let rail_len: Vec<f32> = c
-                .rail()
-                .map(|r| (0..r.segments.len()).map(|i| r.length(i)).collect())
-                .unwrap_or_default();
-            egui::CollapsingHeader::new(format!("Levels ({})", c.levels.len())).default_open(true).show(ui, |ui| {
-                if let Some(v) = c.variants.iter().find(|v| v.no == c.variant) {
-                    for lr in &v.levels {
-                        match &lr.name {
-                            Some(n) => ui.label(n),
-                            None => ui.weak(format!("hash {:08x}: no entry with that name in the pack", lr.hash)),
-                        };
-                    }
-                }
-                for e in &c.level_errors {
-                    ui.colored_label(egui::Color32::LIGHT_RED, e);
-                }
-            });
-            for l in &c.levels {
-                egui::CollapsingHeader::new(format!("{}  ({})", l.name, l.kind())).default_open(false).show(ui, |ui| {
-                    ui.label(format!("{} bytes, {} entities, {} scene nodes", l.size, l.entity_count, l.node_count));
-                    for (k, n) in &l.component_kinds {
-                        ui.label(format!("  component {k}: {n}"));
-                    }
-                    if !l.species.is_empty() {
-                        ui.label(format!("species used: {:?}", l.species));
-                    }
-                    if !l.env_params.is_empty() {
-                        ui.label(format!("environment parameters: {}", l.env_params.len()));
-                    }
-                });
+    fn checks_ui(&mut self, ui: &mut egui::Ui, acts: &mut Vec<Action>) {
+        let Some(c) = &self.loaded else { return };
+        if self.issues_version != Some(self.history.version) && !self.ground.models.is_empty() {
+            self.issues = edit::checks(c, &self.ground);
+            self.issues_version = Some(self.history.version);
+        }
+        let title = if self.issues.is_empty() { "Checks: all good".to_string() } else { format!("Checks: {} to look at", self.issues.len()) };
+        let advanced = self.advanced;
+        egui::CollapsingHeader::new(title).default_open(true).show(ui, |ui| {
+            if self.issues.is_empty() {
+                ui.weak("No Pokémon under the ground or far from the rail.");
             }
-            egui::CollapsingHeader::new("Camera rail").default_open(true).show(ui, |ui| {
-                if rail_len.is_empty() {
-                    ui.label("no rail found (course parameters s6 -> node -> path)");
+            for (n, is) in self.issues.iter().enumerate() {
+                if n >= 12 && !advanced {
+                    ui.weak(format!("...and {} more (Advanced shows all)", self.issues.len() - n));
+                    break;
                 }
-                for (i, len) in rail_len.iter().enumerate() {
-                    let pts = c.rail().map(|r| r.segments[i].len()).unwrap_or(0);
-                    ui.label(format!("segment {i}: {pts} points, {len:.1} units"));
+                if ui.link(&is.text).clicked() {
+                    acts.push(Action::Select(Some(is.sel)));
+                    if let Some(p) = edit::position(c, is.sel) {
+                        acts.push(Action::Focus(p));
+                    }
+                }
+            }
+        });
+    }
+
+    fn export_ui(&mut self, ui: &mut egui::Ui, acts: &mut Vec<Action>) {
+        if self.loaded.is_none() {
+            return;
+        }
+        let has = self.unsaved() > 0;
+        egui::CollapsingHeader::new("Save as a mod pack").default_open(true).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Pack name");
+                ui.text_edit_singleline(&mut self.pack_name);
+            });
+            ui.horizontal(|ui| {
+                ui.label("Folder");
+                ui.text_edit_singleline(&mut self.export_dir);
+            });
+            ui.horizontal(|ui| {
+                if ui.add_enabled(has, egui::Button::new("Export to folder")).clicked() {
+                    acts.push(Action::Export(PathBuf::from(&self.export_dir)));
+                }
+                if let Some(g) = edit::game_mods_dir() {
+                    if ui
+                        .add_enabled(has, egui::Button::new("Install into my game"))
+                        .on_hover_text(format!("Writes the pack to {}; the game loads it at the next start", g.display()))
+                        .clicked()
+                    {
+                        acts.push(Action::Export(g));
+                    }
                 }
             });
-            let total_paths: usize = c.levels.iter().map(|l| l.paths.len()).sum();
-            ui.label(format!("Other paths: {}", total_paths.saturating_sub(rail_len.is_empty() as usize ^ 1)));
-            let total_spawns: usize = c.levels.iter().map(|l| l.spawns.len()).sum();
-            egui::CollapsingHeader::new(format!("Spawns ({total_spawns})")).default_open(open).show(ui, |ui| {
-                ui.weak("click to select, double-click to focus the camera");
-                for (li, l) in c.levels.iter().enumerate() {
-                    for (si, s) in l.spawns.iter().enumerate() {
-                        let col = render::species_color(&s.label);
-                        let col = egui::Color32::from_rgb((col[0] * 255.0) as u8, (col[1] * 255.0) as u8, (col[2] * 255.0) as u8);
-                        let txt = format!(
+            if !has {
+                ui.weak("Make a change first. Only changed files are written; the original game stays untouched.");
+            }
+            if let Some((ok, m)) = &self.export_msg {
+                ui.colored_label(if *ok { egui::Color32::LIGHT_GREEN } else { egui::Color32::LIGHT_RED }, m);
+            }
+        });
+    }
+
+    fn parts(&mut self, ui: &mut egui::Ui, acts: &mut Vec<Action>) {
+        let (open, advanced, cur_sel) = (self.expand_all, self.advanced, self.sel);
+        let Some(c) = &mut self.loaded else { return };
+        let total_spawns: usize = c.levels.iter().map(|l| l.spawns.len()).sum();
+        egui::CollapsingHeader::new(format!("Pokémon and objects ({total_spawns})")).default_open(open).show(ui, |ui| {
+            for (li, l) in c.levels.iter().enumerate() {
+                for (si, s) in l.spawns.iter().enumerate() {
+                    if !s.alive {
+                        continue;
+                    }
+                    let unplaced = !s.pos_from_path && s.pos == [0.0; 3];
+                    let txt = if s.alive_off.is_some() {
+                        format!("{}  [added]", s.label)
+                    } else if unplaced {
+                        format!("{}  [placed by the game, not by this file]", s.label)
+                    } else {
+                        format!(
                             "{}  ({:.1}, {:.1}, {:.1}){}",
                             s.label,
                             s.pos[0],
                             s.pos[1],
                             s.pos[2],
-                            if s.pos_from_path { "  [path start]" } else { "" }
-                        );
-                        let sel = self.selected_spawn == Some((li, si));
-                        let r = ui.selectable_label(sel, egui::RichText::new(txt).color(col));
-                        if r.clicked() {
-                            new_sel = Some((li, si));
-                        }
-                        if r.double_clicked() {
-                            focus = Some(s.pos);
-                        }
+                            if s.pos_from_path { "  [walks a route]" } else { "" }
+                        )
+                    };
+                    let sel = cur_sel == Some(Sel::Spawn(li, si));
+                    let rt = egui::RichText::new(txt);
+                    let rt = if sel { rt.strong() } else { rt.color(col32(render::species_color(&s.label))) };
+                    let r = ui.selectable_label(sel, rt);
+                    if r.clicked() {
+                        acts.push(Action::Select(Some(Sel::Spawn(li, si))));
+                    }
+                    if r.double_clicked() {
+                        acts.push(Action::Focus(Vec3::from(s.pos)));
                     }
                 }
-            });
-            let total_models = c.models.len();
-            let missing = c.models.iter().filter(|m| m.mesh.is_none()).count();
-            egui::CollapsingHeader::new(format!("Model instances ({total_models}, {missing} unresolved)"))
-                .default_open(open)
-                .show(ui, |ui| {
-                    for m in &mut c.models {
-                        ui.horizontal(|ui| {
-                            if ui.checkbox(&mut m.visible, "").changed() {
-                                dirty = true;
-                            }
-                            let tris = m.mesh.as_ref().map(|x| x.indices.len() / 3).unwrap_or(0);
-                            let t = format!("{}  {} tris", m.inst.name, tris);
-                            match &m.error {
-                                Some(e) => ui.colored_label(egui::Color32::LIGHT_RED, format!("{t}: {e}")),
-                                None => ui.label(t),
-                            };
-                        });
+            }
+        });
+        let missing = c.models.iter().filter(|m| m.mesh.is_none()).count();
+        let title = format!("Scenery ({} models{})", c.models.len(), if missing > 0 { format!(", {missing} not found") } else { String::new() });
+        egui::CollapsingHeader::new(title).default_open(open && advanced).show(ui, |ui| {
+            ui.weak("Tick to show or hide. Click a name to select it.");
+            for (mi, m) in c.models.iter_mut().enumerate() {
+                if !m.inst.alive {
+                    continue;
+                }
+                ui.horizontal(|ui| {
+                    if ui.checkbox(&mut m.visible, "").changed() {
+                        acts.push(Action::Rebuild);
+                    }
+                    let tris = m.mesh.as_ref().map(|x| x.indices.len() / 3).unwrap_or(0);
+                    let added = if m.inst.alive_off.is_some() { "  [added]" } else { "" };
+                    let t = if advanced { format!("{}{added}  {} tris", m.inst.name, tris) } else { format!("{}{added}", m.inst.name) };
+                    if let Some(e) = &m.error {
+                        ui.colored_label(egui::Color32::LIGHT_RED, format!("{t}: {e}"));
+                    } else if ui.selectable_label(cur_sel == Some(Sel::Model(mi)), t).clicked() {
+                        acts.push(Action::Select(Some(Sel::Model(mi))));
                     }
                 });
-            egui::CollapsingHeader::new("Component kinds (all levels)").default_open(false).show(ui, |ui| {
+            }
+        });
+        let rail_len: Vec<(usize, f32)> =
+            c.rail().map(|r| (0..r.segments.len()).map(|i| (r.segments[i].len(), r.length(i))).collect()).unwrap_or_default();
+        let stats = edit::rail_stats(c);
+        let rail_start = edit::rail_ref(c).map(|(l, _)| Sel::Rail(l, 0, 0));
+        let mut show_points = self.layers.rail_points;
+        egui::CollapsingHeader::new("Camera rail").default_open(true).show(ui, |ui| {
+            if rail_len.is_empty() {
+                ui.label("No rail found.");
+                return;
+            }
+            if let Some(st) = &stats {
+                ui.label(st.summary()).on_hover_text(format!(
+                    "The camera keeps its speed ({:.2} units a second, measured in game on Florio) and rides the extra length. Original length {:.1} units.",
+                    edit::RAIL_SPEED,
+                    st.orig_length
+                ));
+            }
+            ui.checkbox(&mut show_points, "Show rail points so I can bend the ride")
+                .on_hover_text("Click a rail point, then drag it. Keep the length close to the original so the ride takes the same time.");
+            ui.horizontal(|ui| {
+                if let Some(s) = rail_start {
+                    if ui.button("Select the start").clicked() {
+                        acts.push(Action::Select(Some(s)));
+                    }
+                }
+                if ui.button("Reset the rail").clicked() {
+                    acts.push(Action::ResetRail);
+                }
+            });
+            if advanced {
+                for (i, (pts, len)) in rail_len.iter().enumerate() {
+                    ui.monospace(format!("part {i}: {pts} points, {len:.1} units"));
+                }
+            }
+        });
+        if show_points != self.layers.rail_points {
+            self.layers.rail_points = show_points;
+            self.ov_dirty = true;
+        }
+        if !advanced {
+            return;
+        }
+        egui::CollapsingHeader::new(format!("Level files ({})", c.levels.len())).default_open(false).show(ui, |ui| {
+            if let Some(v) = c.variants.iter().find(|v| v.no == c.variant) {
+                for lr in &v.levels {
+                    match &lr.name {
+                        Some(n) => ui.label(format!("{:08x}  {n}", lr.hash)),
+                        None => ui.weak(format!("{:08x}  no entry with that name in the pack", lr.hash)),
+                    };
+                }
+            }
+            for e in &c.level_errors {
+                ui.colored_label(egui::Color32::LIGHT_RED, e);
+            }
+            for l in &c.levels {
+                ui.collapsing(format!("{}  ({}){}", l.name, l.kind(), if l.dirty { "  edited" } else { "" }), |ui| {
+                    ui.label(format!("{} bytes, {} entities, {} scene nodes, {} paths", l.size, l.entity_count, l.node_count, l.paths.len()));
+                    for (k, n) in &l.component_kinds {
+                        ui.monospace(format!("component {k}: {n}"));
+                    }
+                    if !l.species.is_empty() {
+                        ui.label(format!("species used: {:?}", l.species));
+                    }
+                    if !l.env_params.is_empty() {
+                        ui.label(format!("environment parameters: {}", l.env_params.join(", ")));
+                    }
+                });
+            }
+            ui.collapsing("Component kinds", |ui| {
                 ui.weak("slot number of the component sub-table; names are working labels");
                 for s in [1usize, 4, 5, 6, 7, 8, 9, 10, 11, 14, 15] {
-                    ui.label(format!("{s:>2}: {}", kind_name(s)));
+                    ui.monospace(format!("{s:>2}: {}", kind_name(s)));
                 }
             });
         });
-        if dirty {
-            self.scene_dirty = true;
-        }
-        if let Some(s) = new_sel {
-            self.selected_spawn = if self.selected_spawn == Some(s) { None } else { Some(s) };
-            self.scene_dirty = true;
-        }
-        if let Some(p) = focus {
-            self.focus(p);
-        }
     }
 
-    fn viewport_ui(&mut self, ui: &mut egui::Ui, gpu: &mut Gpu) {
+    fn pick(&self, rect: egui::Rect, at: egui::Pos2) -> Option<Sel> {
+        let c = self.loaded.as_ref()?;
+        if self.layers.rail && self.layers.rail_points {
+            if let Some((rl, pi)) = edit::rail_ref(c) {
+                let mut best: Option<(f32, Sel)> = None;
+                for (si, seg) in c.levels[rl].paths[pi].segments.iter().enumerate() {
+                    for (i, p) in seg.iter().enumerate() {
+                        let Some(sp) = pick::project(&self.cam, rect, Vec3::from(*p)) else { continue };
+                        let d = sp.distance(at);
+                        if d < 12.0 && best.map(|b| d < b.0).unwrap_or(true) {
+                            best = Some((d, Sel::Rail(rl, si, i)));
+                        }
+                    }
+                }
+                if let Some((_, s)) = best {
+                    return Some(s);
+                }
+            }
+        }
+        if self.layers.spawns {
+            let mut best: Option<(f32, Sel)> = None;
+            for (li, l) in c.levels.iter().enumerate() {
+                for (si, s) in l.spawns.iter().enumerate() {
+                    if !s.alive || (!s.pos_from_path && s.pos == [0.0; 3]) {
+                        continue;
+                    }
+                    let Some(p) = pick::project(&self.cam, rect, Vec3::from(s.pos) + Vec3::Y * 0.6) else { continue };
+                    let d = p.distance(at);
+                    if d < 14.0 && best.map(|b| d < b.0).unwrap_or(true) {
+                        best = Some((d, Sel::Spawn(li, si)));
+                    }
+                }
+            }
+            if let Some((_, s)) = best {
+                return Some(s);
+            }
+        }
+        if !self.lock_scenery {
+            let (o, d) = pick::screen_ray(&self.cam, rect, at);
+            return self.ground.raycast(o, d, 1e5, None).map(|h| Sel::Model(h.model));
+        }
+        None
+    }
+
+    fn viewport_ui(&mut self, ui: &mut egui::Ui, gpu: &mut Gpu, acts: &mut Vec<Action>) {
         ui.horizontal(|ui| {
             let before = self.layers;
-            ui.checkbox(&mut self.layers.geometry, "geometry");
+            ui.checkbox(&mut self.layers.geometry, "scenery");
             ui.checkbox(&mut self.layers.rail, "rail");
-            ui.checkbox(&mut self.layers.paths, "other paths");
-            ui.checkbox(&mut self.layers.spawns, "spawns");
-            ui.checkbox(&mut self.layers.spawn_links, "spawn paths");
-            if before != self.layers {
-                self.scene_dirty = true;
+            ui.checkbox(&mut self.layers.rail_points, "rail points").on_hover_text("Show the rail's points; click one and drag it to bend the ride");
+            ui.checkbox(&mut self.layers.spawns, "Pokémon");
+            ui.checkbox(&mut self.layers.spawn_links, "their routes");
+            ui.checkbox(&mut self.layers.paths, "all paths");
+            if before.geometry != self.layers.geometry {
+                self.geo_dirty = true;
             }
-            if ui.button("frame course").clicked() {
+            if before != self.layers {
+                self.ov_dirty = true;
+            }
+            ui.separator();
+            ui.checkbox(&mut self.lock_scenery, "lock scenery")
+                .on_hover_text("When locked, clicks in the 3D view only pick Pokémon, so the ground cannot be moved by accident");
+            if ui.button("Frame course").clicked() {
                 if let Some(c) = self.loaded.take() {
                     self.frame_course(&c);
                     self.loaded = Some(c);
                 }
             }
-            ui.weak("drag: orbit   right/middle drag: pan   wheel: zoom");
         });
-        let avail = ui.available_size();
+        let avail = ui.available_size() - egui::vec2(0.0, 24.0);
         let ppp = ui.ctx().pixels_per_point();
         let (w, h) = ((avail.x * ppp).max(16.0) as u32, (avail.y * ppp).max(16.0) as u32);
         let vp = self.viewport.get_or_insert_with(|| Viewport::new(gpu.device));
@@ -329,22 +1101,68 @@ impl EditorApp {
                 None => self.tex_id = Some(gpu.egui.register_native_texture(gpu.device, view, wgpu::FilterMode::Linear)),
             }
         }
-        if self.scene_dirty {
-            if let Some(c) = &self.loaded {
-                let s = render::build_scene(c, self.layers, self.selected_spawn);
+        if let Some(c) = &self.loaded {
+            if self.geo_dirty {
+                let (s, g) = render::build_geometry(c, self.layers);
                 self.scene_tris = s.triangles;
-                self.gpu_scene = Some(GpuScene::upload(gpu.device, &s));
+                self.geo_gpu = Some(GpuScene::upload(gpu.device, &s));
+                self.ground = g;
+                self.geo_dirty = false;
+                self.ov_dirty = true;
+                self.issues_version = None;
             }
-            self.scene_dirty = false;
+            if self.ov_dirty {
+                let s = render::build_overlay(c, self.layers, self.sel, &self.ground);
+                self.ov_gpu = Some(GpuScene::upload(gpu.device, &s));
+                self.ov_dirty = false;
+            }
         }
-        vp.render(gpu.device, gpu.queue, self.gpu_scene.as_ref(), &self.cam, self.fog_dist);
+        let scenes: Vec<&GpuScene> = self.geo_gpu.iter().chain(self.ov_gpu.iter()).collect();
+        vp.render(gpu.device, gpu.queue, &scenes, &self.cam, self.fog_dist);
         let Some(id) = self.tex_id else { return };
         let resp = ui.add(egui::Image::new((id, avail)).sense(egui::Sense::click_and_drag()));
+        let rect = resp.rect;
+
+        if resp.drag_started_by(egui::PointerButton::Primary) {
+            let origin = ui.input(|i| i.pointer.press_origin()).unwrap_or(rect.center());
+            if let Some(s) = self.pick(rect, origin) {
+                let movable = self.loaded.as_ref().map(|c| edit::move_mode(c, s).is_ok()).unwrap_or(false);
+                acts.push(Action::Select(Some(s)));
+                if movable {
+                    let cur = self.loaded.as_ref().and_then(|c| edit::position(c, s)).unwrap_or(Vec3::ZERO);
+                    let g = self.ground.below(cur, Self::skip_model(s)).map(|g| cur.y - g.y).unwrap_or(0.0);
+                    self.drag = Some(Drag { sel: s, height: g.max(0.0) });
+                }
+            }
+        }
         let d = resp.drag_delta();
         if resp.dragged_by(egui::PointerButton::Primary) {
-            self.cam.orbit(d.x, d.y);
+            match self.drag.as_ref().map(|dr| (dr.sel, dr.height)) {
+                Some((s, h)) => {
+                    if let Some(at) = resp.interact_pointer_pos() {
+                        let (o, dir) = pick::screen_ray(&self.cam, rect, at);
+                        if let Some(hit) = self.ground.raycast(o, dir, 1e5, Self::skip_model(s)) {
+                            self.move_sel_to(s, hit.point + Vec3::Y * h, Some("drag"));
+                        }
+                    }
+                }
+                None => self.cam.orbit(d.x, d.y),
+            }
         } else if resp.dragged_by(egui::PointerButton::Secondary) || resp.dragged_by(egui::PointerButton::Middle) {
             self.cam.pan(d.x, d.y);
+        }
+        if resp.drag_stopped() {
+            self.drag = None;
+            self.history.end_interaction();
+        }
+        if resp.clicked() {
+            let at = resp.interact_pointer_pos().unwrap_or(rect.center());
+            acts.push(Action::Select(self.pick(rect, at)));
+        }
+        if resp.double_clicked() {
+            if let Some(p) = self.sel.and_then(|s| self.loaded.as_ref().and_then(|c| edit::position(c, s))) {
+                acts.push(Action::Focus(p));
+            }
         }
         if resp.hovered() {
             let scroll = ui.input(|i| i.smooth_scroll_delta.y);
@@ -354,21 +1172,28 @@ impl EditorApp {
         }
         let info = match &self.loaded {
             Some(c) => format!(
-                "{} leg {}   {} triangles   rail: {}   spawns: {}",
+                "{} leg {}   {} triangles   rail {}   {} spawns",
                 c.course,
                 c.variant,
                 self.scene_tris,
-                c.rail().map(|r| format!("{:.1} units", r.length(0))).unwrap_or("none".into()),
+                edit::rail_stats(c).map(|s| format!("{:.1} units", s.length)).unwrap_or("none".into()),
                 c.levels.iter().map(|l| l.spawns.len()).sum::<usize>()
             ),
             None => "no course loaded".into(),
         };
-        ui.painter().text(
-            resp.rect.left_top() + egui::vec2(8.0, 8.0),
-            egui::Align2::LEFT_TOP,
-            info,
-            egui::FontId::proportional(14.0),
-            egui::Color32::WHITE,
-        );
+        ui.painter().text(rect.left_top() + egui::vec2(8.0, 8.0), egui::Align2::LEFT_TOP, info, egui::FontId::proportional(14.0), egui::Color32::WHITE);
+        if let Some(s) = self.sel {
+            if let Some(p) = self.loaded.as_ref().and_then(|c| edit::position(c, s)) {
+                if let Some(sp) = pick::project(&self.cam, rect, p + Vec3::Y * 1.6) {
+                    ui.painter().text(sp, egui::Align2::CENTER_BOTTOM, self.label(s), egui::FontId::proportional(15.0), egui::Color32::WHITE);
+                }
+            }
+        }
+        ui.horizontal(|ui| {
+            ui.label(&self.status);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.weak("left drag: orbit / move selected   right drag: pan   wheel: zoom   G ground   R face rail   F show");
+            });
+        });
     }
 }

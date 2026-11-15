@@ -1,0 +1,22 @@
+# fixture: story_complete (with 9:0:0x3b30, 0x3b34, 0x3b4d set). Florio Day ride: B and Y throws with dense frames, then pause > How to Play.
+repeat @f3100 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=700
+@f150 6 A
+@f510 6 A
+repeat @f710 @f3710 90 6 A
+wait ride timeout=900
+wait rail>=20
+@f0 600 shot=3
+1.0 0.2 B
+3.0 0.2 B
+5.0 0.2 Y
+7.0 0.2 Y
+wait rail>=24
+1.0 0.2 Plus
+wait ui=pause_menu timeout=60
+1.5 0.2 Down
+2.5 0.2 Down
+3.5 0.2 Down
+4.5 0.2 A
+@f400 60 shot=20
+end @f600

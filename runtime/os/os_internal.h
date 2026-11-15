@@ -73,7 +73,10 @@ struct Thread {
     uint32_t wtag = 0, wresult = 0;
     bool woken = false;
     char waker_name[24] = {};                // name and priority of the thread that last woke this one (perf only; a copy,
-    int waker_prio = -1;                     // since the waker may be destroyed before the wait is reported)
+    int waker_prio = -1;
+    uint32_t host_tid = 0;                   // perf pass 13 (SNAP_CRIT): host thread id of this thread, and of the thread that last woke it
+    uint32_t waker_tid = 0;
+    uint64_t wake_ns = 0;                     // since the waker may be destroyed before the wait is reported)
     Thread *lock_owner = nullptr;            // W_LOCK: the thread whose lock we wait for
     std::vector<Thread *> lock_waiters;      // threads in W_LOCK on locks we own (priority inheritance)
     // lifecycle
