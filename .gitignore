@@ -24,6 +24,7 @@ build/
 *.jpg
 *.webp
 !docs/screenshots/*.webp
+!builder/release/screenshots/*.png
 *.dds
 *.ktx
 *.tga
