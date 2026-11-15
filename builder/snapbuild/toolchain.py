@@ -76,6 +76,32 @@ def vc_env(vcvars):
     return env
 
 
+def native_env(mode='auto', tools_dir=None):
+    """The environment for compiling and linking the Windows exe, and a short description of where the system files come from.
+
+    mode 'vs'   : Visual Studio Build Tools (vcvars64.bat), as before.
+         'xwin' : the Microsoft C runtime and Windows SDK files downloaded by winsdk.install (no Visual Studio needed).
+         'auto' : Visual Studio when it is installed, else the downloaded files.
+    Returns (link_env, compile_env, description). compile_env is the plain environment for Visual Studio (clang finds it itself)."""
+    from . import winsdk
+    if mode not in ('auto', 'vs', 'xwin'):
+        raise StepError(f'unknown --winsdk value "{mode}" (use auto, vs or xwin)')
+    if mode in ('auto', 'vs'):
+        try:
+            vcvars = find_vcvars()
+            return vc_env(vcvars), dict(os.environ), f'Visual Studio Build Tools ({vcvars})'
+        except StepError:
+            if mode == 'vs':
+                raise
+    root = winsdk.find(tools_dir)
+    if root:
+        env = winsdk.env_for(root)
+        return env, env, f'Microsoft C runtime and Windows SDK files downloaded earlier ({root})'
+    raise StepError('Neither Visual Studio Build Tools nor the downloaded Microsoft SDK files were found. '
+                    'The setup program downloads them for you (it asks you to accept the Microsoft license first); '
+                    'from the command line run: python builder/snap_builder.py winsdk --accept-license')
+
+
 def find_python(arg, root):
     """A Python with capstone, pyelftools and numpy (the lifter needs them)."""
     cands = [arg, Path(root) / 'tools' / 'venv-recomp' / 'Scripts' / 'python.exe', Path(root) / 'tools' / 'venv' / 'Scripts' / 'python.exe',

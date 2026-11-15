@@ -61,6 +61,7 @@ class Options:
         self.force = []
         self.compare_generated = None
         self.smoke_timeout = 420
+        self.winsdk = 'auto'         # where the C runtime and Windows SDK files come from: auto, vs or xwin
         self.upscalers = None        # names to fetch after the link (default: the ones marked default in versions.json)
         self.accept_license = []     # upscaler names whose vendor license the user accepted on the command line
         self.cache = True            # reuse function lists and generated C from %LOCALAPPDATA%\SnapRecomp\cache
@@ -152,11 +153,11 @@ def build(opt, log):
         raise StepError('preflight failed:\n  ' + '\n  '.join(probs))
     llvm = toolchain.find_llvm(opt.llvm, repo)
     py = toolchain.find_python(opt.python, repo)
-    vcvars = toolchain.find_vcvars()
+    link_env, compile_env, sdk_desc = toolchain.native_env(getattr(opt, 'winsdk', 'auto'))
     pre = find_prebuilt(opt.prebuilt)
     vk = toolchain.find_vulkan_lib(opt.vulkan_lib, repo, pre)
     man = check_prebuilt(pre)
-    log.write(f'tools: clang {toolchain.clang_version(llvm)} in {llvm}; python {py}; prebuilt {pre} (runtime ABI {man["runtime_abi"]})')
+    log.write(f'tools: clang {toolchain.clang_version(llvm)} in {llvm}; python {py}; prebuilt {pre} (runtime ABI {man["runtime_abi"]}); system files: {sdk_desc}')
     want_llvm = table.get('tools', {}).get('llvm', {}).get('version_major')
     if want_llvm and not toolchain.clang_version(llvm).startswith(str(want_llvm) + '.'):
         log.write(f'warning: clang {toolchain.clang_version(llvm)} differs from the pinned major version {want_llvm}; the result may differ')
@@ -255,7 +256,7 @@ def build(opt, log):
     maps_files_key = sha256_text(*[sha256_file(maps_dir / n) for n in ghidra_maps.RESULT_FILES])
     gen_env = dict(os.environ, SNAP_ELF_MAIN=str(elf_dir / 'main.elf'), SNAP_ELF_SDK=str(elf_dir / 'sdk.elf'),
                    SNAP_MAPS=str(maps_dir), SNAP_RUNTIME_INCLUDE=str(include))
-    build_env = dict(os.environ, SNAP_LLVM_BIN=str(llvm), SNAP_RUNTIME_INCLUDE=str(include))
+    build_env = dict(compile_env, SNAP_LLVM_BIN=str(llvm), SNAP_RUNTIME_INCLUDE=str(include))
     compile_keys = {}
     report = {}
     for mod in ('main', 'sdk'):
@@ -296,7 +297,7 @@ def build(opt, log):
     link_key = sha256_text(compile_keys['main'], compile_keys['sdk'], sha256_file(pre / 'manifest.json'), vk.stat().st_size)
 
     def do_link():
-        env = toolchain.vc_env(vcvars)
+        env = link_env
         objs = [pre / 'obj' / o['name'] for o in man['objs']]
         libs = [work / 'build' / 'main' / 'lib' / 'snap_main.lib', work / 'build' / 'sdk' / 'lib' / 'snap_sdk.lib', vk]
         libs += [f'-l{n}' for n in ('user32', 'gdi32', 'bcrypt', 'ole32', 'avrt', 'shell32', 'advapi32', 'winmm', 'oleaut32', 'dbghelp', 'dwmapi', 'winhttp', 'comctl32')]

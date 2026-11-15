@@ -97,6 +97,7 @@ def main(argv=None):
     b.add_argument('--ghidra', help='Ghidra 12.1.2 folder (with the Switch loader extension); needed without --maps')
     b.add_argument('--jdk', help='JDK 21 folder for Ghidra')
     b.add_argument('--prebuilt', help='folder with the prebuilt runtime objects (default: the one shipped with the builder)')
+    b.add_argument('--winsdk', default='auto', choices=('auto', 'vs', 'xwin'), help='where the C runtime and Windows SDK files come from: Visual Studio Build Tools (vs), the files fetched by the winsdk command (xwin), or whichever exists (auto)')
     b.add_argument('--jobs', type=int, default=0, help='parallel compile jobs (default: from CPUs and RAM, at most 8)')
     b.add_argument('--skip-smoke', action='store_true', help='do not start the game at the end')
     b.add_argument('--harness', help='ShaderHarness.dll for the smoke run')
@@ -124,6 +125,11 @@ def main(argv=None):
     u.add_argument('--yes', action='store_true', help='download without asking (does NOT accept any license)')
     u.add_argument('--offline-dir', action='append', default=[], help='unused for now; downloads are cached in a temporary folder')
     u.add_argument('--list', action='store_true', help='show what is installed')
+    w = sub.add_parser('winsdk', help="fetch Microsoft's C runtime and Windows SDK files with the pinned xwin (the way to build without Visual Studio)")
+    w.add_argument('--accept-license', action='store_true', help="you have read and accept Microsoft's license (https://go.microsoft.com/fwlink/?LinkId=2086102); required")
+    w.add_argument('--tools-dir', help='where to unpack (default %%LOCALAPPDATA%%\\SnapRecomp\\tools)')
+    w.add_argument('--offline-dir', action='append', default=[], help='folder with an already downloaded xwin archive (hash checked)')
+    w.add_argument('--yes', action='store_true', help='download xwin itself without asking (does NOT accept the Microsoft license)')
     up = sub.add_parser('update', help='check for a newer builder release, install it (rebuilds here, switches only if the new build passes), or roll back')
     up.add_argument('action', choices=('check', 'apply', 'rollback'))
     up.add_argument('--work', help='the work folder of your build (holds out\\ and the record of the last build)')
@@ -198,8 +204,24 @@ def main(argv=None):
         print('Done: ' + ', '.join(f'{k} {v}' for k, v in res.items()))
         return 0
 
-    if a.cmd in ('fetch', 'pyenv'):
+    if a.cmd == 'winsdk':
+        from snapbuild import winsdk
         table = versioncheck.load_table(pipeline.BUILDER / 'versions.json')
+        tools_dir = Path(a.tools_dir) if a.tools_dir else fetch.default_tools_dir()
+        if winsdk.find(tools_dir):
+            print(f'Already installed: {winsdk.find(tools_dir)}')
+            return 0
+        try:
+            got = fetch.fetch_tools(table, ['xwin'], tools_dir, tools_dir / 'downloads', fetch.ask_from_args(a.yes), a.offline_dir)
+            exe = next(Path(got['xwin']).rglob('xwin.exe'))
+            print('Done: ' + str(winsdk.install(exe, tools_dir, a.accept_license)))
+            return 0
+        except (fetch.FetchError, StepError) as e:
+            print('Stopped: ' + str(e))
+            return 1
+
+    if a.cmd in ('fetch', 'pyenv'):
+        table =versioncheck.load_table(pipeline.BUILDER / 'versions.json')
         tools_dir = Path(a.tools_dir) if a.tools_dir else fetch.default_tools_dir()
         dl = tools_dir / 'downloads'
         if a.cmd == 'fetch' and a.list:

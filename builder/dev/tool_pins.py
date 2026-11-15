@@ -41,6 +41,27 @@ TOOLS = {
         'install': {'dir': '.', 'strip': 0},   # the zip holds jdk-21.0.9+10/
         'source': GH + '/adoptium/temurin21-binaries/releases/download/jdk-21.0.9%2B10/OpenJDK21U-jdk_x64_windows_hotspot_21.0.9_10.zip.sha256.txt (Adoptium checksum file)',
     },
+    'xwin': {
+        # Downloads the Microsoft C runtime and Windows SDK files the final link needs, from Microsoft's own servers, on the user PC,
+        # after the user accepts Microsoft's license in the setup wizard. Nothing from Microsoft is ever shipped by us.
+        'version': '0.10.0',
+        'filename': 'xwin-0.10.0-x86_64-pc-windows-msvc.tar.gz',
+        'url': GH + '/Jake-Shadle/xwin/releases/download/0.10.0/xwin-0.10.0-x86_64-pc-windows-msvc.tar.gz',
+        'sha256': '96e83665ef5c1406aabd0be603a8d08e67e604f36fda630b6807ee948a614e26', 'size': 3074443,
+        'install': {'dir': 'xwin', 'strip': 1},   # the archive holds xwin-0.10.0-x86_64-pc-windows-msvc/xwin.exe
+        'license': 'MIT or Apache-2.0',
+        'source': GH + '/Jake-Shadle/xwin/releases/tag/0.10.0; SHA-256 computed by us from the official release asset 2026-11-15 (no digest is published)',
+    },
+    'nstool': {
+        # Reads the user's own dump (XCI or NSP) with the user's own prod.keys, on the user PC. MIT.
+        'version': '1.9.2',
+        'filename': 'nstool-v1.9.2-win_x64.zip',
+        'url': GH + '/jakcron/nstool/releases/download/v1.9.2/nstool-v1.9.2-win_x64.zip',
+        'sha256': '34659dc47249a3c00f7fc88a11f4e5ba14dfbec0a6a96b4f3f71368a7e1c9374', 'size': 487087,
+        'install': {'dir': 'nstool', 'strip': 0},   # the zip holds nstool.exe
+        'license': 'MIT',
+        'source': GH + '/jakcron/nstool/releases/tag/v1.9.2; SHA-256 computed by us from the official release asset 2026-11-15 (no digest is published)',
+    },
     'vulkan_sdk': {
         'note': 'not needed: the prebuilt folder ships a small vulkan-1.lib import library; vulkan-1.dll comes with the graphics driver',
     },
