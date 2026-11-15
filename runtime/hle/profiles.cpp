@@ -135,12 +135,25 @@ static bool copy_uid(const fs::path& src, const fs::path& dst, std::string* err)
   return true;
 }
 
+static bool copy_tree_verified(const fs::path& from, const fs::path& to, std::error_code* why);
+
 bool copy_consistent(const std::string& src_root, const std::string& dst_root, std::string* err) {
   std::error_code ec;
   fs::create_directories(P(dst_root), ec);
   for (fs::directory_iterator it(P(src_root), ec), end; !ec && it != end; it.increment(ec)) {
     std::error_code e2;
     if (!it->is_directory(e2)) continue;
+    if (it->path().filename() == "photos_hd") {
+      // The HD photo copies (runtime/nvn/nvn_hdphoto.cpp) are display-only extras beside the uid folders, not a save:
+      // copy them whole, and a failure only costs the HD look of those photos, so it never fails the copy.
+      std::error_code why;
+      const fs::path dst = P(dst_root) / "photos_hd";
+      if (!copy_tree_verified(it->path(), dst, &why)) {
+        log("profiles: HD photo copies were not copied (%s); those photos show at the game's own size", why.message().c_str());
+        fs::remove_all(dst, e2);
+      }
+      continue;
+    }
     if (!copy_uid(it->path(), P(dst_root) / it->path().filename(), err)) return false;
   }
   return true;

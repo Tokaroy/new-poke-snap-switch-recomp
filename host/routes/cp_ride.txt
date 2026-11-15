@@ -1,0 +1,12 @@
+# fixture: post_tutorial
+# Scratch route (perf pass 19): Florio boot to the ride, ride shooting until the film is used up, then end.
+repeat @f300 @f30000 120 8 A
+wait ui=map_select timeout=240
+repeat @f60 @f30000 120 8 A
+wait ride timeout=240
+repeat @f0 @f30000 24 4 A
+repeat @f0 @f6000 600 200 ZL
+repeat @f0 @f30000 400 60 rx=0.25
+repeat @f200 @f30000 400 60 rx=-0.25
+wait film<=0 timeout=300
+end @f60

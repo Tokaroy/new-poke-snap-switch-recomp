@@ -1,0 +1,24 @@
+# fixture: shiny_album
+# shiny inert proof (round 5): album photo editing re-encodes a saved photo. With SNAP_SHINY unset the re-encoded JPEG must be identical run to run and against a build without the mod (run with SNAP_PHOTO_EXPORT=1 SNAP_PHOTO_LOG=1 and compare the jpeg_crc32 values).
+repeat @f300 @f30000 120 8 A
+wait ui=main_menu:MainMenu timeout=240
+@f200 8 Down
+@f400 8 A
+repeat @f800 @f30000 120 8 A
+wait ui=main_menu:Laboratory timeout=300
+@f90 8 Down
+@f200 8 A
+wait ui=myphoto:ModeSelect timeout=60
+@f200 8 A
+wait ui=myphoto:Album timeout=60
+@f300 8 A
+@f450 8 A
+@f750 8 A
+@f950 8 A
+@f1100 8 Down
+@f1250 8 Down
+@f1400 8 Down
+@f1550 8 A
+@f1900 8 A
+@f2300 8 A
+end @f2900

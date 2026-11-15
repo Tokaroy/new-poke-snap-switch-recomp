@@ -39,12 +39,13 @@
 
 ## Status
 
-Early playable. The game boots to the title screen, the lab hub and the courses, and photos can be taken, scored, saved and reloaded. Checks so far are scripted runs on a hidden desktop with a null audio backend. No full human play-through has been done.
+Early playable. The game boots to the title screen and the lab hub, all 14 courses play to the end, and photos can be taken, scored, saved and reloaded. Checks so far are scripted runs on a hidden desktop with a null audio backend. No full human play-through has been done.
 
 | Area | State | Notes |
 | --- | --- | --- |
 | Boot, title, lab hub, map | Works | |
 | Florio Park ride, photo select, scoring | Works | Photos sort by subject, thumbnails show, and the professor scores them |
+| Courses | Works | A scripted sweep rode all 14 courses and 28 entries (Day, Night, Evening and Illumina variants) to the course end and the photo select. 26 of 28 reached the score screen with a scored photo. Florio Illumina and Volcano Illumina were not scored because the blind route cannot photograph the Illumina Pokémon. No crash, hang or device loss |
 | Progression | Partial | Points registration, save and reload, level 2 unlock (Florio Night) and Photodex persistence pass from a real save. Professor requests were not reached |
 | Story | Partial | Events 1, 2, 27 and 33 start and play, with cutscenes, dialogue, credits and the post-credits talk. The save after event 2 is verified. The save after credits and events 8 and 35 are not confirmed |
 | Secrets | Partial | Scan pulses, Level 3 spawns and Night spawns pass. Florio Side Path, Mew, targeted orb, melody and fluffruit reactions, and special-pose photos were not triggered |
@@ -52,10 +53,11 @@ Early playable. The game boots to the title screen, the lab hub and the courses,
 | Audio, video, text | Works | Title, hub, map, Florio ride and photo select have music, shutter and ambience with no clipping. Cutscenes are in-engine, so there are no video files. English text and score numbers read correctly |
 | Input | Partial | Keyboard, mouse and controllers (XInput, plus SDL3 when built with it). Rumble works on the host side with scripted test values, but no game action was seen producing vibration yet. Gyro was tested only with a scripted route, because no test pad reports a gyro |
 | Frame rate | Works | Capped at 60 fps, like the original. A Florio ride held 60.0 fps on an RTX 4090. Frame rate drops when several test instances share one PC; that case has no clean benchmark yet |
-| Vulkan validation | Works | Title, hub, one Florio ride and photo select gave no synchronization hazards and no other validation errors after one startup pipeline error was fixed |
+| Vulkan validation | Works | Title, hub, Florio, Reef, Jungle, Beach and Snowfields rides and photo select gave no synchronization hazards and no other validation errors after one startup pipeline error was fixed |
 
 **Known problems**
 
+- Reef Day shows saturated, patchy sea-bed colors. It is unproven whether that matches the original.
 - Wurmple photos stay unselectable ("subject is not clearly visible"). The cause is unknown; it may be normal game behavior, since the subject is whatever the reticle center points at.
 - A loading hang on Lental was seen once and did not come back in four later runs.
 - Draw distance and full-rate distant animation are experimental and may change photo scores.
@@ -70,7 +72,8 @@ Early playable. The game boots to the title screen, the lab hub and the courses,
 - The default look matches the original game: its own FXAA, no sharpening, no forced anisotropic filtering.
 - The enhanced look turns on with one setting (see [Running and settings](#running-and-settings)): 2x supersampling plus SMAA, CAS sharpening, 16x anisotropic filtering, automatic UI font supersampling and PNG photo export (lossless, with a JSON sidecar).
 - Quality presets: Very Low, Low, Normal, High, Ultra, Maximum and Custom.
-- Upscalers: NVIDIA DLSS and DLAA, AMD FSR and Intel XeSS, each with quality modes. The vendor SDK files are not in this repo.
+- Upscalers: NVIDIA DLSS and DLAA, AMD FSR and Intel XeSS, each with quality modes. The vendor SDK files are not in this repo or the release zip. The builder and the launcher download them to your PC from the vendors only after you read and accept each license, and check them against pinned hashes. An upscaler that is not installed is hidden.
+- HD photos (off by default, display only): photos taken under a scaled frame (4K, DLAA, DLSS, FSR or render scale above 1) also get a 2160x1440 copy. It is shown in the photo select preview, the score screen and the album. Turn it on with the "HD photos" row in the Photos settings tab. The game's own save, JPEG and score inputs do not change.
 - HDR output (HDR10 and scRGB, with fallback to SDR), peak and paper-white settings.
 - Render scale from 0.5x to 4x, shadow resolution up to 8192, ambient occlusion options.
 - Optional color looks (Neutral, Vivid, Warm, Cool) and per-pass switches for bloom, depth of field, film grain and chromatic aberration.
@@ -85,10 +88,16 @@ Early playable. The game boots to the title screen, the lab hub and the courses,
 ### Window, saves and tools
 
 - Borderless fullscreen (F11 or Alt+Enter), monitor choice, remembered window position and size, pause and mute when unfocused, and a fast-boot mode that skips the frame limiter during loading.
+- Save import and export from the launcher or the command line: Switch save-manager backups (JKSV, Checkpoint), Ryujinx and yuzu-family save folders, and .zip files. See [Saves: import and export](#saves-import-and-export).
 - Save profiles with a picker, duplicate, import and restore from trash. Each commit is an immutable generation, and the current and 5 earlier generations are kept as backups.
 - One running copy per save folder, so two instances cannot corrupt a save.
 - A mod loader for loose-file packs that replace single game archive entries, including HD texture packs. See [docs/mods.md](docs/mods.md). The repo holds only the loader, never pack contents made from game data.
 - Options that go beyond the original game: draw distance, detail distance, full-rate distant animation, photos per expedition (72 original, up to 500), NEO-ONE speed and dialogue skipping.
+- Shiny Pokémon mod (experimental, off by default, cosmetic only): a small share of spawned Pokémon get a recolored texture. A row in the Effects settings tab picks Off, 1 in 4096, 1 in 512 or Test. The recolored textures are built on your PC from your own files. See [docs/shiny-mod-plan.md](docs/shiny-mod-plan.md).
+
+### Level editor (early)
+
+A Rust course editor opens a course from your own unpacked files and draws its geometry, ride rail, paths and spawn points. You can move and copy scenery and Pokémon spawns, bend the ride rail, and export the result as a mod pack for the mod loader. In game tests, an edited Florio with a copied Dodrio and a raised rail section rode to the end and reached photo select. New courses and new models are not supported yet. Source: [tools/level-editor](tools/level-editor). Plan: [docs/level-editor-plan.md](docs/level-editor-plan.md).
 
 ## Screenshots
 
@@ -244,8 +253,8 @@ Bring a save in, or take yours out, with the launcher buttons "Import save..." a
 
 - **Import from:** a folder of the game's save files, or a .zip of one. Backups from a save manager such as JKSV or Checkpoint work, and so do the save folders of Ryujinx and the yuzu family of emulators. One level of nesting is fine: a dated backup folder, or Ryujinx's `0` folder (its `1` folder is ignored). The launcher also lists emulator saves it finds on this PC, newest first.
 - **Checks:** all 15 save files must be present with the right names and sizes. A save from another game, an incomplete copy or a damaged zip is refused with a message, and nothing changes. A save from an older game version imports with a warning, since the game upgrades it on the first load.
-- **Export:** copies the current save's files into a folder you pick (into a dated subfolder when that folder is not empty). Restore the result with a save manager, or copy its files into an emulator's save folder for this game.
-- **Command line:** `snap_boot.exe --import-save <folder or .zip> [--profile <name>]` and `snap_boot.exe --export-save <folder>`. The exit code is 0 for success, 1 for a failure and 2 when the game is running.
+- **Export:** copies the current save's files into a folder you pick (into a dated subfolder when that folder is not empty), or into a .zip when the path ends in `.zip`. The zip has the files at its top level, the layout JKSV uses. Restore the result with a save manager, or copy its files into an emulator's save folder for this game.
+- **Command line:** `snap_boot.exe --import-save <folder or .zip> [--profile <name>]` and `snap_boot.exe --export-save <folder or .zip>`. The exit code is 0 for success, 1 for a failure and 2 when the game is running.
 
 ## Testing
 
@@ -271,7 +280,7 @@ Game-level checks use scripted routes: `powershell -File host\run_boot.ps1 -Rout
 | `host/` | Loader, boot driver, `build_snap.py`, `play.ps1`, `run_boot.ps1`, scripted routes and in-game mods |
 | `scripts/` | Extraction, unpacking and analysis tools: NSO to ELF, PFS0, DRP archives, shader and format parsers, Ghidra scripts, an offline Maxwell-to-SPIR-V harness |
 | `tests/` | Instruction differential, HLE, mods, audio, NVN and OS tests |
-| `docs/` | Design notes, `mods.md` and screenshots |
+| `docs/` | Design notes, `mods.md`, the HD, shiny and level editor plans, and screenshots |
 | `AGENTS.md` | The project's decisions and current state |
 
 Game shaders are translated offline (Ryujinx shader translator to SPIR-V) and loaded at run time from your own extracted files.
@@ -282,7 +291,7 @@ In progress: save hardening and the profile changes it needs, load-time and sche
 
 Planned:
 
-- Wider scripted course coverage.
+- Scoring the two Illumina entries that the blind route cannot photograph.
 - A human play-through. Professor requests, the album viewer and several secrets are unchecked.
 - The cause of the Wurmple photo problem.
 - Present pacing for high-refresh displays.

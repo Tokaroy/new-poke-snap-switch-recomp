@@ -275,6 +275,7 @@ void FullPass(ReplayCtx& cx, VkImageView target, uint32_t w, uint32_t hh, VkAtta
   ca.imageView = target; ca.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; ca.loadOp = load; ca.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
   VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
   ri.renderArea = {{0, 0}, {w, hh}}; ri.layerCount = 1; ri.colorAttachmentCount = 1; ri.pColorAttachments = &ca;
+  if (g_perfPassOn) { char lb[96]; snprintf(lb, sizeof lb, "aa pass %ux%u", w, hh); PerfMark(cx.h, cx.cb, lb); g_perfDraws++; }
   vkCmdBeginRendering(cx.cb, &ri);
   VkViewport vp{0, 0, (float)w, (float)hh, 0, 1}; VkRect2D sc{{(int32_t)x0, 0}, {w - x0, hh}};
   vkCmdSetViewport(cx.cb, 0, 1, &vp); vkCmdSetScissor(cx.cb, 0, 1, &sc);

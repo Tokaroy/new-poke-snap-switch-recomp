@@ -22,7 +22,7 @@ thread_local uint8_t tl_role = R_OTHER;
 std::atomic<uint64_t> g_role_ns[R_COUNT][WT_COUNT], g_fs_bytes;
 uint64_t g_wait_event_ns = 8000000;
 static const char* kWtName[WT_COUNT] = {"core", "lock", "cvar", "key", "multi", "sleep", "fs"};
-static uint64_t g_prev_role[R_COUNT][WT_COUNT], g_prev_fs_bytes;
+static uint64_t g_prev_role[R_COUNT][WT_COUNT], g_prev_fs_bytes, g_prev_cs_elided, g_prev_cs_forced;
 static std::mutex g_led_mu;
 static std::map<unsigned long, Ledger*> g_ledgers;
 unsigned long ledger_tid() { return GetCurrentThreadId(); }
@@ -202,7 +202,7 @@ static void init() {
     static const char* kRole[R_COUNT] = {"oth", "gt", "mt"};
     for (int r : {1, 2, 0})
         for (int i = 0; i < WT_COUNT; i++) fprintf(g_frames, ",%s_%s_ms", kRole[r], kWtName[i]);
-    fprintf(g_frames, ",fs_bytes\n");
+    fprintf(g_frames, ",fs_bytes,cs_elided,cs_forced\n");
     fprintf(g_threads, "t_s,tid,name,cpu_ms,wall_ms\n");
     fprintf(g_events, "t_s,kind,ms,detail\n");
     g_waits = fopen((b + "_waits.csv").c_str(), "w");
@@ -264,8 +264,9 @@ void frame_mark(uint64_t present_no, double gpu_busy_ms, double gpu_span_ms, int
             g_prev_role[r][i] = v;
         }
     const uint64_t fb = g_fs_bytes.load(std::memory_order_relaxed);
-    fprintf(g_frames, ",%llu\n", (unsigned long long)(fb - g_prev_fs_bytes));
-    g_prev_fs_bytes = fb;
+    const uint64_t ce = g_cs_elided.load(std::memory_order_relaxed), cf = g_cs_forced.load(std::memory_order_relaxed);
+    fprintf(g_frames, ",%llu,%llu,%llu\n", (unsigned long long)(fb - g_prev_fs_bytes), (unsigned long long)(ce - g_prev_cs_elided), (unsigned long long)(cf - g_prev_cs_forced));
+    g_prev_fs_bytes = fb; g_prev_cs_elided = ce; g_prev_cs_forced = cf;
     if (present_no % 120 == 0) { fflush(g_frames); fflush(g_events); }
 }
 

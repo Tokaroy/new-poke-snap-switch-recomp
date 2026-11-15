@@ -495,6 +495,7 @@ VkPipeline GetPipeline(ReplayCtx& cx, DrawState& d, VkPrimitiveTopology topo, co
     if (rt0->lastDrawPresent != now) { rt0->drawStreak = rt0->lastDrawPresent == now - 1 ? rt0->drawStreak + 1 : 1; rt0->lastDrawPresent = now; }
     mustHave = rt0->drawStreak < 3;
   }
+  if (!mustHave && PipelineShutterWindow()) mustHave = true;   // a photo is being taken: no skipped draws
   VkPipeline pipe = PipelineAcquire(h, pd, d.prog, &pending, mustHave);   // nvn_pipeline.cpp: ready map, inline or background compile, key recording
   if (!pipe && pending) { snap_perf::count(snap_perf::V_PIPES_SKIPPED); LifeCount(LS_PIPE_SKIP); }   // [nvnfix] SNAP_NVN_STATS
   return pipe;
@@ -602,7 +603,7 @@ ResolvedTex ResolveHandle(ReplayCtx& cx, DrawState& d, uint64_t handle, bool ima
       drawnW = std::max(std::fabs(f[14 * 2] - f[0]), std::fabs(f[14] - f[0]));
       if (!(drawnW < 4096.0f)) drawnW = 0;
     }
-    if (TextureImpl* hs = HdPhotoSubstitute(r.t, drawnW)) { r.t = hs; hdSub = true; }
+    if (TextureImpl* hs = HdPhotoSubstitute(r.t, drawnW, (float)cx.rt[0]->HW() / 1920.0f)) { r.t = hs; hdSub = true; }
   }
   if (!r.t->EnsureImage()) return r;
   const TexView* tv = (slot.hasView && !up && !hdSub) ? &slot.view : nullptr;
@@ -669,6 +670,11 @@ void BeginRendering(ReplayCtx& cx, const RtInfo& rt) {
   ri.renderArea = {{0, 0}, {w, hgt}};
   ri.layerCount = layerCount;
   ri.colorAttachmentCount = (uint32_t)rt.nColor; ri.pColorAttachments = col;
+  if (g_perfPassOn) {
+    char lb[96];
+    snprintf(lb, sizeof lb, "rp %ux%u c%d f%x%s%s t%x", w, hgt, rt.nColor, cx.rt[0] ? cx.rt[0]->b.format : 0, dt ? " z" : "", dt ? "" : "", (unsigned)(((uintptr_t)(cx.rt[0] ? (void*)cx.rt[0] : (void*)cx.rt[8]) >> 6) & 0xfff));
+    PerfMark(cx.h, cx.cb, lb);
+  }
   vkCmdBeginRendering(cx.cb, &ri);
   cx.rendering = true;
   for (int i = 0; i < 8; i++) if (cx.bcDst[i]) cx.bcDirty = true;
@@ -1235,6 +1241,7 @@ void DoDraw(ReplayCtx& cx, const Cmd& c0) {
     HdPhotoCapture(cx, p, texWrites[0].r.t, cx.rt[0], (u4.pool && u4.pool->storage && u4.range >= 8) ? reinterpret_cast<const float*>(static_cast<const uint8_t*>(u4.pool->storage) + u4.off) : nullptr, uvp);
   }
   if (!cx.rendering) BeginRendering(cx, rt);
+  g_perfDraws++;
 
   ProgramImpl* evalVar = EvalCopyDepthVariant(cx, p, texWrites);
   if (!evalVar && cx.rt[0] && !texWrites.empty() && !texWrites[0].image)   // photo capture Lanczos on a scaled source (nvn_capture.cpp)
@@ -1330,8 +1337,23 @@ void DoIndirectDraw(ReplayCtx& cx, const Cmd& c) {
   DoDraw(cx, d);
 }
 
+static std::atomic<uint64_t> g_csElidedN{0}, g_csForcedN{0};
 void DoDispatch(ReplayCtx& cx, const Cmd& c) {
   Host* h = cx.h;
+  // a dispatch whose trailing barrier was left out (below) is closed by the next DoDispatch call, on every path out of it, early returns included
+  bool keepOpen = false;
+  struct Flush {   // a dispatch whose barrier was left out is followed by one that closes it, on every path out of here
+    ReplayCtx& cx; const bool& keep;
+    ~Flush() {
+      if (!cx.csOpen || keep) return;
+      VkMemoryBarrier2 m{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+      m.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT; m.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+      m.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT; m.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+      VkDependencyInfo di0{VK_STRUCTURE_TYPE_DEPENDENCY_INFO}; di0.memoryBarrierCount = 1; di0.pMemoryBarriers = &m;
+      vkCmdPipelineBarrier2(cx.cb, &di0);
+      cx.csOpen = false; cx.csReads.clear(); cx.csWrites.clear();
+    }
+  } flush{cx, keepOpen};
   DrawState& d = *cx.ds;
   ProgramImpl* p = d.prog;
   if (!p || !p->layout || !p->st[5].valid) { LogError("dispatch without a usable compute program"); return; }
@@ -1357,9 +1379,54 @@ void DoDispatch(ReplayCtx& cx, const Cmd& c) {
     std::lock_guard<std::mutex> lk(h->pipeMutex);
     h->pipelines[key] = pipe;
   }
+  if (g_perfPassOn) { char lb[96]; snprintf(lb, sizeof lb, "cs p%d %dx%dx%d", (int)p->id, c.i[0], c.i[1], c.i[2]); PerfMark(cx.h, cx.cb, lb); }
   vkCmdBindPipeline(cx.cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
   if (!WriteDescriptors(cx, d, p, tw, VK_PIPELINE_BIND_POINT_COMPUTE)) return;
+  // Barrier elision between back-to-back skinning dispatches (perf pass 18, SNAP_CS_ELIDE, default on, =0 turns it off). The skinning shader (cache key
+  // ada6de87ec03; SPIR-V checked: SSBOs 0 and 1 are only loaded, SSBO 2 is only stored) is dispatched about 25 times per frame, once per model, each
+  // writing its own vertex range of SSBO 2 (cb0: destination byte offset +8, stride +12, count +16). NVN has no implicit ordering between
+  // dispatches (the game puts a Barrier command where one is needed), so the full barrier we emit after every dispatch only serializes dispatches
+  // that do not depend on each other. It is left out when the next work command is another dispatch and the check below finds no overlap between the
+  // two dispatches' buffers and destination ranges; otherwise it is emitted before that next dispatch, exactly where the old one would have run.
+  static const bool elide = [] { const char* e = getenv("SNAP_CS_ELIDE"); return !(e && *e == '0'); }();
+  const bool skin = elide && !strncmp(p->st[5].key, "ada6de87ec03", 12);
+  ReplayCtx::CsRange rdA{}, rdB{}, wr{}, wrDst{};
+  bool hazard = false;
+  if (skin) {
+    auto rng = [&](int i) { const BufBind& bb = d.ssbo[5][i]; return ReplayCtx::CsRange{bb.pool, bb.off, bb.off + bb.range}; };
+    rdA = rng(0); rdB = rng(1); wr = rng(2);
+    wrDst = wr;
+    const BufBind& ub = d.ubo[5][0];
+    bool ok = wr.pool && rdA.pool && rdB.pool && ub.pool && ub.pool->storage && ub.range >= 20;
+    if (ok) {
+      const uint32_t* w = (const uint32_t*)((const uint8_t*)ub.pool->storage + ub.off);
+      const uint64_t lo = wr.lo + w[2], hi = lo + (uint64_t)w[3] * w[4];
+      ok = w[3] && hi > lo && hi <= wr.hi;
+      wrDst = {wr.pool, lo, hi};
+    }
+    auto hit = [](const ReplayCtx::CsRange& a, const ReplayCtx::CsRange& bq) { return a.pool == bq.pool && a.lo < bq.hi && bq.lo < a.hi; };
+    hazard = !ok || hit(wr, rdA) || hit(wr, rdB);   // unknown destination, or the output aliases the shader's own inputs
+    if (cx.csOpen && !hazard) {
+      for (const auto& r : cx.csWrites) if (hit(r, wrDst) || hit(r, rdA) || hit(r, rdB)) hazard = true;   // WAW, RAW
+      for (const auto& r : cx.csReads) if (hit(r, wr)) hazard = true;                                      // WAR
+    }
+    if (cx.csOpen && hazard) { snap_perf::g_cs_forced.fetch_add(1, std::memory_order_relaxed); if ((++g_csForcedN & 255) == 1) Log("skin dispatch barrier forced (%llu so far, %llu elided)", (unsigned long long)g_csForcedN.load(), (unsigned long long)g_csElidedN.load()); }   // Flush closes the open run before this dispatch's own barrier decision below
+  }
+  if (cx.csOpen && (hazard || !skin)) {   // overlap, or a different dispatch follows: the barrier goes in before it, not after
+    VkMemoryBarrier2 m{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+    m.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT; m.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+    m.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT; m.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+    VkDependencyInfo di0{VK_STRUCTURE_TYPE_DEPENDENCY_INFO}; di0.memoryBarrierCount = 1; di0.pMemoryBarriers = &m;
+    vkCmdPipelineBarrier2(cx.cb, &di0);   // the barrier the previous dispatch left out, before this one starts
+    cx.csOpen = false; cx.csReads.clear(); cx.csWrites.clear();
+  }
   vkCmdDispatch(cx.cb, (uint32_t)std::max(c.i[0], 1), (uint32_t)std::max(c.i[1], 1), (uint32_t)std::max(c.i[2], 1));
+  if (skin && cx.nextIsDispatch && !hazard) {
+    cx.csOpen = true; cx.csReads.push_back(rdA); cx.csReads.push_back(rdB); cx.csWrites.push_back(wrDst);
+    keepOpen = true; snap_perf::g_cs_elided.fetch_add(1, std::memory_order_relaxed); if ((++g_csElidedN & 8191) == 1) Log("skin dispatch barriers elided %llu, forced %llu", (unsigned long long)g_csElidedN.load(), (unsigned long long)g_csForcedN.load());
+    return;
+  }
+  cx.csOpen = false; cx.csReads.clear(); cx.csWrites.clear();   // the barrier below also covers the dispatches before this one
   VkMemoryBarrier2 mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};   // make compute writes visible to everything that follows
   mb.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT; mb.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
   mb.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT; mb.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;

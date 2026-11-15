@@ -107,6 +107,9 @@ inline uint64_t now_ns() {
     return (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 extern std::atomic<uint64_t> g_ns[C_COUNT], g_calls[C_COUNT], g_val[V_COUNT];
+// Skinning dispatch barrier elision (nvn_draw.cpp DoDispatch, perf pass 18): dispatch barriers dropped, and dropped barriers the overlap guard put
+// back. The frames csv ends with these two as per-frame deltas (cs_elided, cs_forced); cs_forced above 0 means the guard fired.
+inline std::atomic<uint64_t> g_cs_elided{0}, g_cs_forced{0};
 
 inline void add(Ctr c, uint64_t ns) {
     g_ns[c].fetch_add(ns, std::memory_order_relaxed);

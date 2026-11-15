@@ -81,6 +81,9 @@ try {
         if (-not $ok) { Start-Sleep -Seconds 2 }
     }
     if (-not $ok) { Write-Host 'could not copy a stable build\snap exe'; exit 7 }
+    # upscalers\ (the FSR DLL the builder fetches; runtime/nvn/upscale/upscale_fsr.cpp loads it next to the exe): mirrored when the build has it
+    if (Test-Path "$src\upscalers") { robocopy "$src\upscalers" "$runDir\upscalers" /MIR /NFL /NDL /NJH /NJS /NP | Out-Null }
+    elseif (Test-Path "$runDir\upscalers") { Remove-Item -Recurse -Force "$runDir\upscalers" -ErrorAction SilentlyContinue }
     $warm = Join-Path $root 'build\snap\nvn_cache'   # own build dir without a warm translated-shader cache: use the main one
     if (-not (Test-Path "$src\nvn_cache") -and (Test-Path $warm)) { robocopy $warm "$runDir\nvn_cache" /MIR /MT:16 /NFL /NDL /NJH /NJS /NP | Out-Null }
     if (Test-Path "$src\nvn_cache") { robocopy "$src\nvn_cache" "$runDir\nvn_cache" /MIR /MT:16 /NFL /NDL /NJH /NJS /NP | Out-Null }

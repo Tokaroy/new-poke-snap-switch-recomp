@@ -204,6 +204,7 @@ MAIN_INLINE_HOOKS = {BASE + 0x5e3a58: 'rt_mod_entry',
                      # host/mods/drpfast.cpp (perf pass 11): DRP keystream decrypt on the host; SNAP_DRP_FASTDEC=0 keeps the guest loop
                      BASE + 0x5ec9f0: 'rt_drp_decrypt',         # `cmp x28, x23` before the per-word loop of 0x5ec890: x21 = RNG state, w22 = bound
                      BASE + 0x5eca1c: 'rt_drp_decrypt_check'}   # loop exit (SNAP_DRP_FASTDEC=check compares here)
+# host/mods/crcfast.cpp (perf pass 17, PCLMUL crc32) is not hooked in: no wall-clock gain; its header says how to add it back.
 
 
 def sdk_plan():

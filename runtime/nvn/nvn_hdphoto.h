@@ -21,6 +21,7 @@ void HdPhotoCopyToBuffer(const TextureImpl* t, const uint8_t* dst);    // CopyTe
 void HdPhotoUploadFrom(const TextureImpl* t, const uint8_t* src);      // CopyBufferToTexture (src = host pointer, may be null)
 void HdPhotoTexGone(const TextureImpl* t);
 void HdPhotoReadback(uint64_t id, const uint8_t* map, uint64_t size);  // FlushReadbacks, readback kind 4
-// The HD texture to sample instead of `t`, or nullptr. drawnW = on-screen width of the sprite in 1920-wide UI units (0 = unknown).
-TextureImpl* HdPhotoSubstitute(TextureImpl* t, float drawnW);
+// The HD texture to sample instead of `t`, or nullptr. drawnW = on-screen width of the sprite in 1920-wide UI units (0 = unknown);
+// hostPerUnit = host pixels per UI unit (picks the album grid thumbnail's pyramid level).
+TextureImpl* HdPhotoSubstitute(TextureImpl* t, float drawnW, float hostPerUnit = 1.0f);
 }  // namespace nvn

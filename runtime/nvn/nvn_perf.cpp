@@ -10,6 +10,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <vector>
 
 #include "nvn_aa.h"
 #include "nvn_internal.h"
@@ -31,11 +32,43 @@ VkQueryPool g_pool = VK_NULL_HANDLE;
 Slot g_slots[kSlots];
 uint32_t g_next = 0;
 bool g_failed = false;
+// SNAP_GPU_PASSES: marks per command buffer slot
+struct Mark { uint32_t q; uint32_t draws; char label[96]; };
+std::vector<Mark> g_marks[kSlots];
+uint32_t g_startDraws[kSlots], g_endDraws[kSlots];
+int g_curSlot = -1;
+VkCommandBuffer g_curCb = VK_NULL_HANDLE;
+VkQueryPool g_mpool = VK_NULL_HANDLE;
+constexpr uint32_t kMarkQ = 32768;
+uint32_t g_markNext = 0;
+FILE* g_pf = nullptr;
 }  // namespace
+
+bool g_perfPassOn = false;
+uint32_t g_perfDraws = 0;
+
+void PerfMark(Host* h, VkCommandBuffer cb, const char* label) {
+  if (!g_perfPassOn || g_curSlot < 0 || cb != g_curCb) return;
+  if (!g_mpool) {
+    VkQueryPoolCreateInfo qi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+    qi.queryType = VK_QUERY_TYPE_TIMESTAMP; qi.queryCount = kMarkQ;
+    if (vkCreateQueryPool(h->device, &qi, nullptr, &g_mpool) != VK_SUCCESS) { g_perfPassOn = false; return; }
+  }
+  const uint32_t q = g_markNext++ % kMarkQ;
+  vkResetQueryPool(h->device, g_mpool, q, 1);
+  vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, g_mpool, q);
+  Mark m{q, g_perfDraws, {}};
+  snprintf(m.label, sizeof m.label, "%s", label);
+  g_marks[g_curSlot].push_back(m);
+}
 
 bool PerfGpuReady(Host* h) {
   if (!PerfGpuOn() || g_failed) return false;
   if (g_pool) return true;
+  if (const char* pp = getenv("SNAP_GPU_PASSES"); pp && *pp && (g_pf = fopen(pp, "w"))) {
+    fprintf(g_pf, "present,slot,idx,ms,draws,label\n");
+    g_perfPassOn = true;
+  }
   if (!h->hostQueryReset) { g_failed = true; return false; }
   VkQueryPoolCreateInfo qi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
   qi.queryType = VK_QUERY_TYPE_TIMESTAMP; qi.queryCount = kSlots * 2;
@@ -50,12 +83,14 @@ int PerfGpuBegin(Host* h, VkCommandBuffer cb) {
   g_slots[s] = {0, false, true};
   vkResetQueryPool(h->device, g_pool, s * 2, 2);
   vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, g_pool, s * 2);
+  g_marks[s].clear(); g_startDraws[s] = g_perfDraws; g_curSlot = (int)s; g_curCb = cb;
   return (int)s;
 }
 
 void PerfGpuEnd(Host*, VkCommandBuffer cb, int slot) {
   if (slot < 0) return;
   vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, g_pool, (uint32_t)slot * 2 + 1);
+  g_endDraws[slot] = g_perfDraws; g_curSlot = -1; g_curCb = VK_NULL_HANDLE;
 }
 
 void PerfGpuSubmitted(int slot, uint64_t value) {
@@ -78,6 +113,23 @@ void PerfFrameMark(QueueImpl* q, uint64_t presentNo) {
       uint64_t t[2] = {0, 0};
       if (vkGetQueryPoolResults(q->host->device, g_pool, s * 2, 2, sizeof t, t, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS && t[1] >= t[0]) {
         sum += t[1] - t[0]; lo = std::min(lo, t[0]); hi = std::max(hi, t[1]); cbs++;
+        if (g_perfPassOn && g_pf && !g_marks[s].empty()) {   // per-pass rows: each segment runs from its mark to the next one (or the end)
+          const auto& ms = g_marks[s];
+          const double per = q->host->props.limits.timestampPeriod / 1e6;
+          uint64_t prev = t[0]; uint32_t prevDraws = g_startDraws[s]; const char* prevLabel = "cb-start"; int idx = 0;
+          for (size_t k = 0; k <= ms.size(); k++) {
+            uint64_t at = t[1]; uint32_t dr = g_endDraws[s];
+            if (k < ms.size()) {
+              uint64_t mt = 0;
+              if (vkGetQueryPoolResults(q->host->device, g_mpool, ms[k].q, 1, 8, &mt, 8, VK_QUERY_RESULT_64_BIT) != VK_SUCCESS) mt = prev;
+              at = mt; dr = ms[k].draws;
+            }
+            if (at < prev) at = prev;
+            fprintf(g_pf, "%llu,%u,%d,%.4f,%u,%s\n", (unsigned long long)presentNo, s, idx++, (double)(at - prev) * per, dr - prevDraws, prevLabel);
+            prev = at; prevDraws = dr;
+            if (k < ms.size()) prevLabel = ms[k].label;
+          }
+        }
       }
       sl.used = false; sl.submitted = false;
     }
@@ -102,6 +154,7 @@ void PerfFrameMark(QueueImpl* q, uint64_t presentNo) {
     prevCyc = cyc;
     if (busy >= 0 && cbs > 0) g_ovGpuMs.store(busy);
   }
+  if (g_pf) fflush(g_pf);
   if (snap_perf::on) snap_perf::frame_mark(presentNo, busy, span, cbs);
 }
 

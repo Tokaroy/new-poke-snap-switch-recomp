@@ -1,0 +1,30 @@
+# fixture: unlock_all
+# sweep2 route ill5g nav=- entry=2 level=0 mode=F:/AI/Recomps/new-pokemon-snap/analysis/core/aim_ill5_g.txt (mk_routes2.py)
+wait ui=title timeout=200
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=300
+@f240 6 A
+wait ui=map_select:CourseSelect timeout=60
+@f90 6 Down
+@f180 6 Down
+@f360 6 A
+wait ride timeout=300
+@f0 420 shot=6
+@f5 18 lx=-1.0
+repeat @f100 @f340 10 4 Y
+repeat @f350 @f1400 30 4 A
+repeat @f1500 @f60000 90 8 A
+wait ui=photo_submit:FolderSelect timeout=500
+@f150 8 Down
+@f240 8 Down
+@f330 8 A
+@f480 8 Plus
+@f560 8 Up
+@f640 8 A
+wait ui=evaluation timeout=60
+# 6) Evaluation: A taps through the comments and the score; the run ends after the evaluation closes.
+repeat @f240 @f60000 90 8 A
+wait ui=evaluation:Score timeout=120
+repeat @f60 @f60000 90 8 A
+wait ui=evaluation:End timeout=240
+end @f300

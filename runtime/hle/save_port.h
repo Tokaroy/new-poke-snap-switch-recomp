@@ -4,7 +4,7 @@
 //   Import writes the files as a NEW generation of the live save store (runtime/hle/save_gen.h layout, the same steps as the
 //   runtime's commit: gens/<n>/, <n>.ok, CURRENT.tmp then an atomic replace, then the usual backup pruning), so the save that was
 //   current stays as a backup. It refuses while a game holds the save folder's lock.
-//   Export copies the current generation's files into a folder.
+//   Export copies the current generation's files into a folder, or into a .zip when the path ends in .zip (JKSV layout: files at the top).
 // The game's save files are named by "%08x%08x" (16 lowercase hex digits); the same names are used on the console and in emulators.
 #pragma once
 #include <cstdint>

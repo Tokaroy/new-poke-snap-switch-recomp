@@ -678,6 +678,56 @@ bool import_save(const std::string& input, const std::string& save_root, const s
   return true;
 }
 
+// Writes the files as a zip with the files at the top level, the layout JKSV makes and restores (stored, no compression: the
+// reader of a JKSV zip needs nothing more, and every size stays under 4 GB). CRCs follow the data (flag bit 3).
+static bool write_zip(const fs::path& gd, const std::vector<std::pair<std::string, uint64_t>>& files, const fs::path& zip, std::string* E) {
+  uint64_t total = 0;
+  for (auto& f : files) total += f.second + 200;
+  if (total >= 0xFFFF0000ull) { *E = "The save is too large for a zip file (over 4 GB). Export to a folder instead."; return false; }
+  std::error_code ec;
+  if (zip.has_parent_path()) fs::create_directories(zip.parent_path(), ec);
+  const fs::path tmp = zip.string() + ".part";
+  std::ofstream o(tmp, std::ios::binary | std::ios::trunc);
+  if (!o) { *E = "Could not write " + S(zip); return false; }
+  auto w16 = [&](uint32_t v) { char b[2] = {(char)v, (char)(v >> 8)}; o.write(b, 2); };
+  auto w32 = [&](uint32_t v) { char b[4] = {(char)v, (char)(v >> 8), (char)(v >> 16), (char)(v >> 24)}; o.write(b, 4); };
+  struct CD { std::string name; uint32_t crc, size, off; };
+  std::vector<CD> cd;
+  const uint32_t dos_time = 0, dos_date = (uint32_t)(((2026 - 1980) << 9) | (1 << 5) | 1);
+  std::vector<char> buf(1 << 20);
+  for (auto& [name, sz] : files) {
+    CD c{name, 0, (uint32_t)sz, (uint32_t)o.tellp()};
+    w32(0x04034b50); w16(20); w16(8); w16(0); w16(dos_time); w16(dos_date); w32(0); w32(0); w32(0); w16((uint32_t)name.size()); w16(0);
+    o.write(name.data(), (std::streamsize)name.size());
+    std::ifstream in(gd / name, std::ios::binary);
+    uint64_t left = sz;
+    while (left) {
+      size_t n = (size_t)std::min<uint64_t>(left, buf.size());
+      in.read(buf.data(), (std::streamsize)n);
+      if ((size_t)in.gcount() != n) { *E = "Could not read " + name + " from the save."; return false; }
+      o.write(buf.data(), (std::streamsize)n);
+      c.crc = crc32_update(c.crc, (const uint8_t*)buf.data(), n);
+      left -= n;
+    }
+    w32(0x08074b50); w32(c.crc); w32(c.size); w32(c.size);
+    cd.push_back(c);
+  }
+  const uint32_t cd_off = (uint32_t)o.tellp();
+  for (auto& c : cd) {
+    w32(0x02014b50); w16(20); w16(20); w16(8); w16(0); w16(dos_time); w16(dos_date); w32(c.crc); w32(c.size); w32(c.size);
+    w16((uint32_t)c.name.size()); w16(0); w16(0); w16(0); w16(0); w32(0); w32(c.off);
+    o.write(c.name.data(), (std::streamsize)c.name.size());
+  }
+  const uint32_t cd_size = (uint32_t)o.tellp() - cd_off;
+  w32(0x06054b50); w16(0); w16(0); w16((uint32_t)cd.size()); w16((uint32_t)cd.size()); w32(cd_size); w32(cd_off); w16(0);
+  o.flush();
+  if (!o) { *E = "Could not write " + S(zip) + " (disk full?)."; return false; }
+  o.close();
+  flush_path(tmp);
+  if (!replace_file(tmp, zip)) { *E = "Could not finish " + S(zip); return false; }
+  return true;
+}
+
 bool export_save(const std::string& save_root, const std::string& uid_in, const std::string& dest, Report* rep, std::string* err) {
   Report local;
   Report& R = rep ? *rep : local;
@@ -695,6 +745,16 @@ bool export_save(const std::string& save_root, const std::string& uid_in, const 
     const uint64_t sz = fs::file_size(gd / fsp.name, ec);
     if (ec) { E = std::string("The current save is missing ") + fsp.name + "; nothing was exported."; return false; }
     files.push_back({fsp.name, sz});
+  }
+  {
+    std::string d = lower(dest);
+    if (d.size() > 4 && d.compare(d.size() - 4, 4, ".zip") == 0) {
+      if (!write_zip(gd, files, P(dest), &E)) return false;
+      uint64_t bytes = 0;
+      for (auto& f : files) bytes += f.second;
+      R.dest = dest; R.generation = cur; R.bytes = bytes; R.files = (int)files.size();
+      return true;
+    }
   }
   fs::path out = P(dest);
   std::error_code ec;
@@ -804,7 +864,9 @@ std::string format_report(const Report& r, bool import) {
     if (r.had_previous) s += "\nYour previous save was kept as a backup (generation " + std::to_string(r.previous) + ").";
   } else {
     s = "Exported " + std::to_string(r.files) + " save files (" + fmt_size(r.bytes) + ") to:\n" + r.dest +
-        "\nRestore that folder with a save manager such as JKSV or Checkpoint, or copy its files into the game's save folder of an emulator.";
+        (lower(r.dest).size() > 4 && lower(r.dest).compare(lower(r.dest).size() - 4, 4, ".zip") == 0
+             ? "\nRestore that zip with a save manager such as JKSV, or unzip it and copy the files into an emulator's save folder for this game."
+             : "\nRestore that folder with a save manager such as JKSV or Checkpoint, or copy its files into the game's save folder of an emulator.");
   }
   for (const std::string& w : r.warnings) s += "\nNote: " + w;
   return s;

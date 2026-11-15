@@ -43,6 +43,9 @@ const char* TranslatorVersion();
 // `mustHave`: the draw cannot be dropped (one-shot passes such as the photo thumbnail, evaluation and capture targets): wait for a pending
 // background compile, or compile inline, instead of returning VK_NULL_HANDLE.
 VkPipeline PipelineAcquire(Host* h, const PipeDesc& pd, ProgramImpl* p, bool* pending, bool mustHave = false);
+// True for a short time after the A button (the shutter) was seen by the pad poll: a draw whose pipeline is still compiling must not be skipped then,
+// or the photo taken in that frame would miss objects (cold pipeline cache). SNAP_PHOTO_NOSKIP=0 turns it off. Costs a compile on the game thread only on a miss.
+bool PipelineShutterWindow();
 void PipelineServiceInit(Host* h);       // after the device and cacheDir exist: loads the key list, starts the workers
 void PipelineServiceShutdown(Host* h);   // joins workers, saves the cache
 bool PipelineHoldGame();                 // true while "compile now" is running and the game must stay on its present loop

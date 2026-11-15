@@ -353,6 +353,7 @@ void FxDrawFullscreen(ReplayCtx& cx, TextureImpl* t, VkPipeline pipe, VkPipeline
   ca.imageView = v; ca.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; ca.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD; ca.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
   VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
   ri.renderArea = {{0, 0}, {w, h}}; ri.layerCount = 1; ri.colorAttachmentCount = 1; ri.pColorAttachments = &ca;
+  if (g_perfPassOn) { char lb[96]; snprintf(lb, sizeof lb, "fx pass %ux%u", w, h); PerfMark(cx.h, cb, lb); g_perfDraws++; }
   vkCmdBeginRendering(cb, &ri);
   const uint32_t x0 = FxSplitX(w);
   VkViewport vp{0, 0, (float)w, (float)h, 0, 1}; VkRect2D sc{{(int32_t)x0, 0}, {w - x0, h}};

@@ -36,6 +36,7 @@ bool shiny_on() {
 
 extern "C" int snap_shiny_buf_flag(const uint8_t* pix, char* out, int n);   // runtime/nvn/nvn_shiny.cpp
 extern "C" void snap_shiny_buf_painted(const uint8_t* buf);
+extern "C" void snap_shiny_buf_decoded(const uint8_t* buf, int w, int h);   // runtime/nvn/nvn_shiny.cpp: this guest buffer holds a decoded shiny photo (w > 0) or no longer does (w == 0)
 namespace { std::mutex g_encMu; std::unordered_map<uint64_t, std::pair<const uint8_t*, std::pair<int, int>>> g_encPix; }
 extern "C" void snap_shiny_pixels(uint64_t enc, uint64_t data, const int* dim) {   // JpegEncoder::SetPixelData: which buffer this encoder compresses
   if (!shiny_on()) return;
@@ -201,18 +202,15 @@ void h_decode(Cpu* c) {
   if (!shiny_on()) return;
   { std::lock_guard<std::mutex> lk(g_crcMu); if (!g_loaded) load_sidecar(); hit = g_shinyCrc.count(crc) != 0; }
   { static int tr = 0; static const bool trace = getenv("SNAP_SHINY_TRACE") != nullptr; if (trace && tr++ < 40) fprintf(stderr, "[shiny] decode: %llu bytes crc %08x %s\n", (unsigned long long)a[4], crc, hit ? "SHINY" : "plain"); }
-  if (!hit) return;
+  if (!hit) { snap_shiny_buf_decoded(reinterpret_cast<const uint8_t*>(a[0]), 0, 0); return; }
   int w = 0, h = 0, fmt = 14;
   { std::lock_guard<std::mutex> lk(g_crcMu); auto it = g_fmt.find(a[5]); if (it != g_fmt.end()) fmt = it->second; }
   if (!jpeg_size(reinterpret_cast<const uint8_t*>(a[3]), (size_t)a[4], &w, &h) || w < 32 || h < 32) return;
-  size_t stride = (size_t)w * 4;
-  const int align = (int)a[2];
-  if (align > 1) stride = (stride + align - 1) / align * align;
-  if (fmt != 14 || stride * (size_t)h > a[1]) { static int n = 0; if (n++ < 4) fprintf(stderr, "[shiny] photo badge skipped: format %d %dx%d stride %zu buffer %llu\n", fmt, w, h, stride, (unsigned long long)a[1]); return; }
-  paint_badge(reinterpret_cast<uint8_t*>(a[0]), w, h, stride);
-  snap_shiny_buf_painted(reinterpret_cast<const uint8_t*>(a[0]));   // the overlay must not draw a second badge on textures made from this buffer
+  // The badge is NOT written into the decoded pixels: the photo editor re-encodes that buffer and the JPEG must stay vanilla. The buffer is only
+  // marked; the textures made from it are flagged and the host overlay draws the badge on screen (runtime/nvn/nvn_shiny.cpp ShinyBufUpload).
+  snap_shiny_buf_decoded(reinterpret_cast<const uint8_t*>(a[0]), w, h);
   static int n = 0;
-  if (n++ < 12) fprintf(stderr, "[shiny] photo badge drawn on a decoded shiny photo (crc %08x, %dx%d)\n", crc, w, h);
+  if (n++ < 12) fprintf(stderr, "[shiny] decoded photo marked shiny (badge is overlay only) (crc %08x, %dx%d)\n", crc, w, h);
 }
 
 void h_setfmt(Cpu* c) {

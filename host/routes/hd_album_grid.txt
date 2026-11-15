@@ -1,0 +1,18 @@
+# fixture: qa_post_florio
+# HD photos grid check (analysis/core/hd_photos.md): the lab album grid ('myphoto') of a save made by hd_eval (set SNAP_SAVE_DIR
+# to a copy of it), POST-dump frames of the grid after the thumbnails had time to load. Same menu path as hd_album.txt, no A
+# into a photo: 'myphoto' opens on "Your Space", one A opens the Album grid, a second A closes its first-visit help card. Run once with SNAP_HD_PHOTOS=1 and once without on two copies of the same save, then compare the same cell.
+# Run: SNAP_HD_PHOTOS=1 NVN_FRAME_DUMP_POST=1 NVN_FRAME_DUMP_FULL=1 powershell -File host\run_boot.ps1 -Route hd_album_grid -ShotAt 9999 -ShotMax 20
+repeat @f300 @f30000 120 8 A
+wait ui=main_menu:MainMenu timeout=240
+@f200 8 Down
+@f400 8 A
+repeat @f800 @f30000 200 8 A
+wait ui=main_menu:Laboratory timeout=300
+@f90 8 Down
+@f200 8 A
+wait ui=myphoto timeout=60
+@f200 8 A
+@f700 8 A
+@f1100 60 shot=30
+end @f1300

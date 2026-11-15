@@ -93,6 +93,39 @@ std::vector<HdP> g_gpuLive;                             // HDs holding display t
 uint64_t g_nextId = 1, g_tick = 0;
 TextureImpl* g_cap[2] = {};                             // the 2160x1440 blit targets (RGBA8, RGBA8_SRGB), reused (copies are ordered on the queue)
 
+// ---- album grid thumbnails (state; code below ThumbSubstitute) ----
+// The grid draws the game's own small thumbnail JPEGs (204x136; 240x200 elsewhere), encoded a moment before or after their
+// 1080x720 photo. At encode a thumbnail is matched by content to a recent photo (a region search finds its crop) and the pair is
+// appended to <save root>\photos_hd\thumbs.txt ("<thumbnail crc> <photo crc> x0 y0 x1 y1", the crop in 0..1 of the photo), so the
+// link survives restarts. On screen the cell shows one level of the HD crop's mip pyramid (2^L x 2^L box averages), the smallest
+// level at least as wide as the cell's host pixels (the game's UI samplers have no mip filtering, so the level is picked here).
+constexpr int kSmW = 270, kSmH = 180;           // photo comparison image: 4x4 box averages of the 1080x720 photo
+constexpr uint64_t kThumbBudget = 64ull << 20;  // grid display textures (a 4K grid cell level is about 0.8 MB)
+struct ThumbRef { uint32_t photo = 0; float r[4] = {0, 0, 1, 1}; };
+struct Thumb {
+  uint32_t crc = 0; ThumbRef ref; HdP photo;
+  int w = 0, h = 0;                    // the game's thumbnail size
+  std::vector<uint8_t> px; int pw = 0, ph = 0, level = 0;   // the chosen pyramid level (RGBA), kept until uploaded
+  bool busy = false, bad = false;
+  int retryAt = 0;                     // present count before which a failed load is not retried
+  TextureImpl* gpu[2] = {};
+  uint64_t lastUse = 0;
+};
+using ThumbP = std::shared_ptr<Thumb>;
+std::unordered_map<uint32_t, ThumbRef> g_thumbIdx;      // thumbnail JPEG CRC -> photo CRC + crop (thumbs.txt)
+bool g_thumbIdxLoaded = false;
+std::unordered_map<uint32_t, ThumbP> g_thumbs;           // by thumbnail JPEG CRC
+std::unordered_map<const TextureImpl*, ThumbP> g_tlink;  // guest texture -> grid thumbnail
+struct TDec { uint64_t size; ThumbP th; };
+std::map<const uint8_t*, TDec> g_tdec;                   // decoded thumbnail buffers
+std::unordered_map<uint64_t, ThumbP> g_tHead;            // decoded thumbnails by HeadHash (the album copies the pixels first)
+std::vector<ThumbP> g_tLive;                             // thumbnails holding display textures (LRU by lastUse)
+struct PhotoSm { uint32_t crc; std::vector<uint8_t> rgb; ULONGLONG t; };              // kSmW x kSmH RGB of an encoded photo
+struct ThumbSm { uint32_t crc; int w, h; std::vector<uint8_t> rgba; ULONGLONG t; };   // an encoded thumbnail not matched yet
+std::deque<PhotoSm> g_photoSm;
+std::deque<ThumbSm> g_thumbPend;
+bool g_matchQueued = false;
+
 // Box average of an RGBA image into kMiniW x kMiniH RGB (w, h multiples of the grid).
 void Mini(const uint8_t* rgba, int w, int h, size_t stride, std::vector<uint8_t>& out) {
   const int bx = w / kMiniW, by = h / kMiniH;
@@ -108,7 +141,11 @@ void Mini(const uint8_t* rgba, int w, int h, size_t stride, std::vector<uint8_t>
     }
 }
 
-void UpdateActive() { g_active.store((int)(g_link.size() + g_dec.size()), std::memory_order_relaxed); }
+std::atomic<int> g_tActive{0};   // grid thumbnail links + decoded buffers: zero keeps small UI textures off the lock
+void UpdateActive() {
+  g_active.store((int)(g_link.size() + g_dec.size() + g_tlink.size() + g_tdec.size()), std::memory_order_relaxed);
+  g_tActive.store((int)(g_tlink.size() + g_tdec.size()), std::memory_order_relaxed);
+}
 
 const std::string& Dir() {
   static const std::string d = [] {
@@ -441,6 +478,304 @@ void EvictLocked(const HdP& keep) {
   }
 }
 
+// ---- album grid thumbnails: index, matching, pyramid level ----
+std::string ThumbIdxPath() { return Dir() + "\\thumbs.txt"; }
+bool RegionOk(const float* r) { return r[0] >= 0.0f && r[1] >= 0.0f && r[2] <= 1.0f && r[3] <= 1.0f && r[2] - r[0] >= 0.1f && r[3] - r[1] >= 0.1f; }
+
+void LoadThumbIdx() {   // g_mu held; once per session (a small text file)
+  if (g_thumbIdxLoaded) return;
+  g_thumbIdxLoaded = true;
+  FILE* f = fopen(ThumbIdxPath().c_str(), "rb");
+  if (!f) return;
+  char line[200];
+  while (fgets(line, sizeof line, f)) {
+    unsigned a = 0, b = 0; ThumbRef r;
+    if (sscanf(line, "%8x %8x %f %f %f %f", &a, &b, &r.r[0], &r.r[1], &r.r[2], &r.r[3]) == 6 && RegionOk(r.r)) { r.photo = b; g_thumbIdx[a] = r; }
+  }
+  fclose(f);
+  if (g_log) fprintf(stderr, "[hdphoto] thumbnail index: %zu entries from %s\n", g_thumbIdx.size(), ThumbIdxPath().c_str());
+}
+
+// Area average of the region (x0,y0)-(x1,y1) of an RGBA image (pixel units) into gw x gh RGB cells.
+void SampleRgba(const uint8_t* p, int w, int h, size_t stride, float x0, float y0, float x1, float y1, int gw, int gh, std::vector<uint8_t>& out) {
+  out.assign((size_t)gw * gh * 3, 0);
+  for (int gy = 0; gy < gh; gy++) {
+    const int ya = std::clamp((int)std::lround(y0 + (y1 - y0) * gy / gh), 0, h - 1), yb = std::clamp((int)std::lround(y0 + (y1 - y0) * (gy + 1) / gh), ya + 1, h);
+    for (int gx = 0; gx < gw; gx++) {
+      const int xa = std::clamp((int)std::lround(x0 + (x1 - x0) * gx / gw), 0, w - 1), xb = std::clamp((int)std::lround(x0 + (x1 - x0) * (gx + 1) / gw), xa + 1, w);
+      uint32_t acc[3] = {};
+      for (int y = ya; y < yb; y++) for (int x = xa; x < xb; x++) { const uint8_t* q = p + (size_t)y * stride + (size_t)x * 4; acc[0] += q[0]; acc[1] += q[1]; acc[2] += q[2]; }
+      const uint32_t n = (uint32_t)((yb - ya) * (xb - xa));
+      for (int c = 0; c < 3; c++) out[((size_t)gy * gw + gx) * 3 + c] = (uint8_t)(acc[c] / n);
+    }
+  }
+}
+
+// Summed-area table of a kSmW x kSmH RGB image: region averages in O(1) for the crop search.
+struct Sat {
+  std::vector<uint32_t> s;   // (kSmW + 1) x (kSmH + 1) x 3
+  void Build(const std::vector<uint8_t>& rgb) {
+    s.assign((size_t)(kSmW + 1) * (kSmH + 1) * 3, 0);
+    for (int y = 1; y <= kSmH; y++)
+      for (int x = 1; x <= kSmW; x++)
+        for (int c = 0; c < 3; c++)
+          s[((size_t)y * (kSmW + 1) + x) * 3 + c] = rgb[((size_t)(y - 1) * kSmW + (x - 1)) * 3 + c] + s[((size_t)(y - 1) * (kSmW + 1) + x) * 3 + c] +
+                                                    s[((size_t)y * (kSmW + 1) + x - 1) * 3 + c] - s[((size_t)(y - 1) * (kSmW + 1) + x - 1) * 3 + c];
+  }
+  uint32_t At(int x, int y, int c) const { return s[((size_t)y * (kSmW + 1) + x) * 3 + c]; }
+  // mean absolute difference between the region (sm pixels) sampled into gw x gh cells and `ref` (gw x gh RGB)
+  float Diff(float x0, float y0, float x1, float y1, int gw, int gh, const std::vector<uint8_t>& ref, std::vector<uint8_t>* out = nullptr) const {
+    uint64_t d = 0;
+    if (out) out->assign((size_t)gw * gh * 3, 0);
+    for (int gy = 0; gy < gh; gy++) {
+      const int ya = std::clamp((int)std::lround(y0 + (y1 - y0) * gy / gh), 0, kSmH - 1), yb = std::clamp((int)std::lround(y0 + (y1 - y0) * (gy + 1) / gh), ya + 1, kSmH);
+      for (int gx = 0; gx < gw; gx++) {
+        const int xa = std::clamp((int)std::lround(x0 + (x1 - x0) * gx / gw), 0, kSmW - 1), xb = std::clamp((int)std::lround(x0 + (x1 - x0) * (gx + 1) / gw), xa + 1, kSmW);
+        const uint32_t n = (uint32_t)((yb - ya) * (xb - xa));
+        for (int c = 0; c < 3; c++) {
+          const int v = (int)((At(xb, yb, c) - At(xa, yb, c) - At(xb, ya, c) + At(xa, ya, c)) / n);
+          if (out) (*out)[((size_t)gy * gw + gx) * 3 + c] = (uint8_t)v;
+          d += (uint64_t)std::abs(v - (int)ref[((size_t)gy * gw + gx) * 3 + c]);
+        }
+      }
+    }
+    return (float)d / (float)(gw * gh * 3);
+  }
+};
+
+// The crop of a photo (sm image) that a thumbnail shows: a coarse search over scale and position, then a fine one around the best.
+// Returns the difference after a tone fit (0..255) and the region in 0..1 of the photo.
+float FindCrop(const Sat& sat, const ThumbSm& t, float r[4]) {
+  const float a = (float)t.w / (float)t.h;
+  const float rwMax = std::min((float)kSmW, kSmH * a);
+  const int cw = 16, ch = std::max(6, (int)std::lround(16 / a)), fw = 40, fh = std::max(12, (int)std::lround(40 / a));
+  std::vector<uint8_t> refC, refF;
+  SampleRgba(t.rgba.data(), t.w, t.h, (size_t)t.w * 4, 0, 0, (float)t.w, (float)t.h, cw, ch, refC);
+  SampleRgba(t.rgba.data(), t.w, t.h, (size_t)t.w * 4, 0, 0, (float)t.w, (float)t.h, fw, fh, refF);
+  float best = 1e9f, bx = 0, by = 0, bs = 1;
+  for (float s = 1.0f; s >= 0.499f; s -= 0.05f) {
+    const float rw = rwMax * s, rh = rw / a;
+    for (float y = 0; y <= kSmH - rh + 0.01f; y += 3.0f)
+      for (float x = 0; x <= kSmW - rw + 0.01f; x += 3.0f) {
+        const float d = sat.Diff(x, y, x + rw, y + rh, cw, ch, refC);
+        if (d < best) { best = d; bx = x; by = y; bs = s; }
+      }
+    if (kSmW - rw > 0.01f || kSmH - rh > 0.01f) {   // the far edges too
+      const float d = sat.Diff(kSmW - rw, kSmH - rh, (float)kSmW, (float)kSmH, cw, ch, refC);
+      if (d < best) { best = d; bx = kSmW - rw; by = kSmH - rh; bs = s; }
+    }
+  }
+  best = 1e9f;
+  float fx = bx, fy = by, fs = bs;
+  for (float s = bs - 0.05f; s <= bs + 0.051f; s += 0.0125f) {
+    if (s > 1.0001f || s < 0.45f) continue;
+    const float rw = rwMax * s, rh = rw / a;
+    for (float y = by - 3.0f; y <= by + 3.01f; y += 0.5f)
+      for (float x = bx - 3.0f; x <= bx + 3.01f; x += 0.5f) {
+        if (x < -0.01f || y < -0.01f || x + rw > kSmW + 0.01f || y + rh > kSmH + 0.01f) continue;
+        const float d = sat.Diff(x, y, x + rw, y + rh, fw, fh, refF);
+        if (d < best) { best = d; fx = x; fy = y; fs = s; }
+      }
+  }
+  const float rw = rwMax * fs, rh = rw / a;
+  std::vector<uint8_t> got;
+  sat.Diff(fx, fy, fx + rw, fy + rh, fw, fh, refF, &got);
+  Tone tone;
+  const float fit = FitDiff(got, refF, tone);
+  r[0] = std::max(0.0f, fx / kSmW); r[1] = std::max(0.0f, fy / kSmH); r[2] = std::min(1.0f, (fx + rw) / kSmW); r[3] = std::min(1.0f, (fy + rh) / kSmH);
+  return fit;
+}
+
+// Worker: matches the waiting thumbnails against the recent photos; matched pairs go to the index (memory and thumbs.txt).
+void PostThumbMatch() {   // g_mu held
+  if (g_matchQueued || g_thumbPend.empty() || g_photoSm.empty()) return;
+  g_matchQueued = true;
+  Post([] {
+    std::deque<ThumbSm> th; std::deque<PhotoSm> ph;
+    { std::lock_guard<std::mutex> g(g_mu); g_matchQueued = false; th = g_thumbPend; ph = g_photoSm; }
+    std::vector<Sat> sats(ph.size());
+    for (size_t i = 0; i < ph.size(); i++) sats[i].Build(ph[i].rgb);
+    for (const ThumbSm& t : th) {
+      float best = 1e9f, second = 1e9f, br[4] = {}; uint32_t bp = 0;
+      for (size_t i = 0; i < ph.size(); i++) {
+        if (ph[i].t + 20000 < t.t || t.t + 20000 < ph[i].t) continue;   // encoded within 20 s of each other
+        float r[4];
+        const float d = FindCrop(sats[i], t, r);
+        if (d < best) { second = best; best = d; bp = ph[i].crc; memcpy(br, r, sizeof br); }
+        else if (d < second) second = d;
+      }
+      const bool ok = bp && RegionOk(br) && (best <= 6.0f || (best <= 12.0f && best <= 0.7f * second));
+      std::lock_guard<std::mutex> g(g_mu);
+      if (ok) {
+        g_thumbPend.erase(std::remove_if(g_thumbPend.begin(), g_thumbPend.end(), [&](const ThumbSm& p) { return p.crc == t.crc; }), g_thumbPend.end());
+        ThumbRef ref; ref.photo = bp; memcpy(ref.r, br, sizeof br);
+        g_thumbIdx[t.crc] = ref;
+        char line[160];
+        snprintf(line, sizeof line, "%08x %08x %.5f %.5f %.5f %.5f\n", t.crc, bp, br[0], br[1], br[2], br[3]);
+        CreateDirectoryA(Dir().c_str(), nullptr);
+        if (FILE* f = fopen(ThumbIdxPath().c_str(), "ab")) { fputs(line, f); fflush(f); fclose(f); }
+        fprintf(stderr, "[hdphoto] thumbnail %08x (%dx%d) shows photo %08x region (%.3f,%.3f)-(%.3f,%.3f) (difference %.1f after tone fit, next photo %.1f)\n",
+                t.crc, t.w, t.h, bp, br[0], br[1], br[2], br[3], best, second);
+      } else if (g_log) {
+        fprintf(stderr, "[hdphoto] thumbnail %08x (%dx%d): no photo match yet (best %.1f, next %.1f)\n", t.crc, t.w, t.h, best, second);
+      }
+    }
+    std::lock_guard<std::mutex> g(g_mu);   // thumbnails older than 20 s found no photo: dropped
+    const ULONGLONG now = GetTickCount64();
+    g_thumbPend.erase(std::remove_if(g_thumbPend.begin(), g_thumbPend.end(), [&](const ThumbSm& p) { return p.t + 20000 < now; }), g_thumbPend.end());
+  });
+}
+
+// Encode hooks (g_mu held). Photo: its comparison image. Thumbnail: queued for matching unless the index knows it.
+void PhotoEncodedSm(uint32_t crc, const uint8_t* rgba) {
+  for (const PhotoSm& p : g_photoSm) if (p.crc == crc) return;
+  PhotoSm p{crc, {}, GetTickCount64()};
+  SampleRgba(rgba, 1080, 720, 1080 * 4, 0, 0, 1080, 720, kSmW, kSmH, p.rgb);
+  g_photoSm.push_back(std::move(p));
+  while (g_photoSm.size() > 6) g_photoSm.pop_front();
+  PostThumbMatch();
+}
+void ThumbEncoded(uint32_t crc, const uint8_t* rgba, int w, int h) {
+  LoadThumbIdx();
+  if (g_thumbIdx.count(crc)) return;
+  for (const ThumbSm& p : g_thumbPend) if (p.crc == crc) return;
+  ThumbSm t{crc, w, h, std::vector<uint8_t>(rgba, rgba + (size_t)w * h * 4), GetTickCount64()};
+  g_thumbPend.push_back(std::move(t));
+  while (g_thumbPend.size() > 8) g_thumbPend.pop_front();
+  if (g_log) fprintf(stderr, "[hdphoto] thumbnail encoded %dx%d crc %08x\n", w, h, crc);
+  PostThumbMatch();
+}
+
+// Decode hook (g_mu held): a thumbnail JPEG decoded into a guest buffer; records the buffer when the index links it to an HD photo.
+void ThumbDecoded(const uint8_t* p, uint64_t size, uint32_t crc, int w, int h) {
+  bool changed = g_dec.erase(p) > 0;
+  ThumbP th;
+  if (w >= 32 && h >= 32 && w <= 512 && h <= 512 && size >= (uint64_t)w * h * 4) {
+    LoadThumbIdx();
+    auto it = g_thumbIdx.find(crc);
+    if (it != g_thumbIdx.end()) {
+      auto t2 = g_thumbs.find(crc);
+      if (t2 != g_thumbs.end() && t2->second->w == w && t2->second->h == h) th = t2->second;
+      else if (HdP hd = ByCrc(it->second.photo)) {
+        th = std::make_shared<Thumb>();
+        th->crc = crc; th->ref = it->second; th->photo = hd; th->w = w; th->h = h;
+        if (g_thumbs.size() > 4096) g_thumbs.clear();
+        g_thumbs[crc] = th;
+      }
+    }
+  }
+  if (g_log) fprintf(stderr, "[hdphoto] thumbnail decode %dx%d crc %08x into %p%s\n", w, h, crc, (const void*)p, th ? ": has an HD copy" : "");
+  if (!th) { if (g_tdec.erase(p) || changed) UpdateActive(); return; }
+  g_tdec[p] = {size, th};
+  if (g_tdec.size() > 256) g_tdec.erase(g_tdec.begin());
+  if ((uint64_t)w * h * 4 >= kHeadBytes) {
+    if (g_tHead.size() > 1024) g_tHead.clear();
+    g_tHead[HeadHash(p)] = th;
+  }
+  UpdateActive();
+}
+
+// Worker: the pyramid level of the thumbnail's HD crop for a cell `want` host pixels wide.
+void PostThumb(const ThumbP& th, int want) {
+  th->busy = true;
+  Post([th, want] {
+    std::vector<uint8_t> px, jpg;
+    bool disk = false; uint32_t pcrc = 0; ThumbRef ref;
+    {
+      std::lock_guard<std::mutex> g(g_mu);
+      const HdP& hd = th->photo;
+      if (!hd->rgba.empty()) px = hd->rgba; else { jpg = hd->jpg; disk = hd->fromDisk; }
+      pcrc = hd->crc; ref = th->ref;
+    }
+    if (px.empty()) { if (jpg.empty() && disk) ReadFile(PathOf(pcrc), jpg); if (!jpg.empty()) DecodeJpeg(jpg, px); }
+    std::vector<uint8_t> out; int ow = 0, oh = 0, level = 0;
+    if (px.size() == kBytes) {
+      const int x0 = std::clamp((int)std::lround(ref.r[0] * kW), 0, kW - 1), y0 = std::clamp((int)std::lround(ref.r[1] * kH), 0, kH - 1);
+      const int x1 = std::clamp((int)std::lround(ref.r[2] * kW), x0 + 1, kW), y1 = std::clamp((int)std::lround(ref.r[3] * kH), y0 + 1, kH);
+      const int cw = x1 - x0, ch = y1 - y0;
+      while (level < 6 && (cw >> (level + 1)) >= want && (ch >> (level + 1)) >= 8) level++;
+      const int k = 1 << level;
+      ow = cw >> level; oh = ch >> level;
+      out.resize((size_t)ow * oh * 4);
+      for (int y = 0; y < oh; y++)
+        for (int x = 0; x < ow; x++) {
+          uint32_t acc[4] = {};
+          for (int yy = 0; yy < k; yy++) {
+            const uint8_t* q = px.data() + ((size_t)(y0 + y * k + yy) * kW + x0 + x * k) * 4;
+            for (int xx = 0; xx < k; xx++) for (int c = 0; c < 4; c++) acc[c] += q[xx * 4 + c];
+          }
+          uint8_t* o = out.data() + ((size_t)y * ow + x) * 4;
+          for (int c = 0; c < 3; c++) o[c] = (uint8_t)((acc[c] + (uint32_t)(k * k) / 2) / (uint32_t)(k * k));
+          o[3] = 255;
+        }
+    }
+    std::lock_guard<std::mutex> g(g_mu);
+    th->busy = false;
+    if (out.empty()) {
+      th->retryAt = g_presentCount + 120;   // the session copy may still be encoding; a missing file stays missing
+      if (disk) th->bad = true;
+      if (g_log || disk) fprintf(stderr, "[hdphoto] grid thumbnail %08x: HD copy %08x not available%s\n", th->crc, pcrc, disk ? ": showing the game's thumbnail" : " yet");
+      return;
+    }
+    th->px = std::move(out); th->pw = ow; th->ph = oh; th->level = level;
+    if (g_log) fprintf(stderr, "[hdphoto] grid thumbnail %08x: level %d of the HD crop, %dx%d for a cell %d px wide\n", th->crc, level, ow, oh, want);
+  });
+}
+
+void EvictThumbs(const ThumbP& keep) {   // g_mu held
+  uint64_t bytes = 0;
+  for (auto& t : g_tLive) for (auto* s : t->gpu) if (s) bytes += (uint64_t)s->b.width * s->b.height * 4;
+  while (bytes > kThumbBudget && g_tLive.size() > 1) {
+    auto lru = std::min_element(g_tLive.begin(), g_tLive.end(), [&](const ThumbP& a, const ThumbP& b) { return (a == keep ? UINT64_MAX : a->lastUse) < (b == keep ? UINT64_MAX : b->lastUse); });
+    if (*lru == keep) break;
+    for (auto*& s : (*lru)->gpu) if (s) { bytes -= (uint64_t)s->b.width * s->b.height * 4; Retire(GK_TEXTURE, s); s = nullptr; }
+    g_tLive.erase(lru);
+  }
+}
+
+// The grid display texture for a thumbnail texture drawn drawnW UI units wide, or nullptr (the game's texture stays).
+TextureImpl* ThumbSubstitute(TextureImpl* t, float drawnW, float hostPerUnit) {
+  const TextureBuilder& b = t->b;
+  if (g_tActive.load(std::memory_order_relaxed) == 0 || b.width > 512 || b.height > 512 || (b.width == 360 && b.height == 240) || drawnW <= 0.0f) return nullptr;
+  std::lock_guard<std::mutex> g(g_mu);
+  ThumbP th;
+  auto it = g_tlink.find(t);
+  if (it != g_tlink.end()) th = it->second;
+  else if (!g_tdec.empty() && b.pool && !b.packaged) {   // a texture whose storage is a decoded thumbnail buffer
+    if (auto* pl = Impl<PoolImpl>(b.pool, MAGIC_POOL)) if (pl->storage) {
+      auto d = g_tdec.find(static_cast<const uint8_t*>(pl->storage) + b.poolOffset);
+      if (d != g_tdec.end()) th = d->second.th;
+    }
+  }
+  if (!th || th->bad || b.width != th->w || b.height != th->h) return nullptr;
+  th->lastUse = ++g_tick;
+  const int fi = (t->fi && (t->fi->vk == VK_FORMAT_BC1_RGBA_SRGB_BLOCK || t->fi->vk == VK_FORMAT_BC1_RGB_SRGB_BLOCK || t->fi->vk == VK_FORMAT_R8G8B8A8_SRGB ||
+                            t->fi->vk == VK_FORMAT_B8G8R8A8_SRGB || t->fi->vk == VK_FORMAT_BC3_SRGB_BLOCK || t->fi->vk == VK_FORMAT_BC7_SRGB_BLOCK)) ? 1 : 0;
+  if (TextureImpl* s = th->gpu[fi]) {
+    if (s->uploaded && s->b.packaged) { s->b.packaged = nullptr; if (!th->gpu[fi ^ 1]) { th->px.clear(); th->px.shrink_to_fit(); } }
+    return s;
+  }
+  if (th->px.empty()) {
+    if (!th->busy && g_presentCount >= th->retryAt) PostThumb(th, std::max(16, (int)std::ceil(drawnW * hostPerUnit)));
+    return nullptr;
+  }
+  auto* s = new TextureImpl();
+  s->host = t->host;
+  s->b = TextureBuilder{};
+  s->b.device = b.device; s->b.target = TT_2D; s->b.width = th->pw; s->b.height = th->ph; s->b.depth = 1; s->b.levels = 1; s->b.samples = 1;
+  s->b.format = fi ? FMT_RGBA8_SRGB : FMT_RGBA8;
+  s->b.flags = TF_LINEAR; s->b.stride = th->pw * 4; s->b.packaged = th->px.data();
+  s->shTried = true;
+  if (!s->EnsureImage()) { delete s; th->bad = true; return nullptr; }
+  th->gpu[fi] = s;
+  if (std::find(g_tLive.begin(), g_tLive.end(), th) == g_tLive.end()) g_tLive.push_back(th);
+  EvictThumbs(th);
+  static int n = 0;
+  if (g_log || n++ < 6) fprintf(stderr, "[hdphoto] showing HD grid thumbnail %08x (photo %08x, level %d, %dx%d) for %p %dx%d drawn %.0f wide (%.0f px) at present %d\n", th->crc,
+                                th->ref.photo, th->level, th->pw, th->ph, (const void*)t, b.width, b.height, drawnW, drawnW * hostPerUnit, g_presentCount);
+  return s;
+}
+
 void HostReadBarrier(VkCommandBuffer cb) {
   VkMemoryBarrier2 mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
   mb.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT; mb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
@@ -618,6 +953,12 @@ void HdPhotoCompress(const TextureImpl* bc, const TextureImpl* src) {
 
 void HdPhotoCopyTex(const TextureImpl* s, const TextureImpl* d) {
   std::lock_guard<std::mutex> g(g_mu);
+  if (!g_tlink.empty()) {   // grid thumbnails: a copy shows what its source shows
+    auto t = g_tlink.find(s);
+    if (t != g_tlink.end() && d->b.width == t->second->w && d->b.height == t->second->h) g_tlink[d] = t->second;
+    else g_tlink.erase(d);
+    UpdateActive();
+  }
   auto it = g_link.find(s);
   if (it == g_link.end()) { if (g_link.count(d)) SetLink(d, nullptr); return; }
   SetLink(d, it->second);
@@ -630,6 +971,17 @@ void HdPhotoCopyToBuffer(const TextureImpl* t, const uint8_t* dst) {   // log on
 
 void HdPhotoUploadFrom(const TextureImpl* t, const uint8_t* src) {
   std::lock_guard<std::mutex> g(g_mu);
+  if (t->b.width <= 512 && t->b.height <= 512 && (!g_tdec.empty() || !g_tHead.empty() || !g_tlink.empty())) {   // grid thumbnails
+    ThumbP th;
+    if (src) { auto it = g_tdec.find(src); if (it != g_tdec.end()) th = it->second.th; }
+    if (!th && src && !g_tHead.empty() && t->fi && t->fi->bytes == 4 && t->fi->bw == 1 && (uint64_t)t->b.width * t->b.height * 4 >= kHeadBytes) {
+      auto it = g_tHead.find(HeadHash(src));
+      if (it != g_tHead.end()) th = it->second;
+    }
+    if (th && (th->w != t->b.width || th->h != t->b.height)) th = nullptr;
+    if (th) { g_tlink[t] = th; UpdateActive(); if (g_log) fprintf(stderr, "[hdphoto] texture %p (%dx%d) uploaded from decoded thumbnail %08x\n", (const void*)t, t->b.width, t->b.height, th->crc); }
+    else if (g_tlink.erase(t)) UpdateActive();
+  }
   HdP hd;
   if (src) { auto it = g_dec.find(src); if (it != g_dec.end()) hd = it->second.hd; }
   if (!hd && src && t->b.width == 1080 && t->b.height == 720 && !g_decHead.empty()) {   // a copy of a decoded photo's pixels
@@ -647,12 +999,14 @@ void HdPhotoUploadFrom(const TextureImpl* t, const uint8_t* src) {
 
 void HdPhotoTexGone(const TextureImpl* t) {
   std::lock_guard<std::mutex> g(g_mu);
-  if (g_link.erase(t)) UpdateActive();
+  const bool a = g_link.erase(t) > 0, b = g_tlink.erase(t) > 0;
+  if (a || b) UpdateActive();
 }
 
-TextureImpl* HdPhotoSubstitute(TextureImpl* t, float drawnW) {
+TextureImpl* HdPhotoSubstitute(TextureImpl* t, float drawnW, float hostPerUnit) {
   if (g_active.load(std::memory_order_relaxed) == 0) return nullptr;
   const TextureBuilder& b = t->b;
+  if (b.width <= 512 && b.height <= 512 && !(b.width == 360 && b.height == 240)) return ThumbSubstitute(t, drawnW, hostPerUnit);
   if (!((b.width == 360 && b.height == 240) || (b.width == 1080 && b.height == 720))) return nullptr;
   std::lock_guard<std::mutex> g(g_mu);
   HdP hd;
@@ -718,8 +1072,14 @@ extern "C" void snap_hdphoto_encoded(uint64_t enc, const uint8_t* jpg, size_t n)
   if (!nvn::HdPhotoOn() || !jpg || n < 4 || n > (64u << 20)) return;
   std::lock_guard<std::mutex> g(nvn::g_mu);
   auto e = nvn::g_encBuf.find(enc);
-  if (e == nvn::g_encBuf.end() || e->second.w != 1080 || e->second.h != 720 || !e->second.data) return;
+  if (e == nvn::g_encBuf.end() || !e->second.data) return;
+  const int ew = e->second.w, eh = e->second.h;
+  if (!(ew == 1080 && eh == 720)) {   // an album thumbnail: matched to its photo for the grid (read only, like the photo)
+    if (ew >= 32 && eh >= 32 && ew <= 512 && eh <= 512) nvn::ThumbEncoded(nvn::Crc32(jpg, n), e->second.data, ew, eh);
+    return;
+  }
   const uint32_t crc = nvn::Crc32(jpg, n);
+  nvn::PhotoEncodedSm(crc, e->second.data);
   if (nvn::g_byCrc.count(crc)) return;   // the same photo encoded again
   nvn::Waiting w{crc, n, {}};
   nvn::Mini(e->second.data, 1080, 720, 1080 * 4, w.mini);
@@ -734,7 +1094,9 @@ extern "C" void snap_hdphoto_decoded(uint64_t dst, uint64_t size, uint32_t crc, 
   if (!nvn::HdPhotoOn() || !dst) return;
   std::lock_guard<std::mutex> g(nvn::g_mu);
   const uint8_t* p = reinterpret_cast<const uint8_t*>(dst);
-  nvn::HdP hd = (w == 1080 && h == 720) ? nvn::ByCrc(crc) : nullptr;
+  if (!(w == 1080 && h == 720)) { nvn::ThumbDecoded(p, size, crc, w, h); return; }   // album grid thumbnails
+  if (nvn::g_tdec.erase(p)) nvn::UpdateActive();
+  nvn::HdP hd = nvn::ByCrc(crc);
   if (nvn::g_log) fprintf(stderr, "[hdphoto] decode %dx%d crc %08x into %p (%llu bytes)%s\n", w, h, crc, (const void*)p, (unsigned long long)size, hd ? ": has an HD copy" : "");
   if (!hd) { if (nvn::g_dec.erase(p)) nvn::UpdateActive(); return; }
   nvn::g_dec[p] = {size, crc, hd};

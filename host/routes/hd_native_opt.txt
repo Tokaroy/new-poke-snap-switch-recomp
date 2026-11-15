@@ -1,0 +1,33 @@
+# fixture: post_tutorial
+# HD photos row in the game's Settings screen (native PC tab "Photos", row 2; scripts/ui/make_native_options.py, host/mods/nativeopt.cpp).
+# Opens Settings from the lab hub as native_options_tabs.txt does, A closes the info popup, R x4 to "Other", R x10 to the PC tab
+# Photos (Quality, Textures, Effects, Output, View, Display, Controller, Mouse, Audio, Photos), Down to "HD photos", Left to On,
+# shots of the page, B closes. The settings file must then hold hd_photos=1.
+# Run with SNAP_MODS_DIR=<mods root holding native-options>, SNAP_NATIVE_OPT_SETTINGS=<settings.cfg>, SNAP_NATIVE_OPT_TRACE=1.
+repeat @f200 @f1400 100 8 ZL
+repeat @f1500 @f30000 240 8 Up
+repeat @f1530 @f30000 240 8 A
+anchor options
+@f120 8 A
+@f300 8 R
+@f370 8 R
+@f440 8 R
+@f510 8 R
+@f650 8 R
+@f760 8 R
+@f870 8 R
+@f980 8 R
+@f1090 8 R
+@f1200 8 R
+@f1310 8 R
+@f1420 8 R
+@f1530 8 R
+@f1640 8 R
+@f1700 40 shot=20
+@f1800 8 Down
+@f1900 40 shot=20
+@f2000 8 Left
+@f2100 8 A
+@f2200 60 shot=20
+@f2400 8 B
+end @f2700

@@ -688,7 +688,7 @@ bool Hub::save(std::string* err) {
 // A token is a Switch button name (A B X Y L R ZL ZR Plus Minus Left Up Right Down StickL StickR ...) or an axis
 // lx=<f> ly=<f> rx=<f> ry=<f> with f in [-1, 1] (y up positive).
 namespace {
-struct ScriptEntry { double start, end, period, hold; uint64_t buttons; int32_t ax[4]; bool has_ax[4]; int seg; bool frames; float rumble_lo, rumble_hi; bool has_rumble; float gyro_yaw, gyro_pitch; bool has_gyro; bool is_end; int shot_n; };
+struct ScriptEntry { double start, end, period, hold; uint64_t buttons; int32_t ax[4]; bool has_ax[4]; int seg; bool frames; float rumble_lo, rumble_hi; bool has_rumble; float gyro_yaw, gyro_pitch; bool has_gyro; bool is_end; int shot_n; std::string cond; };
 struct Script {
   bool loaded = false;
   uint64_t t0 = 0;
@@ -705,7 +705,7 @@ Script g_script;
 
 // ---- route signals: game state that inline hooks report (host/mods/routes.cpp, neofilm.cpp, skips.cpp); "wait" lines read it.
 // Off (every report returns at once) unless the script has a "wait" line or SNAP_ROUTE_LOG=1 (which also logs scenes and states).
-struct UiScene { uint64_t player; char name[40]; char state[64]; int f_event, f_state; bool open; };
+struct UiScene { uint64_t player; char name[40]; char state[64]; char focus[40]; int f_event, f_state; bool open; };
 struct RailSig { uint64_t obj; float prog; int f_adv, f_start; };
 std::mutex g_rs_mu;
 UiScene g_ui[64];
@@ -739,6 +739,11 @@ bool route_cond(const std::string& c0, std::string* why) {
       std::snprintf(b, sizeof b, "%s %s, state '%s' for %d presents", s.name, s.open ? "open" : "closed", s.state, f - s.f_state);
     }
     if (!b[0]) std::snprintf(b, sizeof b, "scene %s not seen", scene.c_str());
+  } else if (c.rfind("focus=", 0) == 0) {   // focus=<element>: the last UI focus event (any scene, newest) named that Lumen element (QA routes: press Down until focus=AllCheck)
+    const UiScene* nw = nullptr;
+    for (int i = 0; i < g_nui; ++i) if (g_ui[i].open && g_ui[i].focus[0] && (!nw || g_ui[i].f_event >= nw->f_event)) nw = &g_ui[i];
+    r = nw && c.substr(6) == nw->focus;
+    std::snprintf(b, sizeof b, "focus %s", nw ? nw->focus : "none");
   } else if (c == "dialog") {
     r = f - g_dialog_f.load() <= 8;
     std::snprintf(b, sizeof b, "dialog window last waited %d presents ago", f - g_dialog_f.load());
@@ -801,6 +806,7 @@ void route_ui(uint64_t player, const char* scene, const char* state, int event, 
     std::snprintf(s->state, sizeof s->state, "%s", state);
     s->f_state = f;
   }
+  if (event == 16 && elem && elem[0]) std::snprintf(s->focus, sizeof s->focus, "%s", elem);   // 16 = focus moved
   if (g_route_log && event >= 0 && event != 22) log("route: ui %s event %d state '%s' element '%s' present %d", s->name, event, state, elem, f);
 }
 
@@ -856,6 +862,7 @@ bool script_token(const std::string& t, ScriptEntry& en) {
       size_t c = t.find(',', eq); en.gyro_pitch = c == std::string::npos ? 0.0f : (float)std::atof(t.c_str() + c + 1);
       return true;
     }
+    if (k == "if") { en.cond = t.substr(eq + 1); return true; }   // if=<cond>: the entry presses only while the wait condition holds (`!` negates), e.g. `repeat @f60 @f600 90 8 Down if=!focus=AllCheck`
     if (k == "shot") {   // shot=<n>: while the entry is active, ask NVN_FRAME_DUMP for a frame every n presents (needs NVN_FRAME_DUMP; test evidence aid)
       en.shot_n = std::max(1, std::atoi(t.c_str() + eq + 1));
       return true;
@@ -1013,6 +1020,7 @@ void script_apply(uint64_t now_ns_v, PadSample& p) {
       on = now >= en.start && now < en.start + en.hold;
     }
     if (!on) continue;
+    if (!en.cond.empty() && !route_cond(en.cond, nullptr)) continue;
     if (en.is_end) {
       log("input script: end of route reached (segment %d, present %d); exiting", seg, nvn::g_presentCount);
       std::fflush(stdout);

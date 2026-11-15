@@ -11,6 +11,8 @@ namespace nvn { struct TextureImpl; void ShinyBufferInit(uint64_t va, uint64_t s
   uint32_t ShinyQueryBegin(struct Host* h, VkCommandBuffer_T* cb); void ShinyQueryDiscard(); void ShinyQueryEnd(VkCommandBuffer_T* cb, uint32_t qi); }
 // UI badge rects (1920x1080 space) of flagged textures sampled in the last frames; returns the count (host UI, runtime/ui/ui_shiny.cpp).
 extern "C" int snap_shiny_badge_rects(float* out4, int max);
+extern "C" int snap_shiny_badge_rects5(float* out5, int max);   // 5 floats per badge: rect + 1 for the 1080x720 (Score) photo
+extern "C" int snap_shiny_since_shutter();
 // 1 when the last photo-sized copy came from a flagged texture (species in out); frames = how many presents back it may be.
 extern "C" int snap_shiny_copy_flag(int frames, char* out, int n);
 extern "C" int snap_shiny_buf_flag(const uint8_t* pix, char* out, int n);

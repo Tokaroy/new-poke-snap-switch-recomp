@@ -12,6 +12,7 @@
 #include "hle.h"
 #include "hle_config.h"
 #include "input_core.h"
+#include "shutter_hook.h"
 
 namespace hle {
 namespace {
@@ -56,6 +57,7 @@ void write_npad_state(void* dst, uint32_t id, uint32_t style) {
   }
   if (!match) return;
   input::PadSample p = input::hub().pad();
+  if ((p.buttons & 1) && g_shutter_hook) g_shutter_hook();   // A: the shutter; the pipeline service then compiles instead of skipping draws for a moment
   uint8_t* b = static_cast<uint8_t*>(dst);
   store<uint64_t>(b + 8, p.buttons);
   store<int32_t>(b + 0x10, p.lx); store<int32_t>(b + 0x14, p.ly);

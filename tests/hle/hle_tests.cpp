@@ -1754,6 +1754,22 @@ static void test_profiles() {
   write_via_fs(s.save_dir(p1), "0000000100000002", "even newer", false);
   CHECK(read_via_fs(s.save_dir(p3), "0000000100000002") == "newer progress");
   CHECK(read_via_fs(s.save_dir(p1), "0000000100000002") == "even newer");
+  // the HD photo copies (save root\photos_hd, runtime/nvn/nvn_hdphoto.cpp) come along whole, and are not taken for a user folder
+  {
+    const stdfs::path hd = stdfs::path(s.save_dir(p1)) / "photos_hd";
+    stdfs::create_directories(hd);
+    { std::ofstream(hd / "0123456789abcdef.png", std::ios::binary) << "hd photo bytes"; }
+    { std::ofstream(hd / "index.txt", std::ios::binary) << "0123456789abcdef\n"; }
+    std::string p4 = s.duplicate(p1, "Profile 1 HD copy", &err);
+    CHECK(!p4.empty());
+    const stdfs::path hd4 = stdfs::path(s.save_dir(p4)) / "photos_hd";
+    CHECK(slurp(hd4 / "0123456789abcdef.png") == "hd photo bytes");
+    CHECK(slurp(hd4 / "index.txt") == "0123456789abcdef\n");
+    CHECK(!stdfs::exists(hd4 / "CURRENT") && !stdfs::exists(hd4 / "gens"));
+    CHECK(read_via_fs(s.save_dir(p4), "0000000100000002") == "even newer");
+    std::error_code ec4;
+    stdfs::remove_all(hd, ec4);
+  }
   // a save with a torn pointer file still imports and mounts (the layer repairs it from the newest complete generation)
   {
     stdfs::path torn = base / "torn";
@@ -2356,6 +2372,7 @@ int main(int argc, char** argv) {
       {"saveport.old_version", sp_test::test_old_version_warns},
       {"saveport.backup", sp_test::test_backup_preserved},
       {"saveport.export", sp_test::test_export},
+      {"saveport.zip_export", sp_test::test_zip_export},
       {"saveport.detect", sp_test::test_detect},
 #ifdef _WIN32
       {"saveport.running", sp_test::test_refuse_running},

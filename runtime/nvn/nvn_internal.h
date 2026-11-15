@@ -376,6 +376,11 @@ struct Readback {
   std::string dumpPath;   // kind 2: debug dump of a texture to this file (NVN_RT_DUMP)
 };
 struct ReplayCtx {
+  // Skinning dispatch runs (nvn_draw.cpp DoDispatch): nextIsDispatch = the next work command is another dispatch; csOpen = the last dispatch
+  // left its trailing barrier out; csPrev = binding and destination ranges of the dispatches since the last barrier.
+  bool nextIsDispatch = false, csOpen = false;
+  struct CsRange { const void* pool; uint64_t lo, hi; };
+  std::vector<CsRange> csReads, csWrites;
   Host* h = nullptr;
   VkCommandBuffer cb = VK_NULL_HANDLE;
   QueueImpl* q = nullptr;
@@ -643,4 +648,10 @@ extern std::atomic<uint64_t> g_lifeStat[LS_COUNT];
 inline void LifeCount(LifeStat s, uint64_t n = 1) { g_lifeStat[s].fetch_add(n, std::memory_order_relaxed); }
 void LifeStatsTick();                  // at present: SNAP_NVN_STATS=1 prints the counters every 300 presents
 
+// SNAP_GPU_PASSES=<csv path> (with SNAP_PERF or SNAP_PERF_SHARED): per-pass GPU timing. PerfMark writes a GPU timestamp into the command
+// buffer that PerfGpuBegin opened; the time up to the next mark (or the command buffer's end) is booked to this label. Draws are counted
+// with g_perfDraws. nvn_perf.cpp writes one row per segment at the present that collects the command buffer.
+extern bool g_perfPassOn;
+extern uint32_t g_perfDraws;
+void PerfMark(Host* h, VkCommandBuffer cb, const char* label);
 }  // namespace nvn

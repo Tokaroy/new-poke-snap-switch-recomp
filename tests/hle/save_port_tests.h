@@ -342,6 +342,43 @@ inline void test_export() {
   CHECK(!same_save(src, out3));
 }
 
+inline void test_zip_export() {
+  Small sm;
+  auto src = fresh("ze_src"), root = fresh("ze_root");
+  make_save(src, 31);
+  sp::Report r; std::string err;
+  CHECK(sp::import_save(u8(src), u8(root), "", &r, &err));
+  auto zip = g_tmp / "sp" / "ze_out" / "save.zip";   // parent folder is created
+  CHECK(sp::export_save(u8(root), "", u8(zip), &r, &err));
+  CHECK(err.empty());
+  CHECK_EQ(r.files, 15);
+  CHECK(stdfs::exists(zip) && !stdfs::exists(u8(zip) + ".part"));
+  // round trip: zip export, then import, byte identical
+  auto root2 = fresh("ze_root2");
+  CHECK(sp::import_save(u8(zip), u8(root2), "", &r, &err));
+  CHECK(err.empty());
+  CHECK(r.warnings.empty());
+  auto uid2 = root2 / "534e4150524543310000000000000001";
+  CHECK(same_save(src, sg::gen_dir(uid2, cur_gen(uid2))));
+  // JKSV layout: files at the top of the zip, nothing else; an unrelated tool (bsdtar) lists and extracts it the same way
+  auto ex = fresh("ze_extract");
+  std::string cmd = "\"\"C:\\Windows\\System32\\tar.exe\" -x -f \"" + zip.string() + "\" -C \"" + ex.string() + "\" 2>nul\"";
+  CHECK(std::system(cmd.c_str()) == 0);
+  int n = 0;
+  for (auto& e : stdfs::directory_iterator(ex)) { (void)e; ++n; }
+  CHECK_EQ(n, 15);
+  CHECK(same_save(src, ex));
+  // a case-insensitive extension, overwriting an older zip, and a damaged store is reported without leaving a zip
+  auto zip2 = g_tmp / "sp" / "ze_out" / "SAVE2.ZIP";
+  CHECK(sp::export_save(u8(root), "", u8(zip2), &r, &err));
+  CHECK(sp::export_save(u8(root), "", u8(zip2), &r, &err));
+  CHECK(has(sp::format_report(r, false), "zip"));
+  stdfs::remove(sg::gen_dir(root / "534e4150524543310000000000000001", cur_gen(root / "534e4150524543310000000000000001")) / sp::expected_files()[2].name);
+  auto zip3 = g_tmp / "sp" / "ze_out" / "bad.zip";
+  CHECK(!sp::export_save(u8(root), "", u8(zip3), &r, &err));
+  CHECK(!stdfs::exists(zip3));
+}
+
 inline void test_detect() {
   Small sm;
   auto ad = fresh("d_appdata");

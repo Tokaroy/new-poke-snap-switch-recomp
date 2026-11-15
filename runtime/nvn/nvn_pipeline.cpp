@@ -27,6 +27,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "hle/shutter_hook.h"
 #include "nvn_pipeline.h"
 #include "os/perf.h"
 #include "shaderprecompile.h"
@@ -538,8 +539,13 @@ void PipelineRegisterStageKey(const char* key12, const char* fullKey, bool eft) 
   if (t && t->ok) PatchTmplEft(t, key12);   // loaded before the game built the program (a load still running re-checks eftKeys itself)
 }
 
+std::atomic<uint64_t> g_shutterNs{0};
+// Registered as hle::g_shutter_hook: the pad poll (runtime/hle/hid.cpp) calls it while the A button is down.
+static void ShutterNote() { g_shutterNs.store(snap_perf::now_ns(), std::memory_order_relaxed); }
+
 void PipelineServiceInit(Host* h) {
   if (S) return;
+  hle::g_shutter_hook = &ShutterNote;
   S = new Svc;
   S->h = h;
   S->dir = Dir();
@@ -604,6 +610,13 @@ void PipelineServiceShutdown(Host* h) {
   }
   if (S->keysFile) fclose(S->keysFile);
   S->up = false;
+}
+
+bool PipelineShutterWindow() {
+  static const bool on = [] { const char* e = getenv("SNAP_PHOTO_NOSKIP"); return !(e && *e == '0'); }();
+  if (!on) return false;
+  const uint64_t t = g_shutterNs.load(std::memory_order_relaxed);
+  return t && snap_perf::now_ns() - t < 500000000ull;   // 0.5 s: the capture is resampled within a few frames of the press
 }
 
 VkPipeline PipelineAcquire(Host* h, const PipeDesc& pd, ProgramImpl* p, bool* pending, bool mustHave) {
@@ -738,3 +751,4 @@ int shaderprecompile_is_holding_game(void) { return PipelineHoldGame() ? 1 : 0; 
 uint32_t shaderprecompile_background_pending(void) { return S ? S->bgPending.load() : 0; }
 
 }  // extern "C"
+

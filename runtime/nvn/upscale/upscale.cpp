@@ -530,6 +530,7 @@ static void Resolve(ReplayCtx& cx) {
   if (!U.haveCur) U.noCam++;
   // motion vectors
   if (U.mvOk) {
+    if (g_perfPassOn) PerfMark(U.h, cb, "upscale mv");
     MvBarrier(cb, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT);
     Mat R{};
     for (int i = 0; i < 4; i++) R.m[i][i] = 1.0;   // zero motion
@@ -554,6 +555,7 @@ static void Resolve(ReplayCtx& cx) {
     MvBarrier(cb, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
   }
   Transition(cb, o, VK_IMAGE_LAYOUT_GENERAL);
+  if (g_perfPassOn) PerfMark(U.h, cb, "upscale eval");
   Eval e;
   e.cb = cb;
   e.color = {c->image, c->View(nullptr, true), c->fi->vk};
@@ -597,6 +599,7 @@ static void Resolve(ReplayCtx& cx) {
     evOk = noEval ? false : front::Evaluate(e);
   }
   U.bkMsSum += Now() - tb;
+  if (g_perfPassOn) PerfMark(U.h, cb, "post-upscale");
   if (front::LogLevel() && ++U.resolves % 300 == 0) {
     static double lastT = 0; static int lastP = 0; const double t = Now();
     Logf("p%d stats: %llu upscaled of %llu, record %.2f ms avg (backend %.2f ms), %.1f presents/s", g_presentCount, (unsigned long long)U.evals, (unsigned long long)U.resolves,

@@ -854,6 +854,17 @@ static uint64_t CopySkippingGpu(PoolImpl* p, uint64_t b, uint64_t e) {
   }
   return copied;
 }
+// SNAP_POOLSYNC_HIST=1: calls by log2(range size): [0] copied directly (SNAP_POOLSYNC_SMALL), [1] GetWriteWatch found no dirty page, [2] found some.
+static std::atomic<uint64_t> g_psHist[3][34];
+static int PsBucket(uint64_t sz) { int b = 0; while (sz > 1 && b < 33) { sz >>= 1; b++; } return b; }
+static void PoolSyncHistDump() {
+  for (int k = 0; k < 3; k++) {
+    uint64_t tot = 0; for (int b = 0; b < 34; b++) tot += g_psHist[k][b].load();
+    fprintf(stderr, "[poolhist] %s total %llu:", k == 0 ? "direct" : k == 1 ? "clean" : "dirty", (unsigned long long)tot);
+    for (int b = 0; b < 34; b++) if (g_psHist[k][b].load()) fprintf(stderr, " <=%llu:%llu", (unsigned long long)(1ull << b), (unsigned long long)g_psHist[k][b].load());
+    fprintf(stderr, "\n");
+  }
+}
 // Returns false when write watch cannot be used for this pool (the caller falls back to a full copy).
 static bool SyncDirtyPages(PoolImpl* p, uint64_t off, uint64_t end) {
   if (!p->Cpu() || !p->storage) return true;
@@ -877,6 +888,18 @@ static bool SyncDirtyPages(PoolImpl* p, uint64_t off, uint64_t end) {
     }
     p->ww = 1;
     snap_perf::count(snap_perf::V_POOLSYNC_BYTES, CopySkippingGpu(p, 0, p->size));   // mirror == storage as of the reset
+    return true;
+  }
+  // [perf pass 19] Small ranges (a uniform block, a slice of a ring page): copy the exact bytes and skip GetWriteWatch. The query is a
+  // syscall of about 0.7 us and ~950 of them ran per 4K ride frame, 25% of the JobWorkers' cycles; a copy of <= a few KB is 30-100 ns.
+  // The GPU reads exactly the bound range, so mirror == guest memory for every byte it can read, the same bytes the dirty-page path
+  // delivers. The pages stay dirty in the watch (nothing is reset here), so a later larger query copies them again: redundant, never
+  // stale. SNAP_POOLSYNC_SMALL=<bytes> sets the limit (0 = off, the old path).
+  static const uint64_t kSmall = [] { const char* e = getenv("SNAP_POOLSYNC_SMALL"); return e ? (uint64_t)strtoull(e, nullptr, 0) : 0ull; }();
+  static const bool kHist = [] { const char* e = getenv("SNAP_POOLSYNC_HIST"); const bool on = e && *e == '1'; if (on) atexit(PoolSyncHistDump); return on; }();
+  if (kSmall && end - off <= kSmall) {
+    if (kHist) g_psHist[0][PsBucket(end - off)]++;
+    snap_perf::count(snap_perf::V_POOLSYNC_BYTES, CopySkippingGpu(p, off, std::min<uint64_t>(end, p->size)));
     return true;
   }
   const uint64_t pb = off & ~0xFFFull, pe = std::min<uint64_t>((end + 0xFFF) & ~0xFFFull, p->size);
@@ -906,6 +929,7 @@ static bool SyncDirtyPages(PoolImpl* p, uint64_t off, uint64_t end) {
   }
   addrs.resize((size_t)n);
   if (GetWriteWatch(WRITE_WATCH_FLAG_RESET, (uint8_t*)p->storage + pb, (SIZE_T)(pe - pb), addrs.data(), &n, &gran) != 0) { p->ww = -1; return false; }
+  if (kHist) { g_psHist[n ? 2 : 1][PsBucket(end - off)]++; static std::atomic<uint64_t> tot{0}; if ((++tot & 0x1FFFF) == 0) PoolSyncHistDump(); }
   if (kSnap && p->wwSnapEpoch == g_replayEpoch)   // [cpuprof] these pages are reset and copied now
     for (uint64_t pg = pb >> 12; pg < (pe >> 12); pg++) p->wwBits[pg >> 6] &= ~(1ull << (pg & 63));
   uint64_t copied = 0;
@@ -920,6 +944,33 @@ static bool SyncDirtyPages(PoolImpl* p, uint64_t off, uint64_t end) {
   snap_perf::count(snap_perf::V_POOLSYNC_BYTES, copied);
   return true;
 }
+// SNAP_POOLSYNC_VERIFY=1 (diagnostic): after a sync, compare the mirror with guest memory over [off, end), skipping GPU-owned ranges, and
+// report ranges that differ. With SNAP_POOLSYNC_SMALL=0 this tests the dirty-page path against the ground truth the direct copy delivers.
+static void VerifyMirror(PoolImpl* p, uint64_t off, uint64_t end) {
+  static std::atomic<uint64_t> checked{0}, bad{0}, bytes{0};
+  if (!p->Cpu() || !p->storage || !p->mapped || !PoolBacked(p)) return;
+  std::lock_guard<std::mutex> lk(p->gpuMutex);
+  uint64_t pos = off;
+  while (pos < end) {
+    uint64_t next = end;
+    bool skip = false;
+    for (auto& r : p->gpuRanges) {
+      if (r.second <= pos || r.first >= end) continue;
+      if (r.first <= pos) { pos = std::max(pos, std::min(r.second, end)); skip = true; break; }
+      next = std::min(next, r.first);
+    }
+    if (skip) continue;
+    const uint8_t* a = p->mapped + pos; const uint8_t* b = static_cast<uint8_t*>(p->storage) + pos;
+    if (memcmp(a, b, (size_t)(next - pos)) != 0) {
+      uint64_t k = 0; while (a[k] == b[k]) k++;
+      if (bad++ < 40) fprintf(stderr, "[poolverify] MISMATCH pool %p off 0x%llx len %llu first diff +%llu (range 0x%llx..0x%llx, pool size 0x%llx)\n", (void*)p,
+                              (unsigned long long)pos, (unsigned long long)(next - pos), (unsigned long long)k, (unsigned long long)off, (unsigned long long)end, (unsigned long long)p->size);
+    }
+    bytes += next - pos;
+    pos = next;
+  }
+  if ((++checked & 0xFFFFF) == 0) fprintf(stderr, "[poolverify] checked %llu ranges (%llu bytes), %llu mismatching\n", (unsigned long long)checked.load(), (unsigned long long)bytes.load(), (unsigned long long)bad.load());
+}
 void SyncPoolRangeOnce(PoolImpl* p, uint64_t off, uint64_t size) {
   if (!p || off >= p->size) return;
   const uint64_t end = std::min<uint64_t>(off + size, p->size);
@@ -929,6 +980,8 @@ void SyncPoolRangeOnce(PoolImpl* p, uint64_t off, uint64_t size) {
     for (auto& r : p->synced) if (r.first <= off && end <= r.second) return;
   }
   if (!(WriteWatchOn() && !p->wbPool.load(std::memory_order_relaxed) && SyncDirtyPages(p, off, end))) SyncPoolRange(p, off, size);
+  static const bool kVerify = [] { const char* e = getenv("SNAP_POOLSYNC_VERIFY"); return e && *e == '1'; }();
+  if (kVerify) VerifyMirror(p, off, end);
   std::lock_guard<std::mutex> lk(p->gpuMutex);
   if (p->syncEpoch != g_replayEpoch) { p->synced.clear(); p->syncEpoch = g_replayEpoch; }
   if (p->synced.size() >= 64) p->synced.clear();
@@ -1357,6 +1410,15 @@ static void Replay(ReplayCtx& cx, const CmdList& list) {
         break;
       }
       default:
+        if (c.op == Op::Dispatch) {   // is the next work command (state/bind ops skipped) another dispatch?
+          cx.nextIsDispatch = false;
+          for (const Cmd* n = &c + 1; n != list.cmds.data() + list.cmds.size(); ++n) {
+            const Op o = n->op;
+            if (o == Op::Dispatch) { cx.nextIsDispatch = true; break; }
+            if ((o >= Op::BindProgram && o <= Op::PolygonOffset) || o == Op::SetAlphaRef || o == Op::SetPatchSize || o == Op::SetViewports || o == Op::SetScissors) continue;
+            break;
+          }
+        }
         ReplayDrawOp(cx, c);
         break;
     }
@@ -1803,6 +1865,7 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
       } else { fdBuf = VK_NULL_HANDLE; }
     }
   }
+  PerfMark(h, cb, "present clear+blit");
   bool hdrDone = false;   // HDR10 swapchain (SNAP_HDR=1): nvn_hdr.cpp draws the PQ pass instead of the clear + blit below (set after the rects are known)
   if (!w->hdr) {
   imgBarrier(dst, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
@@ -1856,6 +1919,7 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
   }
   if (!w->hdr && !hdrDone) vkCmdBlitImage(cb, src->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
                  same ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
+  PerfMark(h, cb, "present look+ui");
   { SnapUiFrame uf{h->instance, h->phys, h->device, h->queue, h->family, cb, dst, w->scFormat, w->scExtent, w->swapchain, (uint32_t)w->scImages.size(), w->hwnd}; if (!hdrDone) { snap_look_present(&uf); snap_ui_present(&uf); } }
   if (fdBuf && fdPost) {   // NVN_FRAME_DUMP_POST: copy the finished swapchain image (TRANSFER_DST after the overlay)
     imgBarrier(dst, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);

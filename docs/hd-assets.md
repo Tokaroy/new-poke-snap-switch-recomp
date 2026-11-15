@@ -187,7 +187,7 @@ Installed (2026-11-14, owner's game not running): `%APPDATA%\SnapRecomp\mods\hd-
 
 ### Material swap: options (2026-11-14)
 
-A body with no normal sampler can get one; `docs/pokemon-materials.md` "Material swap mod: result" proved it on Dodrio with a test pattern. Options, cheapest first:
+A body with no normal sampler can get one; `docs/creature-materials.md` "Material swap mod: result" proved it on Dodrio with a test pattern. Options, cheapest first:
 
 1. **Data-only material mod (exists: `scripts/hd/make_material_mod.py`).** Re-point the `.matinstb`/`.numatb` to the twin shader that samples `normalTexture` and add the slot. Cost: minutes per species, no code. Risk: the normal rides on a decoy entry (a variant-1 texture), so that variant shows a normal map as colour; only 302 of 490 no-normal materials have an exact-delta twin; `sssNormalMapWeight` comes from the shader default. Gotcha found today: `--entry-name` must include `.nutexb`, otherwise the loader ignores the file (`[mods] warning: ... expected <archive>.drp/<entry>.<ext>`) and the shader samples the decoy's own texture as a normal.
 2. **Loader serves new entry names** (`runtime/mods/mods.cpp`, add index entries to the DRP): removes the decoys. Cost: moderate (archive index layout). Risk: moderate. Not started.

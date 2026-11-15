@@ -155,6 +155,30 @@ static std::string pick_zip() {
   return out;
 }
 
+static std::string pick_save_zip() {
+  std::string out;
+  IFileSaveDialog* dlg = nullptr;
+  if (FAILED(CoCreateInstance(CLSID_FileSaveDialog, nullptr, CLSCTX_ALL, IID_PPV_ARGS(&dlg)))) return out;
+  DWORD opts = 0;
+  dlg->GetOptions(&opts);
+  dlg->SetOptions(opts | FOS_FORCEFILESYSTEM | FOS_OVERWRITEPROMPT);
+  COMDLG_FILTERSPEC ft[1] = {{L"Save backup (.zip)", L"*.zip"}};
+  dlg->SetFileTypes(1, ft);
+  dlg->SetDefaultExtension(L"zip");
+  dlg->SetFileName(L"New Pokemon Snap save.zip");
+  dlg->SetTitle(L"Export the save as a .zip");
+  if (SUCCEEDED(dlg->Show(nullptr))) {
+    IShellItem* item = nullptr;
+    if (SUCCEEDED(dlg->GetResult(&item))) {
+      PWSTR p = nullptr;
+      if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &p))) { out = U8(p); CoTaskMemFree(p); }
+      item->Release();
+    }
+  }
+  dlg->Release();
+  return out;
+}
+
 // A task dialog of command links. Returns the index of the link picked, -1 on cancel.
 static int choose(const std::wstring& title, const std::wstring& content, const std::vector<std::wstring>& links) {
   using TDI = HRESULT(WINAPI*)(const TASKDIALOGCONFIG*, int*, int*, BOOL*);
@@ -218,7 +242,10 @@ static void import_save_flow(const fs::path& cfg_path) {
 static void export_save_flow(const fs::path& cfg_path) {
   std::string root, label;
   if (!save_target(cfg_path, &root, &label)) return;
-  std::string dest = pick_folder("", L"Pick the folder to export the save to");
+  int how = choose(L"Export the save", L"Both are the plain save files, named the way the game names them.",
+                   {L"To a folder...\nFor Checkpoint, or to copy into an emulator", L"To a .zip file...\nFor JKSV"});
+  if (how < 0) return;
+  std::string dest = how == 0 ? pick_folder("", L"Pick the folder to export the save to") : pick_save_zip();
   if (dest.empty()) return;
   HCURSOR old = SetCursor(LoadCursor(nullptr, IDC_WAIT));
   hle::saveport::Report r;
@@ -293,8 +320,9 @@ bool prepare(Result& r) {
     if (choice == 4) { offer_upscalers(exe_dir, data, false); continue; }
     if (choice == 5) { import_save_flow(cfg_path); continue; }
     if (choice == 6) { export_save_flow(cfg_path); continue; }
-    if (choice == 3) {
-      std::string sf = save_folder(cfg);
+    if (choice == 3) {   // the active profile's save folder (the one the game would use), else the legacy folder
+      std::string sf, label;
+      if (!save_target(cfg_path, &sf, &label)) sf = save_folder(cfg);
       std::error_code e3;
       fs::create_directories(fs::u8path(sf), e3);
       ShellExecuteW(nullptr, L"explore", W(sf).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
