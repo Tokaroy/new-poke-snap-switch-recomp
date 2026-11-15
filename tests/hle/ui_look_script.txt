@@ -1,0 +1,35 @@
+# Look: Enhanced / Original row (visual_defaults.h, F1 Graphics page). A fresh profile starts Enhanced; the row flips the six extras together and
+# clears the player's own choices for them; a row changed afterwards keeps its own value. Run: build/w-style run_boot with SNAP_UI_TEST=<this file>, no SNAP_VISUALS.
+# Times: seconds after the first present.
+25 key F1 1
+26 expect_open 1
+26.5 tab Graphics
+27 expect_opt gfx_look enhanced
+27 expect_opt gfx_sharpen 0.30
+27 expect_opt gfx_aniso 16
+27 expect_opt photo_export 1
+27 expect_opt hd_photos 1
+27 expect_opt gfx_ui_font auto
+27 expect_opt gfx_preset normal
+28 opt gfx_aa smaa
+28.2 opt gfx_sharpen 0.60
+28.4 expect_opt gfx_preset custom
+29 opt gfx_look original
+29.2 expect_opt gfx_look original
+29.2 expect_opt gfx_aa default
+29.2 expect_opt gfx_sharpen 0.00
+29.2 expect_opt gfx_aniso 0
+29.2 expect_opt photo_export 0
+29.2 expect_opt hd_photos 0
+29.2 expect_opt gfx_ui_font off
+29.4 expect_opt gfx_preset normal
+31 opt gfx_aniso 8
+31.2 expect_opt gfx_aniso 8
+32 opt gfx_look enhanced
+32.2 expect_opt gfx_look enhanced
+32.2 expect_opt gfx_sharpen 0.30
+32.2 expect_opt gfx_aniso 16
+32.2 expect_opt photo_export 1
+32.2 expect_opt hd_photos 1
+33 tab Photos
+38 quit

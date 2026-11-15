@@ -15,6 +15,7 @@
 #include "hle_config.h"
 #include "input_core.h"
 #include "profiles.h"
+#include "visual_defaults.h"   // Look row (gfx_look)
 
 #ifdef _WIN32
 #define NOMINMAX
@@ -201,6 +202,10 @@ void apply(bool env) {
     icons::set_style(icons::parse_style(e && *e ? std::string(e) : get("button_icons", "auto")));
   }
   if (!env) return;
+  {   // Look row (gfx_look "original" / "enhanced"; erased = the build's default): the column of hle/visual_defaults.h every unset visual row follows; SNAP_VISUALS set by hand wins
+    const std::string l = get("gfx_look", "");
+    snapdef::saved_look().store(l == "original" ? 0 : l == "enhanced" ? 1 : -1, std::memory_order_relaxed);
+  }
   // next start: env-var mods
   std::string look = get("look", "neutral");
   if (look != "neutral" && !look.empty()) {
@@ -237,6 +242,7 @@ const char* env_name(const std::string& key) {
   if (key == "look" || key == "look_intensity") return "SNAP_LOOK";
   if (key == "win_size") return "SNAP_WINDOW_W";
   if (key == "shiny") return "SNAP_SHINY";
+  if (key == "gfx_look") return "SNAP_VISUALS";
   for (auto& m : kPassKeys) if (key == m.key) return "SNAP_PASS_OFF";
   for (auto& m : kEnvKeys) if (key == m.key) return m.env;
   return nullptr;

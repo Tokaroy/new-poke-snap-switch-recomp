@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// HD photos (SNAP_HD_PHOTOS=1, settings key hd_photos; off by default). With a render scale or upscaler the scene the game
+// HD photos (SNAP_HD_PHOTOS=1, settings key hd_photos; on by default since 2026-11-15, off with the Original look). With a render scale or upscaler the scene the game
 // photographs is larger than its 1080x720 photo and 360x240 thumbnail. Each capture draw also blits the same frame region into a
 // host-only 2160x1440 image; photo select's large preview and the album's full view then sample that image instead of the
 // game's small texture. The guest never sees the HD pixels: its own photo, thumbnail, JPEG, save and score are unchanged.

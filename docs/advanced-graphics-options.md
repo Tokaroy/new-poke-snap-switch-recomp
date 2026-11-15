@@ -9,7 +9,7 @@ Goal: finer graphics tuning inside the game's own Settings screen (never the F1 
 The native menu has no scrolling and no sub-pages. Every PC tab is a fixed page of 6 row slots, and the only secondary screens are the pulldown popups. So there are two ways to add rows:
 
 1. Widen rows that already exist. A pulldown holds up to 10 items, and several current rows offer only 4 to 6, so most "more granular" wishes are solved by more steps on the same row, with no new tab.
-2. Add new rows for switches that have no row yet. Quality, Textures, Effects, Display, Controller and Mouse are full (6 of 6). Output and View each have 2 free slots. Anything else needs a new tab.
+2. Add new rows for switches that have no row yet. Textures, Effects, Display, Controller and Mouse are full (6 of 6); Quality has 1 free slot (its Upscaler rows moved to the last tab, Upscaler, when the Look row took the first slot). Output and View each have 2 free slots. Anything else needs a new tab.
 
 Decision:
 
@@ -80,7 +80,7 @@ Rules for the advanced rows:
 3. `set_preset` writes or erases all listed keys, so picking Normal also erases shadow distance. This is intended.
 4. Known mismatch to fix first (chunk 0): the native AA row stores `original` and `ssaa2+smaa`, while `kPresetKeys`/`kPresets` use `default` and `ssaa2,smaa`. Picking Original by hand stores a non-default string and reads as Custom, and "SMAA + supersampling" never matches High. Align the native row values with the F1 values before adding more preset keys.
 
-SNAP_VISUALS: `original` (default) and `enhanced` only change the snapdef defaults (AA, sharpen, aniso, UI font scale, PNG export). A new row whose default differs between the two looks needs a snapdef entry in `runtime/hle/visual_defaults.h`; the native default then comes from that file at pack build. None of the new rows need this, since their defaults are the same under both.
+SNAP_VISUALS: `enhanced` (default since 2026-11-15) and `original` only change the snapdef defaults (AA, sharpen, aniso, UI font scale, PNG export, HD photos); the Look row on the Quality tab sets the same choice (key `gfx_look`). A new row whose default differs between the two looks needs a snapdef entry in `runtime/hle/visual_defaults.h`; the native default then comes from that file at pack build. None of the new rows need this, since their defaults are the same under both.
 
 Hand-set env wins: `runtime/hle/settings.cpp` exports a saved key to its `SNAP_*` variable only when that variable is not already set. So an env var set by hand always beats the menu value, and the menu shows its saved value with no sign of the override. The F1 overlay has an "env wins" warning; the native menu does not. Plan: document this in `host/README.md`, and add an optional chunk that appends a short "(env)" marker to the row's current-value text when the env var is set at start.
 

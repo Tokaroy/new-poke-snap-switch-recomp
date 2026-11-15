@@ -1,0 +1,24 @@
+# fixture: post_tutorial
+# Look row in the game's Settings screen (native PC tab "Quality", row 1; scripts/ui/make_native_options.py, host/mods/nativeopt.cpp, runtime/ui/ui_options.cpp set_look).
+# Opens Settings from the lab hub as hd_native_opt.txt does, A closes the info popup, R x4 to "Other", R x1 to the PC tab Quality, shot (Enhanced),
+# Right and A to Original (settings file must hold gfx_look=original and no gfx_aa / gfx_sharpen / gfx_aniso / hd_photos keys), shot, Minus (Restore Default Settings:
+# the Look goes back to Enhanced, gfx_look erased), shot, B closes.
+# Run with SNAP_MODS_DIR=<mods root holding native-options>, SNAP_NATIVE_OPT_SETTINGS=<settings.cfg>, SNAP_NATIVE_OPT_TRACE=1.
+repeat @f200 @f1400 100 8 ZL
+repeat @f1500 @f30000 240 8 Up
+repeat @f1530 @f30000 240 8 A
+anchor options
+@f120 8 A
+@f300 8 R
+@f370 8 R
+@f440 8 R
+@f510 8 R
+@f650 8 R
+@f800 40 shot=20
+@f900 8 Right
+@f950 8 A
+@f1000 40 shot=20
+@f1100 8 Minus
+@f1200 40 shot=20
+@f1400 8 B
+end @f1700

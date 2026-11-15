@@ -20,6 +20,7 @@
 #include <wincodec.h>
 #include <objidl.h>
 
+#include "hle/visual_defaults.h"   // HD photos default (SNAP_VISUALS)
 #include "nvn_internal.h"
 #include "nvn_hdphoto.h"
 #include "nvn_capture.h"
@@ -841,7 +842,7 @@ HdP Grab(ReplayCtx& cx, TextureImpl* src, int x0, int y0, int x1, int y1, bool s
 
 bool HdPhotoOn() {
   static const bool on = [] {
-    const char* e = getenv("SNAP_HD_PHOTOS");
+    const char* e = snapdef::get("SNAP_HD_PHOTOS");   // env or the saved choice, else the Enhanced / Original look (hle/visual_defaults.h)
     const bool v = e && (*e == '1' || !_stricmp(e, "on") || !_stricmp(e, "true") || !_stricmp(e, "yes"));
     g_log = getenv("SNAP_HD_PHOTOS_LOG") != nullptr;
     if (v) fprintf(stderr, "[hdphoto] HD photos on: 2160x1440 copies in %s\n", Dir().c_str());

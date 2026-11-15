@@ -282,10 +282,10 @@ wall time from the first input poll, so a loaded PC shifts the game but not the 
 ## PC tabs in the game's own Settings screen (2026-11-13, `host/mods/nativeopt.cpp`)
 
 The game's Settings screen (lab hub gear) is data driven: `option.lmb` in `common/UI/master/Scenes/option.drp` lists states
-(tabs), elements and focus groups (format and dumper: `scripts/ui/lmb.py dump <option.lmb> [state]`). The PC settings are twelve
+(tabs), elements and focus groups (format and dumper: `scripts/ui/lmb.py dump <option.lmb> [state]`). The PC settings are thirteen
 extra tabs in sets of five after the game's "Other" tab (R past Other; L on Game goes to the last one): Quality, Textures,
 Effects, Output, View | Display, Controller, Mouse, Audio, Photos | Shadows & AO, Performance (overlay mode and corner, see
-"Performance overlay"). They use the game's own row widgets (two-choice rows,
+"Performance overlay"), Upscaler (the two upscaler rows, moved off Quality when the Look row took its first slot). They use the game's own row widgets (two-choice rows,
 pulldowns with their popup), tab bar, help line, sounds and Restore Default Settings button.
 
 - Pack: `python -I scripts/ui/make_native_options.py [--src <option.lmb>] [--out <mods root>] [--if-stale]` writes the local
@@ -320,10 +320,9 @@ pulldowns with their popup), tab bar, help line, sounds and Restore Default Sett
   The generator asserts at most 6 rows per tab (no scrolling), 10 items per pulldown, 112-character help.
 - "(env)" after a pulldown's value: the row's `SNAP_*` variable was set by hand before start, so it wins over the saved
   value (`settings::env_wins`; the F1 menu shows the same warning).
-- Visual extras (owner 2026-11-13 and 2026-11-14: the original base game by default, every enhancement row defaults to
-  Original): Anti-aliasing (stores the F1 table's values, so the quality preset keeps its name: original look = Original
-  `default` / SMAA `smaa` / SMAA + supersampling `ssaa2,smaa`; under `SNAP_VISUALS=enhanced` Original is `off`, the
-  game's FXAA, and `default` is the supersampling entry), Sharpening (Off, 0.1 to 0.7, 0.85, 1.0), Texture filtering
+- Visual extras (owner 2026-11-15: new installs start on the Enhanced look; the Look row, first on the Quality tab, flips them all, and its
+  Restore Default Settings goes back to Enhanced): Anti-aliasing (stores the F1 table's values, so the quality preset keeps its name:
+  `default` follows the Look, `off` is the game's own FXAA, `smaa`, `ssaa2,smaa`), Sharpening (Off, 0.1 to 0.7, 0.85, 1.0), Texture filtering
   (Original / 2x / 4x / 8x / 16x), Sharper menu text (Off = `off` / On = `auto`, 2x at 1440p and above) and Save PNG
   copies. Their defaults (and so Restore Default Settings) are read from `runtime\hle\visual_defaults.h` when the pack is
   built (the pack rebuilds when that file changes); they apply after a restart (the F1 table marks them `kRestart`).
@@ -357,30 +356,33 @@ pulldowns with their popup), tab bar, help line, sounds and Restore Default Sett
   (leaves the Reset button), R to Shadows & AO, Shadow distance 1.5x and Contact shadows On, R to Performance, overlay FPS then Detailed, R (wraps to Game), L (back to Performance), B closes (Detailed stays on over the hub; run with `NVN_FRAME_DUMP_POST=1` to see it in the shots). Run it with
   `SNAP_MODS_DIR=build\w\<owner>_mods` (pack built with `--out` there) plus the three switches above.
 
-## Visual defaults and SNAP_VISUALS (2026-11-13, `runtime/hle/visual_defaults.h`)
+## Visual defaults, the Look row and SNAP_VISUALS (2026-11-13, Enhanced by default since 2026-11-15, `runtime/hle/visual_defaults.h`)
 
-The settings whose defaults can differ from the original game live in one table. The owner chose the original look as the default on 2026-11-13. Each extra still works on its own through its own switch (an F1 menu choice, which `settings.cpp` exports as env, or a hand-set env var), and that always wins over the profile. `SNAP_VISUALS=enhanced` turns every extra on at once; `SNAP_VISUALS=original` forces the original look if the default is ever flipped back. To change the default for everyone, flip `snapdef::kDefaultEnhanced` in that header (one line); the F1 menu labels, the Normal preset and the code paths all read the table.
+The settings whose defaults differ from the original game live in one table. The owner chose the original look as the default on 2026-11-13 and the Enhanced look for new installs on 2026-11-15 (`snapdef::kDefaultEnhanced = true`). Each extra still works on its own through its own switch (an F1 menu choice, which `settings.cpp` exports as env, or a hand-set env var), and that always wins over the profile and the Look. `SNAP_VISUALS=enhanced` or `original` forces every row's column for one run. A player's saved choices are never rewritten: only keys that were never saved (or saved as `default`, which is the same as unset) take the new default.
 
-| Setting (env) | Original (default) | Enhanced (`SNAP_VISUALS=enhanced`) | Read by |
+**Look row.** `Look: Enhanced / Original` is the first row of the F1 Graphics page and of the in-game Settings Quality tab. It stores settings key `gfx_look` (`original`; Enhanced is the erased default), which `settings.cpp` hands to `snapdef::saved_look()` (order of precedence: `SNAP_VISUALS` env, saved Look, `kDefaultEnhanced`). Picking either value also erases the rows' own keys (`snapdef::look_keys()`: `gfx_aa`, `gfx_sharpen`, `gfx_aniso`, `gfx_ui_font`, `photo_export`, `hd_photos`) so the whole bundle follows the Look; rows changed afterwards keep their own value. Restore Default Settings on the Quality tab resets the Look to Enhanced with the other rows. The row takes effect at the next start. The launcher can bind the same key (S_CFG `gfx_look`, then erase `look_keys()`). **Hook for Lighting v2:** when its Enhanced lighting passes the photo-score and 144 fps checks, add the commented `SNAP_LIGHTING` row of the table (original `original`, enhanced `enhanced`), make `lighting_preset.h` read it with `snapdef::get`, and add `gfx_lighting` to `look_keys()`; nothing else changes. Tests: `tests/hle/hle_tests.cpp` (settings: saved keys kept, Look column, `SNAP_VISUALS` wins), `tests/hle/ui_look_script.txt` (F1 row: starts Enhanced, flips and clears together, flips back; run with `SNAP_UI_TEST`, no `SNAP_VISUALS`), `host/routes/look_native_opt.txt` (the in-game Quality tab: Look to Original, Restore Default back to Enhanced).
+
+| Setting (env) | Original (`SNAP_VISUALS=original`) | Enhanced (default) | Read by |
 |---|---|---|---|
 | Anti-aliasing (`SNAP_AA`) | `original`: the game's own FXAA | `ssaa2+smaa`: 2x window height, capped (below), plus SMAA | `nvn_aa.cpp` (`AaParseEnv`) |
 | Sharpening (`SNAP_SHARPEN`) | 0 (off) | 0.30 (CAS) | `nvn_aa.cpp`; off with an upscaler unless `SNAP_SHARPEN` is set |
 | Anisotropic filtering (`SNAP_ANISO`) | 0: the game's own filtering | 16x | `nvn_entry.cpp` (`ApplyHostEnvPolicy`) |
 | UI font supersampling (`SNAP_UI_FONT_SCALE`) | `off` | `auto`: 2x at a 1440p+ window | `gamemods.cpp` (`decide_font_scale`) |
 | PNG photo export (`SNAP_PHOTO_EXPORT`) | 0 (off) | 1 (on) | `photoexport.cpp` |
+| HD photos (`SNAP_HD_PHOTOS`) | 0 (off) | 1 (on) | `nvn_hdphoto.cpp` (`HdPhotoOn`, read once) |
 
 `SNAP_LOD_BIAS` is not a row: its automatic mode only follows a render scale above 1 and does nothing at 1x, so both profiles behave the same. The ssaa2 scale is 2x the window height over 1080, capped at 3.0 (5760 x 3240) and 8192 px per side, so a 2160p window renders at 3.0, not 4.0; the log line `aa: ssaa2 scale capped ...` shows it. An explicit `SNAP_RENDER_SCALE` is never capped. The window height used for this (and by the upscaler) is `SNAP_WINDOW_H`, else the primary monitor height when the window is borderless or maximized (`SNAP_WINDOW_MODE` or `window.json`; read once at start, so a later F11 does not change it), else the `window.json` windowed height, else 720. With no `mods.json`, no mod pack is enabled except `native-options` (the PC tabs in the game's Settings screen); `mods.json` can still disable it.
 
 ## Graphics quality presets (F1 > Graphics > Quality preset)
 
-The row picks Very Low, Low, Normal, High, Ultra or Maximum and sets nine rows at once; it shows Custom when the rows match no preset (the preset itself is not stored). All rows need a restart. Blank = the row's default.
+The row picks Very Low, Low, Default, High, Ultra or Maximum and sets nine rows at once (Default erases them, so they follow the Look); it shows Custom when the rows match no preset (the preset itself is not stored). All rows need a restart. Blank = the row's default.
 
-| Row (env) | Very Low | Low | Normal | High | Ultra | Maximum |
+| Row (env) | Very Low | Low | Default | High | Ultra | Maximum |
 |---|---|---|---|---|---|---|
 | Render scale (`SNAP_RENDER_SCALE`) | 0.50 | 1 | default | default | 2.00 | 4.00 |
-| Anti-aliasing (`SNAP_AA`) | none | off (game FXAA) | default (the game's own FXAA; ssaa2+smaa with `SNAP_VISUALS=enhanced`) | ssaa2,smaa | smaa | smaa |
+| Anti-aliasing (`SNAP_AA`) | none | off (game FXAA) | default (ssaa2+smaa; the game's own FXAA with the Original look) | ssaa2,smaa | smaa | smaa |
 | Sharpening (`SNAP_SHARPEN`) | 0 | 0 | default | 0.30 | 0.30 | 0.50 |
-| Aniso (`SNAP_ANISO`) | off | 4 | default (off; 16 with `SNAP_VISUALS=enhanced`) | 16 | 16 | 16 |
+| Aniso (`SNAP_ANISO`) | off | 4 | default (16; off with the Original look) | 16 | 16 | 16 |
 | Texture sharpness (`SNAP_LOD_BIAS`) | +1 | auto | auto | auto | auto | auto |
 | Shadow map (`SNAP_SHADOW_RES`) | 512 | 1024 | 1024 | 2048 | 4096 | 8192 |
 | AO quality (`SNAP_SSAO_QUALITY`) | default | default | default | high | ultra | ultra |

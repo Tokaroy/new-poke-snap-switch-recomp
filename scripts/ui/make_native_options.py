@@ -60,19 +60,22 @@ def visual_defaults():
     return {k: (e if enhanced else o) for k, o, e in rows}
 
 
-# Anti-aliasing row choices in the F1 table's values, so a hand pick of the default look stores "default" (the key erased) and the
-# quality preset keeps its name (kPresets compare these strings). Original look: default = the game's FXAA; enhanced: default = ssaa2+smaa.
-AA_CHOICES = ((('default', 'Original'), ('smaa', 'SMAA'), ('ssaa2,smaa', 'SMAA + supersampling'))
-              if visual_defaults()['SNAP_AA'] in ('original', 'off', 'fxaa') else
-              (('off', 'Original'), ('smaa', 'SMAA'), ('default', 'SMAA + supersampling')))
+# Anti-aliasing row choices in the F1 table's values, so a hand pick of the default stores "default" (the key erased) and the quality preset
+# keeps its name (kPresets compare these strings). "default" follows the Look row (Enhanced: ssaa2+smaa, Original: the game's FXAA), which
+# the player can flip at run time, so no label here names what the default is (the pack is built once).
+AA_CHOICES = (('default', 'Follows Look'), ('off', 'Original (FXAA)'), ('smaa', 'SMAA'), ('ssaa2,smaa', 'SMAA + supersampling'))
 
 
 TABS = [
     ('Quality', 'Picture quality for this PC version.', [
+        # Look: Enhanced / Original (owner 2026-11-15). One row flips anti-aliasing, sharpening, filtering, menu text, PNG copies and HD photos
+        # together (ui_options.cpp set_look); Restore Default Settings sets it back to Enhanced. Lighting v2 joins it later (visual_defaults.h hook).
+        row('Look', 'c', 'opt', 'gfx_look', 'enhanced', (('enhanced', 'Enhanced'), ('original', 'Original')),
+            'Enhanced: sharper picture, PNG copies, HD photos. Original: the game as shipped.' + R),
         row('Quality preset', 'p', 'opt', 'gfx_preset', 'normal',
-            (('verylow', 'Very Low'), ('low', 'Low'), ('normal', 'Original'), ('high', 'High'), ('ultra', 'Ultra'),
+            (('verylow', 'Very Low'), ('low', 'Low'), ('normal', 'Default'), ('high', 'High'), ('ultra', 'Ultra'),
              ('maximum', 'Maximum'), ('custom', 'Custom')),
-            'Sets this tab and the next together. Very Low suits weak PCs, Maximum a very fast GPU.' + R),
+            'Sets this tab and the next together. Default follows the Look. Maximum needs a fast GPU.' + R),
         row('Render scale', 'p', 'opt', 'gfx_render_scale', '1.00',
             (('0.50', '0.5x'), ('0.75', '0.75x'), ('1.00', '1x (1080p)'), ('1.25', '1.25x'), ('1.50', '1.5x'), ('1.75', '1.75x'),
              ('2.00', '2x (4K)'), ('2.50', '2.5x'), ('3.00', '3x'), ('4.00', '4x (8K, heavy VRAM)')),
@@ -85,12 +88,6 @@ TABS = [
         row('Sharpening', 'p', 'opt', 'gfx_sharpen', '0.00',
             (('0.00', 'Off'),) + nums('0.10', '0.20', '0.30', '0.40', '0.50', '0.60', '0.70', '0.85', '1.00'),
             'Contrast-adaptive sharpening after anti-aliasing. An upscaler turns it off unless set.' + R),
-        row('Upscaler', 'p', 'opt', 'gfx_upscaler', 'off',
-            (('off', 'Off'), ('dlaa', 'DLAA'), ('dlss', 'DLSS'), ('fsr', 'FSR'), ('xess', 'XeSS')),
-            'Rebuilds a sharp picture from fewer pixels. DLSS and DLAA need an NVIDIA RTX card.' + R),
-        row('Upscaler quality', 'p', 'opt', 'gfx_upscale_quality', 'native',
-            (('native', 'Native'), ('quality', 'Quality'), ('balanced', 'Balanced'), ('performance', 'Performance')),
-            'How many pixels are drawn before the upscaler enlarges them. Lower modes run faster.' + R),
     ]),
     ('Textures', 'Texture, shadow and shading detail.', [
         row('Texture filtering', 'p', 'opt', 'gfx_aniso', '0',
@@ -220,10 +217,10 @@ TABS = [
             'Silences the game while its window is not in front.'),
     ]),
     ('Photos', 'Photo files and expeditions.', [
-        row('Save PNG copies', 'c', 'opt', 'photo_export', '0', TOGGLE,
+        row('Save PNG copies', 'c', 'opt', 'photo_export', '1', TOGGLE,
             'Each photo you keep is also saved as a full-quality PNG file.' + R),
         # runtime/nvn/nvn_hdphoto.cpp (SNAP_HD_PHOTOS); needs a 4K-class render scale or upscaler
-        row('HD photos', 'c', 'opt', 'hd_photos', '0', TOGGLE,
+        row('HD photos', 'c', 'opt', 'hd_photos', '1', TOGGLE,
             'Shows photos at 2160x1440 in photo select and the album. Uses more disk and GPU memory.' + R),
         row('NEO-ONE speed', 'p', 'opt', 'neo_speed', '1',
             (('0.5', '0.5x'), ('0.75', '0.75x'), ('1', '1x (original)'), ('1.25', '1.25x'), ('1.5', '1.5x'), ('2', '2x'),
@@ -256,6 +253,9 @@ TABS = [
         row('Performance overlay', 'p', 'opt', 'fps_overlay', 'default', (('default', 'Off'), ('fps', 'FPS'), ('detailed', 'Detailed')),
             'FPS: the frame rate. Detailed adds timing, sizes and modes. F3 cycles it. Never in photos.'),
         row('Overlay corner', 'p', 'opt', 'fps_overlay_corner', 'tr',
+            (('tl', 'Top left'), ('tr', 'Top right'), ('bl', 'Bottom left'), ('br', 'Bottom right')),
+            'Where the performance overlay sits on the screen.'),
+    ]),
     # (the Quality tab's six slots went to the Look row: the two upscaler rows moved to the end of the third set)
     ('Upscaler', 'Rebuild a sharp picture from fewer pixels.', [
         row('Upscaler', 'p', 'opt', 'gfx_upscaler', 'off',
@@ -267,12 +267,9 @@ TABS = [
         row('Frame generation', 'p', 'opt', 'frame_generation', 'default', (('default', 'Off'), ('1', 'On')),
             'FSR adds computed frames between real ones. Menus stay out. Off under 50 fps; photos unaffected.' + R),
     ]),
-            (('tl', 'Top left'), ('tr', 'Top right'), ('bl', 'Bottom left'), ('br', 'Bottom right')),
-            'Where the performance overlay sits on the screen.'),
-    ]),
 ]
 VISUAL_KEYS = {'gfx_sharpen': 'SNAP_SHARPEN', 'gfx_aniso': 'SNAP_ANISO', 'gfx_ui_font': 'SNAP_UI_FONT_SCALE',
-               'photo_export': 'SNAP_PHOTO_EXPORT'}
+               'photo_export': 'SNAP_PHOTO_EXPORT', 'hd_photos': 'SNAP_HD_PHOTOS'}
 _VD = visual_defaults()
 for _t in TABS:
     assert len(_t[2]) <= 6, (_t[0], 'a PC page has 6 row slots and no scrolling')

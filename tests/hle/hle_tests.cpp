@@ -31,6 +31,7 @@
 #include "../../runtime/hle/profiles.h"
 #include "../../runtime/hle/save_gen.h"
 #include "../../runtime/hle/settings.h"
+#include "../../runtime/hle/visual_defaults.h"
 
 namespace stdfs = std::filesystem;
 using namespace hle;
@@ -2077,6 +2078,25 @@ static void test_padfx() {
   { std::ofstream o(f, std::ios::trunc); o << "gfx_draw_distance=12\ngfx_lod_dist=3.00\n"; }
   settings::use_path_for_test(f);
   CHECK(!settings::has("gfx_draw_distance") && settings::get("gfx_draw_dist") == "8.00" && settings::get("gfx_lod_dist") == "3.00");
+  // Look (owner 2026-11-15): an existing profile with no saved Look gets the Enhanced column for every key it never saved, keeps the keys it did save,
+  // a saved gfx_look=original follows the Original column, and SNAP_VISUALS set by hand wins over both
+  _putenv_s("SNAP_VISUALS", "");
+  { std::ofstream o(f, std::ios::trunc); o << "gfx_aa=smaa\ngfx_sharpen=0.50\n"; }
+  settings::use_path_for_test(f);
+  CHECK(snapdef::enhanced() && std::string(snapdef::def("SNAP_AA")) == "ssaa2+smaa" && std::string(snapdef::def("SNAP_ANISO")) == "16");
+  CHECK(std::string(snapdef::def("SNAP_HD_PHOTOS")) == "1" && std::string(snapdef::def("SNAP_PHOTO_EXPORT")) == "1" && std::string(snapdef::def("SNAP_UI_FONT_SCALE")) == "auto");
+  CHECK(settings::get("gfx_aa") == "smaa" && settings::get("gfx_sharpen") == "0.50");   // saved choices untouched
+  settings::set("gfx_look", "original");
+  CHECK(!snapdef::enhanced() && std::string(snapdef::def("SNAP_AA")) == "original" && std::string(snapdef::def("SNAP_SHARPEN")) == "0.00" && std::string(snapdef::def("SNAP_ANISO")) == "0");
+  CHECK(std::string(snapdef::def("SNAP_HD_PHOTOS")) == "0" && std::string(snapdef::def("SNAP_PHOTO_EXPORT")) == "0" && std::string(snapdef::def("SNAP_UI_FONT_SCALE")) == "off");
+  CHECK(settings::get("gfx_aa") == "smaa");                          // flipping the Look in settings alone never rewrites another key (the menu row does that)
+  _putenv_s("SNAP_VISUALS", "enhanced"); CHECK(snapdef::enhanced()); _putenv_s("SNAP_VISUALS", "");
+  settings::use_path_for_test(f);                                    // re-read: the saved Look survives a restart
+  CHECK(!snapdef::enhanced());
+  settings::erase("gfx_look");
+  CHECK(snapdef::enhanced());
+  int nlk = 0; const char* const* lk = snapdef::look_keys(&nlk);
+  CHECK(nlk == 6 && std::string(lk[0]) == "gfx_aa" && std::string(lk[nlk - 1]) == "hd_photos");
   stdfs::remove(f);
 }
 

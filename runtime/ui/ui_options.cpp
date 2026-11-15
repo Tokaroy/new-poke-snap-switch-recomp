@@ -69,6 +69,7 @@ struct Opt {
   std::string (*get)() = nullptr;               // custom store (window API, audio layer); null = the settings file
   void (*set)(const std::string&) = nullptr;
   Choices (*dyn)() = nullptr;                   // choices that depend on the PC (monitors)
+  const char* vis = nullptr;                    // the hle/visual_defaults.h row (env name) this option's default comes from: follows the Look row live
 };
 
 float px(float v) { return v * ImGui::GetFontSize() / theme().font_px; }
@@ -103,13 +104,28 @@ void set_contact(const std::string& v) {
   else st::erase("contact_shadows");
   snap_contact_shadows_set(v == "1");
 }
+// ---- Look: Enhanced / Original (owner 2026-11-15: new installs start Enhanced). One row flips every visual extra of hle/visual_defaults.h together:
+// anti-aliasing, sharpening, anisotropic filtering, menu text sharpness, PNG export and HD photos (the Lighting preset joins when Lighting v2 passes:
+// add its key to snapdef::look_keys() and its row to the visual_defaults.h table). Stored as key gfx_look ("original"; Enhanced is the erased default), exported
+// to the runtime through snapdef::saved_look (hle/settings.cpp apply). Picking either value also clears the rows' own keys, so the whole bundle follows the Look.
+std::string get_look() { return snapdef::enhanced() ? "enhanced" : "original"; }
+void refresh_look_defaults();   // below (needs the option tables)
+void set_look(const std::string& v) {
+  if (v == "original") st::set("gfx_look", "original");
+  else st::erase("gfx_look");
+  int n = 0;
+  const char* const* keys = snapdef::look_keys(&n);
+  for (int i = 0; i < n; i++) st::erase(keys[i]);
+  refresh_look_defaults();
+}
+
 // ---- quality presets. The preset is not stored: it is worked out from the eleven rows below, so changing any row by hand shows "Custom" and
 // setting the rows to a preset's values shows that preset. "" in the table = the row's default (the key is erased, the game's own behavior).
 // Normal is all defaults. Left out on purpose: draw distance and full-rate animation (photo scores unverified), the lighting preset and
 // upscaler rows (other workers), and the HDR/color rows (not quality).
-struct PresetKey { const char* key; const char* def; };
+struct PresetKey { const char* key; const char* def; const char* vis = nullptr; };   // vis: the visual_defaults.h row the default comes from (follows the Look)
 const PresetKey kPresetKeys[] = {
-    {"gfx_render_scale", "1.00"}, {"gfx_aa", "default"}, {"gfx_sharpen", snapdef::def("SNAP_SHARPEN")}, {"gfx_aniso", snapdef::def("SNAP_ANISO")}, {"gfx_lod_bias", "auto"},
+    {"gfx_render_scale", "1.00"}, {"gfx_aa", "default"}, {"gfx_sharpen", "0.00", "SNAP_SHARPEN"}, {"gfx_aniso", "0", "SNAP_ANISO"}, {"gfx_lod_bias", "auto"},
     {"gfx_shadow_res", "default"}, {"ssao_quality", "default"}, {"gfx_ssao_samples", "default"}, {"gfx_ssao_hbao", "default"},
     {"gfx_pass_bloom", "default"}, {"gfx_pass_dof", "default"}, {"gfx_shadow_dist", "default"},
 };
@@ -119,16 +135,17 @@ const PresetDef kPresets[] = {
     // Very Low draws at 0.5 (960 x 540). Sub-native scale used to lose the GPU device after the photo score screen: the album thumbnail
     // readback copied a 240x200 guest region out of a 120x100 scaled image; transfers are render-scale aware since 2026-11-12 (nvn_xfer.cpp).
     // The upscaler rows stay out of the presets (they need a backend DLL and pick their own scene scale).
-    // sharpening "0.00", not "": "" is the visual_defaults.h default, which is 0.30 under SNAP_VISUALS=enhanced
-    // "normal" (all defaults, the game's own look) is labeled Original (owner 2026-11-14: every enhancement defaults to Original).
+    // sharpening "0.00", not "": "" is the visual_defaults.h default, which is 0.30 in the Enhanced look
+    // "normal" (all defaults) is labeled Default: the Look row decides what that is (Enhanced from 2026-11-15, the game's own look with Original).
     // Shadow distance (last column) doubles with the shadow resolution: the same shadow texels per meter as the game, over more ground.
     {"verylow", "Very Low", {"0.50", "none", "0.00", "0", "1", "512", "", "4", "", "off", "off", ""}},
     {"low", "Low", {"", "off", "0.00", "4", "", "", "", "8", "", "", "", ""}},
-    {"normal", "Original", {"", "", "", "", "", "", "", "", "", "", "", ""}},
+    {"normal", "Default", {"", "", "", "", "", "", "", "", "", "", "", ""}},
     {"high", "High", {"", "ssaa2,smaa", "0.30", "16", "", "2048", "high", "", "", "", "", "2"}},
     {"ultra", "Ultra", {"2.00", "smaa", "0.30", "16", "", "4096", "ultra", "", "", "", "", "4"}},
     {"maximum", "Maximum", {"4.00", "smaa", "0.50", "16", "", "8192", "ultra", "512", "32,128", "", "", "8"}},
 };
+const char* preset_def(int k) { return kPresetKeys[k].vis ? snapdef::def(kPresetKeys[k].vis) : kPresetKeys[k].def; }
 bool preset_eq(int k, const std::string& a, const std::string& b) {
   if (a == b) return true;
   if (k == 0 || k == 2) return std::fabs((float)std::atof(a.c_str()) - (float)std::atof(b.c_str())) < 1e-4f;
@@ -138,8 +155,8 @@ std::string get_preset() {
   for (const PresetDef& p : kPresets) {
     bool all = true;
     for (int k = 0; k < kPresetKeyN && all; k++) {
-      const std::string want = p.v[k][0] ? p.v[k] : kPresetKeys[k].def;
-      all = preset_eq(k, st::get(kPresetKeys[k].key, kPresetKeys[k].def), want);
+      const std::string want = p.v[k][0] ? p.v[k] : preset_def(k);
+      all = preset_eq(k, st::get(kPresetKeys[k].key, preset_def(k)), want);
     }
     if (all) return p.id;
   }
@@ -193,16 +210,21 @@ Choices monitors() {
 std::vector<Opt>& graphics_opts() {
   static std::vector<Opt> v = {
       {"", "Picture quality", kSection, kLive, "", ""},
+      {"gfx_look", "Look", kChoice, kRestart,
+       "Enhanced is the look new installs start with: 2x supersampling with SMAA, sharpening 0.30, 16x anisotropic filtering, sharper menu text, a PNG file for every photo and HD photos. "
+       "Original is the game as it shipped (its own FXAA, no sharpening or filtering, no PNG files, no HD photos). Picking one sets all of those together and clears your own choices for them; "
+       "you can still change any row afterwards. Photo scores are the same either way.",
+       "enhanced", {{"enhanced", "Enhanced"}, {"original", "Original"}}, 0, 0, "", "SNAP_VISUALS", get_look, set_look},
       {"gfx_preset", "Quality preset", kChoice, kRestart,
        "Sets the picture-quality rows below together: render scale, anti-aliasing, sharpening, anisotropic filtering, texture sharpness, shadow resolution and distance, and ambient occlusion. "
        "Very Low: for really weak hardware (draws the 3D scene at half size, 960 x 540, then stretches it to the window; no anti-aliasing, no filtering, softer textures, 512 shadows, few occlusion samples). "
-       "Low: for weak or older graphics cards (1920 x 1080, the game's own FXAA, 4x filtering, fewer occlusion samples). Original: the defaults (the game's own look unless SNAP_VISUALS=enhanced). "
+       "Low: for weak or older graphics cards (1920 x 1080, the game's own FXAA, 4x filtering, fewer occlusion samples). Default: the Look row's own settings (Enhanced, or the game's own look with Original). "
        "High: 2x supersampling, SMAA, 2048 shadows reaching 2x as far, High occlusion. Ultra: 2x scale, 4096 shadows at 4x distance, Ultra occlusion. "
        "Maximum: 4x scale (7680 x 4320), 8192 shadows at 8x distance and the most occlusion samples. It will slow even a very fast graphics card and needs a lot of video memory. "
        "In the course the costly rows are render scale, anti-aliasing, filtering and texture sharpness; shadow size only sharpens Pokemon shadows and the occlusion rows only act on the photo-select screen. "
        "Changing any row by hand shows Custom. Draw distance and full-rate animation are not part of any preset.",
        "normal",
-       {{"verylow", "Very Low"}, {"low", "Low"}, {"normal", "Original"}, {"high", "High"}, {"ultra", "Ultra"}, {"maximum", "Maximum"}, {"custom", "Custom"}}, 0, 0, "", nullptr, get_preset, set_preset},
+       {{"verylow", "Very Low"}, {"low", "Low"}, {"normal", "Default"}, {"high", "High"}, {"ultra", "Ultra"}, {"maximum", "Maximum"}, {"custom", "Custom"}}, 0, 0, "", nullptr, get_preset, set_preset},
       {"gfx_render_scale", "Render scale", kSlider, kRestart,
        "How sharp the 3D picture is drawn, as a multiple of the game's own 1920 x 1080. 2.00x draws 3840 x 2160 and then shows it on your screen. Higher is crisper and slower. "
        "Below 1.00x the scene is drawn smaller and stretched (0.50x = 960 x 540): blurrier, but much lighter for a weak graphics card. "
@@ -211,9 +233,9 @@ std::vector<Opt>& graphics_opts() {
       {"gfx_aa", "Anti-aliasing", kChoice, kRestart,
        "Smooths jagged edges. FXAA is what the game ships with. SMAA keeps more detail. 2x supersampling draws at twice the window height first (capped at 3x the game's size): very sharp, and costs a lot of GPU time.",
        "default",
-       {{"default", default_label("SNAP_AA")}, {"off", "FXAA (the game's own)"}, {"smaa", "SMAA"}, {"ssaa2", "2x supersampling + FXAA"}, {"ssaa2,smaa", "2x supersampling + SMAA"}, {"none", "None (not even the game's FXAA)"}}, 0, 0, "", "SNAP_AA"},
+       {{"default", default_label("SNAP_AA")}, {"off", "FXAA (the game's own)"}, {"smaa", "SMAA"}, {"ssaa2", "2x supersampling + FXAA"}, {"ssaa2,smaa", "2x supersampling + SMAA"}, {"none", "None (not even the game's FXAA)"}}, 0, 0, "", "SNAP_AA", nullptr, nullptr, nullptr, "SNAP_AA"},
       {"gfx_sharpen", "Sharpening", kSlider, kRestart,
-       "A gentle sharpening pass after anti-aliasing. 0 is off. Too much makes edges look hard.", snapdef::def("SNAP_SHARPEN"), {}, 0.0f, 1.0f, "%.2f", "SNAP_SHARPEN"},
+       "A gentle sharpening pass after anti-aliasing. 0 is off. Too much makes edges look hard.", snapdef::def("SNAP_SHARPEN"), {}, 0.0f, 1.0f, "%.2f", "SNAP_SHARPEN", nullptr, nullptr, nullptr, "SNAP_SHARPEN"},
       {"gfx_upscaler", "Upscaler", kChoice, kRestart,
        "DLSS, DLAA, FSR and XeSS rebuild a sharp picture from a smaller one so you can render fewer pixels. DLSS and DLAA need an NVIDIA RTX card. It replaces the render scale and the 2x supersampling default; the game's FXAA is turned off unless you pick an anti-aliasing mode. Photos stay at native size.",
        "off", {{"off", "Off"}, {"dlaa", "DLAA (native, anti-aliased)"}, {"dlss", "DLSS"}, {"fsr", "FSR"}, {"xess", "XeSS"}}, 0, 0, "", "SNAP_UPSCALER"},
@@ -223,7 +245,7 @@ std::vector<Opt>& graphics_opts() {
       {"", "Textures and shadows", kSection, kLive, "", ""},
       {"gfx_aniso", "Anisotropic filtering", kChoice, kRestart,
        "Keeps ground and walls sharp when you look at them from a shallow angle. The original game does not force any (Off keeps its own filtering); 16x costs almost nothing on a PC GPU.",
-       snapdef::def("SNAP_ANISO"), {{"0", "Off (1x)"}, {"2", "2x"}, {"4", "4x"}, {"8", "8x"}, {"16", "16x"}}, 0, 0, "", "SNAP_ANISO"},
+       snapdef::def("SNAP_ANISO"), {{"0", "Off (1x)"}, {"2", "2x"}, {"4", "4x"}, {"8", "8x"}, {"16", "16x"}}, 0, 0, "", "SNAP_ANISO", nullptr, nullptr, nullptr, "SNAP_ANISO"},
       {"gfx_lod_bias", "Texture sharpness", kChoice, kRestart,
        "Picks which texture detail level is used. Automatic sharpens textures when the render scale is above 1 and leaves the game alone at 1. Sharper values can shimmer.",
        "auto", {{"auto", "Automatic"}, {"-2", "Sharpest (-2.0)"}, {"-1.5", "-1.5"}, {"-1", "Sharper (-1.0)"}, {"-0.5", "A little sharper (-0.5)"}, {"0", "As the game ships (0)"},
@@ -340,7 +362,7 @@ std::vector<Opt>& display_opts() {
       {"", "Text", kSection, kLive, "", ""},
       {"gfx_ui_font", "Menu text sharpness", kChoice, kRestart,
        "The game's own menus and labels are drawn from a low-resolution letter sheet. Higher draws the letters sharper on large screens, at the same size and position. Automatic uses 2x when the game window is 1440 lines tall or more.", "default",
-       {{"default", default_label("SNAP_UI_FONT_SCALE")}, {"auto", "Automatic (2x at 1440p and above)"}, {"1", "Off (as the game ships)"}, {"2", "Sharper (2x)"}, {"3", "Sharper (3x)"}, {"4", "Sharpest (4x)"}}, 0, 0, "", "SNAP_UI_FONT_SCALE"},
+       {{"default", default_label("SNAP_UI_FONT_SCALE")}, {"auto", "Automatic (2x at 1440p and above)"}, {"1", "Off (as the game ships)"}, {"2", "Sharper (2x)"}, {"3", "Sharper (3x)"}, {"4", "Sharpest (4x)"}}, 0, 0, "", "SNAP_UI_FONT_SCALE", nullptr, nullptr, nullptr, "SNAP_UI_FONT_SCALE"},
       {"", "Controller", kSection, kLive, "", ""},
       {"button_icons", "Button icons", kChoice, kLive,
        "Which button pictures the game's prompts show. Automatic follows the connected controller (PlayStation, Xbox, Switch Pro; no controller shows the Switch pictures). The picture is the button you press with your current controls, so a remapped button shows its new picture. Menus and hints change at once. Cosmetic only.", "auto",
@@ -361,11 +383,11 @@ std::vector<Opt>& photo_opts() {
   static std::vector<Opt> v = {
       {"", "Photo files", kSection, kLive, "", ""},
       {"photo_export", "Save a PNG of every photo", kToggle, kRestart,
-       "Each photo you keep is also written as a full-quality PNG file you can share, next to the game's own in-save copy. The save and scoring are not affected.", snapdef::def("SNAP_PHOTO_EXPORT")},
+       "Each photo you keep is also written as a full-quality PNG file you can share, next to the game's own in-save copy. The save and scoring are not affected.", snapdef::def("SNAP_PHOTO_EXPORT"), {}, 0, 1, "%.2f", nullptr, nullptr, nullptr, nullptr, "SNAP_PHOTO_EXPORT"},
       {"photo_dir", "PNG folder", kPath, kRestart,
        "Where the PNG files go. Empty uses %APPDATA%\\SnapRecomp\\photos. The folder is created when the first photo is saved.", ""},
       {"hd_photos", "HD photos", kToggle, kRestart,
-       "With a render scale or upscaler at 4K, photo select and the album show each photo at 2160x1440 instead of the game's small copy. The game's own photo, save and scoring are unchanged. Uses more disk (about 1 to 2 MB per saved photo, in the save folder's photos_hd) and more GPU memory (up to 256 MB).", "0"},      {"", "Expedition", kSection, kLive, "", ""},
+       "With a render scale or upscaler at 4K, photo select and the album show each photo at 2160x1440 instead of the game's small copy. The game's own photo, save and scoring are unchanged. Uses more disk (about 1 to 2 MB per saved photo, in the save folder's photos_hd) and more GPU memory (up to 256 MB).", snapdef::def("SNAP_HD_PHOTOS"), {}, 0, 1, "%.2f", nullptr, nullptr, nullptr, nullptr, "SNAP_HD_PHOTOS"},      {"", "Expedition", kSection, kLive, "", ""},
       {"neo_speed", "NEO-ONE speed", kSlider, kRestart,
        "How fast the NEO-ONE rides through a course (0.5 to 3, 1 is the game's own). The ride is shorter or longer, so you see less or more of each scene; Pokemon behave as before. Photos and scoring are not changed.",
        "1", {}, 0.5f, 3.0f, "%.2fx", "SNAP_NEO_SPEED"},
@@ -395,6 +417,16 @@ std::vector<Opt>& audio_opts() {
 
 // ---- value access
 std::string cur_of(const Opt& o) { return o.get ? o.get() : st::get(o.key, o.def); }
+
+// After the Look flips: every option that follows a visual_defaults.h row takes that row's new default (and the "Default (...)" label of the choice rows).
+void refresh_look_defaults() {
+  for (auto* list : {&graphics_opts(), &display_opts(), &photo_opts()})
+    for (Opt& o : *list) {
+      if (!o.vis) continue;
+      if (!std::strcmp(o.def, "default")) { if (!o.choices.empty() && o.choices[0].first == "default") o.choices[0].second = default_label(o.vis); }
+      else o.def = snapdef::def(o.vis);
+    }
+}
 
 bool same_value(const Opt& o, const std::string& a, const std::string& b) {
   if (a == b) return true;
@@ -878,10 +910,16 @@ bool options_test_set(const std::string& key, const std::string& value) {
   set_of(*o, value);
   return true;
 }
+  // The in-game pages list the look's own value (Sharper menu text On / Off) instead of "Default (...)": picking the value the Look gives leaves the key
+  // erased, so the row keeps following the Look. (The F1 page lists "default" itself; its explicit values stay explicit.)
+  if (o->vis && !std::strcmp(o->def, "default") && std::strcmp(o->key, "gfx_aa") && value == snapdef::def(o->vis)) { set_of(*o, "default"); return true; }
 void options_test_scroll(float fraction) { g_scroll_req = fraction; }
 std::string options_test_get(const std::string& key) {
   const Opt* o = find_opt(key);
-  return o ? cur_of(*o) : "<unknown option>";
+  if (!o) return "<unknown option>";
+  const std::string v = cur_of(*o);
+  if (o->vis && v == "default" && !std::strcmp(o->def, "default") && std::strcmp(o->key, "gfx_aa")) return snapdef::def(o->vis);   // the Look's own value (see options_test_set)
+  return v;
 }
 bool options_test_option_when(const std::string& key, std::string* when) {
   const Opt* o = find_opt(key);

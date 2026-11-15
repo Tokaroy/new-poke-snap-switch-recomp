@@ -71,11 +71,11 @@ Early playable. The game boots to the title screen and the lab hub, all 14 cours
 
 ### Look and graphics
 
-- The default look matches the original game: its own FXAA, no sharpening, no forced anisotropic filtering.
-- The enhanced look turns on with one setting (see [Running and settings](#running-and-settings)): 2x supersampling plus SMAA, CAS sharpening, 16x anisotropic filtering, automatic UI font supersampling and PNG photo export (lossless, with a JSON sidecar).
-- Quality presets: Very Low, Low, Normal, High, Ultra, Maximum and Custom.
+- The default look is Enhanced: 2x supersampling plus SMAA, CAS sharpening, 16x anisotropic filtering, automatic UI font supersampling, PNG photo export (lossless, with a JSON sidecar) and HD photos.
+- One "Look" row (first row of the Quality tab, in the game's Settings screen and in the F1 menu) switches between Enhanced and Original. Original is the game as shipped: its own FXAA, no sharpening, no forced anisotropic filtering, no PNG files, no HD photos. The row sets all of them together; you can still change any single row afterwards. A choice you already saved keeps working: only settings you never changed follow the new default. `SNAP_VISUALS=original` does the same from the command line (see [Running and settings](#running-and-settings)).
+- Quality presets: Very Low, Low, Default (follows the Look), High, Ultra, Maximum and Custom.
 - Upscalers: NVIDIA DLSS and DLAA, AMD FSR and Intel XeSS, each with quality modes. The vendor SDK files are not in this repo or the release zip. The builder and the launcher download them to your PC from the vendors only after you read and accept each license, and check them against pinned hashes. An upscaler that is not installed is hidden.
-- HD photos (off by default, display only): photos taken under a scaled frame (4K, DLAA, DLSS, FSR or render scale above 1) also get a 2160x1440 copy. It is shown in the photo select preview, the score screen and the album. Turn it on with the "HD photos" row in the Photos settings tab. The game's own save, JPEG and score inputs do not change.
+- HD photos (on in the Enhanced look, display only): photos taken under a scaled frame (4K, DLAA, DLSS, FSR or render scale above 1) also get a 2160x1440 copy. It is shown in the photo select preview, the score screen and the album. Turn it off with the "HD photos" row in the Photos settings tab, or choose the Original look. The game's own save, JPEG and score inputs do not change.
 - HDR output (HDR10 and scRGB, with fallback to SDR), peak and paper-white settings.
 - Render scale from 0.5x to 4x, shadow resolution up to 8192, ambient occlusion options.
 - Optional color looks (Neutral, Vivid, Warm, Cool) and per-pass switches for bloom, depth of field, film grain and chromatic aberration.
@@ -263,7 +263,7 @@ A value set by hand always wins over a menu choice and over `SNAP_VISUALS`.
 
 | Variable | Values | Effect |
 | --- | --- | --- |
-| `SNAP_VISUALS` | `original` (default), `enhanced` | Switches the five visual defaults together. See `host/README.md` for the table |
+| `SNAP_VISUALS` | `enhanced` (default), `original` | Switches the visual defaults together (anti-aliasing, sharpening, anisotropic filtering, UI font, PNG export, HD photos). See `host/README.md` for the table |
 | `SNAP_PROFILE` | save profile name | Picks the save profile, the same as `play.ps1 -Profile "<name>"` |
 | `SNAP_AA` | `original` (default), `fxaa`, `off`, `smaa`, `ssaa2`, joined with `+` or `,` | Anti-aliasing, for example `ssaa2+smaa` |
 | `SNAP_RENDER_SCALE` | number | Explicit render scale, never capped |
@@ -338,7 +338,7 @@ No. The game's code is translated ahead of time into C and compiled into a Windo
 Dump your own copy of version 2.0.1 and run the pipeline above. Generated code, extracted assets, keys and vendor SDK binaries are git-ignored and must never be committed or shared.
 
 **Does it change photo scoring?**
-Not by default. The defaults aim for the original look and behavior. Photos and scoring never use jittered or upscaled output. The View options (draw distance, detail distance, full-rate animation) can change which Pokémon are in a photo and so the score, which is why they are marked experimental.
+No. The Enhanced look changes only how the picture is drawn and what extra files are saved; the game's own photo, save and score data are the same as with the Original look. Photos and scoring never use jittered or upscaled output. The View options (draw distance, detail distance, full-rate animation) can change which Pokémon are in a photo and so the score, which is why they are marked experimental.
 
 **Why does the first launch build something with my game files?**
 The native settings tabs are patched into a copy of the game's own settings UI file, built on your PC. That file is never committed.
