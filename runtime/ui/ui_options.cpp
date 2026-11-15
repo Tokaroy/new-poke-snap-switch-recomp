@@ -27,11 +27,14 @@
 #include "audio/audio_out.h"
 #include "hle/hle.h"
 #include "hle/json_lite.h"
+#include "hle/picture_rows.h"   // the Internal resolution / Anti-aliasing / Performance scaling rules, shared with the launcher and the game's own Settings screen
+#include "nvn/nvn_aa.h"           // HostWindowHeight
 #include "hle/settings.h"
 #include "hle/visual_defaults.h"   // the one table of visual defaults (original look vs extras)
 #include "mods/mods_core.h"
 #include "window_opts.h"
 #include "ui_internal.h"
+#include "imgui_internal.h"   // NavMoveRequestCancel: Left / Right on a focused row change its value
 
 extern "C" void snap_vsync_set(const char* mode);   // runtime/nvn/nvn_vk.cpp [vsync]: live, the next present rebuilds the swapchain
 extern "C" const char* snap_vsync_get();
@@ -70,6 +73,7 @@ struct Opt {
   void (*set)(const std::string&) = nullptr;
   Choices (*dyn)() = nullptr;                   // choices that depend on the PC (monitors)
   const char* vis = nullptr;                    // the hle/visual_defaults.h row (env name) this option's default comes from: follows the Look row live
+  std::string (*note)() = nullptr;              // one line under the row: which value is in effect when another row overrides this one (picture rows)
 };
 
 float px(float v) { return v * ImGui::GetFontSize() / theme().font_px; }
@@ -119,13 +123,74 @@ void set_look(const std::string& v) {
   refresh_look_defaults();
 }
 
+// ---- the picture rows: Look -> Internal resolution -> Anti-aliasing -> Performance scaling (owner 2026-11-15). They are views over gfx_render_scale, gfx_aa,
+// gfx_upscaler and gfx_upscale_quality, so saved settings keep working; hle/picture_rows.h has the rules and says what the runtime does with each combination.
+bool beside_exe(const wchar_t* rel) {
+  wchar_t path[MAX_PATH * 2] = {};
+  if (!GetModuleFileNameW(nullptr, path, MAX_PATH)) return false;
+  wchar_t* sl = wcsrchr(path, L'\\');
+  if (!sl) return false;
+  wcscpy(sl + 1, rel);
+  return GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES;
+}
+snappic::Cfg pic_cfg() {
+  snappic::Cfg c;
+  c.aa = st::get("gfx_aa", "");                   if (c.aa == "default") c.aa.clear();
+  c.scale = st::get("gfx_render_scale", "");      if (c.scale == "auto") c.scale.clear();
+  c.upscaler = st::get("gfx_upscaler", "");       if (c.upscaler == "off") c.upscaler.clear();
+  c.quality = st::get("gfx_upscale_quality", ""); if (c.quality == "native") c.quality.clear();
+  c.sharpen_set = !st::get("gfx_sharpen", "").empty();
+  return c;
+}
+snappic::Ctx pic_ctx() {
+  snappic::Ctx x;
+  x.enhanced = snapdef::enhanced();
+  x.window_h = nvn::HostWindowHeight();
+  x.dlss = beside_exe(L"nvngx_dlss.dll"); x.fsr = beside_exe(L"upscalers\\amd_fidelityfx_upscaler_vk.dll"); x.xess = beside_exe(L"libxess.dll");
+  return x;
+}
+void pic_store(const snappic::Cfg& c) {
+  auto put = [](const char* k, const std::string& v) { if (v.empty()) st::erase(k); else st::set(k, v); };
+  put("gfx_aa", c.aa); put("gfx_upscaler", c.upscaler); put("gfx_upscale_quality", c.quality);
+}
+std::string get_aa() { return snappic::aa_row(pic_cfg()); }
+void set_aa(const std::string& v) { pic_store(snappic::with_aa(pic_cfg(), v)); }
+std::string get_perf() { return snappic::perf_row(pic_cfg()); }
+void set_perf(const std::string& v) { pic_store(snappic::with_perf(pic_cfg(), v, pic_ctx())); }
+std::string note_res() { return snappic::note_resolution(pic_cfg(), pic_ctx()); }
+std::string note_aa() { return snappic::note_aa(pic_cfg(), pic_ctx()); }
+std::string note_perf() { return snappic::note_perf(pic_cfg(), pic_ctx()); }
+std::string note_sharpen() { return snappic::note_sharpen(pic_cfg()); }
+Choices res_choices() {
+  Choices c = {{"auto", snappic::auto_label(pic_cfg(), pic_ctx())}};
+  for (const char* v : {"0.50", "0.75", "1.00", "1.25", "1.50", "2.00", "3.00", "4.00"}) {
+    std::string l = snappic::dims((float)std::atof(v));
+    if (!std::strcmp(v, "1.00")) l += " (the game's own)"; else if (!std::strcmp(v, "2.00")) l += " (4K)"; else if (!std::strcmp(v, "4.00")) l += " (8K)";
+    c.push_back({v, l});
+  }
+  return c;
+}
+Choices aa_choices() {   // upscalers that are not installed are left out (the launcher's Install upscalers button adds them)
+  const snappic::Ctx x = pic_ctx();
+  const snappic::Cfg c = pic_cfg();
+  const bool dlss_on = snappic::perf_row(c) != "off";
+  Choices o = {{"default", x.enhanced ? "Default (SSAA + SMAA)" : "Default (FXAA)"}, {"off", "FXAA (the game's own)"}, {"smaa", "SMAA"},
+               {"ssaa2", "2x supersampling + FXAA"}, {"ssaa2,smaa", "2x supersampling + SMAA"}, {"none", "None (not even the game's FXAA)"}};
+  const std::string cur = snappic::aa_row(c);
+  if (x.dlss || cur == "dlaa") o.push_back({"dlaa", dlss_on ? "DLSS (NVIDIA)" : "DLAA (NVIDIA)"});
+  if (x.fsr || cur == "fsr") o.push_back({"fsr", "FSR (AMD)"});
+  if (x.xess || cur == "xess") o.push_back({"xess", "XeSS (Intel)"});
+  return o;
+}
+Choices perf_choices() { return {{"off", "Off"}, {"quality", "Quality"}, {"balanced", "Balanced"}, {"performance", "Performance"}}; }
+
 // ---- quality presets. The preset is not stored: it is worked out from the eleven rows below, so changing any row by hand shows "Custom" and
 // setting the rows to a preset's values shows that preset. "" in the table = the row's default (the key is erased, the game's own behavior).
 // Normal is all defaults. Left out on purpose: draw distance and full-rate animation (photo scores unverified), the lighting preset and
 // upscaler rows (other workers), and the HDR/color rows (not quality).
 struct PresetKey { const char* key; const char* def; const char* vis = nullptr; };   // vis: the visual_defaults.h row the default comes from (follows the Look)
 const PresetKey kPresetKeys[] = {
-    {"gfx_render_scale", "1.00"}, {"gfx_aa", "default"}, {"gfx_sharpen", "0.00", "SNAP_SHARPEN"}, {"gfx_aniso", "0", "SNAP_ANISO"}, {"gfx_lod_bias", "auto"},
+    {"gfx_render_scale", "auto"}, {"gfx_aa", "default"}, {"gfx_sharpen", "0.00", "SNAP_SHARPEN"}, {"gfx_aniso", "0", "SNAP_ANISO"}, {"gfx_lod_bias", "auto"},
     {"gfx_shadow_res", "default"}, {"ssao_quality", "default"}, {"gfx_ssao_samples", "default"}, {"gfx_ssao_hbao", "default"},
     {"gfx_pass_bloom", "default"}, {"gfx_pass_dof", "default"}, {"gfx_shadow_dist", "default"},
 };
@@ -148,6 +213,7 @@ const PresetDef kPresets[] = {
 const char* preset_def(int k) { return kPresetKeys[k].vis ? snapdef::def(kPresetKeys[k].vis) : kPresetKeys[k].def; }
 bool preset_eq(int k, const std::string& a, const std::string& b) {
   if (a == b) return true;
+  if (k == 0 && (a == "auto" || b == "auto")) return false;   // Automatic and a typed 1.00 are different rows
   if (k == 0 || k == 2) return std::fabs((float)std::atof(a.c_str()) - (float)std::atof(b.c_str())) < 1e-4f;
   return false;
 }
@@ -211,7 +277,7 @@ std::vector<Opt>& graphics_opts() {
   static std::vector<Opt> v = {
       {"", "Picture quality", kSection, kLive, "", ""},
       {"gfx_look", "Look", kChoice, kRestart,
-       "Enhanced is the look new installs start with: 2x supersampling with SMAA, sharpening 0.30, 16x anisotropic filtering, sharper menu text, a PNG file for every photo and HD photos. "
+       "Enhanced is the look new installs start with: supersampling sized to your screen (2x at 1080p, 1.5x at 1440p, none extra at 4K) with SMAA, sharpening 0.30, 16x anisotropic filtering, sharper menu text, a PNG file for every photo and HD photos. "
        "Original is the game as it shipped (its own FXAA, no sharpening or filtering, no PNG files, no HD photos). Picking one sets all of those together and clears your own choices for them; "
        "you can still change any row afterwards. Photo scores are the same either way.",
        "enhanced", {{"enhanced", "Enhanced"}, {"original", "Original"}}, 0, 0, "", "SNAP_VISUALS", get_look, set_look},
@@ -225,23 +291,26 @@ std::vector<Opt>& graphics_opts() {
        "Changing any row by hand shows Custom. Draw distance and full-rate animation are not part of any preset.",
        "normal",
        {{"verylow", "Very Low"}, {"low", "Low"}, {"normal", "Default"}, {"high", "High"}, {"ultra", "Ultra"}, {"maximum", "Maximum"}, {"custom", "Custom"}}, 0, 0, "", nullptr, get_preset, set_preset},
-      {"gfx_render_scale", "Render scale", kSlider, kRestart,
-       "How sharp the 3D picture is drawn, as a multiple of the game's own 1920 x 1080. 2.00x draws 3840 x 2160 and then shows it on your screen. Higher is crisper and slower. "
-       "Below 1.00x the scene is drawn smaller and stretched (0.50x = 960 x 540): blurrier, but much lighter for a weak graphics card. "
+      {"gfx_render_scale", "Internal resolution", kChoice, kRestart,
+       "How many pixels the 3D picture is drawn with, as a size over the game's own 1920 x 1080. Automatic lets the Look and the Anti-aliasing row decide (the Enhanced look draws it supersampled); "
+       "a size sets it yourself. Higher is crisper and slower. Below 1920 x 1080 the scene is drawn smaller and stretched: blurrier, but much lighter for a weak graphics card. "
        "Photo scoring still uses the original-size data. Saved photos stay 1080 x 720 but are as sharp as the scene they were taken from.",
-       "1.00", {}, 0.5f, 4.0f, "%.2fx", "SNAP_RENDER_SCALE"},
+       "auto", {}, 0, 0, "", "SNAP_RENDER_SCALE", nullptr, nullptr, res_choices, nullptr, note_res},
       {"gfx_aa", "Anti-aliasing", kChoice, kRestart,
-       "Smooths jagged edges. FXAA is what the game ships with. SMAA keeps more detail. 2x supersampling draws at twice the window height first (capped at 3x the game's size): very sharp, and costs a lot of GPU time.",
-       "default",
-       {{"default", default_label("SNAP_AA")}, {"off", "FXAA (the game's own)"}, {"smaa", "SMAA"}, {"ssaa2", "2x supersampling + FXAA"}, {"ssaa2,smaa", "2x supersampling + SMAA"}, {"none", "None (not even the game's FXAA)"}}, 0, 0, "", "SNAP_AA", nullptr, nullptr, nullptr, "SNAP_AA"},
+       "Smooths jagged edges. FXAA is what the game ships with. SMAA keeps more detail. 2x supersampling draws at twice the window height first (capped at 3x the game's size): very sharp, and costs a lot of GPU time. The Enhanced look sizes it to your screen instead, so 4K stays smooth. "
+       "DLAA, FSR and XeSS use an upscaler at full size; they appear when their files are installed (the launcher's Install upscalers button).",
+       "default", {}, 0, 0, "", "SNAP_AA", get_aa, set_aa, aa_choices, "SNAP_AA", note_aa},
+      {"gfx_upscale_quality", "Performance scaling", kChoice, kRestart,
+       "Draws fewer pixels and enlarges them with DLSS, FSR or XeSS, so a slower graphics card keeps up. Off draws at full size. Quality draws 1.5x fewer pixels per side, Balanced about 1.7x, Performance 2x. "
+       "It needs an upscaler: picking one here switches Anti-aliasing to the best one you have installed. Photos stay at native size.",
+       "off", {}, 0, 0, "", "SNAP_UPSCALE_QUALITY", get_perf, set_perf, perf_choices, nullptr, note_perf},
       {"gfx_sharpen", "Sharpening", kSlider, kRestart,
-       "A gentle sharpening pass after anti-aliasing. 0 is off. Too much makes edges look hard.", snapdef::def("SNAP_SHARPEN"), {}, 0.0f, 1.0f, "%.2f", "SNAP_SHARPEN", nullptr, nullptr, nullptr, "SNAP_SHARPEN"},
-      {"gfx_upscaler", "Upscaler", kChoice, kRestart,
-       "DLSS, DLAA, FSR and XeSS rebuild a sharp picture from a smaller one so you can render fewer pixels. DLSS and DLAA need an NVIDIA RTX card. It replaces the render scale and the 2x supersampling default; the game's FXAA is turned off unless you pick an anti-aliasing mode. Photos stay at native size.",
-       "off", {{"off", "Off"}, {"dlaa", "DLAA (native, anti-aliased)"}, {"dlss", "DLSS"}, {"fsr", "FSR"}, {"xess", "XeSS"}}, 0, 0, "", "SNAP_UPSCALER"},
-      {"gfx_upscale_quality", "Upscaler quality", kChoice, kRestart,
-       "How many pixels the game draws before the upscaler enlarges the picture to the window size (per side, shown for a 4K window). Native: full size (3840x2160), the upscaler only cleans up edges. Quality: 1.5x smaller (2560x1440). Balanced: about 1.7x smaller (2227x1253). Performance: 2x smaller (1920x1080). Lower modes run faster and look softer.", "native",
-       {{"native", "Native (no downscale)"}, {"quality", "Quality"}, {"balanced", "Balanced"}, {"performance", "Performance"}}, 0, 0, "", "SNAP_UPSCALE_QUALITY"},
+       "A gentle sharpening pass after anti-aliasing. 0 is off. Too much makes edges look hard.", snapdef::def("SNAP_SHARPEN"), {}, 0.0f, 1.0f, "%.2f", "SNAP_SHARPEN", nullptr, nullptr, nullptr, "SNAP_SHARPEN", note_sharpen},
+      {"frame_generation", "Frame generation (FSR)", kChoice, kRestart,
+       "AMD FSR frame generation shows an extra, computed frame between two real ones, so a 60 fps game looks like about 120 on a 120 Hz or faster screen. The menus and HUD are kept out of it. "
+       "It adds about one frame of delay, never touches photos or scoring, and turns itself off while the game runs under about 50 fps. It does not count toward the real frame rate in the Frame rate target row. "
+       "Needs the FSR files from the launcher's Upscalers entry (a one-time download you accept).", "default",
+       {{"default", "Off"}, {"1", "On"}}, 0, 0, "", "SNAP_FRAMEGEN"},
       {"", "Textures and shadows", kSection, kLive, "", ""},
       {"gfx_aniso", "Anisotropic filtering", kChoice, kRestart,
        "Keeps ground and walls sharp when you look at them from a shallow angle. The original game does not force any (Off keeps its own filtering); 16x costs almost nothing on a PC GPU.",
@@ -264,11 +333,6 @@ std::vector<Opt>& graphics_opts() {
        "Soft contact shadows in corners and under objects. High and Ultra take more samples. The courses draw no ambient occlusion while you play (their contact shadows are baked in); the effect shows only on the photo-select screen, so this does not change the course view or its frame rate.", "default",
        {{"default", "Default"}, {"high", "High (96 samples)"}, {"ultra", "Ultra (256 samples)"}}, 0, 0, "", "SNAP_SSAO_QUALITY"},
       {"gfx_ssao_samples", "Occlusion samples", kChoice, kRestart,
-      {"frame_generation", "Frame generation (FSR)", kChoice, kRestart,
-       "AMD FSR frame generation shows an extra, computed frame between two real ones, so a 60 fps game looks like about 120 on a 120 Hz or faster screen. The menus and HUD are kept out of it. "
-       "It adds about one frame of delay, never touches photos or scoring, and turns itself off while the game runs under about 50 fps. It does not count toward the real frame rate in the Frame rate target row. "
-       "Needs the FSR files from the launcher's Upscalers entry (a one-time download you accept).", "default",
-       {{"default", "Off"}, {"1", "On"}}, 0, 0, "", "SNAP_FRAMEGEN"},
        "How many samples the simple ambient-occlusion pass takes per pixel. Overrides the Ambient occlusion choice above. Like the row above, it only matters on the photo-select screen, not in the course. 512 is the most the game's pass holds.", "default",
        {{"default", "Default (the game's own)"}, {"8", "8"}, {"16", "16"}, {"64", "64"}, {"128", "128"}, {"256", "256"}, {"512", "512"}}, 0, 0, "", "SNAP_SSAO_SAMPLES"},
       {"gfx_ssao_hbao", "Horizon occlusion", kChoice, kRestart,
@@ -324,9 +388,9 @@ std::vector<Opt>& graphics_opts() {
        "Far-away Pokemon animate every 2nd or 4th frame in the original. On animates them every frame: smoother, a little more CPU. May change photo scores, being tested.", "0", {}, 0, 0, "", "SNAP_FULL_RATE_ANIM"},
       {"", "Frame rate", kSection, kLive, "", ""},
       {"fps_target", "Frame rate target", kChoice, kRestart,
-       "How fast the game runs. Default is the game's own 60 FPS. 90, 120 and 144 run the game itself faster and need a fast CPU; the menus and dialogue keep their original speed. "
+       "How fast the game runs. Default is the game's own 60 FPS. 90, 120, 144, 165 and 240 run the game itself faster and need a fast CPU; the menus and dialogue keep their original speed. "
        "The frame rate limit below still applies. On a variable refresh rate (G-Sync, FreeSync) monitor any of them is smooth.", "default",
-       {{"default", "60 (the game's own)"}, {"90", "90"}, {"120", "120"}, {"144", "144"}}, 0, 0, "", "SNAP_FPS"},
+       {{"default", "60 (the game's own)"}, {"90", "90"}, {"120", "120"}, {"144", "144"}, {"165", "165"}, {"240", "240"}}, 0, 0, "", "SNAP_FPS"},
       {"frame_cap", "Frame rate limit", kChoice, kLive,
        "Stops the game from drawing faster than this. Off keeps the game's own 60 FPS pacing. Remembered in window.json.", "0",
        {{"0", "Off (the game's pacing)"}, {"30", "30"}, {"45", "45"}, {"60", "60"}, {"75", "75"}, {"90", "90"}, {"120", "120"}, {"144", "144"}, {"165", "165"}, {"240", "240"}}, 0, 0, "",
@@ -418,9 +482,6 @@ std::vector<Opt>& audio_opts() {
   return v;
 }
 
-// ---- value access
-std::string cur_of(const Opt& o) { return o.get ? o.get() : st::get(o.key, o.def); }
-
 // After the Look flips: every option that follows a visual_defaults.h row takes that row's new default (and the "Default (...)" label of the choice rows).
 void refresh_look_defaults() {
   for (auto* list : {&graphics_opts(), &display_opts(), &photo_opts()})
@@ -430,6 +491,9 @@ void refresh_look_defaults() {
       else o.def = snapdef::def(o.vis);
     }
 }
+
+// ---- value access
+std::string cur_of(const Opt& o) { return o.get ? o.get() : st::get(o.key, o.def); }
 
 bool same_value(const Opt& o, const std::string& a, const std::string& b) {
   if (a == b) return true;
@@ -513,6 +577,7 @@ void draw_choice(const Opt& o) {
   std::string label = cur.empty() && o.choices.empty() ? "" : cur;
   for (auto& c : list) if (c.first == cur) label = c.second;
   if (label == cur && !cur.empty() && !std::strcmp(o.key, "frame_cap")) label = cur + " fps (custom)";
+  if (label == cur && !cur.empty() && !std::strcmp(o.key, "gfx_render_scale") && std::atof(cur.c_str()) > 0) label = snappic::dims((float)std::atof(cur.c_str())) + " (typed in)";
   ImGui::SetNextItemWidth(px(250));
   if (ImGui::BeginCombo("##v", label.c_str())) {
     for (auto& c : list) {
@@ -549,7 +614,34 @@ bool boxed_checkbox(const char* id, bool* b) {
 
 void draw_toggle(const Opt& o) {
   bool b = cur_of(o) != "0" && !cur_of(o).empty();
-  if (boxed_checkbox("##v", &b)) set_of(o, b ? "1" : "0");
+  const bool changed = boxed_checkbox("##v", &b);
+  // The gamepad's A only presses buttons: on a value row it must not change the value (Left / Right do, see step_focused_row). Mouse and keyboard still toggle.
+  if (changed && !(ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false) && !ImGui::IsMouseClicked(0))) set_of(o, b ? "1" : "0");
+}
+
+// Left / Right (d-pad, arrow keys) on the focused row change its value one step; nothing else about the row moves.
+void step_focused_row(const Opt& o) {
+  ImGuiContext& g = *GImGui;
+  if (!g.NavMoveSubmitted || (g.NavMoveDir != ImGuiDir_Left && g.NavMoveDir != ImGuiDir_Right) || ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId)) return;
+  const int d = g.NavMoveDir == ImGuiDir_Left ? -1 : 1;
+  const std::string cur = cur_of(o);
+  if (o.kind == kToggle) set_of(o, (cur != "0" && !cur.empty()) ? "0" : "1");
+  else if (o.kind == kSlider) {
+    const float v = std::clamp((float)std::atof(cur.c_str()) + (float)d * (o.hi - o.lo) / 20.0f, o.lo, o.hi);
+    set_of(o, fmt_float(std::round(v * 100.0f) / 100.0f));
+  } else if (o.kind == kChoice) {
+    Choices dyn;
+    const Choices& list = o.dyn ? (dyn = o.dyn()) : o.choices;
+    if (list.empty()) return;
+    int i = -1;
+    for (size_t k = 0; k < list.size(); ++k) if (list[k].first == cur) i = (int)k;
+    if (i < 0) i = d > 0 ? -1 : 0;
+    const int n = (int)list.size();
+    const std::string next = list[(size_t)(((i + d) % n + n) % n)].first;
+    if (std::strcmp(o.key, "gfx_preset") == 0 && next == "custom") return;   // Custom is only ever shown
+    set_of(o, next);
+  } else return;
+  ImGui::NavMoveRequestCancel();
 }
 
 void draw_path(const Opt& o) {
@@ -584,9 +676,14 @@ void draw_row(const Opt& o, bool inline_help) {
   }
   ImGui::EndDisabled();
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) || ImGui::IsItemFocused() || ImGui::IsItemActive()) g_help = &o;
+  if (ImGui::IsItemFocused() && o.when != kSoon) step_focused_row(o);
   badge(o);
   ImGui::EndGroup();
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) g_help = &o;
+  if (o.note) {   // which value is in effect when another row overrides this one
+    const std::string n = o.note();
+    if (!n.empty()) { ImGui::Indent(px(24)); ImGui::TextColored(theme().title, "%s", n.c_str()); ImGui::Unindent(px(24)); }
+  }
   if (env_set_by_hand(o)) ImGui::TextColored(theme().error, "    %s is set in the environment and wins over this choice.", st::env_name(o.key) ? st::env_name(o.key) : o.env);
   if (inline_help) {
     ImGui::Indent(px(24));
@@ -602,6 +699,7 @@ void draw_row(const Opt& o, bool inline_help) {
 }
 
 std::string default_label(const Opt& o) {
+  if (o.dyn && o.note) { for (auto& c : o.dyn()) if (c.first == o.def) return c.second; return ""; }   // the picture rows: their list is worked out live
   if (o.dyn) return "";
   for (auto& c : o.choices) if (c.first == o.def) return c.second;
   if (o.kind == kToggle) return std::string(o.def) == "0" ? "Off" : "On";
@@ -632,10 +730,8 @@ void draw_help(const std::vector<Opt>& list, const Opt** remembered) {
   const std::string dl = default_label(*o);
   if (!dl.empty()) wrapped(t.text_dim, "Default: %s", dl.c_str());
   if (o->key && std::strcmp(o->key, "gfx_render_scale") == 0) {
-    const float s = (float)std::atof(cur_of(*o).c_str());
-    char b[64];
-    std::snprintf(b, sizeof b, "%d x %d", (int)std::lround(1920 * s), (int)std::lround(1080 * s));
-    wrapped(t.text_dim, "Now: scene drawn at %s", b);
+    const std::string b = snappic::dims(snappic::effective(pic_cfg(), pic_ctx()).scene);   // whichever row decided it
+    wrapped(t.text_dim, "Now: scene drawn at %s", b.c_str());
   }
   const char* en = st::env_name(o->key) ? st::env_name(o->key) : o->env;
   if (en) { wrapped(t.text_dim, "%s", "Override with the environment variable:"); wrapped(t.text_dim, "%s", en); }
@@ -910,12 +1006,12 @@ bool options_test_set(const std::string& key, const std::string& value) {
   capture_start();
   const Opt* o = find_opt(key);
   if (!o || o->when == kSoon) return false;
-  set_of(*o, value);
-  return true;
-}
   // The in-game pages list the look's own value (Sharper menu text On / Off) instead of "Default (...)": picking the value the Look gives leaves the key
   // erased, so the row keeps following the Look. (The F1 page lists "default" itself; its explicit values stay explicit.)
   if (o->vis && !std::strcmp(o->def, "default") && std::strcmp(o->key, "gfx_aa") && value == snapdef::def(o->vis)) { set_of(*o, "default"); return true; }
+  set_of(*o, value);
+  return true;
+}
 void options_test_scroll(float fraction) { g_scroll_req = fraction; }
 std::string options_test_get(const std::string& key) {
   const Opt* o = find_opt(key);
@@ -923,6 +1019,17 @@ std::string options_test_get(const std::string& key) {
   const std::string v = cur_of(*o);
   if (o->vis && v == "default" && !std::strcmp(o->def, "default") && std::strcmp(o->key, "gfx_aa")) return snapdef::def(o->vis);   // the Look's own value (see options_test_set)
   return v;
+}
+// The one-line note of a picture row (which value is in effect when another row overrides it), for the game's own Settings screen (host/mods/nativeopt.cpp).
+// "" when nothing overrides the row. The Internal resolution row says what Automatic comes to when nothing else has something to say.
+std::string options_note(const std::string& key) {
+  for (const Opt& o : graphics_opts()) {
+    if (!o.key || key != o.key) continue;
+    std::string n = o.note ? o.note() : std::string();
+    if (n.empty() && key == "gfx_render_scale" && cur_of(o) == "auto") n = snappic::auto_label(pic_cfg(), pic_ctx());
+    return n;
+  }
+  return "";
 }
 bool options_test_option_when(const std::string& key, std::string* when) {
   const Opt* o = find_opt(key);

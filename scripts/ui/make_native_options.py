@@ -63,7 +63,8 @@ def visual_defaults():
 # Anti-aliasing row choices in the F1 table's values, so a hand pick of the default stores "default" (the key erased) and the quality preset
 # keeps its name (kPresets compare these strings). "default" follows the Look row (Enhanced: ssaa2+smaa, Original: the game's FXAA), which
 # the player can flip at run time, so no label here names what the default is (the pack is built once).
-AA_CHOICES = (('default', 'Follows Look'), ('off', 'Original (FXAA)'), ('smaa', 'SMAA'), ('ssaa2,smaa', 'SMAA + supersampling'))
+AA_CHOICES = (('default', 'Follows Look'), ('off', 'Original (FXAA)'), ('smaa', 'SMAA'), ('ssaa2,smaa', 'SMAA + supersampling'),
+              ('dlaa', 'DLAA / DLSS (NVIDIA)'), ('fsr', 'FSR (AMD)'), ('xess', 'XeSS (Intel)'))
 
 
 TABS = [
@@ -72,22 +73,26 @@ TABS = [
         # together (ui_options.cpp set_look); Restore Default Settings sets it back to Enhanced. Lighting v2 joins it later (visual_defaults.h hook).
         row('Look', 'c', 'opt', 'gfx_look', 'enhanced', (('enhanced', 'Enhanced'), ('original', 'Original')),
             'Enhanced: sharper picture, PNG copies, HD photos. Original: the game as shipped.' + R),
-        row('Quality preset', 'p', 'opt', 'gfx_preset', 'normal',
-            (('verylow', 'Very Low'), ('low', 'Low'), ('normal', 'Default'), ('high', 'High'), ('ultra', 'Ultra'),
-             ('maximum', 'Maximum'), ('custom', 'Custom')),
-            'Sets this tab and the next together. Default follows the Look. Maximum needs a fast GPU.' + R),
-        row('Render scale', 'p', 'opt', 'gfx_render_scale', '1.00',
-            (('0.50', '0.5x'), ('0.75', '0.75x'), ('1.00', '1x (1080p)'), ('1.25', '1.25x'), ('1.50', '1.5x'), ('1.75', '1.75x'),
-             ('2.00', '2x (4K)'), ('2.50', '2.5x'), ('3.00', '3x'), ('4.00', '4x (8K, heavy VRAM)')),
-            'Scene size as a multiple of 1080p. 4x needs a lot of video memory.' + R),
-        # Visual extras (owner 2026-11-13): original look by default, every extra off. The AA values are the F1 table's
-        # (ui_options.cpp gfx_aa, kPresets): "default" = the visual_defaults.h AA, "off" = the game's FXAA; choices set below.
+        # Internal resolution, Anti-aliasing and Performance scaling are views over the same keys the F1 menu and the launcher use (runtime/hle/picture_rows.h):
+        # Automatic = the key erased; an upscaler in the Anti-aliasing row draws native size, and Performance scaling picks its share. The row help is
+        # replaced by a one-line note when another row overrides it (nativeopt.cpp options_note).
+        row('Internal resolution', 'p', 'opt', 'gfx_render_scale', 'auto',
+            (('auto', 'Automatic'), ('0.50', '960 x 540'), ('0.75', '1440 x 810'), ('1.00', '1920 x 1080 (game)'), ('1.25', '2400 x 1350'),
+             ('1.50', '2880 x 1620'), ('2.00', '3840 x 2160 (4K)'), ('3.00', '5760 x 3240'), ('4.00', '7680 x 4320 (8K)')),
+            'Pixels the 3D scene is drawn with. Automatic follows the Look and the Anti-aliasing row.' + R),
         row('Anti-aliasing', 'p', 'opt', 'gfx_aa', 'default', AA_CHOICES,
-            'Smooths jagged edges. Supersampling draws at 2x size (1.5x at 4K) and costs the most.' + R),
+            'Smooths jagged edges. DLAA, FSR and XeSS need their files installed (the launcher).' + R),
+        row('Performance scaling', 'p', 'opt', 'gfx_upscale_quality', 'off',
+            (('off', 'Off'), ('quality', 'Quality'), ('balanced', 'Balanced'), ('performance', 'Performance')),
+            'Draws fewer pixels, then an upscaler enlarges them. Needs DLSS, FSR or XeSS.' + R),
         # (a pulldown, not the game's 0..10 slider: its knob is moved by the game's handler, which a PC page bypasses)
         row('Sharpening', 'p', 'opt', 'gfx_sharpen', '0.00',
             (('0.00', 'Off'),) + nums('0.10', '0.20', '0.30', '0.40', '0.50', '0.60', '0.70', '0.85', '1.00'),
             'Contrast-adaptive sharpening after anti-aliasing. An upscaler turns it off unless set.' + R),
+        row('Quality preset', 'p', 'opt', 'gfx_preset', 'normal',
+            (('verylow', 'Very Low'), ('low', 'Low'), ('normal', 'Default'), ('high', 'High'), ('ultra', 'Ultra'),
+             ('maximum', 'Maximum'), ('custom', 'Custom')),
+            'Sets this tab and the next together. Default follows the Look. Maximum needs a fast GPU.' + R),
     ]),
     ('Textures', 'Texture, shadow and shading detail.', [
         row('Texture filtering', 'p', 'opt', 'gfx_aniso', '0',
@@ -256,16 +261,10 @@ TABS = [
             (('tl', 'Top left'), ('tr', 'Top right'), ('bl', 'Bottom left'), ('br', 'Bottom right')),
             'Where the performance overlay sits on the screen.'),
     ]),
-    # (the Quality tab's six slots went to the Look row: the two upscaler rows moved to the end of the third set)
-    ('Upscaler', 'Rebuild a sharp picture from fewer pixels.', [
-        row('Upscaler', 'p', 'opt', 'gfx_upscaler', 'off',
-            (('off', 'Off'), ('dlaa', 'DLAA'), ('dlss', 'DLSS'), ('fsr', 'FSR'), ('xess', 'XeSS')),
-            'Rebuilds a sharp picture from fewer pixels. DLSS and DLAA need an NVIDIA RTX card.' + R),
-        row('Upscaler quality', 'p', 'opt', 'gfx_upscale_quality', 'native',
-            (('native', 'Native'), ('quality', 'Quality'), ('balanced', 'Balanced'), ('performance', 'Performance')),
-            'How many pixels are drawn before the upscaler enlarges them. Lower modes run faster.' + R),
+    # (the upscaler and its quality are the Anti-aliasing and Performance scaling rows of the Quality tab now)
+    ('Upscaler', 'Frame generation for the upscaler.', [
         row('Frame generation', 'p', 'opt', 'frame_generation', 'default', (('default', 'Off'), ('1', 'On')),
-            'FSR adds computed frames between real ones. Menus stay out. Off under 50 fps; photos unaffected.' + R),
+            'FSR adds computed frames between real ones. Menus stay out. Off under 50 fps.' + R),
     ]),
 ]
 VISUAL_KEYS = {'gfx_sharpen': 'SNAP_SHARPEN', 'gfx_aniso': 'SNAP_ANISO', 'gfx_ui_font': 'SNAP_UI_FONT_SCALE',

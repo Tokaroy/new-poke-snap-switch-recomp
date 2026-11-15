@@ -5,7 +5,7 @@
 27.5 expect_pending 0
 28 expect_when gfx_render_scale restart
 28.1 expect_when frame_cap live
-28.2 expect_when gfx_upscaler restart
+28.2 expect_when gfx_upscale_quality restart
 28.4 expect_when win_mode live
 28.5 expect_when audio_output restart
 # performance overlay (runtime/ui/ui_fps.cpp): default Off, live; F3 cycles Off -> FPS -> Detailed (F3 is not bound by default)
@@ -34,7 +34,7 @@
 29.9 expect_opt gfx_preset verylow
 29.95 opt gfx_preset normal
 29.96 expect_opt gfx_shadow_res default
-29.965 expect_opt gfx_render_scale 1.00
+29.965 expect_opt gfx_render_scale auto
 29.966 expect_opt gfx_shadow_dist default
 29.97 expect_opt gfx_preset normal
 29.975 opt gfx_pass_bloom off

@@ -28,6 +28,7 @@
 #include "imgui_impl_dx11.h"
 #include "imgui_impl_win32.h"
 #include "hle/json_lite.h"
+#include "hle/picture_rows.h"
 #include "hle/visual_defaults.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -116,7 +117,7 @@ struct JsonFile {
 
 // ---------------------------------------------------------------------------------------------------------------- settings model
 enum Store { S_CFG, S_WIN, S_AUD };
-enum Kind { K_CHOICE, K_PRESET, K_ACTION, K_LOOK, K_PACING };   // K_PRESET / K_LOOK / K_PACING are worked out from or write several stored values
+enum Kind { K_CHOICE, K_PRESET, K_ACTION, K_LOOK, K_PACING, K_AA, K_PERF };   // K_PRESET / K_LOOK / K_PACING / K_AA / K_PERF are worked out from or write several stored values
 enum Enc { E_STR, E_INT, E_VOL, E_BOOL };   // how a window.json / audio.json value is stored
 
 struct Ch {
@@ -132,6 +133,7 @@ struct Item {
   std::vector<Ch> ch;
   UiResult act = UiResult::Quit;   // K_ACTION
   std::string cur;
+  std::string note;   // one line under the label: which value is in effect when another row overrides this one (hle/picture_rows.h)
 };
 
 struct Page {
@@ -148,7 +150,7 @@ struct ModPack {
 // The quality preset is not stored; it is worked out from these rows (the same table and values as runtime/ui/ui_options.cpp: keep them in step).
 struct PresetKey { const char* key; const char* def; };
 const PresetKey kPresetKeys[] = {
-    {"gfx_render_scale", "1.00"}, {"gfx_aa", "default"}, {"gfx_sharpen", nullptr}, {"gfx_aniso", nullptr}, {"gfx_lod_bias", "auto"},
+    {"gfx_render_scale", "auto"}, {"gfx_aa", "default"}, {"gfx_sharpen", nullptr}, {"gfx_aniso", nullptr}, {"gfx_lod_bias", "auto"},
     {"gfx_shadow_res", "default"}, {"ssao_quality", "default"}, {"gfx_ssao_samples", "default"}, {"gfx_ssao_hbao", "default"},
     {"gfx_pass_bloom", "default"}, {"gfx_pass_dof", "default"}, {"gfx_shadow_dist", "default"},
 };
@@ -168,6 +170,7 @@ std::string preset_def(int k) {
 }
 bool preset_eq(int k, const std::string& a, const std::string& b) {
   if (a == b) return true;
+  if (k == 0 && (a == "auto" || b == "auto")) return false;   // Automatic and a typed 1.00 are different rows
   if (k == 0 || k == 2) return std::fabs((float)std::atof(a.c_str()) - (float)std::atof(b.c_str())) < 1e-4f;
   return false;
 }
@@ -436,13 +439,54 @@ void set_look(const std::string& v) {
   apply_look_to_defaults();
 }
 
+// ---- the picture rows (Internal resolution / Anti-aliasing / Performance scaling): views over gfx_render_scale, gfx_aa, gfx_upscaler and gfx_upscale_quality
+// (the pure rules are in hle/picture_rows.h, which tests/hle/picture_rows_test.cpp checks)
+bool file_exists(const std::string& rel) {
+  std::error_code ec;
+  return fs::exists(P(g.info->exe_dir + "\\" + rel), ec);
+}
+bool has_dlss() { return file_exists("nvngx_dlss.dll"); }
+bool has_fsr() { return file_exists("upscalers\\amd_fidelityfx_upscaler_vk.dll"); }
+bool has_xess() { return file_exists("libxess.dll"); }
+int pic_window_h() {   // the height the game window will have: what the runtime scales the upscaled picture from
+  if (const char* e = std::getenv("SNAP_WINDOW_H")) { const int v = std::atoi(e); if (v > 0) return v; }
+  const hle::Json* m = g.win.j.get("mode");
+  if (m && m->type == hle::Json::Str && m->s == "borderless") return g.disp_h;
+  if (const hle::Json* mx = g.win.j.get("maximized")) if (mx->boolean(false)) return g.disp_h;
+  const hle::Json* h = g.win.j.get("height");
+  return h && h->type == hle::Json::Num && h->n >= 240 ? (int)h->n : 720;
+}
+snappic::Ctx pic_ctx() {
+  snappic::Ctx x;
+  x.enhanced = snapdef::enhanced();
+  x.window_h = pic_window_h();
+  x.dlss = has_dlss(); x.fsr = has_fsr(); x.xess = has_xess();
+  return x;
+}
+snappic::Cfg pic_cfg() {
+  snappic::Cfg c;
+  c.aa = g.cfg.get("gfx_aa", "");                 if (c.aa == "default") c.aa.clear();
+  c.scale = g.cfg.get("gfx_render_scale", "");    if (c.scale == "auto") c.scale.clear();
+  c.upscaler = g.cfg.get("gfx_upscaler", "");     if (c.upscaler == "off") c.upscaler.clear();
+  c.quality = g.cfg.get("gfx_upscale_quality", ""); if (c.quality == "native") c.quality.clear();
+  c.sharpen_set = g.cfg.kv.count("gfx_sharpen") != 0;
+  return c;
+}
+void pic_store(const snappic::Cfg& c) {   // the three keys the AA and Performance rows own; "" erases (the default)
+  auto put = [](const char* k, const std::string& v) { if (v.empty()) g.cfg.erase(k); else g.cfg.set(k, v); };
+  put("gfx_aa", c.aa); put("gfx_upscaler", c.upscaler); put("gfx_upscale_quality", c.quality);
+  g.cfg.save();
+}
+
 std::string read_value(const Item& it) {
+  if (it.kind == K_AA) return snappic::aa_row(pic_cfg());
+  if (it.kind == K_PERF) return snappic::perf_row(pic_cfg());
   if (it.kind == K_PRESET) return get_preset();
   if (it.kind == K_LOOK) return get_look();
   if (it.kind == K_PACING) return get_pacing();
   if (it.store == S_CFG) {
     std::string v = g.cfg.get(it.key, it.def);
-    if (it.key == "gfx_render_scale" && std::fabs((float)std::atof(v.c_str()) - (float)std::atof(fit_scale().c_str())) < 0.004f) {
+    if (it.key == "gfx_render_scale" && v != "auto" && std::fabs((float)std::atof(v.c_str()) - (float)std::atof(fit_scale().c_str())) < 0.004f) {
       for (const Ch& c : it.ch) if (c.v == "fit") return "fit";
     }
     return v;
@@ -456,6 +500,8 @@ std::string read_value(const Item& it) {
 }
 
 void write_value(Item& it, const std::string& val) {
+  if (it.kind == K_AA) { pic_store(snappic::with_aa(pic_cfg(), val)); return; }
+  if (it.kind == K_PERF) { pic_store(snappic::with_perf(pic_cfg(), val, pic_ctx())); return; }
   if (it.kind == K_PRESET) { set_preset(val); return; }
   if (it.kind == K_LOOK) { set_look(val); return; }
   if (it.kind == K_PACING) { set_pacing(val); return; }
@@ -473,8 +519,34 @@ void write_value(Item& it, const std::string& val) {
   f.save();
 }
 
+// The Automatic label, the DLAA / DLSS name and the one-line notes follow the other picture rows, so they are worked out again after every change.
+void refresh_picture_text() {
+  const snappic::Cfg c = pic_cfg();
+  const snappic::Ctx x = pic_ctx();
+  const bool dlss_on = snappic::perf_row(c) != "off";
+  for (Page& p : g.pages) for (Item& it : p.items) {
+    it.note.clear();
+    if (it.key == "gfx_render_scale") {
+      it.note = snappic::note_resolution(c, x);
+      for (Ch& ch : it.ch) if (ch.v == "auto") ch.label = snappic::auto_label(c, x);
+    } else if (it.kind == K_AA) {
+      it.note = snappic::note_aa(c, x);
+      for (Ch& ch : it.ch) {
+        if (ch.v == "default") ch.label = x.enhanced ? "Default (SSAA + SMAA)" : "Default (FXAA)";
+        else if (ch.v == "dlaa") ch.label = std::string(dlss_on ? "DLSS (NVIDIA)" : "DLAA (NVIDIA)") + (x.dlss ? "" : " (not installed)");
+        else if (ch.v == "fsr") ch.label = std::string("FSR (AMD)") + (x.fsr ? "" : " (not installed)");
+        else if (ch.v == "xess") ch.label = std::string("XeSS (Intel)") + (x.xess ? "" : " (not installed)");
+      }
+    } else if (it.kind == K_PERF) {
+      it.note = snappic::note_perf(c, x);
+    } else if (it.key == "gfx_sharpen") {
+      it.note = snappic::note_sharpen(c);
+    }
+  }
+}
 void refresh_values() {
   for (Page& p : g.pages) for (Item& it : p.items) if (it.kind != K_ACTION) it.cur = read_value(it);
+  refresh_picture_text();
 }
 
 std::string cfg_path_for(const std::string& id) {
@@ -485,10 +557,8 @@ std::string cfg_path_for(const std::string& id) {
 
 // The defaults that depend on the Look (and the display) are fixed in the items when they are built; this puts them right again after the Look changes.
 void refresh_defaults() {
-  const std::string aa = std::string("Default (") + (snapdef::enhanced() ? "SMAA" : "FXAA") + ")";
   for (Page& p : g.pages) for (Item& it : p.items) {
-    if (it.key == "gfx_aa") { if (!it.ch.empty()) it.ch[0].label = aa; }
-    else if (it.key == "gfx_sharpen") it.def = snapdef::def("SNAP_SHARPEN");
+    if (it.key == "gfx_sharpen") it.def = snapdef::def("SNAP_SHARPEN");
     else if (it.key == "gfx_aniso") it.def = snapdef::def("SNAP_ANISO");
     else if (it.key == "gfx_render_scale") { for (Ch& c : it.ch) if (c.v == "fit") c.label = fit_label(); }
     else if (it.kind == K_PACING && it.ch.size() > 2) it.ch[2].label = "VRR (" + std::to_string(vrr_cap()) + " FPS limit)";
@@ -511,6 +581,7 @@ void load_stores() {
 std::string label_of(const Item& it, const std::string& v) {
   for (const Ch& c : it.ch) if (c.v == v) return c.label;
   if (it.key == "frame_cap" && v == std::to_string(vrr_cap()) && get_pacing() == "vrr") return v + " (auto)";
+  if (it.key == "gfx_render_scale" && v != "auto" && !v.empty()) { const float f = (float)std::atof(v.c_str()); if (f > 0.f) return snappic::dims(f) + " (typed in)"; }
   if (it.store != S_CFG && it.enc == E_VOL) return std::to_string((int)std::lround(std::atof(v.c_str()) * 100)) + "%";
   return v.empty() ? "Default" : v;
 }
@@ -523,13 +594,23 @@ int index_of(const Item& it, const std::string& v) {
 void choose(Item& it, int idx) {
   if (idx < 0 || idx >= (int)it.ch.size() || !it.ch[(size_t)idx].avail) return;
   const bool was_vrr = it.key == "monitor" && get_pacing() == "vrr";
+  const snappic::Cfg before = (it.kind == K_AA || it.kind == K_PERF) ? pic_cfg() : snappic::Cfg();
   write_value(it, it.ch[(size_t)idx].v);
+  if (it.kind == K_AA || it.kind == K_PERF) {   // one row moved the other: say so, the row itself shows the new value
+    const snappic::Cfg now = pic_cfg();
+    if (it.kind == K_AA && snappic::perf_row(before) != "off" && snappic::perf_row(now) == "off") { g.toast = "Performance scaling is off: it needs an upscaler"; g.toast_until = ImGui::GetTime() + 3; }
+    if (it.kind == K_PERF && snappic::aa_row(before) != snappic::aa_row(now)) {
+      const std::string a = snappic::aa_row(now);
+      g.toast = std::string("Anti-aliasing is now ") + (a == "dlaa" ? "DLSS" : a == "fsr" ? "FSR" : "XeSS") + ": Performance scaling needs an upscaler";
+      g.toast_until = ImGui::GetTime() + 3;
+    }
+  }
   if (it.key == "monitor") {
     read_display();             // the screen changed: its refresh rate and size follow
     if (was_vrr) set_pacing("vrr");
     refresh_defaults();
   }
-  if (it.kind == K_LOOK) refresh_defaults();
+  if (it.kind == K_LOOK || it.kind == K_AA || it.kind == K_PERF) refresh_defaults();
   // a preset, the Look, the pacing, the monitor and the render scale each change what other rows show
   refresh_values();
 }
@@ -549,6 +630,8 @@ void reset_page(Page& p) {
   for (Item& it : p.items) {
     if (it.kind == K_ACTION) continue;
     if (it.kind == K_PRESET) { set_preset("normal"); continue; }
+    if (it.kind == K_AA) { g.cfg.erase("gfx_aa"); g.cfg.erase("gfx_upscaler"); g.cfg.erase("gfx_upscale_quality"); continue; }
+    if (it.kind == K_PERF) { g.cfg.erase("gfx_upscale_quality"); if (g.cfg.get("gfx_upscaler", "") == "dlss") g.cfg.set("gfx_upscaler", "dlaa"); continue; }
     if (it.kind == K_LOOK) { set_look(it.def); continue; }
     if (it.kind == K_PACING) { set_pacing("vsync"); continue; }
     if (it.store == S_CFG) { g.cfg.erase(it.key); }
@@ -562,11 +645,6 @@ void reset_page(Page& p) {
 
 struct Mon { RECT r; };
 BOOL CALLBACK mon_cb(HMONITOR, HDC, LPRECT r, LPARAM lp) { ((std::vector<Mon>*)lp)->push_back({*r}); return TRUE; }
-
-bool file_exists(const std::string& rel) {
-  std::error_code ec;
-  return fs::exists(P(g.info->exe_dir + "\\" + rel), ec);
-}
 
 void build_pages() {
   g.pages.clear();
@@ -590,9 +668,6 @@ void build_pages() {
     for (size_t i = 0; i < mons.size(); ++i)
       mch.push_back({std::to_string(i), std::to_string(i + 1) + ": " + std::to_string(mons[i].r.right - mons[i].r.left) + " x " + std::to_string(mons[i].r.bottom - mons[i].r.top)});
     p.items.push_back(choice("Monitor", "monitor", S_WIN, "-1", mch, "Which screen the borderless window covers. A windowed game stays where you put it.", E_INT));
-    p.items.push_back(choice("Internal resolution", "gfx_render_scale", S_CFG, "1.00",
-                             {{"fit", fit_label()}, {"1.00", "1920 x 1080 (the game's own)"}, {"1.50", "2880 x 1620"}, {"2.00", "3840 x 2160 (4K)"}, {"4.00", "7680 x 4320 (8K)"}},
-                             "How many pixels the 3D picture is drawn with. Fit to display matches your screen's height, so it is sharp without wasting power. The Quality page has the finer steps."));
     p.items.push_back(choice("Ultrawide", "gfx_ultrawide", S_CFG, "auto", {{"auto", "Auto (wider 3D view)"}, {"off", "Off (16:9 with side bars)"}},
                              "On a screen wider than 16:9, Auto shows more of the world at the sides. Menus, the interface and your photos stay 16:9."));
     p.items.push_back(choice("Pause in background", "pause_on_focus_loss", S_WIN, "1", {{"1", "On"}, {"0", "Off"}},
@@ -601,29 +676,50 @@ void build_pages() {
                              "Silences the game while another window is in front.", E_BOOL));
     g.pages.push_back(p);
   }
-  // Quality
+  // Picture: the four rows in the order the picture is made (Look, then how many pixels, then the edge smoothing, then the upscaler's share), each
+  // with a one-line note when another row overrides it (hle/picture_rows.h)
   {
-    Page p; p.name = "Quality";
+    Page p; p.name = "Picture";
     Item lk = choice("Look", "gfx_look", S_CFG, snapdef::kDefaultEnhanced ? "enhanced" : "original", {{"enhanced", "Enhanced"}, {"original", "Original"}},
                      "Enhanced is the look new installs start with: smoother edges, sharpening, 16x filtering, sharper menu text and a PNG file for every photo. Original is the game as it shipped. "
                      "Picking one sets all of those together; you can still change any row after. Photo scores are the same either way.");
     lk.kind = K_LOOK;
     p.items.push_back(lk);
-    Item pr = choice("Quality preset", "", S_CFG, "normal",
-                     {{"verylow", "Very Low"}, {"low", "Low"}, {"normal", "Default"}, {"high", "High"}, {"ultra", "Ultra"}, {"maximum", "Maximum"}, {"custom", "Custom"}},
-                     "Sets the picture-quality rows below together. Default follows the Look row. Higher presets are sharper and slower; Maximum needs a very fast graphics card.");
-    pr.kind = K_PRESET;
-    pr.ch[6].avail = false;   // "Custom" is only ever shown, never picked
-    p.items.push_back(pr);
-    p.items.push_back(choice("Render scale", "gfx_render_scale", S_CFG, "1.00",
-                             {{"0.50", "0.50x (half size)"}, {"0.75", "0.75x"}, {"1.00", "1.00x (1080p)"}, {"1.25", "1.25x"}, {"1.50", "1.50x"}, {"2.00", "2.00x (4K)"}, {"3.00", "3.00x"}, {"4.00", "4.00x (8K)"}},
-                             "How sharp the 3D picture is drawn, as a multiple of the game's own 1920 x 1080. Higher is crisper and slower. Below 1.00x is blurrier but lighter for a weak graphics card."));
-    p.items.push_back(choice("Anti-aliasing", "gfx_aa", S_CFG, "default",
-                             {{"default", aa_def}, {"off", "FXAA (the game's own)"}, {"smaa", "SMAA"}, {"ssaa2", "2x supersampling + FXAA"}, {"ssaa2,smaa", "2x supersampling + SMAA"}, {"none", "None"}},
-                             "Smooths jagged edges. FXAA is what the game ships with. SMAA keeps more detail. 2x supersampling is very sharp and costs a lot of GPU time."));
+    p.items.push_back(choice("Internal resolution", "gfx_render_scale", S_CFG, "auto",
+                             {{"auto", "Automatic"}, {"fit", fit_label()}, {"0.50", "960 x 540"}, {"0.75", "1440 x 810"}, {"1.00", "1920 x 1080 (the game's own)"}, {"1.25", "2400 x 1350"},
+                              {"1.50", "2880 x 1620"}, {"2.00", "3840 x 2160 (4K)"}, {"3.00", "5760 x 3240"}, {"4.00", "7680 x 4320 (8K)"}},
+                             "How many pixels the 3D picture is drawn with. Automatic lets the Look and the Anti-aliasing row decide. A size sets it yourself. Fit to display matches your screen's height. Lower is faster and softer."));
+    Item aa = choice("Anti-aliasing", "gfx_aa", S_CFG, "default",
+                     {{"default", "Default"}, {"off", "FXAA (the game's own)"}, {"smaa", "SMAA"}, {"ssaa2", "2x supersampling + FXAA"}, {"ssaa2,smaa", "2x supersampling + SMAA"}, {"none", "None"},
+                      {"dlaa", "DLAA (NVIDIA)"}, {"fsr", "FSR (AMD)"}, {"xess", "XeSS (Intel)"}},
+                     "Smooths jagged edges. FXAA is what the game ships with. SMAA keeps more detail. Supersampling draws at twice the size first and costs a lot of GPU time. "
+                     "DLAA, FSR and XeSS use an upscaler at full size and need the files from Install upscalers on the Upscaling page.");
+    aa.kind = K_AA;
+    const bool dl = has_dlss(), fs_ = has_fsr(), xe = has_xess();
+    aa.ch[6].avail = dl; aa.ch[7].avail = fs_; aa.ch[8].avail = xe;
+    p.items.push_back(aa);
+    Item pf = choice("Performance scaling", "gfx_upscale_quality", S_CFG, "off",
+                     {{"off", "Off"}, {"quality", "Quality"}, {"balanced", "Balanced"}, {"performance", "Performance"}},
+                     "Draws fewer pixels and enlarges them with DLSS, FSR or XeSS, so a slower graphics card keeps up. Quality draws 1.5x fewer, Balanced 1.7x, Performance 2x. "
+                     "It needs an upscaler: picking one here switches Anti-aliasing to the best one you have.");
+    pf.kind = K_PERF;
+    const bool any_up = dl || fs_ || xe;
+    for (size_t i = 1; i < pf.ch.size(); ++i) if (!any_up) { pf.ch[i].avail = false; pf.ch[i].label += " (needs an upscaler)"; }
+    p.items.push_back(pf);
     p.items.push_back(choice("Sharpening", "gfx_sharpen", S_CFG, snapdef::def("SNAP_SHARPEN"),
                              {{"0.00", "Off"}, {"0.15", "0.15"}, {"0.30", "0.30"}, {"0.50", "0.50"}, {"0.75", "0.75"}, {"1.00", "1.00"}},
                              "A gentle sharpening pass after anti-aliasing. Too much makes edges look hard."));
+    Item pr = choice("Quality preset", "", S_CFG, "normal",
+                     {{"verylow", "Very Low"}, {"low", "Low"}, {"normal", "Default"}, {"high", "High"}, {"ultra", "Ultra"}, {"maximum", "Maximum"}, {"custom", "Custom"}},
+                     "Sets the picture rows and the Detail page together. Default follows the Look row. It leaves an upscaler alone. Higher presets are sharper and slower; Maximum needs a very fast graphics card.");
+    pr.kind = K_PRESET;
+    pr.ch[6].avail = false;   // "Custom" is only ever shown, never picked
+    p.items.push_back(pr);
+    g.pages.push_back(p);
+  }
+  // Detail
+  {
+    Page p; p.name = "Detail";
     p.items.push_back(choice("Anisotropic filtering", "gfx_aniso", S_CFG, snapdef::def("SNAP_ANISO"),
                              {{"0", "Off (the game's own)"}, {"2", "2x"}, {"4", "4x"}, {"8", "8x"}, {"16", "16x"}},
                              "Keeps ground and walls sharp at shallow angles. 16x costs almost nothing on a PC graphics card."));
@@ -640,17 +736,7 @@ void build_pages() {
   }
   // Upscaling
   {
-    Page p; p.name = "Upscaling";
-    Item up = choice("Upscaler", "gfx_upscaler", S_CFG, "off",
-                     {{"off", "Off"}, {"dlaa", "DLAA"}, {"dlss", "DLSS"}, {"fsr", "FSR"}, {"xess", "XeSS"}},
-                     "DLSS, DLAA, FSR and XeSS rebuild a sharp picture from a smaller one. DLSS and DLAA need an NVIDIA RTX card. Ones that are not installed are greyed out: use Install upscalers below.");
-    const bool nv = file_exists("nvngx_dlss.dll"), fsr = file_exists("upscalers\\amd_fidelityfx_upscaler_vk.dll"), xe = file_exists("libxess.dll");
-    up.ch[1].avail = nv; up.ch[2].avail = nv; up.ch[3].avail = fsr; up.ch[4].avail = xe;
-    for (size_t i = 1; i < up.ch.size(); ++i) if (!up.ch[i].avail) up.ch[i].label += " (not installed)";
-    p.items.push_back(up);
-    p.items.push_back(choice("Upscaler quality", "gfx_upscale_quality", S_CFG, "native",
-                             {{"native", "Native (no downscale)"}, {"quality", "Quality"}, {"balanced", "Balanced"}, {"performance", "Performance"}},
-                             "How many pixels the game draws before the upscaler enlarges the picture. Quality draws 1.5x fewer, Performance 2x fewer. Lower modes run faster and look softer."));
+    Page p; p.name = "Upscaling";   // the upscaler itself is the Anti-aliasing row and its share the Performance scaling row (Picture page); this page holds what goes with it
     {
       Item fg = choice("Frame generation (FSR)", "frame_generation", S_CFG, "default", {{"default", "Off"}, {"1", "On"}},
                        "AMD FSR frame generation adds a computed frame between two real ones, so 60 fps looks like about 120 on a fast screen. Menus and the HUD stay out of it, photos and scoring never see it, and it turns itself off under about 50 fps. It adds about one frame of delay. Needs the frame generation files: use Install upscalers below.");
@@ -679,8 +765,8 @@ void build_pages() {
       p.items.push_back(pc);
     }
     p.items.push_back(choice("Frame rate target", "fps_target", S_CFG, "default",
-                             {{"default", "60 (the game's own)"}, {"90", "90"}, {"120", "120"}, {"144", "144"}},
-                             "How fast the game runs. 90, 120 and 144 run the game itself faster and need a fast processor. Menus and dialogue keep their original speed."));
+                             {{"default", "60 (the game's own)"}, {"90", "90"}, {"120", "120"}, {"144", "144"}, {"165", "165"}, {"240", "240"}},
+                             "How fast the game runs. 90 to 240 run the game itself faster and need a fast processor. Menus and dialogue keep their original speed."));
     p.items.push_back(choice("Frame rate limit", "frame_cap", S_WIN, "0",
                              {{"0", "Off (the game's pacing)"}, {"30", "30"}, {"45", "45"}, {"60", "60"}, {"75", "75"}, {"90", "90"}, {"120", "120"}, {"144", "144"}, {"165", "165"}, {"240", "240"}},
                              "Stops the game from drawing faster than this. Off keeps the game's own pacing.", E_INT));
@@ -1336,7 +1422,12 @@ void draw_settings(bool* click_back) {
       if (ImGui::IsMouseClicked(0)) { g.row = (int)i; g.confirm_reset = false; if (it.kind == K_ACTION) { g.result = it.act; g.done = true; } else { g.pulldown = true; g.pd_sel = std::max(0, index_of(it, it.cur)); g.pd_top = 0; } }
     }
     pointed(rx, y, rw, rh, 22, C(sel ? kGreen : kRow));
-    text(rx + 44, y + rh / 2, 21, C(0xf7f7f7), it.label.c_str());
+    if (!it.note.empty() && it.kind != K_ACTION) {
+      text(rx + 44, y + rh * 0.36f, 21, C(0xf7f7f7), it.label.c_str());
+      text_clip(rx + 44, y + rh * 0.76f, 14, C(sel ? 0x4a5a38 : 0xffffff), it.note.c_str(), 590.0f);
+    } else {
+      text(rx + 44, y + rh / 2, 21, C(0xf7f7f7), it.label.c_str());
+    }
     if (it.kind == K_ACTION) {
       prompt(rx + rw - 120, y + rh / 2, 36, "A");
       continue;
@@ -1548,7 +1639,7 @@ void draw_home() {
       {"Window", [](const Item& it) { return it.key == "mode"; }},
       {"Frame pacing", [](const Item& it) { return it.kind == K_PACING; }},
       {"Resolution", [](const Item& it) { return it.key == "gfx_render_scale"; }},
-      {"Upscaler", [](const Item& it) { return it.key == "gfx_upscaler"; }},
+      {"Anti-aliasing", [](const Item& it) { return it.kind == K_AA; }},
       {"Quality", [](const Item& it) { return it.kind == K_PRESET; }},
       {"Sound", [](const Item& it) { return it.key == "master"; }},
   };
@@ -1560,8 +1651,17 @@ void draw_home() {
     if (Item* it = find_item(ls[i].pred)) {
       val = label_of(*it, it->cur);
       if (it->kind == K_PACING) { if (it->cur == "vrr") val = "VRR - " + std::to_string(vrr_cap()) + " FPS"; }
-      else if (it->key == "gfx_render_scale") { if (it->cur == "fit") val = "Fit to display"; }
-      else if (it->key == "gfx_upscaler" && it->cur != "off") { Item* q = find_item([](const Item& t) { return t.key == "gfx_upscale_quality"; }); if (q) val += " " + label_of(*q, q->cur); }
+      else if (it->key == "gfx_render_scale") {   // what the 3D picture really is drawn at, whichever row decided it
+        const snappic::Eff e = snappic::effective(pic_cfg(), pic_ctx());
+        val = snappic::dims(e.scene);
+      }
+      else if (it->kind == K_AA) {
+        const snappic::Cfg c = pic_cfg();
+        if (snappic::on(c)) {
+          const std::string p = snappic::perf_row(c);
+          val = snappic::backend_name(c) + (p == "off" ? std::string() : " " + std::string(1, (char)std::toupper((unsigned char)p[0])) + p.substr(1));
+        }
+      }
       else if (it->key == "master") val = "Volume " + label_of(*it, it->cur);
     }
     pointed(lx + 270, ly + 4, 252, 36, 14, C(kWhite));

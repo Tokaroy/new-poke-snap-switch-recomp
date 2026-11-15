@@ -1,0 +1,31 @@
+# fixture: post_tutorial
+# Picture rows in the game's Settings screen (native PC tab "Quality": Look, Internal resolution, Anti-aliasing, Performance scaling, ...;
+# scripts/ui/make_native_options.py, host/mods/nativeopt.cpp, runtime/hle/picture_rows.h).
+# Same opening as look_native_opt.txt. On the Look row (a two-choice row): shot, Right (Look -> Original), shot, A (must change nothing), shot,
+# Left (back to Enhanced), shot. Down to Internal resolution and Down to Anti-aliasing: shots (the help line says which value is in effect when
+# the settings file holds gfx_upscaler=dlaa and gfx_render_scale=2.00). B closes.
+# Run with SNAP_MODS_DIR=<mods root holding native-options>, SNAP_NATIVE_OPT_SETTINGS=<settings.cfg>, SNAP_NATIVE_OPT_TRACE=1.
+repeat @f200 @f1400 100 8 ZL
+repeat @f1700 @f30000 240 8 Up
+repeat @f1730 @f30000 240 8 A
+anchor options
+@f120 8 A
+@f300 8 R
+@f370 8 R
+@f440 8 R
+@f510 8 R
+@f650 8 R
+@f800 40 shot=20
+@f900 8 Right
+@f960 40 shot=20
+@f1020 8 A
+@f1080 40 shot=20
+@f1140 8 Left
+@f1200 40 shot=20
+@f1260 8 Down
+@f1320 40 shot=20
+@f1380 8 Down
+@f1440 40 shot=20
+@f1520 8 B
+@f1900 8 B
+end @f2000

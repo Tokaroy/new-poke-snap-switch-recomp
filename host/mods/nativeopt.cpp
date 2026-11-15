@@ -49,6 +49,7 @@ namespace hle::input { void script_event(const char* name); }   // runtime/hle/i
 namespace snap::ui {                                              // runtime/ui/ui_options.cpp (the F1 option table)
 bool options_test_set(const std::string& key, const std::string& value);
 std::string options_test_get(const std::string& key);
+std::string options_note(const std::string& key);
 }
 
 using namespace loader;
@@ -259,6 +260,7 @@ uint64_t vfn(uint64_t obj, uint64_t off) { return *(const uint64_t*)(*(const uin
 
 std::string g_slider_landed;   // the slider the cursor is on: its first focus event only reports the knob it shows
 std::string g_choice_row;      // "<tab>_<slot>" of the two-choice row the cursor is on (repainted when it leaves)
+std::string g_choice_landed;   // the two-choice row the cursor arrived on: its first focus event is not a change (A never changes a value: moving Left / Right does)
 alignas(16) uint8_t g_tmpl[kElemSize];   // a copy of one of the game's own element entries (all fields but the names zero)
 bool g_have_tmpl = false;
 int g_tab_id[5] = {-1, -1, -1, -1, -1};  // BuildPage tab id of each game tab position
@@ -500,6 +502,14 @@ void redraw_row(Cpu* c, uint64_t player, const Row& r) {
     call_guest_nested(c, vfn(player, 0xa8), {player, p.p(), txt.p(), (uint64_t)(uintptr_t)args});
 }
 
+// The help line of the row the cursor is on says which value is in effect when another row overrides it (picture rows: runtime/ui/ui_options.cpp
+// options_note). The page's own focus action wrote the row's fixed help; when this runs after it, the note replaces it, otherwise the fixed help stays.
+void set_help(Cpu* c, uint64_t player, const std::string& text) {
+    GStr p{std::string("help_mc/dt_help")}, tx{text};
+    alignas(8) uint64_t args[3] = {0, 0, 0};
+    call_guest_nested(c, vfn(player, 0xa8), {player, p.p(), tx.p(), (uint64_t)(uintptr_t)args});
+}
+
 alignas(8) uint8_t g_others[24];   // "Others": the state name handed to the game handler for B and the per-frame update
 void init_names() { put_short((uint64_t)(uintptr_t)g_others, "Others"); }
 
@@ -540,9 +550,14 @@ extern "C" void rt_ui_opt_event(Cpu* c) {
                 if (const Row* r = find_row(pt, ps)) redraw_row(c, player, *r);
         }
         g_choice_row = (kind == 'C') ? now : std::string();
+        if (kind != 'C') g_choice_landed.clear();
+        if (sscanf(e.c_str(), "PcT%dS%d", &tt, &slot) == 2)
+            if (const Row* r = find_row(tt, slot))
+                if (r->store == "opt") { const std::string n = snap::ui::options_note(r->key); if (!n.empty()) set_help(c, player, n); }
     }
     if (ev == 5) {   // entering a PC state: its page data
         g_choice_row.clear();
+        g_choice_landed.clear();
         if (tab) go_tab(c, handler, player, t);
         else if (const Row* r = find_row(t, atoi(st.c_str() + st.find('_') + 1))) open_pull(c, handler, player, t, *r);
     } else if (pull) {
@@ -554,7 +569,20 @@ extern "C" void rt_ui_opt_event(Cpu* c) {
     } else if (ev == 8 && e.compare(0, 3, "PcT") == 0) {   // a slider's knob or mute button got the focus
         int tt = 0, slot = 0, n = -1;
         char kind = 0;
-        if (sscanf(e.c_str(), "PcT%dS%d%c_%d", &tt, &slot, &kind, &n) >= 3 && (kind == 'N' || kind == 'M')) {
+        int bk = 0;
+        if (sscanf(e.c_str(), "PcT%dS%dC%d", &tt, &slot, &bk) == 3) {
+            // a two-choice box got the focus. Moving Left / Right inside the row picks the box; A does nothing (it only presses buttons)
+            const Row* r = find_row(tt, slot);
+            char key[24];
+            snprintf(key, sizeof key, "%d_%d", tt, slot);
+            const bool landing = g_choice_landed != key;   // the cursor just arrived on the row: not a change
+            g_choice_landed = key;
+            g_slider_landed.clear();
+            if (r && r->widget == 'c' && !landing && bk >= 1 && bk <= (int)r->ch.size() && choice_of(*r, get_value(*r)) != bk - 1) {
+                set_value(*r, r->ch[(size_t)bk - 1].first);
+                redraw_row(c, player, *r);
+            }
+        } else if (sscanf(e.c_str(), "PcT%dS%d%c_%d", &tt, &slot, &kind, &n) >= 3 && (kind == 'N' || kind == 'M')) {
             const Row* r = find_row(tt, slot);
             char key[24];
             snprintf(key, sizeof key, "%d_%d", tt, slot);
@@ -566,17 +594,19 @@ extern "C" void rt_ui_opt_event(Cpu* c) {
             }
         } else {
             g_slider_landed.clear();
+            g_choice_landed.clear();
         }
     } else if (ev == 8) {
         g_slider_landed.clear();
+        g_choice_landed.clear();
     } else if (ev == 10) {
         int tt = 0, slot = 0, k = 0;
         char kind = 0;
         if (e == "Reset") {   // Restore Default Settings on a PC tab: this tab's rows only
             for (const Row& r : g_tabs[(size_t)t].rows) { reset_row(r); redraw_row(c, player, r); }
         } else if (sscanf(e.c_str(), "PcT%dS%d%c%d", &tt, &slot, &kind, &k) == 4 && kind == 'C') {
-            const Row* r = find_row(tt, slot);
-            if (r && k >= 1 && k <= (int)r->ch.size()) set_value(*r, r->ch[(size_t)k - 1].first);
+            // A on a two-choice box: nothing. The value follows the cursor (Left / Right, see event 8 above).
+            trace("nativeopt: A on PcT%dS%dC%d ignored (A does not change a value)", tt, slot, k);
         } else if (sscanf(e.c_str(), "PcT%dS%d%c", &tt, &slot, &kind) == 3 && kind == 'P') {   // a pulldown row: its popup opens next
             if (const Row* r = find_row(tt, slot)) prepare_pull(c, player, tt, *r);
         }
