@@ -50,19 +50,39 @@ function Get-SlotOwners {
     (0..($script:LockMax - 1) | ForEach-Object { $f = Join-Path $script:LockRoot "build\slots\run$_.lock"; "run$_=" + $(if (Test-Path $f) { Get-LockText $f } else { 'free' }) }) -join ' | '
 }
 
+# Fair queue (coordinator 2026-11-15): back-to-back exclusive benches starved normal runs for over an hour. Each waiter drops a ticket
+# build\slots\q\<ticks>_<pid>_<x|n>.tkt. An exclusive run takes exclusive.lock only when no older live ticket exists; a normal run yields only to
+# an older exclusive ticket. Tickets of dead pids (or older than 3 h) are removed. Waiters on the old code ignore tickets until they finish.
+function New-QueueTicket([string]$Dir, [bool]$Excl) {
+    $q = Join-Path $Dir 'q'; New-Item -ItemType Directory -Force $q | Out-Null
+    $t = Join-Path $q ('{0:D19}_{1}_{2}.tkt' -f (Get-Date).ToUniversalTime().Ticks, $PID, $(if ($Excl) { 'x' } else { 'n' }))
+    Set-Content -LiteralPath $t -Value $PID -Encoding ascii; return $t
+}
+function Test-QueueAhead([string]$Ticket, [bool]$ExclOnly) {
+    $me = Split-Path $Ticket -Leaf
+    foreach ($f in @(Get-ChildItem -LiteralPath (Split-Path $Ticket) -Filter '*.tkt' -ErrorAction SilentlyContinue | Sort-Object Name)) {
+        if ($f.Name -ge $me) { break }
+        $parts = $f.BaseName -split '_'
+        $dead = -not (Get-Process -Id ([int]$parts[1]) -ErrorAction SilentlyContinue) -or (((Get-Date) - $f.LastWriteTime).TotalHours -gt 3)
+        if ($dead) { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue; continue }
+        if (-not $ExclOnly -or $parts[2] -eq 'x') { return $true }
+    }
+    return $false
+}
+
 # Take one run slot (returns slot index) or, with -Exclusive, all slots (returns 0..2). $null on timeout. Release with Exit-RunSlots.
 function Enter-RunSlots([string]$What, [switch]$Exclusive, [int]$WaitSec = 3600) {
     $dir = Join-Path $script:LockRoot 'build\slots'; New-Item -ItemType Directory -Force $dir | Out-Null
     $xl = Join-Path $dir 'exclusive.lock'; $prio = Join-Path $script:LockRoot 'build\heavy.priority'
-    $got = @(); $haveX = $false; $lastMsg = Get-Date '2000-01-01'
+    $got = @(); $haveX = $false; $lastMsg = Get-Date '2000-01-01'; $tkt = New-QueueTicket $dir ([bool]$Exclusive)
     try {
         for ($i = 0; $i -lt ($WaitSec * 2); $i++) {
             if ($Exclusive) {
                 if ($haveX -and -not (Test-Path $xl)) { $haveX = $false }   # lost to a stale clean-up: take it again
-                if (-not $haveX) { $haveX = Try-TakeLock $xl "$What (exclusive)" }
+                if (-not $haveX -and -not (Test-QueueAhead $tkt $false)) { $haveX = Try-TakeLock $xl "$What (exclusive)" }
                 if ($haveX) { foreach ($n in 0..($script:LockMax - 1)) { if ($got -notcontains $n -and (Try-TakeLock (Join-Path $dir "run$n.lock") "$What (exclusive)")) { $got += $n } } }
                 if ($got.Count -eq $script:LockMax) { $script:SlotsHeld = $got; return $got }
-            } elseif (-not (Test-Path $xl) -or (Test-LockStale $xl)) {   # a waiting exclusive run goes first
+            } elseif ((-not (Test-Path $xl) -or (Test-LockStale $xl)) -and -not (Test-QueueAhead $tkt $true)) {   # an exclusive run that holds the lock or queued earlier goes first
                 $reserved = $null
                 if (Test-Path $prio) { $reserved = ((Get-Content $prio -ErrorAction SilentlyContinue) -join '').Trim() }
                 $isOwner = $reserved -and $env:SNAP_LOCK_OWNER -and ($env:SNAP_LOCK_OWNER.Trim() -eq $reserved)
@@ -76,6 +96,7 @@ function Enter-RunSlots([string]$What, [switch]$Exclusive, [int]$WaitSec = 3600)
         }
         return $null
     } finally {
+        if ($tkt) { Remove-Item -LiteralPath $tkt -Force -ErrorAction SilentlyContinue }
         if ($Exclusive -and -not ($script:SlotsHeld -and $script:SlotsHeld.Count -eq $script:LockMax)) { foreach ($n in $got) { Release-Lock (Join-Path $dir "run$n.lock") }; if ($haveX) { Release-Lock $xl } }
     }
 }
