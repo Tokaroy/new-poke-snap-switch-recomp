@@ -225,7 +225,53 @@ def space_report(cfg, kind, plan_extra=None, table=None):
             'ok': all(a['ok'] for a in per_drive.values())}
 
 
+def scan_text(out):
+    """The detection screen as plain lines (the wizard prints them as they are). Never contains key contents, only the keys file's path."""
+    L = []
+    kind = out.get('kind')
+    if out.get('error') and kind not in ('dump', 'extracted'):
+        return str(out['error'])
+    if kind == 'extracted':
+        s = out.get('summary') or {}
+        L.append('Found extracted game files:')
+        for k in ('main', 'sdk', 'romfs'):
+            L.append(f'   {k}: {(s.get("extracted") or {}).get(k, "")}')
+        L.append('Version check: ' + ('these are the 2.0.1 files, ready to build.' if out.get('ok') else 'not accepted.'))
+    elif kind == 'dump':
+        L.append(f'Found {len(out.get("dumps") or [])} game file(s):')
+        for d in out.get('dumps') or []:
+            vers = ', '.join(t['version_name'] for t in d['titles']) or (d.get('error') or 'could not read')
+            L.append(f'   {d["name"]}  ({d["size"] / GB:.2f} GB)  {vers}')
+        if out.get('plan'):
+            p = out['plan']
+            L.append(f'Using the {p["version_name"]} update ({Path(p["patch"]["file"]).name}) with {Path(p["base"]["file"]).name}.')
+            L.append('Older updates in this folder are ignored.')
+        if out.get('keys'):
+            L.append(f'Keys: found at {out["keys"]} (read from there, never copied).')
+    if out.get('error'):
+        L.append('')
+        L.append(str(out['error']))
+    sp = out.get('space')
+    if sp:
+        L.append('')
+        L.append('Disk space:')
+        for it in sp['items']:
+            L.append(f'   {it["what"]}: about {fmt_gb(it["stays"])} kept ({it["where"]})')
+        for d, a in sp['drives'].items():
+            L.append(f'   Drive {d} needs up to {fmt_gb(a["peak"])} while building and {fmt_gb(a["stays"])} afterwards; {fmt_gb(a["free"])} free'
+                     + ('' if a['ok'] else '  <-- NOT ENOUGH'))
+        if sp.get('note'):
+            L.append(sp['note'])
+    return '\n'.join(L)
+
+
 def scan_folder(folder, keys=None, nstool_exe=None, table=None, cfg=None):
+    out = _scan_folder(folder, keys, nstool_exe, table, cfg)
+    out['text'] = scan_text(out)
+    return out
+
+
+def _scan_folder(folder, keys=None, nstool_exe=None, table=None, cfg=None):
     """What the wizard shows after "Choose your game files". Never raises for a normal bad folder: returns {'ok': False, 'error': text}."""
     out = {'ok': False, 'folder': str(folder), 'kind': None, 'error': None, 'notes': []}
     try:
