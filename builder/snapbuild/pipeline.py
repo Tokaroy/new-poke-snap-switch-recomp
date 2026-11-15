@@ -300,7 +300,7 @@ def build(opt, log):
         env = link_env
         objs = [pre / 'obj' / o['name'] for o in man['objs']]
         libs = [work / 'build' / 'main' / 'lib' / 'snap_main.lib', work / 'build' / 'sdk' / 'lib' / 'snap_sdk.lib', vk]
-        libs += [f'-l{n}' for n in ('user32', 'gdi32', 'bcrypt', 'ole32', 'avrt', 'shell32', 'advapi32', 'winmm', 'oleaut32', 'dbghelp', 'dwmapi', 'winhttp', 'comctl32')]
+        libs += [f'-l{n}' for n in ('user32', 'gdi32', 'bcrypt', 'ole32', 'avrt', 'shell32', 'advapi32', 'winmm', 'oleaut32', 'dbghelp', 'dwmapi', 'winhttp', 'comctl32', 'd3d11', 'dxgi', 'd3dcompiler')]
         for lf in man.get('libs', []):
             libs.append(pre / 'lib' / lf)
         res_file = []
