@@ -4,11 +4,39 @@ Works with your own copy of New Pokémon Snap 2.0.1.
 
 This builder turns your own copy of the game into a native Windows program. It reads the files you supply, translates the game's code on your PC, compiles it and links it with the prebuilt runtime in this zip. The result is `SnapRecomp.exe` in the `out` folder of your work folder.
 
-Building is done from a terminal (there is no builder window yet). The program it makes, `SnapRecomp.exe`, opens a launcher window when you double-click it.
+The easy way is `SnapRecompSetup.exe`: double-click it, pick your game folder, press Build. No terminal, no Python and no Visual Studio are needed. The manual command-line route further down still works and does the same job.
 
-The zip holds no game data and does not help you get any. You need a legal copy of the game, version 2.0.1, and you extract the files yourself with your own tools.
+The program it makes, `SnapRecomp.exe`, opens a launcher window when you double-click it.
+
+The download holds no game data and does not help you get any. You need a legal copy of the game, version 2.0.1, and you dump it yourself with your own tools.
+
+## One-click setup
+
+1. Double-click `SnapRecompSetup.exe`.
+2. Choose your game folder. Drop it on the window or press Browse. It can be:
+   - a folder with the extracted `main`, `sdk` and RomFS, or
+   - a folder with your dumped base game (XCI or NSP), your update NSPs and your `prod.keys`.
+
+   Setup finds the files itself. With a raw dump it picks the base game and the 2.0.1 update (older updates in the folder are ignored) and extracts what it needs into its own work folder. Your dump is read in place and never changed. Keys are read where they are, never copied, and are not written to any log. If setup looks for `prod.keys` in an emulator folder, it asks first. If the 2.0.1 update is missing it says so and stops.
+3. Check the options and the disk-space line, then press Build. One bar shows the stage and the time left. "Show details" opens the log. If something fails, the message says what to do and Retry picks up where it stopped. Closing setup or a reboot loses nothing: start it again and it continues.
+4. Setup downloads the build tools from their publishers and checks every file against a pinned SHA-256 hash. The Windows SDK pieces come from Microsoft after you accept Microsoft's license in the wizard. They are not in the download.
+5. At the end you get a desktop and a Start menu shortcut and a Play now button. HD textures and upscalers are optional pages; each vendor license is shown before anything downloads.
+
+Setup remembers your game folder. A repair, a rebuild or an update reuses it without asking. "Change game folder" is on the maintenance page. If the files moved, it asks once.
+
+Run `SnapRecompSetup.exe` again later to Repair (rebuild with the same game files) or Uninstall (removes the shortcuts, the built program and the game data setup extracted; the build tools and your saves stay unless you tick the matching box; your own game files are never touched). Nothing is deleted behind your back while the game is installed: the extracted RomFS stays, because the game reads it every time it runs.
+
+Space: plan on about 31 GB free while building and about 17 GB afterwards. A raw dump needs about 16 GB more scratch space during extraction. The wizard shows the exact figure for your PC before you press Build.
+
+Known issue: Windows SmartScreen may say "Windows protected your PC" because the exe is not code-signed (a certificate costs money, and this is a free project). Click "More info", then "Run anyway". The update signature (Ed25519) is checked by the updater, and the SHA-256 of each release is on the release page.
+
+Updates arrive the same way: the launcher offers them, one click installs one. If an update changes the runtime ABI, the new release carries matching prebuilt objects and the updater regenerates and recompiles the game code once (the slow Ghidra step is reused). Your working build stays as "previous" until the new one passes its smoke test.
 
 ![The version check](screenshots/builder_check.png)
+
+## Manual route (advanced)
+
+Everything above can be done from a terminal. The sections below describe that route.
 
 ## What you need
 

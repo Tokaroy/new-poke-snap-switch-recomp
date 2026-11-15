@@ -74,6 +74,7 @@ def main():
     ap.add_argument('--llvm', default=str(ROOT / 'tools' / 'llvm' / 'bin'))
     ap.add_argument('--winsdk', help='xwin folder (crt/ and sdk/); default: the managed one, else the INCLUDE and LIB already set')
     ap.add_argument('--offline-dir', action='append', default=[], help='folder with the pinned archives (python_embed, nstool); else downloaded and hash checked')
+    ap.add_argument('--romfs', help='romfs folder for the game-file-name check of the leak scan (read only)')
     ap.add_argument('--sign', action='store_true')
     ap.add_argument('--stub-only', action='store_true', help='compile the wizard exe without a payload (UI tests)')
     a = ap.parse_args()
@@ -104,6 +105,13 @@ def main():
         fetch.extract(py_arc, pydir)
         zp = work / 'payload.zip'
         build_payload(a.prebuilt, zp, pydir, [ns_arc], version)
+        scanned = out / 'SnapRecompSetup.payload.zip'   # the payload alone, so the leak scan can read it (it reads zips, not PE files)
+        # python/ and offline/ are the python.org and NSTool archives, checked by SHA-256 against versions.json (fetch_pin above);
+        # their third-party binaries are not ours to scan, so the scan covers everything else in the payload
+        with zipfile.ZipFile(zp) as zin, zipfile.ZipFile(scanned, 'w', zipfile.ZIP_DEFLATED) as zout:
+            for info in zin.infolist():
+                if not info.filename.startswith(('python/', 'offline/')):
+                    zout.writestr(info, zin.read(info.filename))
         payload = zp.read_bytes()
         tmp = final.with_name(final.name + '.part')
         with open(tmp, 'wb') as f:
@@ -115,10 +123,15 @@ def main():
         shutil.rmtree(work, ignore_errors=True)
     h = hashlib.sha256(final.read_bytes()).hexdigest()
     print(f'{final} {final.stat().st_size / 1e6:.1f} MB sha256 {h}')
-    r = subprocess.run([sys.executable, '-I', str(ROOT / 'builder' / 'leak_scan.py'), str(final), '--strip-prefix', 'prebuilt/',
-                        '--manifest', str(Path(a.prebuilt) / 'manifest.json')])
+    cmd = [sys.executable, '-I', str(ROOT / 'builder' / 'leak_scan.py'), str(scanned), '--strip-prefix', 'prebuilt/',
+           '--manifest', str(Path(a.prebuilt) / 'manifest.json')]
+    if a.romfs:
+        cmd += ['--romfs', a.romfs]
+    r = subprocess.run(cmd)
     if r.returncode != 0:
-        print('note: leak_scan.py reads zips; run it on the payload when it refuses a PE file', file=sys.stderr)
+        final.unlink()
+        raise SystemExit('leak scan failed; SnapRecompSetup.exe was deleted')
+    print('leak scan of the payload clean')
     if a.sign:
         r = subprocess.run([sys.executable, '-I', str(ROOT / 'builder' / 'release_sign.py'), '--zip', str(final), '--version', version])
         if r.returncode != 0:

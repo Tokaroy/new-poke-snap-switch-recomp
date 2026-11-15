@@ -250,6 +250,7 @@ static HWND g_wnd, g_title, g_body, g_next, g_back, g_cancel, g_path, g_detect, 
 static HFONT g_font, g_fontBig;
 static int g_page = P_WELCOME;
 static wstring g_folder, g_keys, g_scanText, g_exePlay, g_err, g_workdir;
+static bool g_noShortcuts = false;
 static bool g_scanOk = false, g_needKeys = false, g_busy = false, g_repair = false, g_auto = false, g_showLog = false, g_uninstMode = false;
 static Proc g_proc;
 static std::mutex g_mu;
@@ -402,6 +403,11 @@ static wstring WriteConfig() {
     j += "\"setup_exe\": \"" + JEsc(g_exe) + "\", ";
     j += string("\"shortcuts\": {\"desktop\": ") + (SendMessageW(g_chk[1], BM_GETCHECK, 0, 0) == BST_CHECKED ? "true" : "false") +
          ", \"start\": " + (SendMessageW(g_chk[2], BM_GETCHECK, 0, 0) == BST_CHECKED ? "true" : "false") + "}, ";
+    if (g_noShortcuts) {
+        size_t p = j.rfind("\"shortcuts\"");
+        size_t e = j.find("}, ", p);
+        j.replace(p, e - p + 1, "\"shortcuts\": {\"desktop\": false, \"start\": false}");
+    }
     string ups, acc;
     const char* names[] = {"fsr", "dlss", "xess"};
     for (int i = 0; i < 3; i++)
@@ -716,9 +722,14 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, PWSTR, int) {
     wstring preFolder, shotDir;
     int startPage = -1;
     bool repair = false, uninst = false;
+    bool hidden = false;
+    wstring snapDir;
     for (int i = 1; i < argc; i++) {
         wstring a = argv[i];
-        if (a == L"/repair") repair = true;
+        if (a == L"/hidden") hidden = true;                                   // test: run on a private hidden desktop
+        else if (a == L"/snapdir" && i + 1 < argc) snapDir = argv[++i];       // test: save a BMP of every page change
+        else if (a == L"/noshortcuts") g_noShortcuts = true;                  // test: leave the desktop and Start menu alone
+        else if (a == L"/repair") repair = true;
         else if (a == L"/uninstall") uninst = true;
         else if (a == L"/auto") g_auto = true;
         else if (a == L"/folder" && i + 1 < argc) preFolder = argv[++i];
@@ -740,7 +751,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, PWSTR, int) {
     RECT r{0, 0, 760, 540};
     AdjustWindowRect(&r, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE);
     HDESK shotDesk = nullptr;
-    if (!shotDir.empty()) {   // test mode: a private hidden desktop, so nothing appears on the player's screen
+    if (!shotDir.empty() || hidden) {   // test mode: a private hidden desktop, so nothing appears on the player's screen
         shotDesk = CreateDesktopW(L"snap_setup_shot", nullptr, nullptr, 0, GENERIC_ALL, nullptr);
         if (shotDesk) SetThreadDesktop(shotDesk);
     }
@@ -769,6 +780,21 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, PWSTR, int) {
             else if (g_page == P_OPTIONS) { SendMessageW(g_chk[0], BM_SETCHECK, BST_CHECKED, 0); OnCommand(ID_NEXT); }
         }
         if (m.message == WM_TIMER && m.hwnd == g_wnd && g_showLog) RefreshLog();
+        if (m.message == WM_TIMER && m.hwnd == g_wnd && !snapDir.empty()) {   // test screenshots: one per page change, one a minute on the build page
+            static int lastPage = -1; static DWORD lastTick = 0; static int n = 0;
+            DWORD now = GetTickCount();
+            int key = g_page * 10 + (g_scanOk ? 1 : 0);
+            static int pending = -1;
+            bool stable = key == pending;   // painted for a full timer tick
+            pending = key;
+            if (stable && (key != lastPage || (g_page == P_BUILD && now - lastTick > 60000))) {
+                wchar_t nm[64]; swprintf(nm, 64, L"\\%02d_page%d.bmp", ++n, g_page);
+                MkDirs(snapDir);
+                RedrawWindow(g_wnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+                SaveBmp(g_wnd, snapDir + nm);
+                lastPage = key; lastTick = now;
+            }
+        }
         TranslateMessage(&m);
         DispatchMessageW(&m);
     }
