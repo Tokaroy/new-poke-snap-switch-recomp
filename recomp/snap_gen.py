@@ -209,7 +209,7 @@ MAIN_INLINE_HOOKS = {BASE + 0x5e3a58: 'rt_mod_entry',
 # SNAP_GEN_UI_PACE=1 (or --ui-pace): the default output, and with it the shared build/eh/main, stays byte-identical and SNAP_RUNTIME_ABI stays 1.
 # When the shared main is regenerated with these sites, flip UI_PACE_DEFAULT and bump SNAP_RUNTIME_ABI (runtime/cpu.h) in the same change.
 # A branch hook is an inline hook that returns its decision in c->x[16]: 0 = `goto target` (registers as before the instruction), else fall on.
-UI_PACE_DEFAULT = False
+UI_PACE_DEFAULT = True
 UI_PACE_INLINE = {BASE + 0x783614: 'rt_gm_ui_enter',    # handler 0x7835d0 after `str x0, [sp, #0x188]`: x0 = the interface object
                   BASE + 0x794b90: 'rt_gm_ui_event',    # label of the per-frame event 22 raise (`ldr x0, [sp, #0x188]` before bl 0x7a9a70)
                   BASE + 0x9263ac: 'rt_gm_ui_pad'}      # the pad update 0x925b60's one epilogue: x19 = pad

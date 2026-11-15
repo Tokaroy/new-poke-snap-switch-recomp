@@ -10,7 +10,7 @@
 // signatures, the MAIN_INLINE_HOOKS table (recomp/snap_gen.py) or the SDK_HOOKS table change. recomp/snap_gen.py reads this number
 // (a literal on the next line) into the generated function table; the table checks it against this header at compile time and refers to
 // the symbol snap_runtime_abi_<n>, which runtime/os/abi.cpp defines for the same number, so a mismatch fails to compile or to link.
-#define SNAP_RUNTIME_ABI 1
+#define SNAP_RUNTIME_ABI 2
 
 typedef struct __attribute__((aligned(16))) Cpu {
     uint64_t x[32];          // x0-x30 (x[31] unused; sp is separate)
