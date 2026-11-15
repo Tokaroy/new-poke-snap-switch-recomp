@@ -595,6 +595,13 @@ def run(cfg, ev, opener=None):
 
     # which stages have work left decides the weights
     sc_kind = cfg.get('kind')
+    if sc_kind not in ('dump', 'extracted'):   # the wizard passes "auto": look at the folder again (a second of reading file names)
+        try:
+            folder0 = cfg.get('game_dir') or (settings.get('game') or {}).get('folder')
+            sc_kind = gamesrc.scan(folder0).kind if folder0 else None
+        except StepError as e:
+            raise StepError(str(e))
+        cfg['kind'] = sc_kind
     need_game = sc_kind == 'dump'
     game_dir = root / 'game'
     already = gamesrc.extracted_already(game_dir) if need_game else None
