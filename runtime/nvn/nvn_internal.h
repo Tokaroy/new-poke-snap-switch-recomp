@@ -340,7 +340,15 @@ struct ProgramImpl {
 };
 bool PatchAlphaTest(const std::vector<uint32_t>& in, int func, std::vector<uint32_t>& out);   // nvn_alpha.cpp
 bool GtaoPatchFragment(std::vector<uint32_t>& words, const char* key);   // nvn_gtao.cpp (P8, SNAP_SSAO_GTAO): the HBAO fragment program becomes GTAO
-bool PatchShadowPcf(const std::vector<uint32_t>& in, int taps, float radiusUv, float bias, float remapK, std::vector<uint32_t>& out);   // nvn_shadowpcf.cpp (P5, SNAP_SHADOW_FILTER)
+struct PcssParams {   // nvn_shadowpcf.cpp: contact-hardening soft shadows (SNAP_SHADOW_PCSS, the Enhanced lighting preset)
+  float lightSize = 6.0f;     // filter radius in map UV per unit of receiver-minus-blocker depth (the sun's angular size on the normalized shadow depth)
+  float maxTexels = 10.0f;    // widest penumbra radius, in texels of the game's own 1024 map
+  int searchTaps = 8;         // blocker search fetches
+  bool flip = false;          // test aid: treat map depths above the receiver as blockers
+};
+bool PatchShadowPcf(const std::vector<uint32_t>& in, int taps, float radiusUv, float bias, float remapK, std::vector<uint32_t>& out, const PcssParams* pcss = nullptr);   // nvn_shadowpcf.cpp (P5, SNAP_SHADOW_FILTER)
+bool ShadowPcss();            // nvn_shadowpcf.cpp: PCSS on (SNAP_SHADOW_PCSS or the Enhanced preset)
+PcssParams ShadowPcssParams();
 bool ShadowFilterApplies(const StageProg& fs);   // nvn_shadowpcf.cpp: the fragment stage has a patchable depth-compare tap (cached per stage key)
 float ShadowFilterBias();   // nvn_shadowpcf.cpp: SNAP_SHADOW_BIAS (n * 1e-4 of reference depth)
 int ShadowFilterTaps();      // nvn_shadowpcf.cpp: SNAP_SHADOW_FILTER 0 (off) / 8 / 16

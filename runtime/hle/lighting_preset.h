@@ -3,8 +3,10 @@
 // (nvn_entry.cpp shadow resolution, nvn_draw.cpp shadow distance) read the same preset and "ultra" means the same thing everywhere.
 //
 //   SNAP_LIGHTING unset / default / original -> level 0 (the game's own lighting)
-//   SNAP_LIGHTING=high                       -> level 1: 2048 shadow maps, 2x shadow distance, SSAO quality high
-//   SNAP_LIGHTING=ultra                      -> level 2: 4096 shadow maps, 4x shadow distance, SSAO quality ultra
+//   SNAP_LIGHTING=enhanced (alias high)      -> level 1, "Enhanced lighting": shadow maps follow the render resolution (2048 at 1080p, 4096 at 4K, 8192 at 8K),
+//                                               2x shadow distance, soft contact-hardening shadows (PCSS, 16 taps), the screen-space occlusion and clean contact shadows
+//                                               of runtime/nvn/nvn_lighting_fx.cpp, SSAO quality high in the photo passes
+//   SNAP_LIGHTING=maximum (alias ultra)      -> level 2: one shadow-map size step above Enhanced, 4x shadow distance, SSAO quality ultra, more occlusion samples
 // Every explicit switch (SNAP_SHADOW_RES, SNAP_SHADOW_DISTANCE, SNAP_SSAO_QUALITY, ...) still wins over the preset.
 #pragma once
 #include <cstdlib>
@@ -15,8 +17,8 @@ inline int level() {
   static const int v = [] {
     const char* l = getenv("SNAP_LIGHTING");
     if (!l || !*l) return 0;
-    if (!_stricmp(l, "high")) return 1;
-    if (!_stricmp(l, "ultra")) return 2;
+    if (!_stricmp(l, "high") || !_stricmp(l, "enhanced")) return 1;
+    if (!_stricmp(l, "ultra") || !_stricmp(l, "maximum")) return 2;
     return 0;
   }();
   return v;
@@ -25,7 +27,19 @@ inline int level() {
 // off in even ones: same-view A/B pairs inside one run. Unset = always on.
 inline int ab_period() { static const int p = [] { const char* e = getenv("SNAP_LIGHT_AB"); return e ? atoi(e) : 0; }(); return p; }
 inline bool ab_on(unsigned long long present) { const int p = ab_period(); return p <= 0 || ((present / (unsigned long long)p) & 1ull) != 0; }
-inline int shadow_res() { const int l = level(); return l == 2 ? 4096 : l == 1 ? 2048 : 0; }          // 0 = the game's 1024
+inline bool enhanced() { return level() >= 1; }
+inline int shadow_res() { const int l = level(); return l == 2 ? 4096 : l == 1 ? 2048 : 0; }          // 0 = the game's 1024 (fixed sizes, superseded by shadow_res_for_scale)
+// Shadow-map side that follows the internal render resolution: the smallest power of two at or above the scene height (1080 x render scale), at least 2048, at most 8192;
+// Maximum goes one step further. 0 = the game's own 1024 (preset Original).
+inline int shadow_res_for_scale(float scale) {
+  const int l = level();
+  if (l < 1) return 0;
+  const double h = 1080.0 * (scale > 0.f ? scale : 1.f);
+  int r = 2048;
+  while (r < h && r < 8192) r *= 2;
+  if (l == 2 && r < 8192) r *= 2;
+  return r;
+}
 inline float shadow_distance() { const int l = level(); return l == 2 ? 4.0f : l == 1 ? 2.0f : 1.0f; }
 inline const char* ssao_quality() { const int l = level(); return l == 2 ? "ultra" : l == 1 ? "high" : nullptr; }
 }  // namespace snaplight

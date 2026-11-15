@@ -274,9 +274,9 @@ static void MakePipeDesc(PipeDesc& pd, DrawState& d, VkPrimitiveTopology topo, c
   ProgramImpl* p = d.prog;
   memset(&pd, 0, sizeof pd);
   pd.pad0 = (uint32_t)XlateAbVariant();   // SNAP_XLATE_AB: separate pipelines for the alternate translation (0 when unset)
-  {   // pad1: bits 0..7 = soft-shadow taps (P5), bits 8..15 = shadow-distance factor * 4 (receivers remap the dynamic map's lookup, see ShadowDistanceOnBind)
+  {   // pad1: bits 0..7 = soft-shadow taps (P5), bit 7 = PCSS, bits 8..15 = shadow-distance factor * 4 (receivers remap the dynamic map's lookup, see ShadowDistanceOnBind)
     const uint32_t kc = ShadowDistK() > 1.0f ? (uint32_t)(ShadowDistK() * 4.0f + 0.5f) : 0u;
-    pd.pad1 = (p->st[1].valid && (ShadowFilterTaps() || kc) && ShadowFilterApplies(p->st[1])) ? ((uint32_t)ShadowFilterTaps() | (kc << 8)) : 0u;
+    pd.pad1 = (p->st[1].valid && (ShadowFilterTaps() || kc) && ShadowFilterApplies(p->st[1])) ? ((uint32_t)ShadowFilterTaps() | (kc << 8) | (ShadowPcss() ? 0x80u : 0u)) : 0u;
   }   // SNAP_SHADOW_FILTER (P5): own pipeline keys for the patched fragment modules (0 when off: the original keys)
   for (int s = 0; s < 5; s++) if (p->st[s].valid) snprintf(pd.stage[s], sizeof pd.stage[s], "%s", p->st[s].key);
   pd.topo = (int)topo;
@@ -362,7 +362,8 @@ VkPipeline CreateGraphicsPipelineImpl(Host* h, const PipeDesc& pd, StageProg* co
         }
         const VkShaderModule baseMod = useAlt ? fp.modAlt : fp.mod;
         VkShaderModule m = baseMod;
-        if (pcfTaps && PatchShadowPcf(cur, std::max(1, pcfTaps & 0xFF), ShadowFilterRadius(), ShadowFilterBias(), (float)(pcfTaps >> 8) / 4.0f, tmp)) { cur = tmp; m = VK_NULL_HANDLE; }
+        const PcssParams pcssP = ShadowPcssParams();
+        if (pcfTaps && PatchShadowPcf(cur, std::max(1, pcfTaps & 0x7F), ShadowFilterRadius(), ShadowFilterBias(), (float)((pcfTaps >> 8) & 0xFF) / 4.0f, tmp, (pcfTaps & 0x80) ? &pcssP : nullptr)) { cur = tmp; m = VK_NULL_HANDLE; }
         if (PatchFragmentOutputs(cur, pd.nColor, dual, tmp)) cur = tmp, m = VK_NULL_HANDLE;
         if (intKindBits) {
           int skippedInt = 0;

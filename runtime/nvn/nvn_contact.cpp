@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "hle/lighting_preset.h"
 #include "nvn_contact_spv.h"
 #include "nvn_fx.h"
 #include "nvn_internal.h"
@@ -36,7 +37,7 @@ std::atomic<int> g_on{-1};
 bool Enabled() {
   int v = g_on.load(std::memory_order_relaxed);
   if (v < 0) { const char* e = getenv("SNAP_CONTACT_SHADOWS"); v = e && *e && atoi(e) != 0 ? 1 : 0; int x = -1; g_on.compare_exchange_strong(x, v); v = g_on.load(); }
-  return v != 0;
+  return v != 0 && !LightingFxEnabled();   // the Enhanced lighting pass (nvn_lighting_fx.cpp) does contact shadows with a denoise
 }
 
 struct Pc { float ivp[16]; float dclip[4]; float light[4]; float size[4]; float q[4]; };
@@ -158,6 +159,7 @@ void Pre(ReplayCtx& cx) {
 const FxEffect kEffect = {"contact_shadows", Enabled, Pre, nullptr, true};
 struct Reg { Reg() { FxRegister(&kEffect); } } reg;
 }  // namespace
+bool ContactSkyGate(ReplayCtx& cx, TextureImpl* z, float nearZ) { return SkyGate(cx, z, nearZ); }
 }  // namespace nvn
 
 extern "C" void snap_contact_shadows_set(int on) {

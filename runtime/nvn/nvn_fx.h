@@ -68,6 +68,8 @@ bool FxAbSkip();                              // SNAP_FX_AB says "off" this pres
 uint32_t FxSplitX(uint32_t w);                // SNAP_FX_SPLIT: first pixel column effects may touch (0 when off)
 bool FxWritable(const TextureImpl* t);        // false (and one log line) for depth formats, the Evaluation depth target and 360x240 photo targets: effects never write those
 bool FxIsTonemapKey(const char* fragKey12);
+bool LightingFxEnabled();                     // nvn_lighting_fx.cpp: the Enhanced lighting screen-space pass is configured (it replaces SNAP_CONTACT_SHADOWS)
+bool ContactSkyGate(ReplayCtx& cx, TextureImpl* z, float nearZ);   // nvn_contact.cpp: true while the view shows (or recently showed) the sky: outdoors
 void FxNoteRan();   // an effect actually drew this scene frame (labels the SNAP_FX_AB log line)
 
 // Vulkan helpers shared by effects. Pipelines are created once (callers cache them) with dynamic viewport/scissor and dynamic rendering.

@@ -22,3 +22,6 @@ def emit(path, desc, items):
 emit(here.parent / 'nvn_fx_spv.h', 'fx_fullscreen.vert', [('kFxFullscreenVert', 'fx_fullscreen.vert', 'vert')])
 if (here / 'contact.frag').exists():
     emit(here.parent / 'nvn_contact_spv.h', 'contact.frag', [('kContactFrag', 'contact.frag', 'frag')])
+if (here / 'lfx_ao.frag').exists():
+    emit(here.parent / 'nvn_lighting_spv.h', 'lfx_ao.frag, lfx_resolve.frag, lfx_comp.frag',
+         [('kLfxAoFrag', 'lfx_ao.frag', 'frag'), ('kLfxResolveFrag', 'lfx_resolve.frag', 'frag'), ('kLfxCompFrag', 'lfx_comp.frag', 'frag')])

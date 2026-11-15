@@ -19,7 +19,9 @@
 namespace nvn {
 namespace {
 enum : uint32_t { kOpTypeFloat = 22, kOpTypeVector = 23, kOpConstant = 43, kOpConstantComposite = 44, kOpFunction = 54, kOpFAdd = 129, kOpFSub = 131, kOpFMul = 133,
-                  kOpImageSampleDrefExplicitLod = 90 };
+                  kOpImageSampleDrefExplicitLod = 90, kOpImageFetch = 95, kOpImage = 100, kOpImageQuerySizeLod = 103, kOpCapability = 17, kOpExtInstImport = 11,
+                  kOpExtInst = 12, kOpTypeBool = 20, kOpTypeInt = 21, kOpTypeSampledImage = 27, kOpMemoryModel = 14, kOpCompositeExtract = 81, kOpSelect = 169,
+                  kOpConvertFToS = 110, kOpConvertSToF = 111, kOpISub = 130, kOpFDiv = 136, kOpVectorTimesScalar = 142, kOpFOrdLessThan = 184, kOpFOrdGreaterThan = 186 };
 void Emit(std::vector<uint32_t>& v, uint32_t op, std::initializer_list<uint32_t> w) {
   v.push_back(((uint32_t)(w.size() + 1) << 16) | op);
   v.insert(v.end(), w.begin(), w.end());
@@ -28,6 +30,30 @@ void Emit(std::vector<uint32_t>& v, uint32_t op, std::initializer_list<uint32_t>
 
 // SNAP_SHADOW_FILTER = 0 (off) | 8 | 16 (taps); SNAP_SHADOW_SOFTNESS = kernel radius in texels of the game's own 1024 map (default 1.5).
 // SNAP_SHADOW_BIAS=<n>: receiver-side bias, n * 1e-4 subtracted from the reference depth of every tap (the game applies none and draws its casters without polygon offset).
+// SNAP_SHADOW_PCSS=0|1 (default: on with the Enhanced lighting preset, off otherwise). PCSS: every tap first searches the map around itself for blockers
+// (texel fetches), converts the average receiver-to-blocker depth gap into a filter radius (contact hardening: sharp where the shadow starts, soft far
+// from the caster) and then runs the Vogel PCF at that radius. Needs ShadowFilterTaps() > 0 (the enhanced preset sets 16 unless SNAP_SHADOW_FILTER says otherwise).
+static bool PcssWanted() {
+  static const bool on = [] {
+    const char* e = getenv("SNAP_SHADOW_PCSS");
+    if (e && *e) return atoi(e) != 0;
+    return snaplight::enhanced();
+  }();
+  return on;
+}
+bool ShadowPcss() { return PcssWanted() && snaplight::ab_on((unsigned long long)g_presentCount); }
+PcssParams ShadowPcssParams() {
+  static const PcssParams p = [] {
+    PcssParams q;
+    const char* e;
+    if ((e = getenv("SNAP_SHADOW_LIGHT")) && *e) q.lightSize = (float)atof(e);
+    if ((e = getenv("SNAP_SHADOW_PCSS_MAX")) && *e) q.maxTexels = (float)atof(e);
+    if ((e = getenv("SNAP_SHADOW_PCSS_SEARCH")) && *e) q.searchTaps = std::max(4, std::min(16, atoi(e)));
+    q.flip = (e = getenv("SNAP_SHADOW_PCSS_FLIP")) && *e && atoi(e) != 0;
+    return q;
+  }();
+  return p;
+}
 float ShadowFilterBias() {
   static const float b = [] { const char* e = getenv("SNAP_SHADOW_BIAS"); const float f = e ? (float)atof(e) : 0.0f; return (f > 0.0f && f <= 1000.0f) ? f * 1.0e-4f : 0.0f; }();
   return b;
@@ -37,6 +63,7 @@ int ShadowFilterTaps() {
     const char* e = getenv("SNAP_SHADOW_FILTER");
     const int v = (!e || !*e || !strcmp(e, "default")) ? 0 : atoi(e);
     if (v == 4 || v == 8 || v == 16 || v == 32) return v;
+    if ((!e || !*e || !strcmp(e, "default")) && PcssWanted()) return 16;   // PCSS (and so the Enhanced preset) filters with 16 taps
     return ShadowFilterBias() > 0.0f ? 1 : 0;   // a bias alone: one tap at the original coordinate, reference depth lowered
   }();
   return snaplight::ab_on((unsigned long long)g_presentCount) ? taps : 0;   // SNAP_LIGHT_AB
@@ -68,7 +95,7 @@ bool ShadowFilterApplies(const StageProg& fs) {
 }
 
 // taps: 1 (bias only) or 4..32. radiusUv: kernel radius in texture-coordinate units. Returns false (out untouched) when the module has no patchable tap.
-bool PatchShadowPcf(const std::vector<uint32_t>& in, int taps, float radiusUv, float bias, float remapK, std::vector<uint32_t>& out) {
+bool PatchShadowPcf(const std::vector<uint32_t>& in, int taps, float radiusUv, float bias, float remapK, std::vector<uint32_t>& out, const PcssParams* pcss) {
   if (in.size() < 6 || in[0] != 0x07230203 || taps < 1 || taps > 64) return false;
   // pass 1: float32 types, vec2-of-float32 types, result types of the instructions that define the taps' coordinates, first function, taps
   std::map<uint32_t, bool> isF32;
@@ -78,9 +105,22 @@ bool PatchShadowPcf(const std::vector<uint32_t>& in, int taps, float radiusUv, f
   std::vector<size_t> tapAt;
   std::map<uint32_t, std::string> nameOf;        // OpName
   std::map<uint32_t, uint32_t> loadPtr, sampImgOf;   // OpLoad result -> pointer; OpSampledImage result -> image
+  // PCSS needs: ImageQuery, GLSL.std.450, int32 / bool / vec4 types, the image type behind each tap's sampled image
+  std::map<uint32_t, uint32_t> sampledToImage;                        // OpTypeSampledImage id -> image type id
+  std::map<std::pair<uint32_t, uint32_t>, uint32_t> vecType;          // (component type, count) -> id
+  uint32_t i32T = 0, boolT = 0, glslSet = 0;
+  size_t capEnd = 0, memModelAt = 0;
+  bool hasImageQuery = false;
   for (size_t i = 5; i < in.size();) {
     const uint32_t wc = in[i] >> 16, op = in[i] & 0xFFFF;
     if (!wc || i + wc > in.size()) return false;
+    if (op == kOpCapability) { capEnd = i + wc; if (wc >= 2 && in[i + 1] == 50) hasImageQuery = true; }
+    else if (op == kOpExtInstImport && wc >= 3 && !strncmp((const char*)&in[i + 2], "GLSL.std.450", 12)) glslSet = in[i + 1];
+    else if (op == kOpMemoryModel && !memModelAt) memModelAt = i;
+    else if (op == kOpTypeInt && wc >= 4 && in[i + 2] == 32 && in[i + 3] == 1) i32T = in[i + 1];
+    else if (op == kOpTypeBool) boolT = in[i + 1];
+    else if (op == kOpTypeSampledImage && wc >= 3) sampledToImage[in[i + 1]] = in[i + 2];
+    if (op == kOpTypeVector && wc >= 4) vecType[{in[i + 2], in[i + 3]}] = in[i + 1];
     if (op == 5 && wc >= 3) nameOf[in[i + 1]] = std::string((const char*)&in[i + 2], strnlen((const char*)&in[i + 2], (wc - 2) * 4));
     else if (op == 61 && wc >= 4) loadPtr[in[i + 2]] = in[i + 3];
     else if (op == 86 && wc >= 5) sampImgOf[in[i + 2]] = in[i + 3];
@@ -112,14 +152,27 @@ bool PatchShadowPcf(const std::vector<uint32_t>& in, int taps, float radiusUv, f
     usable.push_back({(uint32_t)t, ct->second}); dynTap.push_back(remapK > 1.0f && isDyn(in[i + 3]));
   }
   if (usable.empty()) return false;
+  // PCSS only when every usable tap shares one float type and vec2 type and its sampled-image type is known
+  bool pcssOn = pcss != nullptr;
+  const uint32_t fT0 = in[tapAt[usable[0].first] + 1], v2T0 = usable[0].second;
+  std::vector<uint32_t> tapImgT(usable.size(), 0);
+  if (pcssOn) {
+    for (size_t u = 0; u < usable.size(); u++) {
+      const size_t i = tapAt[usable[u].first];
+      auto st = resType.find(in[i + 3]);
+      if (in[i + 1] != fT0 || usable[u].second != v2T0 || st == resType.end() || !sampledToImage.count(st->second)) { pcssOn = false; break; }
+      tapImgT[u] = sampledToImage[st->second];
+    }
+  }
 
   uint32_t next = in[3];
   // constants: one scalar per distinct value, one vec2 constant per offset, 1/N
   struct Off { float x, y; };
   std::vector<Off> offs;
   const float golden = 2.39996323f;
+  const float diskR = pcssOn ? 1.0f : radiusUv;   // PCSS: unit disk, scaled by the penumbra radius at run time
   for (int k = 0; k < taps; k++) {
-    const float r = taps == 1 ? 0.0f : radiusUv * std::sqrt(((float)k + 0.5f) / (float)taps), a = (float)k * golden;
+    const float r = taps == 1 ? 0.0f : diskR * std::sqrt(((float)k + 0.5f) / (float)taps), a = (float)k * golden;
     offs.push_back({r * std::cos(a), r * std::sin(a)});
   }
   // The float type of the taps: all taps of one module use the same one in practice; constants are made per (float type, vec2 type) pair.
@@ -159,11 +212,52 @@ bool PatchShadowPcf(const std::vector<uint32_t>& in, int taps, float radiusUv, f
     if (!invN.count(fT)) { const uint32_t id = next++; Emit(constBlock, kOpConstant, {fT, id, fbits(1.0f / (float)taps)}); invN[fT] = id; }
     if (bias > 0.0f && !biasId.count(fT)) { const uint32_t id = next++; Emit(constBlock, kOpConstant, {fT, id, fbits(bias)}); biasId[fT] = id; }
   }
+  // PCSS ids: types, constants, blocker-search offsets
+  struct Pc { uint32_t i32 = 0, v2i = 0, boolT = 0, v4f = 0, i0 = 0, v2i0 = 0, v2i1 = 0, f0 = 0, f1 = 0, fhalf = 0, light = 0, rmin = 0, rmax = 0, glsl = 0; std::vector<uint32_t> sOff; } pc;
+  std::vector<uint32_t> capBlock, importBlock;
+  int nSearch = 0;
+  if (pcssOn) {
+    nSearch = pcss->searchTaps;
+    auto vtype = [&](uint32_t comp, uint32_t n, uint32_t& slot) {
+      auto it = vecType.find({comp, n});
+      if (it != vecType.end()) { slot = it->second; return; }
+      slot = next++; Emit(constBlock, kOpTypeVector, {slot, comp, n});
+    };
+    if (!(pc.i32 = i32T)) { pc.i32 = next++; Emit(constBlock, kOpTypeInt, {pc.i32, 32, 1}); }
+    if (!(pc.boolT = boolT)) { pc.boolT = next++; Emit(constBlock, kOpTypeBool, {pc.boolT}); }
+    vtype(pc.i32, 2, pc.v2i);
+    vtype(fT0, 4, pc.v4f);
+    auto icst = [&](uint32_t v) { const uint32_t id = next++; Emit(constBlock, kOpConstant, {pc.i32, id, v}); return id; };
+    auto fcst = [&](float f) { const uint32_t id = next++; Emit(constBlock, kOpConstant, {fT0, id, fbits(f)}); return id; };
+    pc.i0 = icst(0);
+    const uint32_t i1 = icst(1);
+    pc.v2i0 = next++; Emit(constBlock, kOpConstantComposite, {pc.v2i, pc.v2i0, pc.i0, pc.i0});
+    pc.v2i1 = next++; Emit(constBlock, kOpConstantComposite, {pc.v2i, pc.v2i1, i1, i1});
+    pc.f0 = fcst(0.0f); pc.f1 = fcst(1.0f); pc.fhalf = fcst(0.5f);
+    pc.light = fcst(pcss->lightSize);
+    pc.rmin = fcst(radiusUv);
+    pc.rmax = fcst(std::max(radiusUv, pcss->maxTexels / 1024.0f));
+    const float searchR = std::max(radiusUv, pcss->maxTexels / 1024.0f);
+    for (int k = 0; k < nSearch; k++) {
+      const float r = searchR * std::sqrt(((float)k + 0.5f) / (float)nSearch), a = (float)k * golden;
+      const uint32_t cx = fcst(r * std::cos(a)), cy = fcst(r * std::sin(a)), id = next++;
+      Emit(constBlock, kOpConstantComposite, {v2T0, id, cx, cy});
+      pc.sOff.push_back(id);
+    }
+    if (!(pc.glsl = glslSet)) {
+      pc.glsl = next++;
+      std::vector<uint32_t> w(1, pc.glsl); const char* nm = "GLSL.std.450"; uint32_t buf[4] = {0, 0, 0, 0}; memcpy(buf, nm, 12); w.insert(w.end(), buf, buf + 4);
+      importBlock.push_back(((uint32_t)(w.size() + 1) << 16) | kOpExtInstImport); importBlock.insert(importBlock.end(), w.begin(), w.end());
+    }
+    if (!hasImageQuery) Emit(capBlock, kOpCapability, {50});
+  }
   // pass 2: copy, inserting the constants before the first function and expanding every usable tap
   out.assign(in.begin(), in.begin() + 5);
   size_t ui = 0;
   for (size_t i = 5; i < in.size();) {
     const uint32_t wc = in[i] >> 16;
+    if (i == capEnd && !capBlock.empty()) out.insert(out.end(), capBlock.begin(), capBlock.end());
+    if (i == memModelAt && !importBlock.empty()) out.insert(out.end(), importBlock.begin(), importBlock.end());
     if (i == firstFn) out.insert(out.end(), constBlock.begin(), constBlock.end());
     if (ui < usable.size() && tapAt[usable[ui].first] == i) {
       const uint32_t fT = in[i + 1], res = in[i + 2], img = in[i + 3], coord = in[i + 4], dref = in[i + 5], lod = in[i + 7];
@@ -178,9 +272,43 @@ bool PatchShadowPcf(const std::vector<uint32_t>& in, int taps, float radiusUv, f
         Emit(out, kOpFAdd, {v2T, coordUse, b, r.first});
       }
       if (bias > 0.0f) { drefUse = next++; Emit(out, kOpFSub, {fT, drefUse, dref, biasId[fT]}); }
+      uint32_t rId = 0;
+      if (pcssOn) {   // blocker search around the tap, then the filter radius from the average receiver-minus-blocker depth gap
+        const uint32_t im = next++, sz = next++, szf = next++, szm1 = next++;
+        Emit(out, kOpImage, {tapImgT[ui], im, img});
+        Emit(out, kOpImageQuerySizeLod, {pc.v2i, sz, im, pc.i0});
+        Emit(out, kOpConvertSToF, {v2T, szf, sz});
+        Emit(out, kOpISub, {pc.v2i, szm1, sz, pc.v2i1});
+        uint32_t sum = pc.f0, cnt = pc.f0;
+        for (int k = 0; k < nSearch; k++) {
+          const uint32_t u = next++, t = next++, ti = next++, tc = next++, d4 = next++, d = next++, isB = next++, wd = next++, wcn = next++, ns = next++, nc = next++;
+          Emit(out, kOpFAdd, {v2T, u, coordUse, pc.sOff[k]});
+          Emit(out, kOpFMul, {v2T, t, u, szf});
+          Emit(out, kOpConvertFToS, {pc.v2i, ti, t});
+          Emit(out, kOpExtInst, {pc.v2i, tc, pc.glsl, 45, ti, pc.v2i0, szm1});   // SClamp
+          Emit(out, kOpImageFetch, {pc.v4f, d4, im, tc, 2, pc.i0});
+          Emit(out, kOpCompositeExtract, {fT, d, d4, 0});
+          Emit(out, kOpFOrdLessThan, {pc.boolT, isB, pcss->flip ? drefUse : d, pcss->flip ? d : drefUse});
+          Emit(out, kOpSelect, {fT, wd, isB, d, pc.f0});
+          Emit(out, kOpSelect, {fT, wcn, isB, pc.f1, pc.f0});
+          Emit(out, kOpFAdd, {fT, ns, sum, wd}); Emit(out, kOpFAdd, {fT, nc, cnt, wcn});
+          sum = ns; cnt = nc;
+        }
+        const uint32_t cm = next++, avg = next++, diff = next++, has = next++, d2 = next++, r0 = next++;
+        rId = next++;
+        Emit(out, kOpExtInst, {fT, cm, pc.glsl, 40, cnt, pc.f1});          // FMax
+        Emit(out, kOpFDiv, {fT, avg, sum, cm});
+        Emit(out, kOpFSub, {fT, diff, drefUse, avg});
+        Emit(out, kOpFOrdGreaterThan, {pc.boolT, has, cnt, pc.fhalf});
+        Emit(out, kOpSelect, {fT, d2, has, diff, pc.f0});
+        Emit(out, kOpFMul, {fT, r0, d2, pc.light});
+        Emit(out, kOpExtInst, {fT, rId, pc.glsl, 43, r0, pc.rmin, pc.rmax});   // FClamp
+      }
       for (int k = 0; k < taps; k++) {
         const uint32_t c = next++, s = next++;
-        Emit(out, kOpFAdd, {v2T, c, coordUse, ids[k]});
+        uint32_t offId = ids[k];
+        if (rId) { offId = next++; Emit(out, kOpVectorTimesScalar, {v2T, offId, ids[k], rId}); }
+        Emit(out, kOpFAdd, {v2T, c, coordUse, offId});
         Emit(out, kOpImageSampleDrefExplicitLod, {fT, s, img, c, drefUse, 2, lod});
         if (!acc) acc = s;
         else { const uint32_t a = next++; Emit(out, kOpFAdd, {fT, a, acc, s}); acc = a; }

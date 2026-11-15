@@ -663,7 +663,8 @@ void ApplyHostEnvPolicy() {
   { float sc = 0, oc = 0; if (UpscaleApplyPolicy(&sc, &oc)) {   // [upscale] SNAP_UPSCALER: scene at sc, window textures at oc; game FXAA off unless SNAP_AA set
       g_scale.scale = sc; g_scale.displayScale = oc; if (!getenv("SNAP_AA")) g_aaMode = AA_OFF;
       if (!getenv("SNAP_SHARPEN")) g_aaSharpen = 0.0f; } }   // CAS sharpening (profile default) stays off with an upscaler unless SNAP_SHARPEN is set
-  if (snaplight::shadow_res()) g_scale.shadowRes = snaplight::shadow_res();   // lighting preset (hle/lighting_preset.h, one parser for high and ultra) (host/mods/gamemods.cpp); SNAP_SHADOW_RES below wins
+  if (snaplight::enhanced()) g_scale.shadowRes = snaplight::shadow_res_for_scale(g_scale.scale);   // Enhanced lighting: shadow map follows the internal resolution
+  else if (snaplight::shadow_res()) g_scale.shadowRes = snaplight::shadow_res();   // lighting preset (hle/lighting_preset.h, one parser for high and ultra) (host/mods/gamemods.cpp); SNAP_SHADOW_RES below wins
   if (const char* e = getenv("SNAP_SHADOW_RES")) { int v = atoi(e); g_scale.shadowRes = ((v > 1024 && v <= 8192) || v == 512) ? v : 0; }
   if (const char* e = snapdef::get("SNAP_ANISO")) { float v = (float)atof(e); g_anisoOverride = v > 1.f ? std::min(v, 16.f) : 0.f; }
   if (const char* e = getenv("SNAP_LOD_BIAS")) {
