@@ -22,6 +22,7 @@ namespace snap_pace {
 
 bool Legacy();   // SNAP_PACE=legacy
 bool LogOn();    // SNAP_PACE_LOG set
+double PanelHz();   // refresh of the window's monitor in Hz, 0 when unknown
 
 // Device setup: adds VK_KHR_present_id + VK_KHR_present_wait (when offered and not legacy) and chains their feature structs after f11.
 void AppendDeviceExt(VkPhysicalDevice phys, std::vector<const char*>& dext, VkPhysicalDeviceVulkan11Features* f11);

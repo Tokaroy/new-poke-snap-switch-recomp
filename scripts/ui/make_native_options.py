@@ -256,6 +256,17 @@ TABS = [
         row('Performance overlay', 'p', 'opt', 'fps_overlay', 'default', (('default', 'Off'), ('fps', 'FPS'), ('detailed', 'Detailed')),
             'FPS: the frame rate. Detailed adds timing, sizes and modes. F3 cycles it. Never in photos.'),
         row('Overlay corner', 'p', 'opt', 'fps_overlay_corner', 'tr',
+    # (the Quality tab's six slots went to the Look row: the two upscaler rows moved to the end of the third set)
+    ('Upscaler', 'Rebuild a sharp picture from fewer pixels.', [
+        row('Upscaler', 'p', 'opt', 'gfx_upscaler', 'off',
+            (('off', 'Off'), ('dlaa', 'DLAA'), ('dlss', 'DLSS'), ('fsr', 'FSR'), ('xess', 'XeSS')),
+            'Rebuilds a sharp picture from fewer pixels. DLSS and DLAA need an NVIDIA RTX card.' + R),
+        row('Upscaler quality', 'p', 'opt', 'gfx_upscale_quality', 'native',
+            (('native', 'Native'), ('quality', 'Quality'), ('balanced', 'Balanced'), ('performance', 'Performance')),
+            'How many pixels are drawn before the upscaler enlarges them. Lower modes run faster.' + R),
+        row('Frame generation', 'p', 'opt', 'frame_generation', 'default', (('default', 'Off'), ('1', 'On')),
+            'FSR adds computed frames between real ones. Menus stay out. Off under 50 fps; photos unaffected.' + R),
+    ]),
             (('tl', 'Top left'), ('tr', 'Top right'), ('bl', 'Bottom left'), ('br', 'Bottom right')),
             'Where the performance overlay sits on the screen.'),
     ]),

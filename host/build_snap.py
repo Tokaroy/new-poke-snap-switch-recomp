@@ -99,7 +99,7 @@ def main():
     # FSR 3.1: the FidelityFX API headers (MIT) from the local SDK copy; without them the FSR backend reports itself unavailable
     ffx = ROOT / 'tools' / 'amd' / 'ffx_sdk_v2.4.0' / 'Kits' / 'FidelityFX'   # SDK 2.4.0 headers (MIT), pinned in builder/versions.json
     if (ffx / 'api' / 'include' / 'ffx_api.h').exists() and (ffx / 'upscalers' / 'include' / 'ffx_upscale.h').exists():
-        cflags += ['-DSNAP_HAVE_FFX_API', '-I', str(ffx / 'api' / 'include'), '-I', str(ffx / 'upscalers' / 'include')]
+        cflags += ['-DSNAP_HAVE_FFX_API', '-I', str(ffx / 'api' / 'include'), '-I', str(ffx / 'upscalers' / 'include'), '-I', str(ffx / 'framegeneration' / 'include')]
     cg = []   # code-generation switches, also passed to the link
     if args.pgo_gen:
         cg += ['-fprofile-generate']

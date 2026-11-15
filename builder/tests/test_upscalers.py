@@ -116,7 +116,7 @@ class UpscalerTests(unittest.TestCase):
     def test_real_table_pins_are_complete_and_inside_install_dir(self):
         table = json.loads((HERE.parent / 'versions.json').read_text(encoding='utf-8'))
         e = table['upscalers']
-        self.assertEqual(set(e), {'fsr', 'dlss', 'xess'})
+        self.assertEqual(set(e), {'fsr', 'fsr_fg', 'dlss', 'xess'})
         self.assertEqual(up.default_names(table), ['fsr'])   # FSR is on by default; DLSS and XeSS are offered, not ticked
         for k, v in e.items():
             self.assertTrue(v['license']['url'].startswith('https://'), k)

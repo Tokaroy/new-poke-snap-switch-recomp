@@ -38,6 +38,7 @@
 #include "nvn_clear_spv.h"
 #include "nvn_state.h"
 #include "upscale/upscale_nvn.h"   // [upscale]
+#include "nvn_framegen.h"          // [framegen]
 
 namespace nvn {
 
@@ -1375,6 +1376,7 @@ void DoDispatch(ReplayCtx& cx, const Cmd& c) {
   EndRendering(cx);
   ScratchVec<TexWrite> twS;   // [cpuprof]
   std::vector<TexWrite>& tw = twS.get();
+  FgAfterDraw(cx, p->st[1].key);   // [framegen] HUD-less copy of the finished 3D scene (nvn_framegen.cpp)
   if (!PrepareTextures(cx, d, p, tw, false)) return;
   std::string key = "CS" + std::to_string(p->id);
   VkPipeline pipe = VK_NULL_HANDLE;

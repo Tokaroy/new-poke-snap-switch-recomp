@@ -95,6 +95,21 @@ UPSCALERS = {
         ],
         'source': 'github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK, FSR SDK v2.4.0 = commit ' + AMD_COMMIT + ' (signedbin and docs/license.md); hashes computed by us 2026-11-14, no vendor digest published',
     },
+    # FSR 3.1 frame generation (off by default, a separate option): same AMD license, same commit, one more DLL beside the upscaler's
+    'fsr_fg': {
+        'title': 'AMD FidelityFX Frame Generation',
+        'detail': 'FSR 3.1 frame generation on any Vulkan GPU; off by default, needs a steady 50+ fps base frame rate',
+        'vendor': 'AMD', 'default': False,
+        'license': {'filename': 'AMD-FidelityFX-LICENSE.md', 'url': AMD_RAW + 'Kits/FidelityFX/docs/license.md',
+                    'sha256': '32357259b965d6a8001e9e508ba60eda6034027c5923a7d226ffbaff813c2bfb', 'size': 65770},
+        'files': [
+            {'url': AMD_RAW + 'Kits/FidelityFX/signedbin/amd_fidelityfx_framegeneration_vk.dll', 'dest': 'upscalers/amd_fidelityfx_framegeneration_vk.dll',
+             'sha256': 'd002dabff8c5e71eaa715fc99438cd4dc81230262a7897b16bc402efec3498b4', 'size': 36806928},
+            {'url': AMD_RAW + '3rdpartynotice.md', 'dest': 'licenses/upscalers/AMD-FidelityFX-3rdpartynotice.md',
+             'sha256': '3b69b1a1011622557a81b55a9a211dd797d01b8160924a5ec51b4c3432d33a4f', 'size': 2519},
+        ],
+        'source': 'github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK, FSR SDK v2.4.0 = commit ' + AMD_COMMIT + ' (signedbin/amd_fidelityfx_framegeneration_vk.dll); hash computed by us 2026-11-15, no vendor digest published',
+    },
     'dlss': {
         'title': 'NVIDIA DLSS',
         'detail': 'NVIDIA RTX graphics cards only',

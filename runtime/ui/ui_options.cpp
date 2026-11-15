@@ -242,6 +242,11 @@ std::vector<Opt>& graphics_opts() {
        "Soft contact shadows in corners and under objects. High and Ultra take more samples. The courses draw no ambient occlusion while you play (their contact shadows are baked in); the effect shows only on the photo-select screen, so this does not change the course view or its frame rate.", "default",
        {{"default", "Default"}, {"high", "High (96 samples)"}, {"ultra", "Ultra (256 samples)"}}, 0, 0, "", "SNAP_SSAO_QUALITY"},
       {"gfx_ssao_samples", "Occlusion samples", kChoice, kRestart,
+      {"frame_generation", "Frame generation (FSR)", kChoice, kRestart,
+       "AMD FSR frame generation shows an extra, computed frame between two real ones, so a 60 fps game looks like about 120 on a 120 Hz or faster screen. The menus and HUD are kept out of it. "
+       "It adds about one frame of delay, never touches photos or scoring, and turns itself off while the game runs under about 50 fps. It does not count toward the real frame rate in the Frame rate target row. "
+       "Needs the FSR files from the launcher's Upscalers entry (a one-time download you accept).", "default",
+       {{"default", "Off"}, {"1", "On"}}, 0, 0, "", "SNAP_FRAMEGEN"},
        "How many samples the simple ambient-occlusion pass takes per pixel. Overrides the Ambient occlusion choice above. Like the row above, it only matters on the photo-select screen, not in the course. 512 is the most the game's pass holds.", "default",
        {{"default", "Default (the game's own)"}, {"8", "8"}, {"16", "16"}, {"64", "64"}, {"128", "128"}, {"256", "256"}, {"512", "512"}}, 0, 0, "", "SNAP_SSAO_SAMPLES"},
       {"gfx_ssao_hbao", "Horizon occlusion", kChoice, kRestart,

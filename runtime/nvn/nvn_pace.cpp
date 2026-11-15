@@ -334,6 +334,11 @@ void QueueCap(VkSwapchainKHR sc, int64_t deadline) {
 
 bool Legacy() { return kLegacy; }
 bool LogOn() { return kLogPath && *kLogPath; }
+// Refresh rate of the window's monitor (0 = unknown), for the frame generation rate gate.
+double PanelHz() {
+  const int64_t t = g_vb.tvRef.load();
+  return t > 0 ? 1e9 / (double)t : 0.0;
+}
 
 void AppendDeviceExt(VkPhysicalDevice phys, std::vector<const char*>& dext, VkPhysicalDeviceVulkan11Features* f11) {
   if (kLegacy || EnvZero("SNAP_PACE_WAIT")) return;

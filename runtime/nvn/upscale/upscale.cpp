@@ -29,6 +29,8 @@
 
 #include "../nvn_internal.h"
 #include "../nvn_aa.h"   // HostWindowHeight
+#include "../nvn_framegen.h"   // [framegen] FgPrepare, FgWanted
+#include "framegen.h"
 #include "../../hle/input_core.h"
 #include "upscale_mv_spv.h"
 #include "upscale_nvn.h"
@@ -124,10 +126,13 @@ void AddInstanceExtensions(std::vector<const char*>& ext) {
 void AddDeviceExtensions(VkInstance inst, VkPhysicalDevice pd, std::vector<const char*>& ext, void** chainHead,
                          VkPhysicalDeviceVulkan11Features* f11, VkPhysicalDeviceVulkan12Features* f12,
                          VkPhysicalDeviceVulkan13Features* f13) {
-  if (!Wanted()) return;
-  if (dlss::LoadAfterInstance()) dlss::DeviceExtensions(pd, ext);
+  const bool upOn = Wanted();
+  if (!upOn && !snap_framegen::Wanted()) return;   // frame generation alone needs the same optional features (FidelityFX shaders), no backend extensions
   bool needMut = false;
-  xess::DeviceExtensions(inst, pd, ext, &needMut);
+  if (upOn) {
+    if (dlss::LoadAfterInstance()) dlss::DeviceExtensions(pd, ext);
+    xess::DeviceExtensions(inst, pd, ext, &needMut);
+  }
   // The backends' shaders use optional 1.1-1.3 features (16-bit storage, int8, dot product, subgroup size control, buffer
   // device address...): enable every one the GPU has (protected memory aside), as the layer already does for 1.0.
   VkPhysicalDeviceVulkan13Features q13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
@@ -224,6 +229,7 @@ struct Mat { double m[4][4]; };   // row-major: clip = M * p
 
 struct State {
   bool wanted = false, on = false;
+  bool fgOnly = false;   // frame generation without an upscaler: scene depth and motion vectors are tracked, nothing is jittered or replaced
   Host* h = nullptr;
   float sceneScale = 1, outScale = 1;
   TextureImpl* evalDepth = nullptr;
@@ -475,14 +481,17 @@ void UpscaleDeviceExtensions(Host* h, std::vector<const char*>& ext, void** chai
   snap_upscale::AddDeviceExtensions(h->instance, h->phys, ext, chainHead, f11, f12, f13);
 }
 void UpscaleDeviceCreated(Host* h) {
-  if (!U.wanted && !snap_upscale::Wanted()) return;
+  const bool fgAlone = !U.wanted && !snap_upscale::Wanted() && FgWanted();
+  if (!U.wanted && !snap_upscale::Wanted() && !fgAlone) return;
   U.h = h;
   snap_upscale::DeviceCtx c;
   c.instance = h->instance; c.phys = h->phys; c.device = h->device; c.queue = h->queue; c.family = h->family;
-  snap_upscale::DeviceCreated(c);
+  if (fgAlone) { U.wanted = true; U.fgOnly = true; }   // scale stays 1 (UpscaleApplyPolicy was not applied); only the MV pass and FgPrepare run
+  else snap_upscale::DeviceCreated(c);
   U.mvOk = MakeMvPipeline(h);
   if (!U.mvOk) Logf("motion-vector pipeline creation failed: zero motion");
-  U.on = snap_upscale::ActiveBackend() != BK_OFF;
+  U.on = fgAlone ? U.mvOk : snap_upscale::ActiveBackend() != BK_OFF;
+  if (fgAlone) Logf("frame generation without an upscaler: scene depth and motion vectors are tracked for it (%s)", U.on ? "on" : "off");
 }
 void UpscaleDestroy(Host* h) {
   if (!U.h || U.h != h) return;
@@ -514,11 +523,11 @@ static void Resolve(ReplayCtx& cx) {
   }
   const double t0 = Now();
   const uint32_t w = c->HW(), h = c->HH(), ow = disp->HW(), oh = disp->HH();
-  TextureImpl* o = EnsureOut(c, ow, oh);
-  if (!o || !EnsureMv(w, h)) { Logf("output or motion image creation failed: upscaler off"); U.on = false; return; }
+  TextureImpl* o = U.fgOnly ? nullptr : EnsureOut(c, ow, oh);
+  if ((!o && !U.fgOnly) || !EnsureMv(w, h)) { Logf("output or motion image creation failed: upscaler off"); U.on = false; return; }
   VkCommandBuffer cb = cx.cb;
   Transition(cb, z, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
-  Transition(cb, c, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  if (!U.fgOnly) Transition(cb, c, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
   const float ujx = U.jitUsed ? U.jx : 0.f, ujy = U.jitUsed ? U.jy : 0.f;
   // camera cut: a jump of the eye or a turn the vectors cannot follow
   bool cut = false;
@@ -553,6 +562,22 @@ static void Resolve(ReplayCtx& cx) {
       vkCmdDispatch(cb, (w + 7) / 8, (h + 7) / 8, 1);
     }
     MvBarrier(cb, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+  }
+  if (U.fgOnly) {   // [framegen] no upscale: hand the frame's depth, motion vectors and camera to the interpolator
+    if (U.mvOk && U.haveCur) {
+      FgScene fs;
+      fs.display = disp; fs.depth = z->image; fs.depthView = z->View(nullptr, true); fs.depthFormat = z->fi->vk;
+      fs.mv = U.mvImg; fs.mvView = U.mvView; fs.rw = w; fs.rh = h; fs.jx = 0; fs.jy = 0;
+      fs.nearZ = U.nearZ; fs.farZ = U.farZ; fs.fovY = U.fovY;
+      for (int i = 0; i < 3; i++) { fs.eye[i] = (float)U.eye[i]; fs.fwd[i] = (float)U.fwd[i]; }
+      fs.cut = cut || U.reset;
+      if (FgPrepare(cx, fs)) { U.evaluated = true; U.evals++; U.lastEvalPresent = g_presentCount; }
+      U.reset = false;
+    }
+    if (U.haveCur) { U.prev = U.cur; memcpy(U.prevEye, U.eye, sizeof U.eye); memcpy(U.prevFwd, U.fwd, sizeof U.fwd); U.havePrev = true; }
+    else U.havePrev = false;
+    U.evalMsSum += Now() - t0;
+    return;
   }
   Transition(cb, o, VK_IMAGE_LAYOUT_GENERAL);
   if (g_perfPassOn) PerfMark(U.h, cb, "upscale eval");
@@ -607,8 +632,18 @@ static void Resolve(ReplayCtx& cx) {
     lastT = t; lastP = g_presentCount;
   }
   if (evOk) {
-    U.evaluated = true; U.evals++; U.reset = false;
+    U.evaluated = true; U.evals++;
     o->uploaded = true;
+    if (FgWanted() && U.haveCur) {   // [framegen] the upscaled frame's depth, vectors and camera (jitter as used by the scene draws)
+      FgScene fs;
+      fs.display = disp; fs.depth = z->image; fs.depthView = z->View(nullptr, true); fs.depthFormat = z->fi->vk;
+      fs.mv = U.mvImg; fs.mvView = U.mvView; fs.rw = w; fs.rh = h; fs.jx = ujx; fs.jy = ujy;
+      fs.nearZ = U.nearZ; fs.farZ = U.farZ; fs.fovY = U.fovY;
+      for (int i = 0; i < 3; i++) { fs.eye[i] = (float)U.eye[i]; fs.fwd[i] = (float)U.fwd[i]; }
+      fs.cut = e.reset;
+      FgPrepare(cx, fs);
+    }
+    U.reset = false;
     if (front::LogLevel() >= 2 || (front::LogLevel() && U.evals <= 3))
       Logf("p%d upscaled %ux%u -> %ux%u jitter (%.3f %.3f)%s%s%s", g_presentCount, w, h, ow, oh, ujx, ujy, e.reset ? " reset" : "",
            cut ? " (camera cut)" : "", U.haveCur ? "" : " (no camera)");
@@ -624,7 +659,7 @@ static void Resolve(ReplayCtx& cx) {
 
 static void CurJitter(const ReplayCtx& cx, float* jx, float* jy) {
   *jx = *jy = 0;
-  if (!U.on || U.phase != 1 || U.frameHold || !front::JitterOn() || !cx.rt[8] || cx.rt[8] != U.sceneDepth) return;
+  if (!U.on || U.fgOnly || U.phase != 1 || U.frameHold || !front::JitterOn() || !cx.rt[8] || cx.rt[8] != U.sceneDepth) return;
   *jx = U.jx; *jy = U.jy;
 }
 

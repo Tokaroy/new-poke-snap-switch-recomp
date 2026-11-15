@@ -19,6 +19,7 @@
 #include "nvn_rt.h"   // [rt] SNAP_RT=1 ray tracing track
 #include "nvn_pace.h"   // [pace] frame clock for the limiter and the guest vsync (SNAP_PACE=legacy restores the old limiter)
 #include "upscale/upscale_nvn.h"   // [upscale] DLSS / FSR / XeSS (SNAP_UPSCALER)
+#include "nvn_framegen.h"          // [framegen] FSR frame generation (SNAP_FRAMEGEN)
 #include "os/perf.h"   // SNAP_PERF instrumentation (off unless the env var is set)
 // runtime/os: give the virtual core back while pacing. Standalone nvn builds (tests/nvn) have no os layer: the alternatename
 // pragmas bind the no-op fallbacks below when os_kernel.cpp is not linked.
@@ -377,6 +378,7 @@ bool Host::Init(bool wantValidation) {
   snap_pace::DeviceCreated(device);   // [pace]
   snap_rt::DeviceCreated(this);   // [rt]
   UpscaleDeviceCreated(this);   // [upscale]
+  FgDeviceCreated(this);   // [framegen]
   VkPipelineCacheCreateInfo pci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
   VKCHK(vkCreatePipelineCache(device, &pci, nullptr, &pipelineCache));
   {
@@ -407,6 +409,7 @@ bool Host::Init(bool wantValidation) {
 
 void Host::Shutdown() {
   if (device) vkDeviceWaitIdle(device);
+  if (device) FgDestroy(this);   // [framegen] (before the upscaler: it shares the FidelityFX device)
   if (device) UpscaleDestroy(this);   // [upscale]
   if (device) snap_rt::DeviceShutdown(this);   // [rt]
   if (device) DestroyHostExtras(this);
@@ -698,6 +701,7 @@ void DestroyTexture(TextureImpl* t) {
   if (!t) return;
   TexPrefetchForget(t);   // [perf] a prefetch job may be reading its guest data
   UpscaleForgetTexture(t);   // [upscale]
+  FgForgetTexture(t);        // [framegen]
   AaForgetTexture(t);   // drops the AA step's cached UNORM views of this image (the graveyard calls this once the GPU is done with it)
   if (t->bcShadow) { DestroyTexture(t->bcShadow); t->bcShadow = nullptr; }
   if (t->xferShadow) { DestroyTexture(t->xferShadow); t->xferShadow = nullptr; }
@@ -1782,6 +1786,11 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
   // The acquire semaphore must have no pending wait: gate reuse on the timeline value of the submit that waited it.
   if (w->needRecreate && !w->Recreate()) return false;
   const uint32_t ak = w->acquireNext++ % (uint32_t)w->acquireSems.size();
+  // [framegen] With frame generation a game frame presents twice: pass 0 the interpolated frame (previous real frame -> this one,
+  // nvn_framegen.cpp), pass 1 (half a base frame later) the real frame. Without it, or when nothing is to be shown, only pass 1 runs.
+  const bool fgPend = FgWanted() && FgBeginPresent(h, src, w->hdr);
+  for (int pass = 0;; pass++) {
+  bool realPass = true;
   // [pace] The timeline wait and vkAcquireNextImageKHR block on the GPU and the display but touch no queue, so the default model
   // drops the queue lock around them (other threads keep submitting); Recreate (vkDeviceWaitIdle) retakes it. Legacy holds it.
   const bool dropLock = !snap_pace::Legacy();
@@ -1844,6 +1853,10 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
   // and writes a half-size BMP after the submit. Used for screenshots when the desktop capture is unavailable (hidden desktop).
   static const char* fdDir = getenv("NVN_FRAME_DUMP");
   static const double fdFrom = getenv("NVN_FRAME_DUMP_FROM") ? atof(getenv("NVN_FRAME_DUMP_FROM")) : 0.0;
+  VkImage blitSrc = src->image;   // [framegen] the interpolated image on pass 0
+  if (fgPend && pass == 0) {
+    if (VkImage gen = FgRecordGenerate(h, cb, src)) { blitSrc = gen; realPass = false; }
+  }
   static const double fdTo = getenv("NVN_FRAME_DUMP_TO") ? atof(getenv("NVN_FRAME_DUMP_TO")) : 1e9;
   static const double fdEvery = getenv("NVN_FRAME_DUMP_EVERY") ? atof(getenv("NVN_FRAME_DUMP_EVERY")) : 1.0;
   static const int fdMax = getenv("NVN_FRAME_DUMP_MAX") ? atoi(getenv("NVN_FRAME_DUMP_MAX")) : 60;
@@ -1857,7 +1870,7 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
   if (fdPost) { fdW = w->scExtent.width; fdH = w->scExtent.height; fdBgra = w->scFormat == VK_FORMAT_B8G8R8A8_UNORM || w->scFormat == VK_FORMAT_B8G8R8A8_SRGB; }
   const bool fdBurstNow = g_fdBurst > 0 && (g_fdBurst-- % 4) == 0;   // NVN_THUMB_LOG: a photo-thumbnail draw requests a short burst of frames
   const bool fdHdr = fdPost && w->hdr;   // HDR10 swapchain: the dump is the raw A2B10G10R10 PQ image, written through snap_hdr::DumpPQ
-  if (fdDir && *fdDir && fdCount < fdMax && src->fi && src->fi->bytes == 4 && src->fi->aspect == VK_IMAGE_ASPECT_COLOR_BIT) {
+  if (realPass && fdDir && *fdDir && fdCount < fdMax && src->fi && src->fi->bytes == 4 && src->fi->aspect == VK_IMAGE_ASPECT_COLOR_BIT) {
     const double nowS = std::chrono::duration<double>(std::chrono::steady_clock::now() - fdT0).count();
     // NVN_FRAME_DUMP_AT=<p1,p2,...>: dump at those present counts instead of by time (frame-exact comparisons between runs)
     static std::vector<int> fdAt = [] { std::vector<int> v; if (const char* e = getenv("NVN_FRAME_DUMP_AT")) for (const char* c = e; *c;) { v.push_back(atoi(c)); while (*c && *c != ',') c++; if (*c == ',') c++; } return v; }();
@@ -1937,7 +1950,7 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
       LogError("HDR pass failed; the next frame recreates an SDR swapchain");
     }
   }
-  if (!w->hdr && !hdrDone) vkCmdBlitImage(cb, src->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
+  if (!w->hdr && !hdrDone) vkCmdBlitImage(cb, blitSrc, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
                  same ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
   PerfMark(h, cb, "present look+ui");
   { SnapUiFrame uf{h->instance, h->phys, h->device, h->queue, h->family, cb, dst, w->scFormat, w->scExtent, w->swapchain, (uint32_t)w->scImages.size(), w->hwnd}; if (!hdrDone) { snap_look_present(&uf); snap_ui_present(&uf); } }
@@ -2019,6 +2032,10 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
 
 bool PipelineHoldGame();   // nvn_pipeline.cpp: "compile shaders now" is running
 bool PresentWindow(QueueImpl* q, WindowImpl* w, int slot) {
+  if (FgWanted()) FgNotePresent(!realPass);   // [framegen]
+  if (realPass) break;
+  lk.unlock(); FgSleepHalf(); lk.lock();   // the real frame follows half a base frame after the interpolated one
+  }
   bool r = PresentWindowOnce(q, w, slot);
   // "Compile shaders now": the game thread stays on its present loop (same frame, UI overlay drawn by the present hook, paced by Pace)
   // until the precompile run finishes or is cancelled.
