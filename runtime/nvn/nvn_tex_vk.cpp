@@ -89,6 +89,20 @@ bool DebugDrawLogActive() {
   }
   return g_presentCount >= a && g_presentCount < b;
 }
+static std::mutex g_sampDbgMu;
+static std::unordered_map<void*, SamplerBuilder> g_sampDbg;
+void DebugSamplerNote(void* vkSampler, const SamplerBuilder& b) {
+  if (!DrawLogFile()) return;
+  std::lock_guard<std::mutex> lk(g_sampDbgMu);
+  g_sampDbg[vkSampler] = b;
+}
+void DebugSamplerDesc(void* vkSampler, char* out, size_t n) {
+  std::lock_guard<std::mutex> lk(g_sampDbgMu);
+  auto it = g_sampDbg.find(vkSampler);
+  if (it == g_sampDbg.end()) { snprintf(out, n, "?"); return; }
+  const SamplerBuilder& b = it->second;
+  snprintf(out, n, "min%d mag%d w%d,%d,%d lod%g..%g bias%g cmp%d an%g", b.minFilter, b.magFilter, b.wrap[0], b.wrap[1], b.wrap[2], b.lodMin, b.lodMax, b.lodBias, b.compareMode, b.aniso);
+}
 void DebugDrawLog(const char* fmt, ...) {
   FILE* f = DrawLogFile();
   if (!f) return;

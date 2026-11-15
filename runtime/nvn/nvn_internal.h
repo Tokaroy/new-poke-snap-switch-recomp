@@ -592,6 +592,8 @@ inline VkViewport MakeNvnViewport(int originMode, float x, float y, float w, flo
 void DebugDumpTexture(const TextureImpl* t, const char* tag, const void* data, uint64_t bytes, uint32_t w, uint32_t h);
 bool DebugDrawLogActive();
 void DebugDrawLog(const char* fmt, ...);
+void DebugSamplerNote(void* vkSampler, const SamplerBuilder& b);   // debug (NVN_DRAW_LOG): remembers a sampler's guest state
+void DebugSamplerDesc(void* vkSampler, char* out, size_t n);        // debug: "min/mag/wrap/lod" text for a VkSampler
 extern int g_presentCount;
 // SNAP_XLATE_AB=1 (test aid, off = no cost): fragment pipelines alternate every present between the translation of SNAP_XLATE_REV and the one of
 // SNAP_XLATE_AB_REV (cache dir SNAP_XLATE_AB_DIR). On a frozen scene (pause menu) two consecutive presents render the same frame with the two

@@ -1,0 +1,10 @@
+# fixture: post_tutorial + tool flags (story_run.sh args)
+# HUD probe for the Turbo (ZR) button: Florio Day ride start, frames, then ZR held for 4 s with frames, then end.
+repeat @f300 @f30000 120 8 A
+wait ui=map_select timeout=240
+repeat @f60 @f30000 120 8 A
+wait ride timeout=240
+wait rail>=3
+@f0 400 shot=20
+1.0 4.0 ZR
+end @f400

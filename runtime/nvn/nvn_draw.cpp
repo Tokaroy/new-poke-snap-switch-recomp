@@ -1076,6 +1076,10 @@ void DoDraw(ReplayCtx& cx, const Cmd& c0) {
   if (!PrepareTextures(cx, d, p, texWrites, true)) return;
   static const char* const kDrawSig = getenv("NVN_DRAW_SIG");   // load pass: read once (getenv per draw showed in a host profile)
   static const bool kRtDump = getenv("NVN_RT_DUMP") != nullptr;
+  {   // debug (SNAP_DRAW_SKIP_FS=<fragment shader key[,key...]>): skip every draw whose fragment shader key is listed (A/B of which draws make a pixel)
+    static const char* const kSkipFs = getenv("SNAP_DRAW_SKIP_FS");
+    if (kSkipFs && p->st[1].key && strstr(kSkipFs, p->st[1].key)) return;
+  }
   if (const char* sigPath = kDrawSig) {   // debug: one line per distinct (render targets, program, sampled textures) combination, the first time it is drawn
     static FILE* sf = fopen(sigPath, "w");
     static std::set<std::string> seen;
@@ -1099,6 +1103,7 @@ void DoDraw(ReplayCtx& cx, const Cmd& c0) {
     DebugDrawLog("draw prog=%d prim=%d n=%d rt0=%p(%dx%d f%x) vp=%d:", (int)p->id, c.i[0], c.i[2], (void*)cx.rt[0], cx.rt[0] ? cx.rt[0]->b.width : 0, cx.rt[0] ? cx.rt[0]->b.height : 0, cx.rt[0] ? cx.rt[0]->b.format : 0, cx.vpSet);
     for (auto& w : texWrites) if (w.r.t) DebugDrawLog(" [b%d t=%p f%x %dx%d fl%x pool=%d]", w.binding, (void*)w.r.t, w.r.t->b.format, w.r.t->b.width, w.r.t->b.height, w.r.t->b.flags, w.r.t->b.pool != nullptr);
     DebugDrawLog("\n");
+    for (auto& w : texWrites) if (w.r.t) { char sd[160]; DebugSamplerDesc((void*)w.r.samp, sd, sizeof sd); DebugDrawLog("   smp b%d lv%d %s\n", w.binding, w.r.t->b.levels, sd); }
     DebugDrawLog("   vs=%s fs=%s idx=%d first=%d n=%d inst=%d base=%d cull=%d depthT=%d depthW=%d nattr=%d:", p->st[0].key, p->st[1].key, (int)indexed, c.i[indexed ? 4 : 1], c.i[2], c.i[indexed ? 5 : 4], c.i[3],
                  (int)d.poly.cull, (int)DsGet(d.ds, DS_DT, 1), (int)DsGet(d.ds, DS_DW, 1), d.nattr);
     for (int i = 0; i < d.nattr; i++) DebugDrawLog(" a%d(f%u s%u o%u)", i, d.attr[i].v & 0x1FF, (d.attr[i].v >> 9) & 15, d.attr[i].v >> 13);

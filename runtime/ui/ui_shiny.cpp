@@ -149,13 +149,13 @@ void draw_shiny_badges(ImVec2 size) {
     if (ph < 1.0 && !scoreSprite && !shiny_fx_active() && snap_shiny_since_shutter() > 240) {
       const float u = (float)ph;                                   // 0..1 across the seal
       const float bx = c.x + (u * 2.6f - 1.3f) * rad;              // band centre
-      const float bw = rad * 0.30f;                                // half width
+      const float bw = rad * 0.40f;                                // half width
       for (int k = -3; k <= 3; k++) {
         const float x = bx + k * bw * 0.34f;
         const float dx = x - c.x;
         if (std::fabs(dx) >= rad * 0.95f) continue;
         const float hh = std::sqrt(std::max(0.0f, rad * rad * 0.9f - dx * dx));
-        const int a8 = (int)(170.0f * (1.0f - std::fabs((float)k) / 3.4f));
+        const int a8 = (int)(215.0f * (1.0f - std::fabs((float)k) / 3.4f));
         dl->AddRectFilled(ImVec2(x - bw * 0.17f, c.y - hh), ImVec2(x + bw * 0.17f, c.y + hh), IM_COL32(255, 255, 255, a8));
       }
     }

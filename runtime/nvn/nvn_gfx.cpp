@@ -304,6 +304,7 @@ Boolean SamplerInitialize(void* samp, const void* builder) {
   if (b->compareMode != 0) { ci.compareEnable = VK_TRUE; ci.compareOp = (VkCompareOp)std::clamp(b->compareFunc - 1, 0, 7); }
   ci.minLod = mips ? std::max(b->lodMin, 0.f) : 0.f;
   ci.maxLod = mips ? std::max(b->lodMax, ci.minLod) : 0.f;
+  { static const char* const dbgLod = getenv("SNAP_DBG_MAXLOD"); if (dbgLod && *dbgLod) ci.maxLod = std::min(ci.maxLod, (float)atof(dbgLod)); }   // debug: clamp every sampler's max LOD (mip bug A/B)
   const float* c = b->border;
   VkSamplerCustomBorderColorCreateInfoEXT customBorder{VK_STRUCTURE_TYPE_SAMPLER_CUSTOM_BORDER_COLOR_CREATE_INFO_EXT};
   if (c[0] == 0.f && c[1] == 0.f && c[2] == 0.f && c[3] == 0.f) ci.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
@@ -321,6 +322,7 @@ Boolean SamplerInitialize(void* samp, const void* builder) {
   auto* s = new SamplerImpl();
   s->host = h; s->b = *b;
   if (vkCreateSampler(h->device, &ci, nullptr, &s->sampler) != VK_SUCCESS) { delete s; LogError("vkCreateSampler failed"); return 0; }
+  DebugSamplerNote((void*)s->sampler, *b);   // no-op unless NVN_DRAW_LOG is set
   Bind(samp, MAGIC_SAMPLER, s);
   return 1;
 }

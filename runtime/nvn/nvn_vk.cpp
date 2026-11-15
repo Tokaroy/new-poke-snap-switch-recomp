@@ -143,7 +143,8 @@ static void InitFormats() {
   SetBc(0x49, VK_FORMAT_BC4_UNORM_BLOCK, 8); SetBc(0x4A, VK_FORMAT_BC4_SNORM_BLOCK, 8);
   SetBc(0x4B, VK_FORMAT_BC5_UNORM_BLOCK, 16); SetBc(0x4C, VK_FORMAT_BC5_SNORM_BLOCK, 16);
   SetBc(0x4D, VK_FORMAT_BC7_UNORM_BLOCK, 16); SetBc(0x4E, VK_FORMAT_BC7_SRGB_BLOCK, 16, true);
-  SetBc(0x4F, VK_FORMAT_BC6H_SFLOAT_BLOCK, 16); SetBc(0x50, VK_FORMAT_BC6H_UFLOAT_BLOCK, 16);
+  if (getenv("SNAP_DBG_BC6SWAP")) { SetBc(0x4F, VK_FORMAT_BC6H_UFLOAT_BLOCK, 16); SetBc(0x50, VK_FORMAT_BC6H_SFLOAT_BLOCK, 16); }   // debug A/B: BC6H signed/unsigned swapped
+  else { SetBc(0x4F, VK_FORMAT_BC6H_SFLOAT_BLOCK, 16); SetBc(0x50, VK_FORMAT_BC6H_UFLOAT_BLOCK, 16); }
   // ASTC LDR 0x79..0x94: 14 block sizes, unorm then sRGB. [ASSUMPTION: order not confirmed, the game uses no ASTC.]
   for (int i = 0; i < 14; i++) {
     g_fmts[0x79 + i] = {kAstcUnorm[i], 16, VK_IMAGE_ASPECT_COLOR_BIT, 0, kAstcDims[i][0], kAstcDims[i][1], kAstcDims[i][0], kAstcDims[i][1], false};
@@ -894,8 +895,8 @@ static bool SyncDirtyPages(PoolImpl* p, uint64_t off, uint64_t end) {
   // syscall of about 0.7 us and ~950 of them ran per 4K ride frame, 25% of the JobWorkers' cycles; a copy of <= a few KB is 30-100 ns.
   // The GPU reads exactly the bound range, so mirror == guest memory for every byte it can read, the same bytes the dirty-page path
   // delivers. The pages stay dirty in the watch (nothing is reset here), so a later larger query copies them again: redundant, never
-  // stale. SNAP_POOLSYNC_SMALL=<bytes> sets the limit (0 = off, the old path).
-  static const uint64_t kSmall = [] { const char* e = getenv("SNAP_POOLSYNC_SMALL"); return e ? (uint64_t)strtoull(e, nullptr, 0) : 0ull; }();
+  // stale. SNAP_POOLSYNC_SMALL=<bytes> sets the limit (default 4096; 0 = off, the old path).
+  static const uint64_t kSmall = [] { const char* e = getenv("SNAP_POOLSYNC_SMALL"); return e ? (uint64_t)strtoull(e, nullptr, 0) : 4096ull; }();
   static const bool kHist = [] { const char* e = getenv("SNAP_POOLSYNC_HIST"); const bool on = e && *e == '1'; if (on) atexit(PoolSyncHistDump); return on; }();
   if (kSmall && end - off <= kSmall) {
     if (kHist) g_psHist[0][PsBucket(end - off)]++;
@@ -948,7 +949,17 @@ static bool SyncDirtyPages(PoolImpl* p, uint64_t off, uint64_t end) {
 // report ranges that differ. With SNAP_POOLSYNC_SMALL=0 this tests the dirty-page path against the ground truth the direct copy delivers.
 static void VerifyMirror(PoolImpl* p, uint64_t off, uint64_t end) {
   static std::atomic<uint64_t> checked{0}, bad{0}, bytes{0};
-  if (!p->Cpu() || !p->storage || !p->mapped || !PoolBacked(p)) return;
+  // SNAP_POOLSYNC_VERIFY=2: only the ranges that still go through the write watch (larger than SNAP_POOLSYNC_SMALL), up to 64 KB, every 2nd (reading the mirror back from
+  // mapped memory is slow). Tests what a small direct copy leaves behind in the watch.
+  static const bool kWatchOnly = [] { const char* e = getenv("SNAP_POOLSYNC_VERIFY"); return e && *e == '2'; }();
+  static const uint64_t kSmallV = [] { const char* e = getenv("SNAP_POOLSYNC_SMALL"); return e ? strtoull(e, nullptr, 0) : 4096ull; }();
+  const uint64_t cap = 0x10000;
+  if (!p->Cpu() || !p->storage || !p->mapped || !PoolBacked(p) || end - off > cap) return;   // whole-pool ranges are too slow to compare
+  if (kWatchOnly) {
+    if (end - off <= kSmallV) return;
+    static std::atomic<uint64_t> seen{0};
+    if ((seen++ & 1) != 0) return;   // every 2nd (comparing every one ran the ride at 4 fps)
+  }
   std::lock_guard<std::mutex> lk(p->gpuMutex);
   uint64_t pos = off;
   while (pos < end) {
@@ -969,7 +980,7 @@ static void VerifyMirror(PoolImpl* p, uint64_t off, uint64_t end) {
     bytes += next - pos;
     pos = next;
   }
-  if ((++checked & 0xFFFFF) == 0) fprintf(stderr, "[poolverify] checked %llu ranges (%llu bytes), %llu mismatching\n", (unsigned long long)checked.load(), (unsigned long long)bytes.load(), (unsigned long long)bad.load());
+  if ((++checked & 0x3FFF) == 0) fprintf(stderr, "[poolverify] checked %llu ranges (%llu bytes), %llu mismatching\n", (unsigned long long)checked.load(), (unsigned long long)bytes.load(), (unsigned long long)bad.load());
 }
 void SyncPoolRangeOnce(PoolImpl* p, uint64_t off, uint64_t size) {
   if (!p || off >= p->size) return;
@@ -980,7 +991,7 @@ void SyncPoolRangeOnce(PoolImpl* p, uint64_t off, uint64_t size) {
     for (auto& r : p->synced) if (r.first <= off && end <= r.second) return;
   }
   if (!(WriteWatchOn() && !p->wbPool.load(std::memory_order_relaxed) && SyncDirtyPages(p, off, end))) SyncPoolRange(p, off, size);
-  static const bool kVerify = [] { const char* e = getenv("SNAP_POOLSYNC_VERIFY"); return e && *e == '1'; }();
+  static const bool kVerify = [] { const char* e = getenv("SNAP_POOLSYNC_VERIFY"); return e && (*e == '1' || *e == '2'); }();
   if (kVerify) VerifyMirror(p, off, end);
   std::lock_guard<std::mutex> lk(p->gpuMutex);
   if (p->syncEpoch != g_replayEpoch) { p->synced.clear(); p->syncEpoch = g_replayEpoch; }

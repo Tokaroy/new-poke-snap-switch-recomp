@@ -1,0 +1,29 @@
+# fixture: post_tutorial
+# verify route (perf pass 19): boot, Florio Day ride, pause > Retry twice (course reload, pools reused), a short third ride, end.
+repeat @f300 @f30000 120 8 A
+wait ui=map_select timeout=240
+repeat @f60 @f30000 120 8 A
+wait ride timeout=240
+@f500 6 Plus
+wait ui=pause_menu timeout=60
+wait !ride for=30 timeout=30
+@f60 6 Down
+@f150 6 A
+@f270 6 A
+@f400 6 Up
+@f480 6 A
+@f560 6 A
+wait ride timeout=200
+@f500 6 Plus
+wait ui=pause_menu timeout=60
+wait !ride for=30 timeout=30
+@f60 6 Down
+@f150 6 A
+@f270 6 A
+@f400 6 Up
+@f480 6 A
+@f560 6 A
+wait ride timeout=200
+@f300 6 Plus
+wait ui=pause_menu timeout=60
+end @f60
