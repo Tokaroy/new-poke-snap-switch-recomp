@@ -292,7 +292,7 @@ static void Layout() {
     case P_WELCOME:
         t = L"Snap Recomp setup";
         b = L"This builds the game program from your own game files, on this PC. It takes a while the first time (about an hour, mostly "
-            L"unattended) and needs roughly 25 GB of free disk space.\r\n\r\n"
+            L"unattended) and needs about 30 GB of free disk space.\r\n\r\n"
             L"Nothing is uploaded. Your game files are only read, never changed, and never copied anywhere except into the work "
             L"folder this setup creates. When it finishes you get a desktop shortcut and can press Play.\r\n\r\n"
             L"You need your own copy of the game. Setup does not download, request or point to game files, keys or firmware.";
@@ -324,7 +324,7 @@ static void Layout() {
         break;
     case P_DONE:
         t = L"Snap Recomp is ready";
-        b = L"A shortcut is on your desktop and in the Start menu. The first start compiles shaders and can take a minute.";
+        b = L"A shortcut is on your desktop and in the Start menu. The first start translates the game's shaders and can take 5 to 10 minutes. Later starts are quick.";
         Show(GetDlgItem(g_wnd, ID_PLAY), true); Show(GetDlgItem(g_wnd, ID_CLOSE), true); Show(g_next, false);
         break;
     case P_ERROR:
@@ -348,7 +348,8 @@ static void Layout() {
     }
     SetWindowTextW(g_title, t.c_str());
     SetWindowTextW(g_body, b.c_str());
-    InvalidateRect(g_wnd, nullptr, TRUE);
+    // repaint the page and every child: a plain parent erase would wipe buttons that stay visible from the page before (the Next button was missing on the welcome page)
+    RedrawWindow(g_wnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
 }
 
 static void SetPage(int p) { g_page = p; Layout(); }
@@ -688,10 +689,9 @@ static void ShotMode(const wstring& dir) {
     SetWindowTextW(g_path, L"E:\\Pokemon Snap");
     SetWindowTextW(g_detect, L"Found 5 game file(s):\r\n   n-pokemonsnap.xci  (14.93 GB)  1.0.0\r\n   n-new_pokemon_snap_v196608.nsp  (2.1 GB)  2.0.0\r\n"
                              L"   n-new_pokemon_snap_v262144.nsp  (2.2 GB)  2.0.1\r\nUsing the 2.0.1 update with n-pokemonsnap.xci.\r\nOlder updates in this folder are ignored.\r\n"
-                             L"Keys: found next to the game files (read from there, never copied).\r\n\r\nDisk space:\r\n   Drive D: needs up to 31.2 GB while building and 17.0 GB afterwards; 4.8 TB free\r\n"
+                             L"Keys: found next to the game files (read from there, never copied).\r\n\r\nDisk space:\r\n   Drive D: needs up to 30.0 GB while building and 22.0 GB afterwards; 4.8 TB free\r\n"
                              L"The extracted game data stays on disk because the game reads it while it runs, so it cannot be deleted after the build.");
     g_scanOk = true;
-    SendMessageW(g_chk[0], BM_SETCHECK, BST_CHECKED, 0);
     AppendLog("Using n-new_pokemon_snap_v262144.nsp (version 2.0.1) with n-pokemonsnap.xci.");
     AppendLog("step elf done in 3s");
     AppendLog("step maps");
@@ -755,7 +755,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, PWSTR, int) {
         shotDesk = CreateDesktopW(L"snap_setup_shot", nullptr, nullptr, 0, GENERIC_ALL, nullptr);
         if (shotDesk) SetThreadDesktop(shotDesk);
     }
-    g_wnd = CreateWindowExW(WS_EX_ACCEPTFILES, L"SnapRecompSetup", L"Snap Recomp setup", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+    g_wnd = CreateWindowExW(WS_EX_ACCEPTFILES, L"SnapRecompSetup", L"Snap Recomp setup", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN,
                             CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top, nullptr, nullptr, hi, nullptr);
     DragAcceptFiles(g_wnd, TRUE);
     CreateUi();

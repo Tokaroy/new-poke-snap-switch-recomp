@@ -33,7 +33,7 @@ Run `SnapRecompSetup.exe` again later to Repair (rebuild with the same game file
 
 Time: the first build takes about an hour on a fast PC, most of it the Ghidra step (15 to 30 minutes) and the compile. The last step starts the new game once to check it reaches the title screen. That first start translates the game's shaders and takes about 8 minutes, so setup waits up to 20 minutes before it calls it a failure. A rebuild with the same game files takes a few minutes.
 
-Space: plan on about 31 GB free while building and about 17 GB afterwards. A raw dump needs about 16 GB more scratch space during extraction. The wizard shows the exact figure for your PC before you press Build.
+Space: plan on about 30 GB of free disk space. A finished install keeps about 22 GB (measured: 12 GB of game data and build files, 8 GB of build tools, 2 GB of shader cache). The wizard shows the exact figure for your PC before you press Build.
 
 Known issue: Windows SmartScreen may say "Windows protected your PC" because the exe is not code-signed (a certificate costs money, and this is a free project). Click "More info", then "Run anyway". The update signature (Ed25519) is checked by the updater, and the SHA-256 of each release is on the release page.
 
