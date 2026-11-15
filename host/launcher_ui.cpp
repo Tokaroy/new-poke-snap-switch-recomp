@@ -1,0 +1,1903 @@
+// SPDX-License-Identifier: MIT
+// The themed launcher window (see launcher_ui.h). One Win32 window, a D3D11 swap chain and Dear ImGui used only as a draw-list and input
+// layer: every shape is drawn here in a 1280 x 720 design space scaled to the window.
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include "launcher_ui.h"
+
+#include <windows.h>
+#include <d3d11.h>
+#include <dxgi.h>
+#include <tlhelp32.h>
+#include <wincodec.h>
+
+#include <algorithm>
+#include <cfloat>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <map>
+#include <sstream>
+
+#include "imgui.h"
+#include "imgui_impl_dx11.h"
+#include "imgui_impl_win32.h"
+#include "hle/json_lite.h"
+#include "hle/visual_defaults.h"
+
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
+#pragma comment(lib, "windowscodecs")
+
+namespace fs = std::filesystem;
+
+namespace snap_launcher {
+namespace {
+
+// ---------------------------------------------------------------------------------------------------------------- files
+std::wstring W(const std::string& s) {
+  if (s.empty()) return L"";
+  int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), nullptr, 0);
+  std::wstring w((size_t)n, L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), w.data(), n);
+  return w;
+}
+fs::path P(const std::string& s) { return fs::path(W(s)); }
+
+bool write_atomic(const std::string& path, const std::string& text) {
+  std::error_code ec;
+  fs::create_directories(P(path).parent_path(), ec);
+  const std::wstring tmp = P(path).wstring() + L".tmp";
+  {
+    std::ofstream f(fs::path(tmp), std::ios::binary | std::ios::trunc);
+    f << text;
+    f.flush();
+    if (!f.good()) { f.close(); fs::remove(fs::path(tmp), ec); return false; }
+  }
+  bool ok = false;
+  for (int i = 0; i < 5 && !ok; ++i) {
+    ok = MoveFileExW(tmp.c_str(), P(path).wstring().c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+    if (!ok) Sleep(20);
+  }
+  if (!ok) fs::remove(fs::path(tmp), ec);
+  return ok;
+}
+
+// settings.cfg of the profile: key=value lines, '#' comments (the same file hle::settings reads and writes).
+struct CfgFile {
+  std::string path;
+  std::map<std::string, std::string> kv;
+  void load() {
+    kv.clear();
+    std::ifstream f(P(path));
+    std::string line;
+    while (std::getline(f, line)) {
+      if (!line.empty() && line.back() == '\r') line.pop_back();
+      const size_t eq = line.find('=');
+      if (line.empty() || line[0] == '#' || eq == std::string::npos) continue;
+      kv[line.substr(0, eq)] = line.substr(eq + 1);
+    }
+  }
+  void save() {
+    std::string t = "# per-profile settings (edited by the F1 menu)\n";
+    for (auto& e : kv) t += e.first + "=" + e.second + "\n";
+    write_atomic(path, t);
+  }
+  std::string get(const std::string& k, const std::string& d) const { auto it = kv.find(k); return it == kv.end() ? d : it->second; }
+  void set(const std::string& k, const std::string& v) { kv[k] = v; }
+  void erase(const std::string& k) { kv.erase(k); }
+};
+
+// window.json and audio.json: one JSON object, read, changed, written back with every other key kept.
+struct JsonFile {
+  std::string path;
+  hle::Json j = hle::Json::object();
+  void load() {
+    j = hle::Json::object();
+    std::ifstream f(P(path), std::ios::binary);
+    if (!f) return;
+    std::stringstream ss;
+    ss << f.rdbuf();
+    hle::Json x;
+    std::string err;
+    if (hle::json_parse(ss.str(), x, err) && x.type == hle::Json::Obj) j = x;
+  }
+  void save() {
+    std::string out;
+    hle::json_dump(j, out);
+    write_atomic(path, out + "\n");
+  }
+};
+
+// ---------------------------------------------------------------------------------------------------------------- settings model
+enum Store { S_CFG, S_WIN, S_AUD };
+enum Kind { K_CHOICE, K_PRESET, K_ACTION, K_LOOK, K_PACING };   // K_PRESET / K_LOOK / K_PACING are worked out from or write several stored values
+enum Enc { E_STR, E_INT, E_VOL, E_BOOL };   // how a window.json / audio.json value is stored
+
+struct Ch {
+  std::string v, label;
+  bool avail = true;
+};
+
+struct Item {
+  std::string label, key, help, def;
+  Store store = S_CFG;
+  Kind kind = K_CHOICE;
+  Enc enc = E_STR;
+  std::vector<Ch> ch;
+  UiResult act = UiResult::Quit;   // K_ACTION
+  std::string cur;
+};
+
+struct Page {
+  std::string name;
+  std::vector<Item> items;
+};
+
+// The quality preset is not stored; it is worked out from these rows (the same table and values as runtime/ui/ui_options.cpp: keep them in step).
+struct PresetKey { const char* key; const char* def; };
+const PresetKey kPresetKeys[] = {
+    {"gfx_render_scale", "1.00"}, {"gfx_aa", "default"}, {"gfx_sharpen", nullptr}, {"gfx_aniso", nullptr}, {"gfx_lod_bias", "auto"},
+    {"gfx_shadow_res", "default"}, {"ssao_quality", "default"}, {"gfx_ssao_samples", "default"}, {"gfx_ssao_hbao", "default"},
+    {"gfx_pass_bloom", "default"}, {"gfx_pass_dof", "default"}, {"gfx_shadow_dist", "default"},
+};
+constexpr int kPresetKeyN = 12;
+struct PresetDef { const char* id; const char* label; const char* v[kPresetKeyN]; };
+const PresetDef kPresets[] = {
+    {"verylow", "Very Low", {"0.50", "none", "0.00", "0", "1", "512", "", "4", "", "off", "off", ""}},
+    {"low", "Low", {"", "off", "0.00", "4", "", "", "", "8", "", "", "", ""}},
+    {"normal", "Default", {"", "", "", "", "", "", "", "", "", "", "", ""}},
+    {"high", "High", {"", "ssaa2,smaa", "0.30", "16", "", "2048", "high", "", "", "", "", "2"}},
+    {"ultra", "Ultra", {"2.00", "smaa", "0.30", "16", "", "4096", "ultra", "", "", "", "", "4"}},
+    {"maximum", "Maximum", {"4.00", "smaa", "0.50", "16", "", "8192", "ultra", "512", "32,128", "", "", "8"}},
+};
+std::string preset_def(int k) {
+  if (kPresetKeys[k].def) return kPresetKeys[k].def;
+  return k == 2 ? snapdef::def("SNAP_SHARPEN") : snapdef::def("SNAP_ANISO");
+}
+bool preset_eq(int k, const std::string& a, const std::string& b) {
+  if (a == b) return true;
+  if (k == 0 || k == 2) return std::fabs((float)std::atof(a.c_str()) - (float)std::atof(b.c_str())) < 1e-4f;
+  return false;
+}
+
+// ---------------------------------------------------------------------------------------------------------------- launcher state
+struct G {
+  UiInfo* info = nullptr;
+  HWND hwnd = nullptr;
+  ID3D11Device* dev = nullptr;
+  ID3D11DeviceContext* ctx = nullptr;
+  IDXGISwapChain* sc = nullptr;
+  ID3D11RenderTargetView* rtv = nullptr;
+  UINT rw = 0, rh = 0;
+  bool resize = false, done = false;
+  UiResult result = UiResult::Quit;
+  ImFont* font = nullptr;
+  ImFont* art_font = nullptr;    // for the Steam artwork: a system font, never the game's own
+  float s = 1, ox = 0, oy = 0;   // design space -> window pixels
+
+  // the display the game will use (read when the window opens and when the Monitor row changes)
+  int disp_w = 1920, disp_h = 1080, disp_hz = 60;
+  std::string gpu_name;
+  bool gpu_rtx = false, gpu_nvidia = false, pad_found = false;
+
+  // Add to Steam
+  enum SteamState { ST_NONE, ST_ASK, ST_WORKING, ST_DONE, ST_FAIL } steam_state = ST_NONE;
+  std::string steam_msg;
+  int steam_status = 0;          // 0 Steam not found, 1 found and not added, 2 added
+  bool steam_running = false, steam_work = false;
+  bool block_hot = false;        // a dialog is open: the screen under it ignores the mouse
+
+  CfgFile cfg;
+  JsonFile win, aud;
+  std::vector<Page> pages;
+  size_t profile_idx = 0;
+
+  enum View { HOME, SETTINGS, SAVES, STEAM } view = HOME;
+  int home_sel = 0, tab = 0, row = 0;
+  bool pulldown = false;
+  int pd_sel = 0, pd_top = 0;
+  bool confirm_reset = false;
+  double t0 = 0;
+  std::string toast;
+  double toast_until = 0;
+};
+G g;
+
+// design-space helpers ---------------------------------------------------------------------------------------------
+ImVec2 V(float x, float y) { return ImVec2(g.ox + x * g.s, g.oy + y * g.s); }
+ImU32 C(unsigned hex, int a = 255) { return IM_COL32((hex >> 16) & 255, (hex >> 8) & 255, hex & 255, a); }
+const unsigned kCream = 0xf4f2f0, kWhite = 0xfcfcfc, kPanel = 0x6e7180, kTab = 0x9a9da7, kRow = 0x989899, kGreen = 0xb6d291, kYellow = 0xf8dc56,
+               kOrange = 0xf8ab79, kOrDark = 0xda743a, kText = 0x646464, kBrown = 0x4f3d29, kGrey = 0x8b8a8b;
+
+float text_w(float sz, const char* t) { return g.font->CalcTextSizeA(sz * g.s, FLT_MAX, 0.0f, t).x / g.s; }
+// Draws text with its left edge (al 0), centre (1) or right edge (2) at x and its vertical centre at y, in design units.
+void text(float x, float y, float sz, ImU32 col, const char* t, int al = 0) {
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  const ImVec2 ts = g.font->CalcTextSizeA(sz * g.s, FLT_MAX, 0.0f, t);
+  float px = g.ox + x * g.s;
+  if (al == 1) px -= ts.x * 0.5f;
+  else if (al == 2) px -= ts.x;
+  dl->AddText(g.font, sz * g.s, ImVec2(px, g.oy + y * g.s - ts.y * 0.5f), col, t);
+}
+void text_clip(float x, float y, float sz, ImU32 col, const char* t, float maxw, int al = 0) {   // shortens with ".." when wider than maxw
+  std::string s = t;
+  if (text_w(sz, s.c_str()) > maxw) {
+    while (s.size() > 3 && text_w(sz, (s + "..").c_str()) > maxw) s.pop_back();
+    s += "..";
+  }
+  text(x, y, sz, col, s.c_str(), al);
+}
+// Word-wraps into at most two lines of maxw (design units) and draws them centred on y.
+void text_wrap2(float x, float y, float sz, ImU32 col, const std::string& t, float maxw) {
+  if (text_w(sz, t.c_str()) <= maxw) { text(x, y, sz, col, t.c_str()); return; }
+  std::string a, b;
+  size_t pos = 0;
+  while (pos < t.size()) {
+    size_t sp = t.find(' ', pos);
+    std::string word = t.substr(pos, sp == std::string::npos ? std::string::npos : sp - pos);
+    std::string trial = a.empty() ? word : a + " " + word;
+    if (b.empty() && text_w(sz, trial.c_str()) <= maxw) a = trial;
+    else b = b.empty() ? word : b + " " + word;
+    if (sp == std::string::npos) break;
+    pos = sp + 1;
+  }
+  text(x, y - sz * 0.62f, sz, col, a.c_str());
+  text_clip(x, y + sz * 0.62f, sz, col, b.c_str(), maxw);
+}
+
+// A bar with pointed ends (the game's rows and value boxes).
+void pointed(float x, float y, float w, float h, float nose, ImU32 col, bool left_point = true) {
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  ImVec2 p[6] = {V(x + (left_point ? nose : 0), y), V(x + w - nose, y), V(x + w, y + h / 2), V(x + w - nose, y + h),
+                 V(x + (left_point ? nose : 0), y + h), V(x + (left_point ? 0 : 0), y + h / 2)};
+  if (left_point) { dl->AddConvexPolyFilled(p, 6, col); }
+  else {
+    ImVec2 q[5] = {V(x, y), V(x + w - nose, y), V(x + w, y + h / 2), V(x + w - nose, y + h), V(x, y + h)};
+    dl->AddConvexPolyFilled(q, 5, col);
+  }
+}
+void rrect(float x, float y, float w, float h, float r, ImU32 col, ImDrawFlags fl = 0) {
+  ImGui::GetForegroundDrawList()->AddRectFilled(V(x, y), V(x + w, y + h), col, r * g.s, fl);
+}
+void shadow(float x, float y, float w, float h, float r) {
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  for (int i = 0; i < 6; ++i) {
+    const float gr = 3.0f + i * 3.5f;
+    dl->AddRectFilled(V(x - gr, y - gr + 8), V(x + w + gr, y + h + gr + 8), IM_COL32(60, 45, 30, 5), (r + gr) * g.s);
+  }
+}
+// The yellow diamond pattern of the selected value box.
+void pattern(float x, float y, float w, float h) {
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  dl->PushClipRect(V(x, y), V(x + w, y + h), true);
+  const float cell = h;
+  for (float cx = x - cell; cx < x + w + cell; cx += cell) {
+    ImVec2 a[3] = {V(cx, y), V(cx + cell / 2, y + h / 2), V(cx, y + h)};
+    ImVec2 b[3] = {V(cx + cell, y), V(cx + cell, y + h), V(cx + cell / 2, y + h / 2)};
+    dl->AddConvexPolyFilled(a, 3, C(0xf1b93a, 120));
+    dl->AddConvexPolyFilled(b, 3, C(0xf1b93a, 120));
+  }
+  dl->PopClipRect();
+}
+// Orange A / B chevron prompt: x,y = left edge and centre, h = height.
+void prompt(float x, float y, float h, const char* glyph) {
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  const float w = h * 1.55f, nose = h * 0.45f;
+  ImVec2 p[5] = {V(x, y - h / 2), V(x + w - nose, y - h / 2), V(x + w, y), V(x + w - nose, y + h / 2), V(x, y + h / 2)};
+  dl->AddConvexPolyFilled(p, 5, C(kOrange));
+  const ImVec2 c = V(x + (w - nose) * 0.52f, y);
+  dl->AddCircleFilled(c, h * 0.33f * g.s, C(kCream), 24);
+  const ImVec2 ts = g.font->CalcTextSizeA(h * 0.42f * g.s, FLT_MAX, 0, glyph);
+  dl->AddText(g.font, h * 0.42f * g.s, ImVec2(c.x - ts.x / 2, c.y - ts.y / 2), C(kOrDark), glyph);
+}
+// The shoulder badge: a pointed orange tab with a white tile (L on the left edge, R on the right).
+void shoulder(bool left, float x, float y, float w, float h) {
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  const float n = h * 0.55f;
+  if (left) { ImVec2 p[5] = {V(x, y + h / 2), V(x + n, y), V(x + w, y), V(x + w, y + h), V(x + n, y + h)}; dl->AddConvexPolyFilled(p, 5, C(kOrange)); }
+  else { ImVec2 p[5] = {V(x, y), V(x + w - n, y), V(x + w, y + h / 2), V(x + w - n, y + h), V(x, y + h)}; dl->AddConvexPolyFilled(p, 5, C(kOrange)); }
+  const float tx = left ? x + w * 0.42f : x + w * 0.1f;
+  rrect(tx, y + h * 0.16f, h * 0.7f, h * 0.68f, 6, C(kCream));
+  text(tx + h * 0.35f, y + h / 2, h * 0.5f, C(kOrDark), left ? "L" : "R", 1);
+}
+void diamond(float cx, float cy, float r, ImU32 col) {
+  ImVec2 p[4] = {V(cx, cy - r), V(cx + r, cy), V(cx, cy + r), V(cx - r, cy)};
+  ImGui::GetForegroundDrawList()->AddConvexPolyFilled(p, 4, col);
+}
+// Our own lens-and-aperture mark (original art): a ring and six blades.
+void aperture(float cx, float cy, float r, ImU32 col) {
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  dl->AddCircle(V(cx, cy), r * g.s, col, 48, r * 0.16f * g.s);
+  for (int i = 0; i < 6; ++i) {
+    const float a = (float)i * 1.0471976f;
+    const ImVec2 p0 = V(cx + std::cos(a) * r * 0.30f, cy + std::sin(a) * r * 0.30f);
+    const ImVec2 p1 = V(cx + std::cos(a + 0.55f) * r * 0.78f, cy + std::sin(a + 0.55f) * r * 0.78f);
+    const ImVec2 p2 = V(cx + std::cos(a + 1.0471976f) * r * 0.30f, cy + std::sin(a + 1.0471976f) * r * 0.30f);
+    ImVec2 t[3] = {p0, p1, p2};
+    dl->AddConvexPolyFilled(t, 3, col);
+  }
+}
+
+// ---------------------------------------------------------------------------------------------------------------- values
+std::string num_text(double v, Enc e) {
+  char b[32];
+  if (e == E_VOL) std::snprintf(b, sizeof b, "%.1f", std::round(v * 10.0) / 10.0);
+  else std::snprintf(b, sizeof b, "%d", (int)std::lround(v));
+  return b;
+}
+
+std::string get_preset() {
+  for (const PresetDef& p : kPresets) {
+    bool all = true;
+    for (int k = 0; k < kPresetKeyN && all; ++k) {
+      const std::string want = p.v[k][0] ? std::string(p.v[k]) : preset_def(k);
+      all = preset_eq(k, g.cfg.get(kPresetKeys[k].key, preset_def(k)), want);
+    }
+    if (all) return p.id;
+  }
+  return "custom";
+}
+void set_preset(const std::string& v) {
+  for (const PresetDef& p : kPresets) {
+    if (v != p.id) continue;
+    for (int k = 0; k < kPresetKeyN; ++k) {
+      if (p.v[k][0]) g.cfg.set(kPresetKeys[k].key, p.v[k]);
+      else g.cfg.erase(kPresetKeys[k].key);
+    }
+    g.cfg.save();
+    return;
+  }
+}
+
+// ---- the display (for VRR and "fit to display") ----------------------------------------------------------------------
+BOOL CALLBACK mon_handle_cb(HMONITOR m, HDC, LPRECT, LPARAM lp) { ((std::vector<HMONITOR>*)lp)->push_back(m); return TRUE; }
+void read_display() {
+  std::vector<HMONITOR> ms;
+  EnumDisplayMonitors(nullptr, nullptr, mon_handle_cb, (LPARAM)&ms);
+  int idx = -1;
+  if (const hle::Json* x = g.win.j.get("monitor")) if (x->type == hle::Json::Num) idx = (int)x->n;
+  HMONITOR m = (idx >= 0 && idx < (int)ms.size()) ? ms[(size_t)idx] : MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
+  MONITORINFOEXW mi{};
+  mi.cbSize = sizeof mi;
+  DEVMODEW dm{};
+  dm.dmSize = sizeof dm;
+  if (GetMonitorInfoW(m, &mi) && EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm)) {
+    if (dm.dmPelsWidth > 0 && dm.dmPelsHeight > 0) { g.disp_w = (int)dm.dmPelsWidth; g.disp_h = (int)dm.dmPelsHeight; }
+    g.disp_hz = dm.dmDisplayFrequency > 1 ? (int)dm.dmDisplayFrequency : 60;
+  }
+}
+// VRR = vsync on plus a frame limit just under the refresh rate, so a G-SYNC / FreeSync screen never reaches the top of its range (the usual "refresh minus 3").
+int vrr_cap() { return std::max(30, g.disp_hz - 3); }
+// "Fit to display": the render scale whose 16:9 picture is as tall as the screen (rounded to 0.05, the same range the Render scale row has).
+std::string fit_scale() {
+  const float s = std::min(4.0f, std::max(0.5f, std::round((float)g.disp_h / 1080.0f * 20.0f) / 20.0f));
+  char b[16];
+  std::snprintf(b, sizeof b, "%.2f", s);
+  return b;
+}
+std::string fit_label() {
+  const float s = (float)std::atof(fit_scale().c_str());
+  return "Fit to display (" + std::to_string((int)std::lround(1920 * s)) + " x " + std::to_string((int)std::lround(1080 * s)) + ")";
+}
+int win_cap() { const hle::Json* x = g.win.j.get("frame_cap"); return x && x->type == hle::Json::Num ? (int)x->n : 0; }
+void win_set_cap(int v) { g.win.j.set("frame_cap", hle::Json::number(v)); g.win.save(); }
+
+std::string get_pacing() {
+  const std::string vs = g.cfg.get("vsync", "on");
+  const int cap = win_cap();
+  if (vs == "off" && cap == 0) return "off";
+  if (vs == "on" && cap == 0) return "vsync";
+  if (vs == "on" && cap == vrr_cap()) return "vrr";
+  return "custom";
+}
+void set_pacing(const std::string& v) {
+  if (v == "off") { g.cfg.set("vsync", "off"); g.cfg.save(); win_set_cap(0); }
+  else if (v == "vsync") { g.cfg.erase("vsync"); g.cfg.save(); win_set_cap(0); }
+  else if (v == "vrr") { g.cfg.erase("vsync"); g.cfg.save(); win_set_cap(vrr_cap()); }
+}
+
+// ---- the Look (Enhanced / Original): the stored key and the rows it clears are the ones in hle/visual_defaults.h ----
+std::string get_look() {
+  const std::string l = g.cfg.get("gfx_look", "");
+  if (l == "original" || l == "enhanced") return l;
+  return snapdef::kDefaultEnhanced ? "enhanced" : "original";
+}
+void apply_look_to_defaults() {   // the visual rows' defaults follow the Look (the game does the same from the saved key on start)
+  const std::string l = g.cfg.get("gfx_look", "");
+  snapdef::saved_look().store(l == "original" ? 0 : l == "enhanced" ? 1 : -1, std::memory_order_relaxed);
+}
+void set_look(const std::string& v) {
+  if (v == "original" || !snapdef::kDefaultEnhanced) g.cfg.set("gfx_look", v);
+  else g.cfg.erase("gfx_look");
+  int n = 0;
+  const char* const* keys = snapdef::look_keys(&n);
+  for (int i = 0; i < n; ++i) g.cfg.erase(keys[i]);
+  g.cfg.save();
+  apply_look_to_defaults();
+}
+
+std::string read_value(const Item& it) {
+  if (it.kind == K_PRESET) return get_preset();
+  if (it.kind == K_LOOK) return get_look();
+  if (it.kind == K_PACING) return get_pacing();
+  if (it.store == S_CFG) {
+    std::string v = g.cfg.get(it.key, it.def);
+    if (it.key == "gfx_render_scale" && std::fabs((float)std::atof(v.c_str()) - (float)std::atof(fit_scale().c_str())) < 0.004f) {
+      for (const Ch& c : it.ch) if (c.v == "fit") return "fit";
+    }
+    return v;
+  }
+  const JsonFile& f = it.store == S_WIN ? g.win : g.aud;
+  const hle::Json* x = f.j.get(it.key);
+  if (!x) return it.def;
+  if (it.enc == E_STR) return x->type == hle::Json::Str ? x->s : it.def;
+  if (it.enc == E_BOOL) return x->boolean(it.def != "0") ? "1" : "0";
+  return x->type == hle::Json::Num ? num_text(x->n, it.enc) : it.def;
+}
+
+void write_value(Item& it, const std::string& val) {
+  if (it.kind == K_PRESET) { set_preset(val); return; }
+  if (it.kind == K_LOOK) { set_look(val); return; }
+  if (it.kind == K_PACING) { set_pacing(val); return; }
+  const std::string v = (it.key == "gfx_render_scale" && val == "fit") ? fit_scale() : val;
+  if (it.store == S_CFG) {
+    if (v == it.def) g.cfg.erase(it.key);
+    else g.cfg.set(it.key, v);
+    g.cfg.save();
+    return;
+  }
+  JsonFile& f = it.store == S_WIN ? g.win : g.aud;
+  if (it.enc == E_STR) f.j.set(it.key, hle::Json::string(v));
+  else if (it.enc == E_BOOL) f.j.set(it.key, hle::Json::boolean_(v != "0"));
+  else f.j.set(it.key, hle::Json::number(std::atof(v.c_str())));
+  f.save();
+}
+
+void refresh_values() {
+  for (Page& p : g.pages) for (Item& it : p.items) if (it.kind != K_ACTION) it.cur = read_value(it);
+}
+
+std::string cfg_path_for(const std::string& id) {
+  const UiInfo& i = *g.info;
+  if (i.profiles_root.empty() || id.empty()) return i.settings_noprofile;
+  return i.profiles_root + "\\" + id + "\\settings.cfg";
+}
+
+// The defaults that depend on the Look (and the display) are fixed in the items when they are built; this puts them right again after the Look changes.
+void refresh_defaults() {
+  const std::string aa = std::string("Default (") + (snapdef::enhanced() ? "SMAA" : "FXAA") + ")";
+  for (Page& p : g.pages) for (Item& it : p.items) {
+    if (it.key == "gfx_aa") { if (!it.ch.empty()) it.ch[0].label = aa; }
+    else if (it.key == "gfx_sharpen") it.def = snapdef::def("SNAP_SHARPEN");
+    else if (it.key == "gfx_aniso") it.def = snapdef::def("SNAP_ANISO");
+    else if (it.key == "gfx_render_scale") { for (Ch& c : it.ch) if (c.v == "fit") c.label = fit_label(); }
+    else if (it.kind == K_PACING && it.ch.size() > 2) it.ch[2].label = "VRR (" + std::to_string(vrr_cap()) + " FPS limit)";
+  }
+}
+
+void load_stores() {
+  g.cfg.path = cfg_path_for(g.info->profile_id);
+  g.cfg.load();
+  g.win.path = g.info->data_dir + "\\window.json";
+  g.win.load();
+  g.aud.path = g.info->data_dir + "\\audio.json";
+  g.aud.load();
+  apply_look_to_defaults();
+  read_display();
+  refresh_defaults();
+  refresh_values();
+}
+
+std::string label_of(const Item& it, const std::string& v) {
+  for (const Ch& c : it.ch) if (c.v == v) return c.label;
+  if (it.key == "frame_cap" && v == std::to_string(vrr_cap()) && get_pacing() == "vrr") return v + " (auto)";
+  if (it.store != S_CFG && it.enc == E_VOL) return std::to_string((int)std::lround(std::atof(v.c_str()) * 100)) + "%";
+  return v.empty() ? "Default" : v;
+}
+
+int index_of(const Item& it, const std::string& v) {
+  for (size_t i = 0; i < it.ch.size(); ++i) if (it.ch[i].v == v) return (int)i;
+  return -1;
+}
+
+void choose(Item& it, int idx) {
+  if (idx < 0 || idx >= (int)it.ch.size() || !it.ch[(size_t)idx].avail) return;
+  const bool was_vrr = it.key == "monitor" && get_pacing() == "vrr";
+  write_value(it, it.ch[(size_t)idx].v);
+  if (it.key == "monitor") {
+    read_display();             // the screen changed: its refresh rate and size follow
+    if (was_vrr) set_pacing("vrr");
+    refresh_defaults();
+  }
+  if (it.kind == K_LOOK) refresh_defaults();
+  // a preset, the Look, the pacing, the monitor and the render scale each change what other rows show
+  refresh_values();
+}
+
+void cycle(Item& it, int dir) {
+  if (it.ch.empty()) return;
+  const int n = (int)it.ch.size();
+  int i = index_of(it, it.cur);
+  if (i < 0) i = dir > 0 ? -1 : 0;
+  for (int k = 0; k < n; ++k) {
+    i = ((i + dir) % n + n) % n;
+    if (it.ch[(size_t)i].avail) { choose(it, i); return; }
+  }
+}
+
+void reset_page(Page& p) {
+  for (Item& it : p.items) {
+    if (it.kind == K_ACTION) continue;
+    if (it.kind == K_PRESET) { set_preset("normal"); continue; }
+    if (it.kind == K_LOOK) { set_look(it.def); continue; }
+    if (it.kind == K_PACING) { set_pacing("vsync"); continue; }
+    if (it.store == S_CFG) { g.cfg.erase(it.key); }
+    else write_value(it, it.def);
+  }
+  g.cfg.save();
+  read_display();
+  refresh_defaults();
+  refresh_values();
+}
+
+struct Mon { RECT r; };
+BOOL CALLBACK mon_cb(HMONITOR, HDC, LPRECT r, LPARAM lp) { ((std::vector<Mon>*)lp)->push_back({*r}); return TRUE; }
+
+bool file_exists(const std::string& rel) {
+  std::error_code ec;
+  return fs::exists(P(g.info->exe_dir + "\\" + rel), ec);
+}
+
+void build_pages() {
+  g.pages.clear();
+  auto choice = [](const char* label, const char* key, Store st, const char* def, std::vector<Ch> ch, const char* help, Enc enc = E_STR) {
+    Item it;
+    it.label = label; it.key = key; it.store = st; it.def = def; it.ch = std::move(ch); it.help = help; it.enc = enc;
+    return it;
+  };
+  const std::string aa_def = std::string("Default (") + (snapdef::enhanced() ? "SMAA" : "FXAA") + ")";
+  std::vector<Ch> vols;
+  for (int i = 0; i <= 10; ++i) { char v[8], l[8]; std::snprintf(v, sizeof v, "%.1f", i / 10.0); std::snprintf(l, sizeof l, "%d%%", i * 10); vols.push_back({v, l}); }
+
+  // Display
+  {
+    Page p; p.name = "Display";
+    p.items.push_back(choice("Window mode", "mode", S_WIN, "windowed", {{"windowed", "Windowed"}, {"borderless", "Borderless fullscreen"}},
+                             "Windowed, or borderless fullscreen. F11 and Alt+Enter switch it in the game too."));
+    std::vector<Mon> mons;
+    EnumDisplayMonitors(nullptr, nullptr, mon_cb, (LPARAM)&mons);
+    std::vector<Ch> mch = {{"-1", "Where the window is"}};
+    for (size_t i = 0; i < mons.size(); ++i)
+      mch.push_back({std::to_string(i), std::to_string(i + 1) + ": " + std::to_string(mons[i].r.right - mons[i].r.left) + " x " + std::to_string(mons[i].r.bottom - mons[i].r.top)});
+    p.items.push_back(choice("Monitor", "monitor", S_WIN, "-1", mch, "Which screen the borderless window covers. A windowed game stays where you put it.", E_INT));
+    p.items.push_back(choice("Internal resolution", "gfx_render_scale", S_CFG, "1.00",
+                             {{"fit", fit_label()}, {"1.00", "1920 x 1080 (the game's own)"}, {"1.50", "2880 x 1620"}, {"2.00", "3840 x 2160 (4K)"}, {"4.00", "7680 x 4320 (8K)"}},
+                             "How many pixels the 3D picture is drawn with. Fit to display matches your screen's height, so it is sharp without wasting power. The Quality page has the finer steps."));
+    p.items.push_back(choice("Ultrawide", "gfx_ultrawide", S_CFG, "auto", {{"auto", "Auto (wider 3D view)"}, {"off", "Off (16:9 with side bars)"}},
+                             "On a screen wider than 16:9, Auto shows more of the world at the sides. Menus, the interface and your photos stay 16:9."));
+    p.items.push_back(choice("Pause in background", "pause_on_focus_loss", S_WIN, "1", {{"1", "On"}, {"0", "Off"}},
+                             "Pauses the game when you switch to another window.", E_BOOL));
+    p.items.push_back(choice("Mute in background", "mute_in_background", S_WIN, "1", {{"1", "On"}, {"0", "Off"}},
+                             "Silences the game while another window is in front.", E_BOOL));
+    g.pages.push_back(p);
+  }
+  // Quality
+  {
+    Page p; p.name = "Quality";
+    Item lk = choice("Look", "gfx_look", S_CFG, snapdef::kDefaultEnhanced ? "enhanced" : "original", {{"enhanced", "Enhanced"}, {"original", "Original"}},
+                     "Enhanced is the look new installs start with: smoother edges, sharpening, 16x filtering, sharper menu text and a PNG file for every photo. Original is the game as it shipped. "
+                     "Picking one sets all of those together; you can still change any row after. Photo scores are the same either way.");
+    lk.kind = K_LOOK;
+    p.items.push_back(lk);
+    Item pr = choice("Quality preset", "", S_CFG, "normal",
+                     {{"verylow", "Very Low"}, {"low", "Low"}, {"normal", "Default"}, {"high", "High"}, {"ultra", "Ultra"}, {"maximum", "Maximum"}, {"custom", "Custom"}},
+                     "Sets the picture-quality rows below together. Default follows the Look row. Higher presets are sharper and slower; Maximum needs a very fast graphics card.");
+    pr.kind = K_PRESET;
+    pr.ch[6].avail = false;   // "Custom" is only ever shown, never picked
+    p.items.push_back(pr);
+    p.items.push_back(choice("Render scale", "gfx_render_scale", S_CFG, "1.00",
+                             {{"0.50", "0.50x (half size)"}, {"0.75", "0.75x"}, {"1.00", "1.00x (1080p)"}, {"1.25", "1.25x"}, {"1.50", "1.50x"}, {"2.00", "2.00x (4K)"}, {"3.00", "3.00x"}, {"4.00", "4.00x (8K)"}},
+                             "How sharp the 3D picture is drawn, as a multiple of the game's own 1920 x 1080. Higher is crisper and slower. Below 1.00x is blurrier but lighter for a weak graphics card."));
+    p.items.push_back(choice("Anti-aliasing", "gfx_aa", S_CFG, "default",
+                             {{"default", aa_def}, {"off", "FXAA (the game's own)"}, {"smaa", "SMAA"}, {"ssaa2", "2x supersampling + FXAA"}, {"ssaa2,smaa", "2x supersampling + SMAA"}, {"none", "None"}},
+                             "Smooths jagged edges. FXAA is what the game ships with. SMAA keeps more detail. 2x supersampling is very sharp and costs a lot of GPU time."));
+    p.items.push_back(choice("Sharpening", "gfx_sharpen", S_CFG, snapdef::def("SNAP_SHARPEN"),
+                             {{"0.00", "Off"}, {"0.15", "0.15"}, {"0.30", "0.30"}, {"0.50", "0.50"}, {"0.75", "0.75"}, {"1.00", "1.00"}},
+                             "A gentle sharpening pass after anti-aliasing. Too much makes edges look hard."));
+    p.items.push_back(choice("Anisotropic filtering", "gfx_aniso", S_CFG, snapdef::def("SNAP_ANISO"),
+                             {{"0", "Off (the game's own)"}, {"2", "2x"}, {"4", "4x"}, {"8", "8x"}, {"16", "16x"}},
+                             "Keeps ground and walls sharp at shallow angles. 16x costs almost nothing on a PC graphics card."));
+    p.items.push_back(choice("Lighting", "gfx_lighting", S_CFG, "default",
+                             {{"default", "Original"}, {"enhanced", "Enhanced"}, {"maximum", "Maximum"}},
+                             "One switch for the whole lighting look. Enhanced: soft shadows that sharpen where they touch the ground, a shadow map that follows your render resolution at twice the reach, ambient occlusion in corners and under objects, and clean contact shadows. Maximum adds a larger shadow map, four times the reach and a finer occlusion pass. The extra passes are skipped while a photo is taken, so scoring is untouched."));
+    p.items.push_back(choice("Shadow resolution", "gfx_shadow_res", S_CFG, "default",
+                             {{"512", "512 (blocky)"}, {"default", "1024 (the game's own)"}, {"2048", "2048"}, {"4096", "4096"}, {"8192", "8192 (very heavy)"}},
+                             "Size of the moving shadow map. Higher gives crisper shadow edges and uses more video memory."));
+    p.items.push_back(choice("Ambient occlusion", "ssao_quality", S_CFG, "default",
+                             {{"default", "Default"}, {"high", "High"}, {"ultra", "Ultra"}},
+                             "Soft contact shadows. It mostly shows on the photo-select screen."));
+    g.pages.push_back(p);
+  }
+  // Upscaling
+  {
+    Page p; p.name = "Upscaling";
+    Item up = choice("Upscaler", "gfx_upscaler", S_CFG, "off",
+                     {{"off", "Off"}, {"dlaa", "DLAA"}, {"dlss", "DLSS"}, {"fsr", "FSR"}, {"xess", "XeSS"}},
+                     "DLSS, DLAA, FSR and XeSS rebuild a sharp picture from a smaller one. DLSS and DLAA need an NVIDIA RTX card. Ones that are not installed are greyed out: use Install upscalers below.");
+    const bool nv = file_exists("nvngx_dlss.dll"), fsr = file_exists("upscalers\\amd_fidelityfx_upscaler_vk.dll"), xe = file_exists("libxess.dll");
+    up.ch[1].avail = nv; up.ch[2].avail = nv; up.ch[3].avail = fsr; up.ch[4].avail = xe;
+    for (size_t i = 1; i < up.ch.size(); ++i) if (!up.ch[i].avail) up.ch[i].label += " (not installed)";
+    p.items.push_back(up);
+    p.items.push_back(choice("Upscaler quality", "gfx_upscale_quality", S_CFG, "native",
+                             {{"native", "Native (no downscale)"}, {"quality", "Quality"}, {"balanced", "Balanced"}, {"performance", "Performance"}},
+                             "How many pixels the game draws before the upscaler enlarges the picture. Quality draws 1.5x fewer, Performance 2x fewer. Lower modes run faster and look softer."));
+    {
+      Item fg = choice("Frame generation (FSR)", "frame_generation", S_CFG, "default", {{"default", "Off"}, {"1", "On"}},
+                       "AMD FSR frame generation adds a computed frame between two real ones, so 60 fps looks like about 120 on a fast screen. Menus and the HUD stay out of it, photos and scoring never see it, and it turns itself off under about 50 fps. It adds about one frame of delay. Needs the frame generation files: use Install upscalers below.");
+      fg.ch[1].avail = file_exists("upscalers\\amd_fidelityfx_framegeneration_vk.dll");
+      if (!fg.ch[1].avail) fg.ch[1].label += " (not installed)";
+      p.items.push_back(fg);
+    }
+    p.items.push_back(choice("HDR output", "gfx_hdr", S_CFG, "0", {{"0", "Off"}, {"1", "HDR10"}, {"scrgb", "scRGB"}},
+                             "For an HDR monitor with Windows HDR turned on. scRGB has far less banding."));
+    Item inst; inst.label = "Install upscalers..."; inst.kind = K_ACTION; inst.act = UiResult::Upscalers;
+    inst.help = "Download FSR, DLSS or XeSS from their makers (you read and accept each license first). Nothing installs without you.";
+    p.items.push_back(inst);
+    g.pages.push_back(p);
+  }
+  // Frame rate
+  {
+    Page p; p.name = "Frame rate";
+    {
+      Item pc = choice("Frame pacing", "", S_CFG, "vsync",
+                       {{"off", "Off (uncapped, may tear)"}, {"vsync", "VSync"}, {"vrr", "VRR (G-SYNC / FreeSync)"}, {"custom", "Custom"}},
+                       "VSync waits for the screen. VRR is VSync plus a frame limit just under your screen's refresh rate, which keeps a G-SYNC or FreeSync screen smooth without extra delay; "
+                       "the limit follows the monitor. Custom means you set vsync and the limit yourself below.");
+      pc.kind = K_PACING;
+      pc.ch[3].avail = false;
+      pc.ch[2].label = "VRR (" + std::to_string(std::max(30, g.disp_hz - 3)) + " FPS limit)";
+      p.items.push_back(pc);
+    }
+    p.items.push_back(choice("Frame rate target", "fps_target", S_CFG, "default",
+                             {{"default", "60 (the game's own)"}, {"90", "90"}, {"120", "120"}, {"144", "144"}},
+                             "How fast the game runs. 90, 120 and 144 run the game itself faster and need a fast processor. Menus and dialogue keep their original speed."));
+    p.items.push_back(choice("Frame rate limit", "frame_cap", S_WIN, "0",
+                             {{"0", "Off (the game's pacing)"}, {"30", "30"}, {"45", "45"}, {"60", "60"}, {"75", "75"}, {"90", "90"}, {"120", "120"}, {"144", "144"}, {"165", "165"}, {"240", "240"}},
+                             "Stops the game from drawing faster than this. Off keeps the game's own pacing.", E_INT));
+    p.items.push_back(choice("Vsync", "vsync", S_CFG, "on", {{"on", "On"}, {"adaptive", "Adaptive"}, {"fast", "Fast"}, {"off", "Off"}},
+                             "On: no tearing. Adaptive: tears only below the refresh rate. Fast: no tearing, lower latency. Off: lowest latency, may tear."));
+    p.items.push_back(choice("Performance overlay", "fps_overlay", S_CFG, "default", {{"default", "Off"}, {"fps", "FPS"}, {"detailed", "Detailed"}},
+                             "Shows the frame rate in a corner of the game. Detailed adds frame time, 1% low and a graph."));
+    g.pages.push_back(p);
+  }
+  // Sound
+  {
+    Page p; p.name = "Sound";
+    p.items.push_back(choice("Master volume", "master", S_AUD, "1.0", vols, "The overall volume.", E_VOL));
+    p.items.push_back(choice("Music", "bgm", S_AUD, "1.0", vols, "Background music volume.", E_VOL));
+    p.items.push_back(choice("Sound effects", "se", S_AUD, "1.0", vols, "Effects volume.", E_VOL));
+    p.items.push_back(choice("Voices", "voice", S_AUD, "1.0", vols, "Voice and Professor volume.", E_VOL));
+    p.items.push_back(choice("Output", "output", S_AUD, "stereo", {{"stereo", "Stereo"}, {"speakers", "Surround speakers"}, {"spatial", "Spatial (headphones)"}},
+                             "Stereo is right for most setups. Surround speakers and spatial need Windows to be set up for them."));
+    g.pages.push_back(p);
+  }
+  // Controls
+  {
+    Page p; p.name = "Controls";
+    p.items.push_back(choice("Button icons", "button_icons", S_CFG, "auto",
+                             {{"auto", "Automatic"}, {"switch", "Switch"}, {"xbox", "Xbox"}, {"playstation", "PlayStation"}},
+                             "Which controller buttons the game shows. Automatic follows the controller you connect."));
+    p.items.push_back(choice("Rumble", "rumble_on", S_CFG, "1", {{"1", "On"}, {"0", "Off"}}, "Controller vibration."));
+    p.items.push_back(choice("Motion aiming (gyro)", "gyro_on", S_CFG, "0", {{"0", "Off"}, {"1", "On"}}, "Aim the camera by moving a controller that has motion sensors."));
+    g.pages.push_back(p);
+  }
+  refresh_values();
+}
+
+// ---------------------------------------------------------------------------------------------------------------- Add to Steam
+// A non-Steam shortcut: one entry in userdata\<account>\config\shortcuts.vdf (binary VDF) plus five pictures in config\grid. Steam rewrites that file when
+// it exits, so Steam has to be closed while we write. The pictures are drawn here from our own shapes (never from the game's files).
+uint32_t crc32_of(const std::string& s) {
+  static uint32_t t[256];
+  static bool init = false;
+  if (!init) { for (uint32_t i = 0; i < 256; ++i) { uint32_t c = i; for (int k = 0; k < 8; ++k) c = c & 1 ? 0xEDB88320u ^ (c >> 1) : c >> 1; t[i] = c; } init = true; }
+  uint32_t c = 0xFFFFFFFFu;
+  for (unsigned char ch : s) c = t[(c ^ ch) & 255] ^ (c >> 8);
+  return ~c;
+}
+std::string narrow(const std::wstring& w) {
+  if (w.empty()) return "";
+  const int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), nullptr, 0, nullptr, nullptr);
+  std::string s((size_t)n, '\0');
+  WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), s.data(), n, nullptr, nullptr);
+  return s;
+}
+std::string reg_string(HKEY root, const wchar_t* sub, const wchar_t* val) {
+  HKEY k = nullptr;
+  if (RegOpenKeyExW(root, sub, 0, KEY_READ, &k) != ERROR_SUCCESS) return "";
+  wchar_t buf[1024] = {};
+  DWORD sz = sizeof buf - sizeof(wchar_t), ty = 0;
+  const bool ok = RegQueryValueExW(k, val, nullptr, &ty, (LPBYTE)buf, &sz) == ERROR_SUCCESS && ty == REG_SZ;
+  RegCloseKey(k);
+  return ok ? narrow(buf) : "";
+}
+bool steam_test_mode() { return std::getenv("SNAP_STEAM_DIR") != nullptr; }   // tests point this at a scratch folder; the real Steam is never touched
+std::string steam_dir() {
+  std::string d;
+  if (const char* e = std::getenv("SNAP_STEAM_DIR")) d = e;
+  else {
+    d = reg_string(HKEY_CURRENT_USER, L"Software\\Valve\\Steam", L"SteamPath");
+    if (d.empty()) d = reg_string(HKEY_LOCAL_MACHINE, L"SOFTWARE\\WOW6432Node\\Valve\\Steam", L"InstallPath");
+  }
+  for (char& c : d) if (c == '/') c = '\\';
+  std::error_code ec;
+  return (!d.empty() && fs::is_directory(P(d + "\\userdata"), ec)) ? d : "";
+}
+bool steam_is_running() {
+  if (steam_test_mode()) { const char* r = std::getenv("SNAP_STEAM_RUNNING"); return r && *r == '1'; }
+  bool found = false;
+  const HANDLE s = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+  if (s == INVALID_HANDLE_VALUE) return false;
+  PROCESSENTRY32W pe{};
+  pe.dwSize = sizeof pe;
+  for (BOOL ok = Process32FirstW(s, &pe); ok && !found; ok = Process32NextW(s, &pe)) found = _wcsicmp(pe.szExeFile, L"steam.exe") == 0;
+  CloseHandle(s);
+  return found;
+}
+std::vector<std::string> steam_users(const std::string& dir) {
+  std::vector<std::string> u;
+  std::error_code ec;
+  for (const auto& e : fs::directory_iterator(P(dir + "\\userdata"), ec)) {
+    const std::string n = narrow(e.path().filename().wstring());
+    if (!e.is_directory(ec) || n.empty() || n == "0" || n.find_first_not_of("0123456789") != std::string::npos) continue;
+    u.push_back(n);
+  }
+  return u;
+}
+std::string self_exe() {
+  wchar_t b[1024] = {};
+  GetModuleFileNameW(nullptr, b, 1023);
+  return narrow(b);
+}
+
+// binary VDF
+struct VNode { int t = 0; std::string k, s; int32_t i = 0; std::vector<VNode> c; };
+bool vdf_read(const std::string& d, size_t& p, std::vector<VNode>& out, int depth = 0) {
+  while (p < d.size()) {
+    const int t = (unsigned char)d[p++];
+    if (t == 8) return true;
+    VNode n; n.t = t;
+    size_t z = d.find('\0', p);
+    if (z == std::string::npos) return false;
+    n.k = d.substr(p, z - p); p = z + 1;
+    if (t == 0) { if (depth > 8 || !vdf_read(d, p, n.c, depth + 1)) return false; }
+    else if (t == 1) { z = d.find('\0', p); if (z == std::string::npos) return false; n.s = d.substr(p, z - p); p = z + 1; }
+    else if (t == 2) { if (p + 4 > d.size()) return false; std::memcpy(&n.i, d.data() + p, 4); p += 4; }
+    else if (t == 3 || t == 4 || t == 6) { if (p + 4 > d.size()) return false; n.s = d.substr(p, 4); p += 4; }
+    else if (t == 7 || t == 10) { if (p + 8 > d.size()) return false; n.s = d.substr(p, 8); p += 8; }
+    else return false;
+    out.push_back(std::move(n));
+  }
+  return true;   // a file with no closing byte: take what was read
+}
+void vdf_write(const std::vector<VNode>& v, std::string& o) {
+  for (const VNode& n : v) {
+    o.push_back((char)n.t); o += n.k; o.push_back('\0');
+    if (n.t == 0) { vdf_write(n.c, o); o.push_back((char)8); }
+    else if (n.t == 1) { o += n.s; o.push_back('\0'); }
+    else if (n.t == 2) { char b[4]; std::memcpy(b, &n.i, 4); o.append(b, 4); }
+    else o += n.s;
+  }
+}
+VNode vs(const char* k, const std::string& v) { VNode n; n.t = 1; n.k = k; n.s = v; return n; }
+VNode vi(const char* k, int32_t v) { VNode n; n.t = 2; n.k = k; n.i = v; return n; }
+
+struct ShortcutDef { std::string name, exe_q, start_q, icon; uint32_t appid = 0; };
+ShortcutDef shortcut_def(const std::string& grid_dir) {
+  ShortcutDef d;
+  d.name = "Snap Recomp";
+  const std::string exe = self_exe();
+  d.exe_q = "\"" + exe + "\"";
+  d.start_q = "\"" + exe.substr(0, exe.find_last_of('\\') + 1) + "\"";
+  d.appid = crc32_of(d.exe_q + d.name) | 0x80000000u;   // how Steam names a non-Steam game's grid pictures
+  if (!grid_dir.empty()) d.icon = grid_dir + "\\" + std::to_string(d.appid) + "_icon.png";
+  return d;
+}
+VNode shortcut_entry(const char* key, const ShortcutDef& d) {
+  VNode e; e.t = 0; e.k = key;
+  e.c = {vi("appid", (int32_t)d.appid), vs("AppName", d.name), vs("Exe", d.exe_q), vs("StartDir", d.start_q), vs("icon", d.icon), vs("ShortcutPath", ""),
+         vs("LaunchOptions", ""), vi("IsHidden", 0), vi("AllowDesktopConfig", 1), vi("AllowOverlay", 1), vi("OpenVR", 0), vi("Devkit", 0), vs("DevkitGameID", ""),
+         vi("DevkitOverrideAppID", 0), vi("LastPlayTime", 0), vs("FlatpakAppID", "")};
+  VNode tags; tags.t = 0; tags.k = "tags";
+  e.c.push_back(tags);
+  return e;
+}
+bool read_file_bytes(const std::string& path, std::string& out) {
+  std::ifstream f(P(path), std::ios::binary);
+  if (!f) return false;
+  std::stringstream ss;
+  ss << f.rdbuf();
+  out = ss.str();
+  return true;
+}
+// index of our entry in the shortcuts list, or -1
+int find_entry(const std::vector<VNode>& list, const ShortcutDef& d) {
+  for (size_t i = 0; i < list.size(); ++i)
+    for (const VNode& f : list[i].c) if (f.t == 1 && _stricmp(f.k.c_str(), "Exe") == 0 && _stricmp(f.s.c_str(), d.exe_q.c_str()) == 0) return (int)i;
+  return -1;
+}
+bool shortcut_present(const std::string& vdf_path) {
+  std::string d;
+  if (!read_file_bytes(vdf_path, d)) return false;
+  std::vector<VNode> root;
+  size_t p = 0;
+  if (!vdf_read(d, p, root)) return false;
+  const ShortcutDef def = shortcut_def("");
+  for (const VNode& n : root) if (n.t == 0 && _stricmp(n.k.c_str(), "shortcuts") == 0) return find_entry(n.c, def) >= 0;
+  return false;
+}
+bool shortcut_write(const std::string& vdf_path, const ShortcutDef& def) {
+  std::string d;
+  std::vector<VNode> root;
+  if (read_file_bytes(vdf_path, d)) {
+    size_t p = 0;
+    if (!vdf_read(d, p, root)) return false;   // a file we cannot read is left alone
+    std::error_code ec;
+    const std::string bak = vdf_path + ".snaprecomp.bak";   // first change only
+    if (!fs::exists(P(bak), ec)) fs::copy_file(P(vdf_path), P(bak), ec);
+  }
+  VNode* sc = nullptr;
+  for (VNode& n : root) if (n.t == 0 && _stricmp(n.k.c_str(), "shortcuts") == 0) sc = &n;
+  if (!sc) { VNode n; n.t = 0; n.k = "shortcuts"; root.push_back(n); sc = &root.back(); }
+  const int at = find_entry(sc->c, def);
+  if (at >= 0) sc->c[(size_t)at] = shortcut_entry(sc->c[(size_t)at].k.c_str(), def);
+  else {
+    int next = 0;
+    for (const VNode& e : sc->c) next = std::max(next, std::atoi(e.k.c_str()) + 1);
+    sc->c.push_back(shortcut_entry(std::to_string(next).c_str(), def));
+  }
+  std::string out;
+  vdf_write(root, out);
+  out.push_back((char)8);
+  return write_atomic(vdf_path, out);
+}
+void refresh_steam_status() {
+  const std::string dir = steam_dir();
+  g.steam_status = 0;
+  if (dir.empty()) return;
+  g.steam_status = 1;
+  for (const std::string& u : steam_users(dir)) if (shortcut_present(dir + "\\userdata\\" + u + "\\config\\shortcuts.vdf")) g.steam_status = 2;
+}
+
+// PNG through the Windows imaging component (the same way the photo export writes its files)
+bool write_png(const std::string& path, int w, int h, const unsigned char* bgra) {
+  const HRESULT co = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+  IWICImagingFactory* f = nullptr;
+  bool ok = false;
+  if (SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&f)))) {
+    IWICStream* st = nullptr; IWICBitmapEncoder* enc = nullptr; IWICBitmapFrameEncode* fr = nullptr; IPropertyBag2* pb = nullptr;
+    const std::wstring tmp = P(path).wstring() + L".tmp";
+    if (SUCCEEDED(f->CreateStream(&st)) && SUCCEEDED(st->InitializeFromFilename(tmp.c_str(), GENERIC_WRITE)) &&
+        SUCCEEDED(f->CreateEncoder(GUID_ContainerFormatPng, nullptr, &enc)) && SUCCEEDED(enc->Initialize(st, WICBitmapEncoderNoCache)) &&
+        SUCCEEDED(enc->CreateNewFrame(&fr, &pb)) && SUCCEEDED(fr->Initialize(pb)) && SUCCEEDED(fr->SetSize((UINT)w, (UINT)h))) {
+      WICPixelFormatGUID pf = GUID_WICPixelFormat32bppBGRA;
+      fr->SetPixelFormat(&pf);
+      ok = SUCCEEDED(fr->WritePixels((UINT)h, (UINT)w * 4, (UINT)(w * h * 4), (BYTE*)bgra)) && SUCCEEDED(fr->Commit()) && SUCCEEDED(enc->Commit());
+    }
+    if (pb) pb->Release();
+    if (fr) fr->Release();
+    if (enc) enc->Release();
+    if (st) st->Release();
+    f->Release();
+    if (ok) ok = MoveFileExW(tmp.c_str(), P(path).wstring().c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
+    if (!ok) DeleteFileW(tmp.c_str());
+  }
+  if (SUCCEEDED(co)) CoUninitialize();
+  return ok;
+}
+
+// ---- the artwork: a vector sky and hills, a lens mark and the name; drawn in "board" units and scaled to the picture or to a preview ----
+struct Board { int aw, ah; };
+const Board kBoards[5] = {{300, 450}, {460, 215}, {960, 310}, {480, 270}, {128, 128}};   // capsule, wide capsule, hero, logo, icon
+const char* const kBoardFile[5] = {"p.png", ".png", "_hero.png", "_logo.png", "_icon.png"};
+const int kBoardPx[5][2] = {{600, 900}, {920, 430}, {1920, 620}, {960, 540}, {256, 256}};
+
+void art_hill(float aw, float ah, float base, float amp, float ph, ImU32 col) {
+  std::vector<ImVec2> pts;
+  for (float x = -10; x <= aw + 10; x += 6) pts.push_back(V(x, base + amp * std::sin(x * 5.2f / aw + ph) + 0.4f * amp * std::sin(x * 12.0f / aw + ph * 1.7f)));
+  pts.push_back(V(aw + 10, ah + 10));
+  pts.push_back(V(-10, ah + 10));
+  ImGui::GetForegroundDrawList()->AddConcavePolyFilled(pts.data(), (int)pts.size(), col);
+}
+void art_scene(float aw, float ah) {
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  dl->AddRectFilledMultiColor(V(0, 0), V(aw, ah), C(0x8fbde6), C(0x8fbde6), C(0xf3ecd2), C(0xf3ecd2));
+  const float r = std::min(aw, ah) * 0.11f;
+  dl->AddCircleFilled(V(aw * 0.80f, ah * 0.22f), r * 1.7f * g.s, C(0xfff6d6, 70), 48);
+  dl->AddCircleFilled(V(aw * 0.80f, ah * 0.22f), r * g.s, C(0xfff2c0), 48);
+  art_hill(aw, ah, ah * 0.60f, ah * 0.05f, 0.4f, C(0x9ccf9a));
+  art_hill(aw, ah, ah * 0.73f, ah * 0.05f, 2.0f, C(0x6fb589));
+  art_hill(aw, ah, ah * 0.88f, ah * 0.04f, 4.1f, C(0x4f9a82));
+}
+void art_title(float x, float y, float sz, const char* t, int al) {
+  text(x + sz * 0.035f, y + sz * 0.05f, sz, C(0x28503f, 150), t, al);
+  text(x, y, sz, C(0xffffff), t, al);
+}
+void art_mark(float cx, float cy, float r) {
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  dl->AddCircleFilled(V(cx, cy), r * 1.05f * g.s, C(0x28503f, 70), 48);
+  aperture(cx, cy, r, C(0xffffff));
+}
+void art_draw(int kind) {   // draws board `kind` at the current mapping (g.ox / g.oy / g.s)
+  const float aw = (float)kBoards[kind].aw, ah = (float)kBoards[kind].ah;
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  dl->PushClipRect(V(0, 0), V(aw, ah), true);
+  if (kind == 0) { art_scene(aw, ah); art_mark(aw / 2, ah * 0.37f, 52); art_title(aw / 2, ah * 0.70f, 56, "Snap", 1); art_title(aw / 2, ah * 0.82f, 56, "Recomp", 1); }
+  else if (kind == 1) { art_scene(aw, ah); art_mark(86, ah * 0.5f, 40); art_title(140, ah * 0.5f, 54, "Snap Recomp", 0); }
+  else if (kind == 2) { art_scene(aw, ah); }
+  else if (kind == 3) { art_mark(66, ah * 0.5f, 40); art_title(122, ah * 0.5f, 56, "Snap Recomp", 0); }
+  else {
+    rrect(0, 0, aw, ah, 26, C(0x6e7180));
+    rrect(14, 14, aw - 28, ah - 28, 20, C(0x96c283));
+    aperture(aw / 2, ah / 2, 38, C(0xffffff));
+  }
+  dl->PopClipRect();
+}
+// a preview inside the dialog: the board scaled into the design-space rectangle (x, y, w)
+void art_preview(int kind, float x, float y, float w) {
+  const ImVec2 o = V(x, y);
+  const float os = g.s, ox = g.ox, oy = g.oy;
+  ImFont* of = g.font;
+  g.ox = o.x; g.oy = o.y; g.s = os * (w / (float)kBoards[kind].aw);
+  if (g.art_font) g.font = g.art_font;
+  art_draw(kind);
+  g.s = os; g.ox = ox; g.oy = oy; g.font = of;
+}
+
+struct Img { int w = 0, h = 0; std::vector<unsigned char> bgra; };
+// Renders board `kind` into a texture, outside the normal frame, and reads it back as straight (non-premultiplied) BGRA.
+bool render_art(int kind, Img& out) {
+  const int w = kBoardPx[kind][0], h = kBoardPx[kind][1];
+  const bool alpha = kind == 3;
+  D3D11_TEXTURE2D_DESC d{};
+  d.Width = (UINT)w; d.Height = (UINT)h; d.MipLevels = 1; d.ArraySize = 1; d.Format = DXGI_FORMAT_R8G8B8A8_UNORM; d.SampleDesc.Count = 1;
+  d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_RENDER_TARGET;
+  ID3D11Texture2D* tex = nullptr; ID3D11RenderTargetView* rtv = nullptr; ID3D11Texture2D* st = nullptr;
+  bool ok = false;
+  if (SUCCEEDED(g.dev->CreateTexture2D(&d, nullptr, &tex)) && SUCCEEDED(g.dev->CreateRenderTargetView(tex, nullptr, &rtv))) {
+    ImGuiIO& io = ImGui::GetIO();
+    const ImVec2 ods = io.DisplaySize;
+    const float os = g.s, ox = g.ox, oy = g.oy;
+    ImFont* of = g.font;
+    io.DisplaySize = ImVec2((float)w, (float)h);
+    g.ox = 0; g.oy = 0; g.s = (float)w / (float)kBoards[kind].aw;
+    if (g.art_font) g.font = g.art_font;
+    ImGui_ImplDX11_NewFrame();
+    ImGui::NewFrame();
+    art_draw(kind);
+    ImGui::Render();
+    const float clear[4] = {alpha ? 0.0f : 1.0f, alpha ? 0.0f : 1.0f, alpha ? 0.0f : 1.0f, alpha ? 0.0f : 1.0f};
+    g.ctx->OMSetRenderTargets(1, &rtv, nullptr);
+    g.ctx->ClearRenderTargetView(rtv, clear);
+    ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+    g.ctx->OMSetRenderTargets(0, nullptr, nullptr);
+    io.DisplaySize = ods; g.s = os; g.ox = ox; g.oy = oy; g.font = of;
+    D3D11_TEXTURE2D_DESC sd = d;
+    sd.Usage = D3D11_USAGE_STAGING; sd.BindFlags = 0; sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    if (SUCCEEDED(g.dev->CreateTexture2D(&sd, nullptr, &st))) {
+      g.ctx->CopyResource(st, tex);
+      D3D11_MAPPED_SUBRESOURCE mp{};
+      if (SUCCEEDED(g.ctx->Map(st, 0, D3D11_MAP_READ, 0, &mp))) {
+        out.w = w; out.h = h; out.bgra.assign((size_t)w * h * 4, 0);
+        for (int y = 0; y < h; ++y) {
+          const unsigned char* s = (const unsigned char*)mp.pData + (size_t)y * mp.RowPitch;
+          unsigned char* o = out.bgra.data() + (size_t)y * w * 4;
+          for (int x = 0; x < w; ++x) {
+            unsigned r = s[x * 4], gg = s[x * 4 + 1], b = s[x * 4 + 2], a = alpha ? s[x * 4 + 3] : 255;
+            if (alpha && a > 0 && a < 255) { r = std::min(255u, r * 255 / a); gg = std::min(255u, gg * 255 / a); b = std::min(255u, b * 255 / a); }
+            o[x * 4] = (unsigned char)b; o[x * 4 + 1] = (unsigned char)gg; o[x * 4 + 2] = (unsigned char)r; o[x * 4 + 3] = (unsigned char)a;
+          }
+        }
+        g.ctx->Unmap(st, 0);
+        ok = true;
+      }
+    }
+  }
+  if (st) st->Release();
+  if (rtv) rtv->Release();
+  if (tex) tex->Release();
+  return ok;
+}
+
+// The whole job (called between frames, after the "Working" frame was shown).
+void steam_add() {
+  auto fail = [](const std::string& m) { g.steam_state = G::ST_FAIL; g.steam_msg = m; };
+  const std::string dir = steam_dir();
+  if (dir.empty()) { fail("Steam was not found on this PC."); return; }
+  const std::vector<std::string> users = steam_users(dir);
+  if (users.empty()) { fail("No Steam account has signed in on this PC yet. Start Steam once, sign in, close it, and try again."); return; }
+  bool closed = false;
+  if (steam_is_running()) {
+    if (steam_test_mode()) { fail("Steam is running. Close it and try again."); return; }
+    STARTUPINFOW si{sizeof si};
+    PROCESS_INFORMATION pi{};
+    std::wstring cmd = L"\"" + P(dir + "\\steam.exe").wstring() + L"\" -shutdown";
+    if (CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) { CloseHandle(pi.hThread); CloseHandle(pi.hProcess); }
+    for (int i = 0; i < 60 && steam_is_running(); ++i) Sleep(500);
+    if (steam_is_running()) { fail("Steam did not close. Close it yourself, then try again."); return; }
+    closed = true;
+    Sleep(1500);   // it writes its files while it exits
+  }
+  Img im[5];
+  for (int k = 0; k < 5; ++k) if (!render_art(k, im[k])) { fail("The artwork could not be drawn."); return; }
+  std::string exe_dir_unused;
+  int done = 0;
+  uint32_t appid = 0;
+  for (const std::string& u : users) {
+    const std::string cfgdir = dir + "\\userdata\\" + u + "\\config";
+    const std::string grid = cfgdir + "\\grid";
+    std::error_code ec;
+    fs::create_directories(P(grid), ec);
+    const ShortcutDef def = shortcut_def(grid);
+    appid = def.appid;
+    bool ok = true;
+    for (int k = 0; k < 5; ++k) ok = write_png(grid + "\\" + std::to_string(def.appid) + kBoardFile[k], im[k].w, im[k].h, im[k].bgra.data()) && ok;
+    ok = shortcut_write(cfgdir + "\\shortcuts.vdf", def) && ok;
+    if (ok) ++done;
+  }
+  if (closed) {   // put Steam back the way it was
+    STARTUPINFOW si{sizeof si};
+    PROCESS_INFORMATION pi{};
+    std::wstring cmd = L"\"" + P(dir + "\\steam.exe").wstring() + L"\"";
+    if (CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) { CloseHandle(pi.hThread); CloseHandle(pi.hProcess); }
+  }
+  (void)appid;
+  refresh_steam_status();
+  if (done == 0) fail("The shortcut could not be written. Is the Steam folder read-only?");
+  else {
+    g.steam_state = G::ST_DONE;
+    g.steam_msg = std::string("Added for ") + std::to_string(done) + (done == 1 ? " Steam account." : " Steam accounts.") + (closed ? " Steam was started again." : " Open Steam to find it in your library.");
+  }
+}
+
+// ---------------------------------------------------------------------------------------------------------------- drawing
+struct Home { const char* label; const char* help; };
+const Home kHome[] = {
+    {"Play", "Starts the game with the settings shown on the right. This window closes while you play. Left and right switch profile; the last slot creates a new one."},
+    {"Settings", "Display, picture quality, upscaling, frame rate, sound and controls. Everything you change applies when you press Play."},
+    {"Saves", "Open the save folder, or import and export a save for a save manager or an emulator."},
+    {"HD textures", "Sharper textures made from your own game files with a local AI model. Nothing is uploaded."},
+    {"Add to Steam", "Adds Snap Recomp to your Steam library as its own game, with artwork, so you can start it from Big Picture or the Steam Deck."},
+    {"Updates", "Check for a new version, or go back to the previous one. Nothing installs without you."},
+    {"Game folder", "Pick a different folder with your extracted game files."},
+};
+constexpr int kHomeN = 7;
+const UiResult kHomeAct[kHomeN] = {UiResult::Play, UiResult::Quit, UiResult::Quit, UiResult::HdTextures, UiResult::Quit, UiResult::Updates, UiResult::GameFolder};
+enum { H_PLAY, H_SETTINGS, H_SAVES, H_HD, H_STEAM, H_UPDATES, H_FOLDER };
+
+void hill(float base, float amp, float freq, float ph, ImU32 col) {
+  std::vector<ImVec2> pts;
+  for (float x = -20; x <= 1300; x += 20) pts.push_back(V(x, base + amp * std::sin(x * freq + ph) + 0.4f * amp * std::sin(x * freq * 2.3f + ph * 1.7f)));
+  pts.push_back(V(1300, 740));
+  pts.push_back(V(-20, 740));
+  ImGui::GetForegroundDrawList()->AddConcavePolyFilled(pts.data(), (int)pts.size(), col);
+}
+void scene() {   // original vector landscape, softened under a haze like the game's blurred backdrop
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  const ImVec2 a = ImVec2(0, 0), b = ImGui::GetIO().DisplaySize;
+  dl->AddRectFilledMultiColor(a, b, C(0x9ec6e8), C(0x9ec6e8), C(0xf3ecd2), C(0xf3ecd2));
+  dl->AddCircleFilled(V(1020, 180), 78 * g.s, C(0xfff6d6, 200), 48);
+  dl->AddCircleFilled(V(1020, 180), 120 * g.s, C(0xfff6d6, 60), 48);
+  hill(380, 36, 0.006f, 0.4f, C(0x9ccf9a));
+  hill(480, 34, 0.007f, 2.0f, C(0x6fb589));
+  hill(610, 28, 0.008f, 4.1f, C(0x4f9a82));
+  for (int i = 0; i < 5; ++i) {
+    const float x = 150.0f + i * 260.0f, y = 430.0f + (i % 2) * 40.0f;
+    dl->AddCircleFilled(V(x, y), (40 + (i % 3) * 6) * g.s, C(0x3f7f6a, 220), 24);
+    dl->AddRectFilled(V(x - 8, y + 6), V(x + 8, y + 90), C(0x3f7f6a, 220));
+  }
+  dl->AddRectFilled(a, b, C(0x8f9a90, 120));   // haze
+}
+
+bool hot(float x, float y, float w, float h) {
+  if (g.block_hot) return false;
+  const ImVec2 m = ImGui::GetIO().MousePos;
+  const float mx = (m.x - g.ox) / g.s, my = (m.y - g.oy) / g.s;
+  return mx >= x && mx < x + w && my >= y && my < y + h;
+}
+
+void help_bar(const std::string& msg) {
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  const float H = ImGui::GetIO().DisplaySize.y;
+  dl->AddRectFilled(ImVec2(0, g.oy + 656 * g.s), ImVec2(ImGui::GetIO().DisplaySize.x, H), C(0x5b5b5b, 225));
+  diamond(22, 688, 5, C(0xffffff, 160));
+  text_wrap2(40, 688, 19, C(0xffffff), msg, 1110);
+  // back prompt
+  const float x = 1186, y = 656, h = 64;
+  ImVec2 p[5] = {V(x, y + h / 2), V(x + 28, y), V(1280, y), V(1280, y + h), V(x + 28, y + h)};
+  dl->AddConvexPolyFilled(p, 5, C(kOrange));
+  const ImVec2 c = V(1224, y + h / 2);
+  dl->AddCircleFilled(c, 14 * g.s, C(kCream), 24);
+  const ImVec2 ts = g.font->CalcTextSizeA(15 * g.s, FLT_MAX, 0, "B");
+  dl->AddText(g.font, 15 * g.s, ImVec2(c.x - ts.x / 2, c.y - ts.y / 2), C(kOrDark), "B");
+  {
+    ImVec2 ar[5] = {V(1262, y + 20), V(1262, y + 34), V(1246, y + 34), V(1252, y + 28), V(1246, y + 34)};
+    dl->AddPolyline(ar, 3, C(kOrDark), 0, 3.5f * g.s);
+    ImVec2 ah[3] = {V(1254, y + 25), V(1246, y + 34), V(1254, y + 43)};
+    dl->AddPolyline(ah, 3, C(kOrDark), 0, 3.5f * g.s);
+  }
+}
+
+void draw_settings(bool* click_back) {
+  Page& pg = g.pages[(size_t)g.tab];
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  scene();
+  // tabs
+  const int nt = (int)g.pages.size();
+  const float tx0 = 98, tw = (1084 - (nt - 1) * 6.0f) / nt;
+  for (int i = 0; i < nt; ++i) {
+    const float x = tx0 + i * (tw + 6);
+    ImVec2 q[4] = {V(x, 92), V(x + 6, 48), V(x + tw - 6, 48), V(x + tw, 92)};
+    dl->AddConvexPolyFilled(q, 4, C(i == g.tab ? kPanel : kTab));
+    dl->AddRectFilled(V(x + 6, 46), V(x + tw - 6, 56), C(i == g.tab ? kPanel : kTab), 8 * g.s);
+    text(x + tw / 2, 69, 20, C(0xf4f4f6), g.pages[(size_t)i].name.c_str(), 1);
+    if (hot(x, 46, tw, 46) && ImGui::IsMouseClicked(0)) { g.tab = i; g.row = 0; g.pulldown = false; }
+  }
+  shoulder(true, 14, 44, 62, 48);
+  shoulder(false, 1204, 44, 62, 48);
+  // the green double-chevron under the selected tab
+  {
+    const float cx = tx0 + g.tab * (tw + 6) + tw / 2;
+    for (int s = -1; s <= 1; s += 2) {
+      for (int k = 0; k < 2; ++k) {
+        const float x = cx + s * (52 + k * 7);
+        ImVec2 t[3] = {V(x, 89), V(x - s * 7, 85), V(x - s * 7, 93)};
+        dl->AddConvexPolyFilled(t, 3, C(kGreen));
+      }
+    }
+    dl->AddLine(V(cx - 42, 89), V(cx + 42, 89), C(kGreen), 2 * g.s);
+  }
+  // panel
+  shadow(86, 92, 1108, 544, 14);
+  dl->AddRectFilled(V(86, 92), V(1194, 636), C(kPanel), 14 * g.s, ImDrawFlags_RoundCornersBottom);
+  diamond(104, 112, 6, C(0xffffff, 60)); diamond(118, 124, 6, C(0xffffff, 60));
+  diamond(1176, 112, 6, C(0xffffff, 60)); diamond(1162, 124, 6, C(0xffffff, 60));
+  // rows
+  // rows are 60 apart, closer together on a page with more than seven so all of them fit above the restore button
+  const float ry0 = 134, pitch = std::min(60.0f, 446.0f / (float)std::max<size_t>(1, pg.items.size())), rh = pitch - 8, rx = 138, rw = 1004, vw = 340;
+  for (size_t i = 0; i < pg.items.size(); ++i) {
+    Item& it = pg.items[i];
+    const float y = ry0 + (float)i * pitch;
+    const bool sel = (int)i == g.row;
+    if (hot(rx, y, rw, rh) && !g.pulldown) {
+      if (ImGui::GetIO().MouseDelta.x != 0 || ImGui::GetIO().MouseDelta.y != 0) g.row = (int)i;
+      if (ImGui::IsMouseClicked(0)) { g.row = (int)i; g.confirm_reset = false; if (it.kind == K_ACTION) { g.result = it.act; g.done = true; } else { g.pulldown = true; g.pd_sel = std::max(0, index_of(it, it.cur)); g.pd_top = 0; } }
+    }
+    pointed(rx, y, rw, rh, 22, C(sel ? kGreen : kRow));
+    text(rx + 44, y + rh / 2, 21, C(0xf7f7f7), it.label.c_str());
+    if (it.kind == K_ACTION) {
+      prompt(rx + rw - 120, y + rh / 2, 36, "A");
+      continue;
+    }
+    const float vx = rx + rw - 20 - vw, vy = y + 3;
+    pointed(vx, vy, vw, rh - 6, 16, C(sel ? kYellow : kWhite));
+    if (sel) pattern(vx + 16, vy, vw - 32, rh - 6);
+    const float cy = vy + (rh - 6) / 2;
+    ImVec2 tri[3] = {V(vx + 22, cy - 5), V(vx + 40, cy - 5), V(vx + 31, cy + 7)};
+    dl->AddConvexPolyFilled(tri, 3, C(0x7a7b80));
+    const std::string lab = label_of(it, it.cur);
+    const int ci = index_of(it, it.cur);
+    const bool dim = ci >= 0 && !it.ch[(size_t)ci].avail;
+    text_clip(vx + vw / 2 + 12, cy, 21, C(dim ? 0x9a9a9a : kText), lab.c_str(), vw - 100, 1);
+    if (sel) {
+      // selection ring at the right end, like the game's cursor
+      const ImVec2 c = V(vx + vw - 32, cy + 1);
+      dl->AddCircleFilled(c, 13 * g.s, C(kWhite), 24);
+      dl->AddCircle(c, 13 * g.s, C(kOrange), 24, 4 * g.s);
+      dl->AddCircleFilled(c, 5 * g.s, C(kOrDark), 16);
+    }
+  }
+  // restore defaults pill
+  {
+    const float x = 930, y = 594, w = 212, h = 34;
+    const bool h_ = hot(x, y, w, h);
+    dl->AddRectFilled(V(x, y), V(x + w, y + h), C(h_ || g.confirm_reset ? kYellow : kCream), 17 * g.s);
+    dl->AddCircleFilled(V(x + 17, y + 17), 10 * g.s, C(0x8f9097), 16);
+    dl->AddRectFilled(V(x + 12, y + 15.5f), V(x + 22, y + 18.5f), C(0xffffff));
+    text(x + 36, y + 17, 15, C(0x666666), g.confirm_reset ? "Press X again to reset" : "Restore Default Settings");
+    if (h_ && ImGui::IsMouseClicked(0)) { if (g.confirm_reset) { reset_page(pg); g.confirm_reset = false; g.toast = "Defaults restored"; g.toast_until = ImGui::GetTime() + 2; } else g.confirm_reset = true; }
+  }
+  // pulldown
+  if (g.pulldown) {
+    Item& it = pg.items[(size_t)g.row];
+    const int vis = std::min<int>(8, (int)it.ch.size());
+    const float ih = 46, w = 420, h = vis * ih + 20;
+    const float x = rx + rw - 20 - vw + (vw - w);
+    float y = ry0 + (float)g.row * pitch + rh + 4;
+    if (y + h > 650) y = std::max(100.0f, ry0 + (float)g.row * pitch - h - 4);
+    dl->AddRectFilled(V(86, 92), V(1194, 636), C(0x000000, 70), 14 * g.s, ImDrawFlags_RoundCornersBottom);
+    shadow(x, y, w, h, 16);
+    rrect(x, y, w, h, 16, C(kCream));
+    if (g.pd_sel < g.pd_top) g.pd_top = g.pd_sel;
+    if (g.pd_sel >= g.pd_top + vis) g.pd_top = g.pd_sel - vis + 1;
+    for (int k = 0; k < vis; ++k) {
+      const int i = g.pd_top + k;
+      const Ch& c = it.ch[(size_t)i];
+      const float yy = y + 10 + k * ih;
+      const bool s = i == g.pd_sel;
+      if (hot(x + 10, yy, w - 20, ih - 2)) {
+        if (ImGui::GetIO().MouseDelta.x != 0 || ImGui::GetIO().MouseDelta.y != 0) g.pd_sel = i;
+        if (ImGui::IsMouseClicked(0)) { choose(it, i); g.pulldown = false; }
+      }
+      if (s) { rrect(x + 10, yy, w - 20, ih - 2, 12, C(kYellow)); pattern(x + 22, yy, w - 44, ih - 2); dl->AddRect(V(x + 10, yy), V(x + w - 10, yy + ih - 2), C(kOrange), 12 * g.s, 0, 3 * g.s); }
+      text(x + 30, yy + (ih - 2) / 2, 21, C(!c.avail ? 0xa8a6a4 : s ? kBrown : kText), c.label.c_str());
+    }
+  }
+  // clicking outside closes a pulldown
+  if (g.pulldown && ImGui::IsMouseClicked(0)) {
+    // handled inside the list above; a click elsewhere on the dim area is ignored
+  }
+  (void)click_back;
+  help_bar(g.confirm_reset ? "Press X (or click the button) again to put this page back to its defaults. Any other key cancels."
+           : g.pulldown ? "Up and down choose, A confirms, B closes the list."
+           : pg.items[(size_t)g.row].help);
+  // toast
+  if (ImGui::GetTime() < g.toast_until) {
+    const float w = text_w(18, g.toast.c_str()) + 40;
+    rrect(640 - w / 2, 108, w, 36, 18, C(kYellow));
+    text(640, 126, 18, C(kBrown), g.toast.c_str(), 1);
+  }
+}
+
+void draw_home_bg() {
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  const ImVec2 b = ImGui::GetIO().DisplaySize;
+  dl->AddRectFilledMultiColor(ImVec2(0, 0), b, C(0xfbfaf8), C(0xf4f2f0), C(0xe9e6e2), C(0xf0eeeb));
+  // a big faint emblem behind the card
+  for (int r : {470, 410, 300}) dl->AddCircle(V(1130, 250), (float)r * g.s, C(0xc9c3bd, 140), 96, 2.0f * g.s);
+  diamond(1130, 250, 120, C(0xd8d3ce, 140));
+}
+
+struct Chip { std::string text; unsigned dot, fg, bg; };
+
+// (page, row) of the first item that matches, for the loadout rows that jump to a setting
+bool find_pos(bool (*pred)(const Item&), int& pg, int& row) {
+  for (size_t p = 0; p < g.pages.size(); ++p)
+    for (size_t i = 0; i < g.pages[p].items.size(); ++i)
+      if (pred(g.pages[p].items[i])) { pg = (int)p; row = (int)i; return true; }
+  return false;
+}
+Item* find_item(bool (*pred)(const Item&)) {
+  for (Page& p : g.pages) for (Item& it : p.items) if (pred(it)) return &it;
+  return nullptr;
+}
+
+void draw_home() {
+  draw_home_bg();
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  UiInfo& in = *g.info;
+  // title
+  diamond(116, 72, 44, C(0x8f8e90));
+  aperture(116, 72, 21, C(kCream));
+  text(172, 62, 40, C(0x6a6561), "Snap Recomp");
+  text(174, 98, 17, C(kGrey), "Works with your own copy of the game");
+  if (in.update_available) {
+    const std::string t = "Update " + in.update_version + " ready";
+    const float w = text_w(18, t.c_str()) + 80;
+    rrect(1250 - w, 38, w, 40, 20, C(kYellow));
+    text(1250 - w + 20, 58, 18, C(kBrown), t.c_str());
+    const float cx = 1250 - 24;
+    dl->AddCircleFilled(V(cx, 58), 13 * g.s, C(kWhite), 20);
+    text(cx, 58, 15, C(kOrDark), "Y", 1);
+    if (hot(1250 - w, 38, w, 40) && ImGui::IsMouseClicked(0)) { g.result = UiResult::Updates; g.done = true; }
+  }
+  auto enter = [] { ImGui::GetIO().AddKeyEvent(ImGuiKey_Enter, true); ImGui::GetIO().AddKeyEvent(ImGuiKey_Enter, false); };
+  const bool mouse_moved = ImGui::GetIO().MouseDelta.x != 0 || ImGui::GetIO().MouseDelta.y != 0;
+
+  // the Play tile
+  {
+    const bool sel = g.home_sel == H_PLAY;
+    const float x = 84, y = 128, w = 470, h = 104;
+    if (hot(x, y, w, h)) {
+      if (mouse_moved) g.home_sel = H_PLAY;
+      if (ImGui::IsMouseClicked(0)) { g.home_sel = H_PLAY; enter(); }
+    }
+    shadow(x, y, w, h, 26);
+    rrect(x, y, w, h, 26, C(kYellow));
+    pattern(x + 22, y, w - 44, h);
+    dl->AddRect(V(x, y), V(x + w, y + h), C(kOrange), 26 * g.s, 0, (sel ? 5.0f : 2.5f) * g.s);
+    diamond(x + 66, y + h / 2, 46, C(0x8f8e90));
+    aperture(x + 66, y + h / 2, 22, C(kCream));
+    text(x + 134, y + 44, 48, C(kBrown), "Play");
+    std::string pl;
+    if (!in.profiles.empty()) {
+      pl = g.profile_idx < in.profiles.size() ? in.profiles[g.profile_idx].name : "+ New profile";
+      if (sel) pl = "<  " + pl + "  >";
+    }
+    if (!pl.empty()) text_clip(x + 134, y + 86, 19, C(0x7a6440), pl.c_str(), w - 150);
+  }
+
+  // status chips
+  std::vector<Chip> chips;
+  chips.push_back({in.game_ok ? "Game files ready" : "Game folder needs attention", in.game_ok ? 0x5aa070u : 0xc84a3au, in.game_ok ? 0x5f5f5fu : 0xc84a3au, 0xffffffu});
+  if (!g.gpu_name.empty()) chips.push_back({g.gpu_name + (g.gpu_rtx && file_exists("nvngx_dlss.dll") ? " - DLSS available" : ""), 0x3fa9a0u, 0x5f5f5fu, 0xffffffu});
+  if (g.pad_found) chips.push_back({"Controller found", 0x5aa070u, 0x5f5f5fu, 0xffffffu});
+  if (in.update_available) chips.push_back({"Update " + in.update_version, 0xe0733au, 0xb85a28u, 0xfcefe6u});
+  float cx = 84, cy = 246;
+  for (const Chip& c : chips) {
+    std::string t = c.text;
+    float tw = text_w(15, t.c_str());
+    if (tw > 330) { t = c.text; while (t.size() > 4 && text_w(15, (t + "..").c_str()) > 330) t.pop_back(); t += ".."; tw = text_w(15, t.c_str()); }
+    const float w = tw + 44;
+    if (cx + w > 554 && cx > 84) { cx = 84; cy += 37; }
+    shadow(cx, cy, w, 30, 15);
+    rrect(cx, cy, w, 30, 15, C(c.bg));
+    dl->AddCircleFilled(V(cx + 16, cy + 15), 5 * g.s, C(c.dot), 12);
+    text(cx + 30, cy + 15, 15, C(c.fg), t.c_str());
+    cx += w + 8;
+  }
+
+  // the menu rows
+  float y = cy + 30 + 12;
+  for (int i = H_SETTINGS; i < kHomeN; ++i) {
+    const bool sel = i == g.home_sel;
+    const float x = 84, w = 470, h = 46;
+    if (hot(x, y, w, h)) {
+      if (mouse_moved) g.home_sel = i;
+      if (ImGui::IsMouseClicked(0)) { g.home_sel = i; enter(); }
+    }
+    shadow(x, y, w, h, 18);
+    rrect(x, y, w, h, 18, C(sel ? kYellow : 0xffffff));
+    if (sel) { pattern(x + 18, y, w - 36, h); dl->AddRect(V(x, y), V(x + w, y + h), C(kOrange), 18 * g.s, 0, 3.5f * g.s); }
+    text(x + 22, y + h / 2, sel ? 24 : 22, C(sel ? kBrown : 0x6a6561), kHome[i].label);
+    std::string sub;
+    if (i == H_SETTINGS) sub = std::to_string(g.pages.size()) + " pages";
+    else if (i == H_SAVES) sub = in.profiles.empty() ? "" : std::to_string(in.profiles.size()) + (in.profiles.size() == 1 ? " profile" : " profiles");
+    else if (i == H_STEAM) sub = g.steam_status == 0 ? "Steam not found" : g.steam_status == 2 ? "Added" : "Not added";
+    else if (i == H_UPDATES) sub = in.update_available ? in.update_version + " ready" : in.version;
+    else if (i == H_FOLDER) sub = in.game_ok ? "Ready" : "Needs attention";
+    if (!sub.empty()) text(x + w - 22, y + h / 2, 15, C(sel ? 0x7a6440 : 0x9a9795), sub.c_str(), 2);
+    y += h + 6;
+  }
+
+  // the loadout card
+  shadow(600, 128, 600, 492, 26);
+  rrect(600, 128, 600, 492, 26, C(0xffffff));
+  rrect(600, 128, 600, 70, 26, C(0x96c283), ImDrawFlags_RoundCornersTop);
+  text(630, 163, 29, C(0xffffff), "Your loadout");
+  {
+    const std::string pn = (g.profile_idx < in.profiles.size()) ? in.profiles[g.profile_idx].name : "New profile";
+    const float w = text_w(16, pn.c_str()) + 36;
+    rrect(1170 - w, 146, w, 34, 17, C(0xffffff));
+    text(1170 - w / 2, 163, 16, C(0x5f8a62), pn.c_str(), 1);
+  }
+  struct L { const char* label; bool (*pred)(const Item&); };
+  const L ls[] = {
+      {"Look", [](const Item& it) { return it.kind == K_LOOK; }},
+      {"Window", [](const Item& it) { return it.key == "mode"; }},
+      {"Frame pacing", [](const Item& it) { return it.kind == K_PACING; }},
+      {"Resolution", [](const Item& it) { return it.key == "gfx_render_scale"; }},
+      {"Upscaler", [](const Item& it) { return it.key == "gfx_upscaler"; }},
+      {"Quality", [](const Item& it) { return it.kind == K_PRESET; }},
+      {"Sound", [](const Item& it) { return it.key == "master"; }},
+  };
+  for (int i = 0; i < 7; ++i) {
+    const float ly = 206 + i * 52, lx = 628, lw = 544;
+    pointed(lx, ly, lw, 44, 20, C(kRow));
+    text(lx + 40, ly + 22, 20, C(0xf7f7f7), ls[i].label);
+    std::string val = "-";
+    if (Item* it = find_item(ls[i].pred)) {
+      val = label_of(*it, it->cur);
+      if (it->kind == K_PACING) { if (it->cur == "vrr") val = "VRR - " + std::to_string(vrr_cap()) + " FPS"; }
+      else if (it->key == "gfx_render_scale") { if (it->cur == "fit") val = "Fit to display"; }
+      else if (it->key == "gfx_upscaler" && it->cur != "off") { Item* q = find_item([](const Item& t) { return t.key == "gfx_upscale_quality"; }); if (q) val += " " + label_of(*q, q->cur); }
+      else if (it->key == "master") val = "Volume " + label_of(*it, it->cur);
+    }
+    pointed(lx + 270, ly + 4, 252, 36, 14, C(kWhite));
+    text_clip(lx + 270 + 126, ly + 22, 18, C(kText), val.c_str(), 214, 1);
+    if (hot(lx, ly, lw, 44) && ImGui::IsMouseClicked(0)) {
+      int pg = 0, row = 0;
+      if (find_pos(ls[i].pred, pg, row)) { g.view = G::SETTINGS; g.tab = pg; g.row = row; }
+    }
+  }
+  {
+    std::string d = std::to_string(g.disp_w) + " x " + std::to_string(g.disp_h) + "  -  " + std::to_string(g.disp_hz) + " Hz";
+    if (!g.gpu_name.empty()) d += "  -  " + g.gpu_name;
+    text_clip(628, 592, 15, C(0x5f5f5f), d.c_str(), 340);
+    text(1172, 592, 15, C(kGrey), "Change these in Settings", 2);
+  }
+  help_bar(kHome[g.home_sel].help);
+  if (g.home_sel == H_PLAY) prompt(556, 180, 50, "A");
+  if (ImGui::GetTime() < g.toast_until) {
+    const float w = text_w(18, g.toast.c_str()) + 40;
+    rrect(640 - w / 2, 108, w, 36, 18, C(kYellow));
+    text(640, 126, 18, C(kBrown), g.toast.c_str(), 1);
+  }
+}
+
+// A pill button of the Steam dialog; returns true when clicked.
+bool dlg_button(float x, float y, float w, float h, const char* label, const char* glyph, bool primary, bool enabled = true) {
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  const bool over = enabled && hot(x, y, w, h);
+  rrect(x, y, w, h, h / 2, C(!enabled ? 0xd8d6d4 : primary ? kYellow : 0xffffff));
+  if (primary && enabled) dl->AddRect(V(x, y), V(x + w, y + h), C(kOrange), h / 2 * g.s, 0, (over ? 4.0f : 3.0f) * g.s);
+  const ImVec2 c = V(x + 28, y + h / 2);
+  dl->AddCircleFilled(c, 13 * g.s, C(0xf4f2f0), 20);
+  const ImVec2 ts = g.font->CalcTextSizeA(14 * g.s, FLT_MAX, 0, glyph);
+  dl->AddText(g.font, 14 * g.s, ImVec2(c.x - ts.x / 2, c.y - ts.y / 2), C(kOrDark), glyph);
+  text(x + 54 + (w - 54) / 2 - 10, y + h / 2, 21, C(!enabled ? 0x9a9795 : primary ? kBrown : 0x6a6561), label, 1);
+  return over && ImGui::IsMouseClicked(0);
+}
+
+void steam_close() { g.view = G::HOME; g.steam_state = G::ST_NONE; }
+void steam_start() { if (g.steam_state == G::ST_ASK && g.steam_status > 0) { g.steam_state = G::ST_WORKING; g.steam_work = true; } }
+
+void draw_steam() {
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  dl->AddRectFilled(ImVec2(0, 0), ImGui::GetIO().DisplaySize, C(0x20201f, 110));
+  const float x = 210, y = 88, w = 860, h = 530;
+  shadow(x, y, w, h, 32);
+  rrect(x, y, w, h, 32, C(kCream));
+  rrect(x, y, w, 64, 32, C(kPanel), ImDrawFlags_RoundCornersTop);
+  text(x + 30, y + 32, 28, C(0xffffff), "Add to Steam");
+  {
+    const char* t = g.steam_status == 0 ? "Steam not found" : "Steam found";
+    const float tw = text_w(16, t) + 34;
+    rrect(x + w - 28 - tw, y + 16, tw, 32, 16, C(0xffffff));
+    text(x + w - 28 - tw / 2, y + 32, 16, C(g.steam_status == 0 ? 0xc84a3a : 0x5f5f5f), t, 1);
+  }
+  // the artwork
+  const float ay = y + 86;
+  art_preview(0, x + 30, ay, 150);
+  art_preview(1, x + 200, ay, 250);
+  art_preview(2, x + 200, ay + 132, 250);
+  rrect(x + 200, ay + 236, 64, 64, 14, C(0x6e7180));
+  art_preview(4, x + 200, ay + 236, 64);
+  text(x + 30, ay + 238, 12, C(kGrey), "Capsule");
+  text(x + 200, ay + 224, 12, C(kGrey), "Wide capsule, hero banner and logo");
+  text(x + 276, ay + 268, 12, C(kGrey), "Library icon");
+  // the text and the facts
+  const float tx = x + 480;
+  text(tx, ay + 16, 18, C(0x666666), "Adds Snap Recomp to your Steam library as");
+  text(tx, ay + 40, 18, C(0x666666), "its own game, with artwork, so you can");
+  text(tx, ay + 64, 18, C(0x666666), "start it from Big Picture or the Steam Deck.");
+  struct R { const char* a; std::string b; unsigned col; };
+  std::string sv; unsigned sc;
+  if (g.steam_status == 0) { sv = "not found"; sc = 0xc84a3a; }
+  else if (g.steam_running) { sv = "running: closes first"; sc = 0xe0733a; }
+  else { sv = "ready"; sc = 0x5f8a62; }
+  const R rows[] = {{"Shortcut name", "Snap Recomp", 0x6a6561}, {"Artwork", "5 images", 0x5f8a62}, {"Steam", sv, sc}, {"Shortcut", g.steam_status == 2 ? "added (this updates it)" : "not added yet", g.steam_status == 2 ? 0x5f8a62u : 0x6a6561u}};
+  for (int i = 0; i < 4; ++i) {
+    const float ry = ay + 94 + i * 50;
+    rrect(tx, ry, 340, 42, 14, C(0xffffff));
+    text(tx + 16, ry + 21, 17, C(0x6a6561), rows[i].a);
+    text(tx + 324, ry + 21, 17, C(rows[i].col), rows[i].b.c_str(), 2);
+  }
+  text_wrap2(x + 30, y + 410, 15, C(kGrey), "The shortcut starts this launcher. Nothing is installed into Steam, and you can remove it from Steam at any time.", w - 60);
+  // the buttons and the result
+  const float by = y + h - 76;
+  if (g.steam_state == G::ST_ASK) {
+    if (dlg_button(x + w - 30 - 280 - 16 - 150, by, 150, 50, "Cancel", "B", false)) steam_close();
+    if (dlg_button(x + w - 30 - 280, by, 280, 50, g.steam_status == 0 ? "Steam not found" : g.steam_running ? "Close Steam and add" : "Add to Steam", "A", true, g.steam_status > 0)) steam_start();
+  } else if (g.steam_state == G::ST_WORKING) {
+    text(x + w - 30, by + 25, 20, C(0x6a6561), "Working...", 2);
+  } else {
+    const bool bad = g.steam_state == G::ST_FAIL;
+    text_wrap2(x + 30, by + 25, 18, C(bad ? 0xc84a3a : 0x5f8a62), g.steam_msg, w - 30 - 200 - 40);
+    if (dlg_button(x + w - 30 - 170, by, 170, 50, bad ? "Close" : "Done", "A", true)) steam_close();
+  }
+}
+
+void draw_saves() {
+  draw_home_bg();
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  (void)dl;
+  diamond(122, 82, 56, C(0x8f8e90));
+  aperture(122, 82, 26, C(kCream));
+  text(180, 70, 42, C(0x6a6561), "Saves");
+  text(182, 106, 17, C(kGrey), "Back up or move your save");
+  const char* names[3] = {"Open save folder", "Import a save...", "Export the save..."};
+  const char* helps[3] = {"Opens the save folder of the selected profile in Explorer.",
+                          "From a console backup (JKSV, Checkpoint) or an emulator. Your current save is kept as a backup.",
+                          "Copy your save out for a save manager or an emulator."};
+  float y = 160;
+  for (int i = 0; i < 3; ++i) {
+    const bool sel = i == g.row;
+    const float h = sel ? 68 : 58, x = 84, w = 520;
+    if (hot(x, y, w, h)) {
+      if (ImGui::GetIO().MouseDelta.x != 0 || ImGui::GetIO().MouseDelta.y != 0) g.row = i;
+      if (ImGui::IsMouseClicked(0)) { g.row = i; ImGui::GetIO().AddKeyEvent(ImGuiKey_Enter, true); ImGui::GetIO().AddKeyEvent(ImGuiKey_Enter, false); }
+    }
+    shadow(x, y, w, h, 20);
+    rrect(x, y, w, h, 20, C(sel ? kYellow : 0xffffff));
+    if (sel) { pattern(x + 20, y, w - 40, h); ImGui::GetForegroundDrawList()->AddRect(V(x, y), V(x + w, y + h), C(kOrange), 20 * g.s, 0, 4 * g.s); }
+    text(x + 24, y + h / 2, sel ? 27 : 22, C(sel ? kBrown : 0x6a6561), names[i]);
+    if (sel) prompt(x + w - 20, y + h / 2, 44, "A");
+    y += h + 9;
+  }
+  help_bar(helps[std::min(std::max(g.row, 0), 2)]);
+}
+
+// ---------------------------------------------------------------------------------------------------------------- input
+bool key(std::initializer_list<ImGuiKey> ks, bool repeat = false) {
+  for (ImGuiKey k : ks) if (ImGui::IsKeyPressed(k, repeat)) return true;
+  return false;
+}
+
+void handle_input() {
+  const bool up = key({ImGuiKey_UpArrow, ImGuiKey_GamepadDpadUp, ImGuiKey_GamepadLStickUp}, true);
+  const bool dn = key({ImGuiKey_DownArrow, ImGuiKey_GamepadDpadDown, ImGuiKey_GamepadLStickDown}, true);
+  const bool lf = key({ImGuiKey_LeftArrow, ImGuiKey_GamepadDpadLeft, ImGuiKey_GamepadLStickLeft}, true);
+  const bool rt = key({ImGuiKey_RightArrow, ImGuiKey_GamepadDpadRight, ImGuiKey_GamepadLStickRight}, true);
+  const bool ok = key({ImGuiKey_Enter, ImGuiKey_KeypadEnter, ImGuiKey_Space, ImGuiKey_GamepadFaceDown});
+  const bool back = key({ImGuiKey_Escape, ImGuiKey_Backspace, ImGuiKey_GamepadFaceRight});
+  const bool prev = key({ImGuiKey_PageUp, ImGuiKey_Q, ImGuiKey_GamepadL1}, true);
+  const bool next = key({ImGuiKey_PageDown, ImGuiKey_E, ImGuiKey_GamepadR1}, true);
+  const bool x = key({ImGuiKey_X, ImGuiKey_Delete, ImGuiKey_GamepadFaceLeft});
+  const bool y = key({ImGuiKey_Y, ImGuiKey_U, ImGuiKey_GamepadFaceUp});
+  UiInfo& in = *g.info;
+  if (g.view == G::STEAM) {
+    if (g.steam_state == G::ST_WORKING) return;
+    if (back) { steam_close(); return; }
+    if (ok) { if (g.steam_state == G::ST_ASK) steam_start(); else steam_close(); }
+    return;
+  }
+  if (g.view == G::HOME) {
+    if (up) g.home_sel = (g.home_sel + kHomeN - 1) % kHomeN;
+    if (dn) g.home_sel = (g.home_sel + 1) % kHomeN;
+    if (y && in.update_available) { g.result = UiResult::Updates; g.done = true; return; }
+    if (back) { g.result = UiResult::Quit; g.done = true; return; }
+    if (g.home_sel == H_PLAY && !in.profiles.empty() && (lf || rt || ok)) {
+      const int n = (int)in.profiles.size() + 1;   // the last slot is "New profile"
+      if (ok && g.profile_idx == in.profiles.size()) {
+        std::string id = in.new_profile ? in.new_profile() : "";
+        if (!id.empty()) {
+          UiProfile np; np.id = id; np.name = id;
+          // the caller keeps names; re-read through the callback's side effect on info.profiles when it updates the list
+          for (size_t i = 0; i < in.profiles.size(); ++i) if (in.profiles[i].id == id) { g.profile_idx = i; }
+          if (g.profile_idx >= in.profiles.size()) { in.profiles.push_back(np); g.profile_idx = in.profiles.size() - 1; }
+          in.profile_id = in.profiles[g.profile_idx].id;
+          load_stores();
+          g.toast = "New profile created"; g.toast_until = ImGui::GetTime() + 2.5;
+        }
+        return;
+      }
+      if (ok) { g.result = UiResult::Play; g.done = true; return; }
+      int i = (int)g.profile_idx + (lf ? -1 : 1);
+      i = (i % n + n) % n;
+      g.profile_idx = (size_t)i;
+      if ((size_t)i < in.profiles.size()) { in.profile_id = in.profiles[(size_t)i].id; load_stores(); }
+      return;
+    }
+    if (ok) {
+      switch (g.home_sel) {
+        case H_PLAY: g.result = UiResult::Play; g.done = true; break;
+        case H_SETTINGS: g.view = G::SETTINGS; g.row = 0; break;
+        case H_SAVES: g.view = G::SAVES; g.row = 0; break;
+        case H_STEAM:
+          refresh_steam_status();
+          g.steam_running = g.steam_status > 0 && steam_is_running();
+          g.steam_state = G::ST_ASK; g.steam_msg.clear(); g.view = G::STEAM;
+          break;
+        default: g.result = kHomeAct[g.home_sel]; g.done = true; break;
+      }
+    }
+    return;
+  }
+  if (g.view == G::SAVES) {
+    if (back) { g.view = G::HOME; return; }
+    if (up) g.row = (g.row + 2) % 3;
+    if (dn) g.row = (g.row + 1) % 3;
+    if (ok) { g.result = g.row == 0 ? UiResult::OpenSaves : g.row == 1 ? UiResult::ImportSave : UiResult::ExportSave; g.done = true; }
+    return;
+  }
+  // settings
+  Page& pg = g.pages[(size_t)g.tab];
+  if (g.pulldown) {
+    Item& it = pg.items[(size_t)g.row];
+    const int n = (int)it.ch.size();
+    if (up) g.pd_sel = (g.pd_sel + n - 1) % n;
+    if (dn) g.pd_sel = (g.pd_sel + 1) % n;
+    if (ok) { choose(it, g.pd_sel); g.pulldown = false; }
+    if (back) g.pulldown = false;
+    return;
+  }
+  if (back) { if (g.confirm_reset) g.confirm_reset = false; else g.view = G::HOME; return; }
+  const int nt = (int)g.pages.size();
+  if (prev) { g.tab = (g.tab + nt - 1) % nt; g.row = 0; g.confirm_reset = false; }
+  if (next) { g.tab = (g.tab + 1) % nt; g.row = 0; g.confirm_reset = false; }
+  Page& p2 = g.pages[(size_t)g.tab];
+  const int nr = (int)p2.items.size();
+  if (up) { g.row = (g.row + nr - 1) % nr; g.confirm_reset = false; }
+  if (dn) { g.row = (g.row + 1) % nr; g.confirm_reset = false; }
+  Item& it = p2.items[(size_t)g.row];
+  if (x) {
+    if (g.confirm_reset) { reset_page(p2); g.confirm_reset = false; g.toast = "Defaults restored"; g.toast_until = ImGui::GetTime() + 2; }
+    else g.confirm_reset = true;
+    return;
+  }
+  if (it.kind == K_ACTION) { if (ok) { g.result = it.act; g.done = true; } return; }
+  if (lf) { g.confirm_reset = false; cycle(it, -1); }
+  if (rt) { g.confirm_reset = false; cycle(it, +1); }
+  if (ok) { g.confirm_reset = false; g.pulldown = true; g.pd_sel = std::max(0, index_of(it, it.cur)); g.pd_top = 0; }
+}
+
+// ---------------------------------------------------------------------------------------------------------------- window and D3D11
+bool create_target() {
+  ID3D11Texture2D* bb = nullptr;
+  if (FAILED(g.sc->GetBuffer(0, IID_PPV_ARGS(&bb)))) return false;
+  const HRESULT hr = g.dev->CreateRenderTargetView(bb, nullptr, &g.rtv);
+  bb->Release();
+  return SUCCEEDED(hr);
+}
+void release_target() { if (g.rtv) { g.rtv->Release(); g.rtv = nullptr; } }
+
+bool create_device() {
+  DXGI_SWAP_CHAIN_DESC sd{};
+  sd.BufferCount = 2;
+  sd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+  sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+  sd.OutputWindow = g.hwnd;
+  sd.SampleDesc.Count = 1;
+  sd.Windowed = TRUE;
+  sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+  const D3D_FEATURE_LEVEL fl[2] = {D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_0};
+  D3D_FEATURE_LEVEL got;
+  for (D3D_DRIVER_TYPE t : {D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP}) {
+    if (SUCCEEDED(D3D11CreateDeviceAndSwapChain(nullptr, t, nullptr, 0, fl, 2, D3D11_SDK_VERSION, &sd, &g.sc, &g.dev, &got, &g.ctx))) return create_target();
+  }
+  return false;
+}
+void destroy_device() {
+  release_target();
+  if (g.sc) { g.sc->Release(); g.sc = nullptr; }
+  if (g.ctx) { g.ctx->Release(); g.ctx = nullptr; }
+  if (g.dev) { g.dev->Release(); g.dev = nullptr; }
+}
+
+LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
+  if (ImGui_ImplWin32_WndProcHandler(h, m, w, l)) return TRUE;
+  switch (m) {
+    case WM_SIZE:
+      if (g.dev && w != SIZE_MINIMIZED) { g.rw = LOWORD(l); g.rh = HIWORD(l); g.resize = true; }
+      return 0;
+    case WM_GETMINMAXINFO: { MINMAXINFO* mm = (MINMAXINFO*)l; mm->ptMinTrackSize.x = 640; mm->ptMinTrackSize.y = 400; return 0; }
+    case WM_SYSCOMMAND: if ((w & 0xfff0) == SC_KEYMENU) return 0; break;
+    case WM_CLOSE: g.result = UiResult::Quit; g.done = true; return 0;
+  }
+  return DefWindowProcW(h, m, w, l);
+}
+
+// Writes the back buffer as a 32-bit BMP (test pictures).
+bool save_bmp(const std::string& path) {
+  ID3D11Texture2D* bb = nullptr;
+  if (FAILED(g.sc->GetBuffer(0, IID_PPV_ARGS(&bb)))) return false;
+  D3D11_TEXTURE2D_DESC d{};
+  bb->GetDesc(&d);
+  d.Usage = D3D11_USAGE_STAGING; d.BindFlags = 0; d.CPUAccessFlags = D3D11_CPU_ACCESS_READ; d.MiscFlags = 0;
+  ID3D11Texture2D* st = nullptr;
+  bool ok = false;
+  if (SUCCEEDED(g.dev->CreateTexture2D(&d, nullptr, &st))) {
+    g.ctx->CopyResource(st, bb);
+    D3D11_MAPPED_SUBRESOURCE mp{};
+    if (SUCCEEDED(g.ctx->Map(st, 0, D3D11_MAP_READ, 0, &mp))) {
+      BITMAPFILEHEADER bf{}; BITMAPINFOHEADER bi{};
+      bi.biSize = sizeof bi; bi.biWidth = (LONG)d.Width; bi.biHeight = -(LONG)d.Height; bi.biPlanes = 1; bi.biBitCount = 32; bi.biCompression = BI_RGB;
+      bf.bfType = 0x4d42; bf.bfOffBits = sizeof bf + sizeof bi; bf.bfSize = bf.bfOffBits + d.Width * d.Height * 4;
+      std::vector<unsigned char> px((size_t)d.Width * d.Height * 4);
+      for (UINT y = 0; y < d.Height; ++y) {
+        const unsigned char* s = (const unsigned char*)mp.pData + (size_t)y * mp.RowPitch;
+        unsigned char* o = px.data() + (size_t)y * d.Width * 4;
+        for (UINT x = 0; x < d.Width; ++x) { o[x * 4 + 0] = s[x * 4 + 2]; o[x * 4 + 1] = s[x * 4 + 1]; o[x * 4 + 2] = s[x * 4 + 0]; o[x * 4 + 3] = 255; }
+      }
+      std::ofstream f(P(path), std::ios::binary);
+      f.write((const char*)&bf, sizeof bf); f.write((const char*)&bi, sizeof bi); f.write((const char*)px.data(), (std::streamsize)px.size());
+      ok = f.good();
+      g.ctx->Unmap(st, 0);
+    }
+    st->Release();
+  }
+  bb->Release();
+  return ok;
+}
+
+void apply_test_view(const std::string& v) {
+  int a = 0, b = 0;
+  if (v.rfind("settings", 0) == 0) { g.view = G::SETTINGS; std::sscanf(v.c_str(), "settings:%d", &a); g.tab = std::clamp(a, 0, (int)g.pages.size() - 1); }
+  else if (v.rfind("pulldown", 0) == 0) {
+    g.view = G::SETTINGS; std::sscanf(v.c_str(), "pulldown:%d:%d", &a, &b);
+    g.tab = std::clamp(a, 0, (int)g.pages.size() - 1);
+    g.row = std::clamp(b, 0, (int)g.pages[(size_t)g.tab].items.size() - 1);
+    Item& it = g.pages[(size_t)g.tab].items[(size_t)g.row];
+    g.pulldown = true; g.pd_sel = std::max(0, index_of(it, it.cur));
+  } else if (v == "saves") { g.view = G::SAVES; g.row = 0; }
+  else if (v == "steam" || v == "steam_run") {   // steam_run really does the job (against SNAP_STEAM_DIR) and shows the result
+    refresh_steam_status(); g.steam_running = g.steam_status > 0 && steam_is_running(); g.steam_state = G::ST_ASK; g.view = G::STEAM;
+    if (v == "steam_run") steam_add();
+  }
+}
+
+// The graphics card the window runs on, and whether a controller is plugged in (for the status chips).
+void read_gpu_and_pad() {
+  IDXGIDevice* dd = nullptr;
+  if (g.dev && SUCCEEDED(g.dev->QueryInterface(IID_PPV_ARGS(&dd)))) {
+    IDXGIAdapter* ad = nullptr;
+    if (SUCCEEDED(dd->GetAdapter(&ad))) {
+      DXGI_ADAPTER_DESC d{};
+      if (SUCCEEDED(ad->GetDesc(&d))) {
+        std::string n = narrow(d.Description);
+        for (const char* pre : {"NVIDIA ", "AMD ", "Intel(R) "}) if (n.rfind(pre, 0) == 0) n = n.substr(std::strlen(pre));
+        g.gpu_name = n;
+        g.gpu_nvidia = d.VendorId == 0x10de;
+        g.gpu_rtx = g.gpu_nvidia && n.find("RTX") != std::string::npos;
+      }
+      ad->Release();
+    }
+    dd->Release();
+  }
+  using XGet = DWORD(WINAPI*)(DWORD, void*);
+  if (HMODULE x = LoadLibraryW(L"xinput1_4.dll")) {
+    if (XGet f = (XGet)GetProcAddress(x, "XInputGetState")) {
+      unsigned char st[16];
+      for (DWORD i = 0; i < 4 && !g.pad_found; ++i) if (f(i, st) == ERROR_SUCCESS) g.pad_found = true;
+    }
+  }
+}
+
+}  // namespace
+
+UiResult show(UiInfo& info) {
+  g = G();
+  g.info = &info;
+  // per-thread DPI awareness only while this window lives: the game window keeps the process default
+  using SetCtx = HANDLE(WINAPI*)(HANDLE);
+  SetCtx set_ctx = (SetCtx)GetProcAddress(GetModuleHandleW(L"user32.dll"), "SetThreadDpiAwarenessContext");
+  HANDLE old_ctx = set_ctx ? set_ctx((HANDLE)(INT_PTR)-4) : nullptr;   // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+  auto restore = [&] { if (set_ctx && old_ctx) set_ctx(old_ctx); };
+
+  build_pages();
+  g.profile_idx = info.profiles.size();
+  for (size_t i = 0; i < info.profiles.size(); ++i) if (info.profiles[i].id == info.profile_id) g.profile_idx = i;
+  if (g.profile_idx >= info.profiles.size() && !info.profiles.empty()) { g.profile_idx = 0; info.profile_id = info.profiles[0].id; }
+  load_stores();
+
+  const char* shot = std::getenv("SNAP_LAUNCHER_UI_SHOT");
+  const char* view = std::getenv("SNAP_LAUNCHER_UI_VIEW");
+
+  WNDCLASSEXW wc{sizeof wc};
+  wc.style = CS_CLASSDC;
+  wc.lpfnWndProc = wndproc;
+  wc.hInstance = GetModuleHandleW(nullptr);
+  wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+  wc.lpszClassName = L"SnapRecompLauncherUi";
+  wc.hIcon = LoadIconW(wc.hInstance, MAKEINTRESOURCEW(1));
+  wc.hIconSm = wc.hIcon;
+  RegisterClassExW(&wc);
+  using GetDpi = UINT(WINAPI*)(HWND);
+  const DWORD style = WS_OVERLAPPEDWINDOW;
+  g.hwnd = CreateWindowExW(0, wc.lpszClassName, L"Snap Recomp", style, CW_USEDEFAULT, CW_USEDEFAULT, 1280, 720, nullptr, nullptr, wc.hInstance, nullptr);
+  if (!g.hwnd) { UnregisterClassW(wc.lpszClassName, wc.hInstance); restore(); return UiResult::Failed; }
+  {
+    GetDpi gd = (GetDpi)GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow");
+    const float sc = gd ? gd(g.hwnd) / 96.0f : 1.0f;
+    RECT r{0, 0, (LONG)(1280 * sc), (LONG)(720 * sc)};
+    AdjustWindowRectEx(&r, style, FALSE, 0);
+    RECT wa{};
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
+    const int w = std::min<int>(r.right - r.left, wa.right - wa.left), h = std::min<int>(r.bottom - r.top, wa.bottom - wa.top);
+    SetWindowPos(g.hwnd, nullptr, wa.left + (wa.right - wa.left - w) / 2, wa.top + (wa.bottom - wa.top - h) / 2, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+  }
+  RECT cr{};
+  GetClientRect(g.hwnd, &cr);
+  g.rw = (UINT)(cr.right - cr.left); g.rh = (UINT)(cr.bottom - cr.top);
+  if (!create_device()) { destroy_device(); DestroyWindow(g.hwnd); UnregisterClassW(wc.lpszClassName, wc.hInstance); restore(); return UiResult::Failed; }
+
+  IMGUI_CHECKVERSION();
+  ImGui::CreateContext();
+  ImGuiIO& io = ImGui::GetIO();
+  io.IniFilename = nullptr;
+  io.LogFilename = nullptr;
+  io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+  bool ok = ImGui_ImplWin32_Init(g.hwnd) && ImGui_ImplDX11_Init(g.dev, g.ctx);
+  if (ok) {
+    // font: the game's own (bytes decoded by the caller from the user's files), else Segoe UI Bold from Windows, else ImGui's built-in
+    ImFontConfig fc;
+    fc.FontDataOwnedByAtlas = false;
+    if (!info.font_ttf.empty()) g.font = io.Fonts->AddFontFromMemoryTTF(info.font_ttf.data(), (int)info.font_ttf.size(), 22.0f, &fc);
+    if (!g.font) {
+      char sysdir[MAX_PATH] = {};
+      GetWindowsDirectoryA(sysdir, MAX_PATH);
+      for (const char* f : {"\\Fonts\\segoeuib.ttf", "\\Fonts\\segoeui.ttf"}) {
+        const std::string p = std::string(sysdir) + f;
+        if (GetFileAttributesA(p.c_str()) != INVALID_FILE_ATTRIBUTES) { g.font = io.Fonts->AddFontFromFileTTF(p.c_str(), 22.0f); if (g.font) break; }
+      }
+    }
+    if (!g.font) g.font = io.Fonts->AddFontDefaultVector();
+    // the Steam artwork is drawn with a Windows system font, never the game's own
+    {
+      char sysdir[MAX_PATH] = {};
+      GetWindowsDirectoryA(sysdir, MAX_PATH);
+      for (const char* f : {"\\Fonts\\seguibl.ttf", "\\Fonts\\segoeuib.ttf", "\\Fonts\\arialbd.ttf"}) {
+        const std::string p = std::string(sysdir) + f;
+        if (GetFileAttributesA(p.c_str()) != INVALID_FILE_ATTRIBUTES) { g.art_font = io.Fonts->AddFontFromFileTTF(p.c_str(), 22.0f); if (g.art_font) break; }
+      }
+      if (!g.art_font) g.art_font = g.font;
+    }
+    read_gpu_and_pad();
+    refresh_steam_status();
+  }
+  if (!ok || !g.font) {
+    if (ok) { ImGui_ImplDX11_Shutdown(); ImGui_ImplWin32_Shutdown(); }
+    ImGui::DestroyContext();
+    destroy_device();
+    DestroyWindow(g.hwnd);
+    UnregisterClassW(wc.lpszClassName, wc.hInstance);
+    restore();
+    return UiResult::Failed;
+  }
+
+  if (view) apply_test_view(view);
+  ShowWindow(g.hwnd, shot ? SW_HIDE : SW_SHOW);
+  if (!shot) { SetForegroundWindow(g.hwnd); }
+
+  int frames = 0;
+  while (!g.done) {
+    MSG msg;
+    while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+      TranslateMessage(&msg);
+      DispatchMessageW(&msg);
+      if (msg.message == WM_QUIT) { g.done = true; g.result = UiResult::Quit; }
+    }
+    if (g.done) break;
+    if (IsIconic(g.hwnd)) { Sleep(40); continue; }
+    if (g.resize) {
+      g.resize = false;
+      release_target();
+      g.sc->ResizeBuffers(0, g.rw, g.rh, DXGI_FORMAT_UNKNOWN, 0);
+      create_target();
+    }
+    ImGui_ImplDX11_NewFrame();
+    ImGui_ImplWin32_NewFrame();
+    ImGui::NewFrame();
+    const ImVec2 ds = ImGui::GetIO().DisplaySize;
+    g.s = std::min(ds.x / 1280.0f, ds.y / 720.0f);
+    g.ox = (ds.x - 1280 * g.s) / 2;
+    g.oy = (ds.y - 720 * g.s) / 2;
+    if (!shot) handle_input();
+    if (g.done) { ImGui::EndFrame(); break; }
+    bool back = false;
+    if (g.view == G::SETTINGS) draw_settings(&back);
+    else if (g.view == G::SAVES) draw_saves();
+    else if (g.view == G::STEAM) { g.block_hot = true; draw_home(); g.block_hot = false; draw_steam(); }
+    else draw_home();
+    ImGui::Render();
+    const float clear[4] = {0.96f, 0.95f, 0.94f, 1.0f};
+    g.ctx->OMSetRenderTargets(1, &g.rtv, nullptr);
+    g.ctx->ClearRenderTargetView(g.rtv, clear);
+    ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+    ++frames;
+    if (shot && frames >= 5) {
+      const bool saved = save_bmp(shot);
+      std::fprintf(stderr, "launcher ui: picture %s %s\n", shot, saved ? "saved" : "FAILED");
+      g.result = UiResult::Quit;
+      break;
+    }
+    g.sc->Present(shot ? 0 : 1, 0);
+    if (g.steam_work) { g.steam_work = false; steam_add(); }   // after the "Working" frame is on screen
+  }
+  info.profile_id = g.profile_idx < info.profiles.size() ? info.profiles[g.profile_idx].id : info.profile_id;
+  ImGui_ImplDX11_Shutdown();
+  ImGui_ImplWin32_Shutdown();
+  ImGui::DestroyContext();
+  destroy_device();
+  DestroyWindow(g.hwnd);
+  UnregisterClassW(wc.lpszClassName, wc.hInstance);
+  restore();
+  return g.result;
+}
+
+}  // namespace snap_launcher

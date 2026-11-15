@@ -26,6 +26,8 @@
 #include "hle/json_lite.h"
 #include "hle/save_port.h"
 #include "launcher.h"
+#include "launcher_ui.h"
+#include "ui_font.h"
 
 namespace fs = std::filesystem;
 
@@ -636,6 +638,74 @@ static int ask(const UpdateNotice& notice) {
   return sel == 1001 ? 1 : sel == 1002 ? 2 : sel == 1003 ? 3 : sel == 1004 ? 4 : sel == 1005 ? 5 : sel == 1006 ? 6 : sel == 1007 ? 7 : sel == 1008 ? 8 : 0;
 }
 
+// The themed launcher window (host/launcher_ui.cpp). Returns the same codes as ask(), or -1 when the window could not be made (then the task dialog is used).
+// The window also owns the save-profile choice and writes the pre-launch settings to the files the game reads, so they apply at Play.
+static int ask_themed(const UpdateNotice& notice, const fs::path& cfg_path, const fs::path& exe_dir, const std::string& romfs, const hle::Json& cfg, const hle::Json& data) {
+  static std::string s_profile;                      // the choice survives going to a sub-flow and back
+  static std::string s_checked_root;                 // romfs check result, redone only when the folder changed
+  static std::string s_check_msg;
+  hle::load_config(U8(cfg_path.wstring()));
+  snap_launcher::UiInfo ui;
+  auto env = [](const char* n) { const char* e = std::getenv(n); return std::string(e && *e ? e : ""); };
+  ui.data_dir = !env("SNAP_CONFIG_DIR").empty() ? env("SNAP_CONFIG_DIR") : (!env("APPDATA").empty() ? env("APPDATA") + "\\SnapRecomp" : hle::config().data_root);
+  const std::string data_root = hle::config().data_root;
+  ui.settings_noprofile = data_root + "\\settings.cfg";
+  const bool explicit_save = !env("SNAP_SAVE_DIR").empty() || (cfg.get("save_root") && !cfg.get("save_root")->str().empty());
+  const bool profiles_on = !env("SNAP_PROFILES_DIR").empty() || !explicit_save;
+  ui.exe_dir = U8(exe_dir.wstring());
+  ui.version = cfg.get("builder_version") ? cfg.get("builder_version")->str() : "";
+  ui.update_available = notice.available;
+  ui.update_version = notice.latest;
+  if (romfs != s_checked_root) { s_check_msg = check_romfs(romfs, data); s_checked_root = romfs; }
+  ui.game_ok = s_check_msg.empty();
+  ui.game_msg = s_check_msg;
+  std::string root;
+  if (profiles_on) {
+    root = !env("SNAP_PROFILES_DIR").empty() ? env("SNAP_PROFILES_DIR") : data_root + "\\profiles";
+    ui.profiles_root = root;
+    hle::profiles::Store st(root);
+    st.load();
+    if (st.list().empty()) {   // the same first-start steps as hle::profiles::startup, so the settings have a profile folder to live in
+      std::string legacy = !env("SNAP_LEGACY_SAVE_DIR").empty() ? env("SNAP_LEGACY_SAVE_DIR") : data_root + "\\save", e;
+      std::error_code ec;
+      if (fs::is_directory(fs::u8path(legacy), ec) && !fs::is_empty(fs::u8path(legacy), ec)) st.migrate_legacy(legacy, &e);
+      if (st.list().empty()) st.create("Profile 1", &e);
+    }
+    for (auto& p : st.list()) ui.profiles.push_back({p.id, p.name, (long long)p.last_played});
+    std::string want = env("SNAP_PROFILE");
+    const hle::profiles::Profile* pf = want.empty() ? nullptr : st.find(want);
+    ui.profile_id = pf ? pf->id : (!s_profile.empty() && st.find(s_profile)) ? s_profile : st.last_used();
+    ui.new_profile = [&ui, root]() -> std::string {
+      hle::profiles::Store s2(root);
+      s2.load();
+      std::string err;
+      std::string id = s2.create(s2.next_free_name(), &err);
+      ui.profiles.clear();
+      for (auto& p : s2.list()) ui.profiles.push_back({p.id, p.name, (long long)p.last_played});
+      return id;
+    };
+  }
+  snap::ui::game_font_ttf(ui.font_ttf);   // the game's own UI font, decoded now from the user's files; empty when missing
+  using R = snap_launcher::UiResult;
+  const R res = snap_launcher::show(ui);
+  if (res == R::Failed) return -1;
+  if (!ui.profile_id.empty()) {
+    s_profile = ui.profile_id;
+    if (env("SNAP_PROFILE").empty()) _putenv_s("SNAP_PROFILE", ui.profile_id.c_str());   // skips the game's own picker and sends saves here
+  }
+  switch (res) {
+    case R::Play: return 1;
+    case R::GameFolder: return 2;
+    case R::OpenSaves: return 3;
+    case R::Upscalers: return 4;
+    case R::ImportSave: return 5;
+    case R::ExportSave: return 6;
+    case R::Updates: return 7;
+    case R::HdTextures: return 8;
+    default: return 0;
+  }
+}
+
 bool prepare(Result& r) {
   wchar_t mp[MAX_PATH * 2] = {};
   GetModuleFileNameW(nullptr, mp, (DWORD)(sizeof mp / sizeof mp[0]));
@@ -668,7 +738,11 @@ bool prepare(Result& r) {
   if (!autoplay || std::getenv("SNAP_LAUNCHER_UPDATE_CHECK")) start_background_check(cfg, cfg_path);
   for (;;) {
     std::string romfs = cfg.get("romfs_root") ? cfg.get("romfs_root")->str() : "";
-    int choice = autoplay ? 1 : ask(notice);
+    int choice = 1;
+    if (!autoplay) {
+      choice = std::getenv("SNAP_LAUNCHER_CLASSIC") ? -1 : ask_themed(notice, cfg_path, exe_dir, romfs, cfg, data);   // -1: no themed window, use the task dialog
+      if (choice < 0) choice = ask(notice);
+    }
     if (choice == 0) return true;   // quit
     if (choice == 7) { if (updates_flow(cfg_path, cfg, notice)) return true; continue; }
     if (choice == 8) { hd_textures_flow(exe_dir, cfg_path, cfg); continue; }
