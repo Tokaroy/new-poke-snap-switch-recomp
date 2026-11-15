@@ -14,6 +14,7 @@
   <img alt="Graphics: Vulkan" src="https://img.shields.io/badge/graphics-Vulkan-AC162C">
   <img alt="Game version: 2.0.1" src="https://img.shields.io/badge/game%20version-2.0.1-informational">
   <img alt="Status: early playable" src="https://img.shields.io/badge/status-early%20playable-yellow">
+  <a href="https://github.com/finalpantasy/new-poke-snap-switch-recomp/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/finalpantasy/new-poke-snap-switch-recomp"></a>
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue">
 </p>
 
@@ -21,6 +22,7 @@
   <a href="#status">Status</a> ·
   <a href="#features">Features</a> ·
   <a href="#screenshots">Screenshots</a> ·
+  <a href="#build-it-yourself">Download</a> ·
   <a href="#building">Building</a> ·
   <a href="#running-and-settings">Running</a> ·
   <a href="#testing">Testing</a> ·
@@ -145,6 +147,30 @@ Captured from the native build running on Windows. They show the running game on
     </td>
   </tr>
 </table>
+
+## Build it yourself
+
+Snap Recomp Builder turns your own copy of New Pokémon Snap 2.0.1 into `SnapRecomp.exe`. Download `SnapRecomp-Builder-v1.0.0-win-x64.zip` from the [latest release](https://github.com/finalpantasy/new-poke-snap-switch-recomp/releases/latest). It holds only our MIT code and prebuilt runtime objects, no game data.
+
+You need Windows 10 or 11 x64, a Vulkan 1.3 driver, Python 3.14, Visual Studio Build Tools 2022 and about 13 GB of free disk (tools 2 GB, scratch 4 GB, shader cache 7 GB). You also need the game's `main` and `sdk` files and the patched RomFS folder, extracted from your own copy with your own tools.
+
+<p align="center"><img src="docs/screenshots/launcher.webp" alt="The Snap Recomp launcher: Play, game folder, saves, upscalers, HD textures and updates" width="520"></p>
+
+1. `python builder\snap_builder.py check --main <main> --sdk <sdk> --romfs <romfs folder>`
+2. `python builder\snap_builder.py fetch llvm ghidra switch_loader jdk`
+3. `python builder\snap_builder.py pyenv`
+4. `python builder\snap_builder.py build --main <main> --sdk <sdk> --romfs <romfs folder> --work <new empty folder>`
+5. Double-click `<work folder>\out\SnapRecomp.exe`.
+
+The first build takes 25 to 50 minutes, most of it Ghidra and compiling. The first start translates shaders and takes several minutes.
+
+You run the build from a terminal. The finished `SnapRecomp.exe` opens its own launcher window, with Play, the game folder, saves and upscalers.
+
+### HD textures
+
+`python builder\snap_builder.py hdtex --collect <out folder>\SnapRecomp.exe`, then `python builder\snap_builder.py hdtex --level hd`. Levels are Off, Sharp, HD, Ultra and Custom. Upscaling runs on your GPU. Press F8 in game to switch between original and HD.
+
+The updater checks once a day and installs only when you click. Turn the check off under Updates in the launcher. See [builder/README.md](builder/README.md) for every option.
 
 ## Building
 
