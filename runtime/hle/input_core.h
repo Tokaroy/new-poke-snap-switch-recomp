@@ -50,9 +50,13 @@ const char* key_name(int k);
 int key_from_name(const std::string& n);  // case-insensitive; 0 if unknown
 int key_from_ascii(char ch);              // 'A'..'Z', '0'..'9'
 
+// What kind of pad is connected (button icon mod: the face button labels follow it). Same numbering as hle::icons::Family.
+enum PadFamily : int { kPadFamNone = 0, kPadFamSwitch, kPadFamXbox, kPadFamPlayStation };
+
 struct RawInput {
   bool focused = true;                 // the game window has the keyboard focus
   bool pad_connected = false;
+  int pad_family = kPadFamNone;        // PadFamily of the first connected pad (Xbox for XInput; SDL3 reports the type)
   std::bitset<32> pad;                 // PadButton bits (triggers are also given as axes)
   float lx = 0, ly = 0, rx = 0, ry = 0;  // -1..1, y up positive
   float lt = 0, rt = 0;                // 0..1

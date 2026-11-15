@@ -10,6 +10,7 @@
 #include <sstream>
 #include <vector>
 
+#include "btn_icons.h"
 #include "hle.h"
 #include "hle_config.h"
 #include "input_core.h"
@@ -194,6 +195,10 @@ void apply(bool env) {
   fx.gyro_invert_y = get_bool("gyro_invert_y", false);
   fx.rumble_on = get_bool("rumble_on", true);
   fx.rumble_strength = get_float("rumble_strength", 1.0f);
+  {   // button icon mod: live, the renderer reads it on its next draw; SNAP_BUTTON_ICONS (auto|switch|xbox|playstation) overrides the file for test runs
+    const char* e = std::getenv("SNAP_BUTTON_ICONS");
+    icons::set_style(icons::parse_style(e && *e ? std::string(e) : get("button_icons", "auto")));
+  }
   if (!env) return;
   // next start: env-var mods
   std::string look = get("look", "neutral");

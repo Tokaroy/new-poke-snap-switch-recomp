@@ -20,6 +20,7 @@
 #include <cstring>
 #include <chrono>
 #include "nvn_shiny.h"   // shiny mod
+#include "nvn_btnicon.h"   // button icon mod
 #include "nvn_capture.h"   // photo capture filter under render scale
 #include "nvn_hdphoto.h"   // HD photos (SNAP_HD_PHOTOS)
 #include <deque>
@@ -596,6 +597,13 @@ ResolvedTex ResolveHandle(ReplayCtx& cx, DrawState& d, uint64_t handle, bool ima
     r.t = ShinySubstitute(r.t, sd);
   }
   bool hdSub = false;
+  if (!image && !up && BtnIconActive()) {   // button icon mod (nvn_btnicon.cpp): UI glyph sprites
+    BtnDraw bd; bd.rtW = cx.rt[0] ? cx.rt[0]->b.width : 0; bd.rtH = cx.rt[0] ? cx.rt[0]->b.height : 0; bd.prog = d.prog ? (int)d.prog->id : -1;
+    PoolImpl* vp = nullptr; uint64_t vo = 0;
+    if (d.vbAddr[0] && r.t->host && r.t->host->ResolveAddress(d.vbAddr[0], &vp, &vo) && vp && vp->storage && vo + 4 * 14 * 4 <= vp->size)
+      bd.vbf = reinterpret_cast<const float*>(static_cast<const uint8_t*>(vp->storage) + vo);
+    r.t = BtnIconSubstitute(r.t, bd);
+  }
   if (!image && !up && HdPhotoOn() && cx.rt[0] && cx.rt[0]->b.width == 1920) {   // HD photos (nvn_hdphoto.cpp): a photo drawn large in the UI
     float drawnW = 0;
     PoolImpl* vp = nullptr; uint64_t vo = 0;

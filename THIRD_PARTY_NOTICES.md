@@ -38,6 +38,16 @@ Reference only, not copied: Kirikae (https://github.com/Cor3Duo/kirikae) @ `304a
 Copyright (c) 2015 by Hubert & Fischer, licensed under the SIL Open Font License, Version 1.1 (https://openfontlicense.org). The font
 software itself is not included.
 
+## Button icon art
+
+The Xbox and PlayStation button pictures of the "Button icons" setting come from Kenney's Input Prompts pack, version 1.5A
+(creation date 11-07-2026), https://kenney.nl/assets/input-prompts, by Kenney (www.kenney.nl). License: Creative Commons CC0 1.0
+Universal (public domain dedication, https://creativecommons.org/publicdomain/zero/1.0/); attribution is not required, and is given
+here anyway. Used: the colored face buttons, shoulder and trigger buttons, menu and view buttons, D-pads and sticks from the "Xbox
+Series" and "PlayStation Series" sets (Default style, 64x64 PNG). `scripts/mods/make_button_icons.py` packs 52 of those PNGs into one
+atlas, embedded as `runtime/nvn/nvn_btnicon_atlas.h`. The pack itself is not in the repository. The game's own button textures are
+never copied: the renderer reads them from the user's copy while it runs (`analysis/mods/button_icons.md`).
+
 ## License texts
 
 ### TotK Recomp (MIT)

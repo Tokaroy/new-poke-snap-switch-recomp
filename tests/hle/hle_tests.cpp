@@ -23,6 +23,7 @@
 #include <thread>
 #include <vector>
 
+#include "../../runtime/hle/btn_icons.h"
 #include "../../runtime/hle/fs_core.h"
 #include "../../runtime/hle/hle.h"
 #include "../../runtime/hle/hle_config.h"
@@ -1287,6 +1288,109 @@ static void test_input_mapping() {
   CHECK(!m.mouse_look);
 }
 
+// Button icon mod (runtime/hle/btn_icons.h): Auto detection, and the glyph for every binding case.
+static void test_button_icons() {
+  g_test = "button_icons";
+  namespace ic = hle::icons;
+  using namespace input;
+  // --- style setting
+  CHECK(ic::parse_style("auto") == ic::kAuto && ic::parse_style("") == ic::kAuto && ic::parse_style("nonsense") == ic::kAuto);
+  CHECK(ic::parse_style("switch") == ic::kSwitch && ic::parse_style("Xbox") == ic::kXbox && ic::parse_style("PlayStation") == ic::kPlayStation && ic::parse_style("ps") == ic::kPlayStation);
+  for (int s = 0; s < ic::kStyleCount; s++) CHECK(ic::parse_style(ic::style_name((ic::Style)s)) == (ic::Style)s);   // stored value round-trips
+  // --- Auto follows the connected pad; no pad, a Switch pad and an unknown pad keep the Switch pictures
+  CHECK(ic::resolve_style(ic::kAuto, ic::kFamXbox, true) == ic::kXbox);
+  CHECK(ic::resolve_style(ic::kAuto, ic::kFamPlayStation, true) == ic::kPlayStation);
+  CHECK(ic::resolve_style(ic::kAuto, ic::kFamSwitch, true) == ic::kSwitch);
+  CHECK(ic::resolve_style(ic::kAuto, ic::kFamNone, true) == ic::kSwitch);
+  CHECK(ic::resolve_style(ic::kAuto, ic::kFamPlayStation, false) == ic::kSwitch);   // the pad was unplugged: back to the game's own
+  // a chosen style wins over the pad, connected or not
+  CHECK(ic::resolve_style(ic::kXbox, ic::kFamPlayStation, true) == ic::kXbox);
+  CHECK(ic::resolve_style(ic::kPlayStation, ic::kFamNone, false) == ic::kPlayStation);
+  CHECK(ic::resolve_style(ic::kSwitch, ic::kFamXbox, true) == ic::kSwitch);
+
+  // --- the glyph is the physical button under the current binding, not a letter swap
+  Mapping m = Mapping::defaults();
+  CHECK(ic::glyph_of_action(m, kA) == ic::kFaceRight);    // default layout is by position: Switch A is the east button (Xbox B, PlayStation Circle)
+  CHECK(ic::glyph_of_action(m, kB) == ic::kFaceBottom);   // Switch B is south (Xbox A, PlayStation Cross)
+  CHECK(ic::glyph_of_action(m, kX) == ic::kFaceTop);      // Switch X is north (Xbox Y, PlayStation Triangle)
+  CHECK(ic::glyph_of_action(m, kY) == ic::kFaceLeft);     // Switch Y is west (Xbox X, PlayStation Square)
+  CHECK(ic::glyph_of_action(m, kL) == ic::kL1 && ic::glyph_of_action(m, kR) == ic::kR1);
+  CHECK(ic::glyph_of_action(m, kZL) == ic::kL2 && ic::glyph_of_action(m, kZR) == ic::kR2);
+  CHECK(ic::glyph_of_action(m, kPlus) == ic::kMenu && ic::glyph_of_action(m, kMinus) == ic::kView);
+  CHECK(ic::glyph_of_action(m, kLeft) == ic::kDpadLeft && ic::glyph_of_action(m, kUp) == ic::kDpadUp);
+  CHECK(ic::glyph_of_action(m, kRight) == ic::kDpadRight && ic::glyph_of_action(m, kDown) == ic::kDpadDown);
+  CHECK(ic::glyph_of_action(m, kStickL) == ic::kStickLPress && ic::glyph_of_action(m, kStickR) == ic::kStickRPress);
+  // Nintendo layout by label: Switch A is the Xbox A / Cross button
+  set_face_layout(m, 1);
+  CHECK(ic::glyph_of_action(m, kA) == ic::kFaceBottom && ic::glyph_of_action(m, kB) == ic::kFaceRight);
+  CHECK(ic::glyph_of_action(m, kX) == ic::kFaceLeft && ic::glyph_of_action(m, kY) == ic::kFaceTop);
+  set_face_layout(m, 0);
+  CHECK(ic::glyph_of_action(m, kA) == ic::kFaceRight);
+  // a rebound action follows its new button
+  m = Mapping::defaults();
+  slot_set(m.buttons[kA], kDevController, 0, Source{Source::Pad, kPadNorth});
+  CHECK(ic::glyph_of_action(m, kA) == ic::kFaceTop);
+  slot_set(m.buttons[kZR], kDevController, 0, Source{Source::Pad, kPadRShoulder});   // ZR moved onto the right bumper
+  CHECK(ic::glyph_of_action(m, kZR) == ic::kR1);
+  slot_set(m.buttons[kX], kDevController, 0, Source{Source::Pad, kPadRStickDown});   // a stick direction as a button
+  CHECK(ic::glyph_of_action(m, kX) == ic::kStickRDown);
+  // the first controller source wins when two are bound; keyboard and mouse sources are skipped
+  m = Mapping::defaults();
+  m.buttons[kB].clear();
+  m.buttons[kB].push_back(Source{Source::KeyboardKey, key_from_name("K")});
+  m.buttons[kB].push_back(Source{Source::Mouse, kMouseRight});
+  m.buttons[kB].push_back(Source{Source::Pad, kPadWest});
+  CHECK(ic::glyph_of_action(m, kB) == ic::kFaceLeft);
+  // no controller source (keyboard or mouse only): keep the game's own icon
+  m.buttons[kB].pop_back();
+  CHECK(ic::glyph_of_action(m, kB) == ic::kGlyphCount);
+  m.buttons[kY].clear();
+  CHECK(ic::glyph_of_action(m, kY) == ic::kGlyphCount);
+  CHECK(ic::glyph_of_action(m, -1) == ic::kGlyphCount && ic::glyph_of_action(m, 99) == ic::kGlyphCount);
+  // the Guide button has no glyph; every other pad button has one
+  CHECK(ic::glyph_of_pad_button(kPadGuide) == ic::kGlyphCount);
+  for (int b = 0; b < kPadCount; b++) if (b != kPadGuide) CHECK(ic::glyph_of_pad_button(b) < ic::kGlyphCount);
+
+  // --- the snapshot the renderer reads
+  ic::set_mapping(Mapping::defaults());
+  ic::set_pad(ic::kFamNone, false);
+  ic::set_style(ic::kAuto);
+  CHECK(ic::active_style() == ic::kSwitch && snap_btnicon_glyph(kA) == -1);   // no pad: the game's own icons
+  ic::set_pad(ic::kFamXbox, true);
+  CHECK(ic::active_style() == ic::kXbox);
+  CHECK(snap_btnicon_glyph(kA) == ic::kFaceRight);                 // row 0 = Xbox
+  CHECK(snap_btnicon_glyph(kZR) == ic::kR2);
+  ic::set_pad(ic::kFamPlayStation, true);
+  CHECK(ic::active_style() == ic::kPlayStation);
+  CHECK(snap_btnicon_glyph(kA) == ((1 << 8) | ic::kFaceRight));    // row 1 = PlayStation
+  CHECK(snap_btnicon_glyph(kB) == ((1 << 8) | ic::kFaceBottom));
+  ic::set_style(ic::kXbox);                                        // a chosen style beats the pad
+  CHECK(snap_btnicon_glyph(kB) == ic::kFaceBottom);
+  ic::set_style(ic::kSwitch);
+  CHECK(snap_btnicon_glyph(kB) == -1);
+  ic::set_style(ic::kPlayStation);
+  Mapping rb = Mapping::defaults();
+  set_face_layout(rb, 1);
+  ic::set_mapping(rb);                                             // a mapping change shows at once
+  CHECK(snap_btnicon_glyph(kA) == ((1 << 8) | ic::kFaceBottom));
+  rb.buttons[kA].clear();                                          // keyboard only: the game's own icon
+  ic::set_mapping(rb);
+  CHECK(snap_btnicon_glyph(kA) == -1);
+  CHECK(snap_btnicon_glyph(-1) == -1 && snap_btnicon_glyph(28) == -1 && snap_btnicon_glyph(kStickLLeft) == -1);
+  // the hub pushes the mapping and the pad family into the snapshot
+  ic::set_style(ic::kAuto);
+  ic::set_pad(ic::kFamNone, false);
+  Hub h;
+  h.set_mapping(Mapping::defaults());
+  CHECK(snap_btnicon_glyph(kA) == -1);
+  ic::set_style(ic::kXbox);
+  CHECK(snap_btnicon_glyph(kA) == ic::kFaceRight);
+  // leave the globals as a fresh process has them
+  ic::set_style(ic::kAuto);
+  ic::set_pad(ic::kFamNone, false);
+  ic::set_mapping(Mapping::defaults());
+}
+
 static void test_input_config() {
   g_test = "input.config";
   using namespace input;
@@ -2367,6 +2471,7 @@ int main(int argc, char** argv) {
       {"hid", test_hid},
       {"input.mapping", test_input_mapping},
       {"input.config", test_input_config},
+      {"button_icons", test_button_icons},
       {"input.hub", test_input_hub},
       {"profiles", test_profiles},
 #ifdef _WIN32

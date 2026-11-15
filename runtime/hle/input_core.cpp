@@ -14,6 +14,7 @@
 #include <sstream>
 #include <vector>
 
+#include "btn_icons.h"
 #include "hle.h"
 
 namespace nvn { extern int g_presentCount; extern int g_fdBurst; }   // runtime/nvn/nvn_tex_vk.cpp: frame clock for '@f' script times; nvn_vk.cpp: NVN_FRAME_DUMP burst (script token shot=<n>)
@@ -551,7 +552,10 @@ void Hub::set_backend(std::unique_ptr<Backend> b) {
   backend_ = std::move(b);
   last_poll_ns_ = 0;
 }
-void Hub::set_mapping(const Mapping& m) { std::lock_guard<std::mutex> g(mu_); map_ = m; }
+void Hub::set_mapping(const Mapping& m) {
+  { std::lock_guard<std::mutex> g(mu_); map_ = m; }
+  icons::set_mapping(m);   // the button icons follow the current binding
+}
 Mapping Hub::mapping() const { std::lock_guard<std::mutex> g(mu_); return map_; }
 
 bool write_mapping_file(const Mapping& m, const std::string& path, std::string* err) {
@@ -649,6 +653,7 @@ bool Hub::load_config(const std::string& path, const std::string& legacy) {
   }
   std::lock_guard<std::mutex> g(mu_);
   map_ = m;
+  icons::set_mapping(m);
   path_ = path;
   if (!note.empty()) { set_message_locked(note); log("input: %s%s%s", note.c_str(), detail.empty() ? "" : " | ", detail.c_str()); }
   return ok;
@@ -1162,6 +1167,7 @@ void Hub::poll(int min_interval_ms) {
     r.mouse_vy = (float)(sy / ((double)win * 1e-9));
   }
   raw_ = r;
+  icons::set_pad((icons::Family)r.pad_family, r.pad_connected);
   // chord: hold Back + Start for 0.5 s toggles the menu (read from the physical pad, never remapped)
   const bool chord = r.focused && r.pad.test(kPadBack) && r.pad.test(kPadStart);
   if (!chord) { chord_since_ns_ = 0; chord_fired_ = false; }

@@ -13,6 +13,7 @@
 #include "nvn_shiny.h"
 #include "nvn_internal.h"
 #include "nvn_aa.h"   // AaForgetTexture
+#include "nvn_btnicon.h"   // BtnIconForget
 #include "nvn_fx.h"   // [fx]
 #include "nvn_hdr.h"   // HDR10 output (SNAP_HDR=1)
 #include "nvn_rt.h"   // [rt] SNAP_RT=1 ray tracing track
@@ -701,6 +702,7 @@ void DestroyTexture(TextureImpl* t) {
   if (t->bcShadow) { DestroyTexture(t->bcShadow); t->bcShadow = nullptr; }
   if (t->xferShadow) { DestroyTexture(t->xferShadow); t->xferShadow = nullptr; }
   if (t->abAlt) { DestroyTexture(t->abAlt); t->abAlt = nullptr; }   // SNAP_MODS_AB twin (only ever sampled via the parent, so the GPU is done with it too)
+  if (t->biAlts) BtnIconForget(t);   // button icon twins, same reasoning
   if (t->host && t->host->device) {
     for (auto& kv : t->views) vkDestroyImageView(t->host->device, kv.second, nullptr);
     const bool sub = t->image && SubMemFree(t->host, SUBMEM_IMAGE, (uint64_t)t->image);   // [perf pass 7] before the handle can be reused

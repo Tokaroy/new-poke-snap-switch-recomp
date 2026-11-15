@@ -51,6 +51,7 @@ int vk_for_key(int k) {
 void merge_pad(RawInput& dst, const RawInput& src) {
   if (!src.pad_connected) return;
   dst.pad_connected = true;
+  if (dst.pad_family == kPadFamNone) dst.pad_family = src.pad_family;
   dst.pad |= src.pad;
   auto big = [](float& d, float s) { if (std::fabs(s) > std::fabs(d)) d = s; };
   big(dst.lx, src.lx); big(dst.ly, src.ly); big(dst.rx, src.rx); big(dst.ry, src.ry);
@@ -75,6 +76,15 @@ struct SdlPads {
       case SDL_GAMEPAD_TYPE_PS3: return "ps3"; case SDL_GAMEPAD_TYPE_PS4: return "ps4"; case SDL_GAMEPAD_TYPE_PS5: return "ps5";
       case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO: return "switch-pro"; case SDL_GAMEPAD_TYPE_STANDARD: return "standard";
       default: return "other";
+    }
+  }
+  // SDL3 gamepad type to the icon family. Unknown and generic pads count as Xbox (the XInput layout every SDL mapping follows).
+  static int family_of(SDL_GamepadType t) {
+    switch (t) {
+      case SDL_GAMEPAD_TYPE_PS3: case SDL_GAMEPAD_TYPE_PS4: case SDL_GAMEPAD_TYPE_PS5: return kPadFamPlayStation;
+      case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO: case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_LEFT:
+      case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT: case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR: return kPadFamSwitch;
+      default: return kPadFamXbox;
     }
   }
   void say(const char* fmt, ...) __attribute__((format(printf, 2, 3))) {
@@ -141,6 +151,7 @@ struct SdlPads {
     for (SDL_Gamepad* pad : pads) {
       RawInput r;
       r.pad_connected = true;
+      r.pad_family = family_of(SDL_GetGamepadType(pad));
       auto b = [&](SDL_GamepadButton sb, int bit) { if (SDL_GetGamepadButton(pad, sb)) r.pad.set((size_t)bit); };
       b(SDL_GAMEPAD_BUTTON_SOUTH, kPadSouth); b(SDL_GAMEPAD_BUTTON_EAST, kPadEast);
       b(SDL_GAMEPAD_BUTTON_WEST, kPadWest); b(SDL_GAMEPAD_BUTTON_NORTH, kPadNorth);
@@ -229,6 +240,7 @@ class Win32Backend final : public Backend {
         }
         RawInput r;
         r.pad_connected = true;
+        r.pad_family = kPadFamXbox;
         WORD b = s.buttons;
         auto set = [&](int bit, bool v) { if (v) r.pad.set((size_t)bit); };
         set(kPadSouth, b & 0x1000); set(kPadEast, b & 0x2000); set(kPadWest, b & 0x4000); set(kPadNorth, b & 0x8000);
@@ -360,6 +372,7 @@ class Sdl3Backend final : public Backend {
     out.focused = SDL_GetKeyboardFocus() != nullptr;
     if (pad_) {
       out.pad_connected = true;
+      out.pad_family = SdlPads::family_of(SDL_GetGamepadType(pad_));
       auto b = [&](SDL_GamepadButton sb, int bit) { if (SDL_GetGamepadButton(pad_, sb)) out.pad.set((size_t)bit); };
       b(SDL_GAMEPAD_BUTTON_SOUTH, kPadSouth); b(SDL_GAMEPAD_BUTTON_EAST, kPadEast);
       b(SDL_GAMEPAD_BUTTON_WEST, kPadWest); b(SDL_GAMEPAD_BUTTON_NORTH, kPadNorth);

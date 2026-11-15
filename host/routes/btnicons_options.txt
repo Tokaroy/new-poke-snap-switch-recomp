@@ -1,0 +1,10 @@
+# fixture: post_tutorial
+# Button icons mod (analysis/mods/button_icons.md): from the lab hub open the game's Settings screen, close its one-time info popup (A),
+# then step through the tabs with R, so the prompts on it (A, B, L, R chevrons and plates) can be compared across the Button icons styles.
+# Run: powershell -File host\run_boot.ps1 -Route btnicons_options -Timeout 150 -ShotAt 28 -ShotEvery 4 -ShotMax 24
+repeat @f200 @f1400 100 8 ZL
+@f1500 8 Up
+@f1560 8 A
+@f1800 8 A
+@f1900 8 R
+@f2000 8 R
