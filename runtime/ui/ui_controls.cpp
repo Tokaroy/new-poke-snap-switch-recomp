@@ -122,10 +122,22 @@ void slot_button(int action, Device dev, int slot) {
   if (listening) { ImGui::PushStyleColor(ImGuiCol_Button, t.slot_listening); ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0, 0, 0, 1)); pushed = 2; }
   else if (conflict) { ImGui::PushStyleColor(ImGuiCol_Button, t.conflict); ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0, 0, 0, 1)); pushed = 2; }
   else if (s.kind == Source::None) { ImGui::PushStyleColor(ImGuiCol_Text, t.text_dim); pushed = 1; }
+  // Button icons setting: a controller button shows as its Xbox or PlayStation picture instead of its name
+  const float gh = ImGui::GetFontSize() * 1.25f;
+  const bool glyphed = !listening && s.kind == Source::Pad && style_pad_glyph_width(s.id, gh) > 0.0f;
   ImGui::PushID(action * 16 + (int)dev * 4 + slot);
-  if (ImGui::Button(label.c_str(), ImVec2(px(t.slot_w), 0))) {
+  if (ImGui::Button(glyphed ? "##pad" : label.c_str(), ImVec2(px(t.slot_w), 0))) {
     if (listening) { finish_rebind(); say("Rebinding cancelled."); }
     else begin_rebind(action, dev, slot);
+  }
+  if (glyphed) {
+    const ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const char* mark = conflict ? "! " : "";
+    const float mw = ImGui::CalcTextSize(mark).x, gw = style_pad_glyph_width(s.id, gh);
+    float x = (mn.x + mx.x - mw - gw) * 0.5f;
+    if (conflict) { dl->AddText(ImVec2(x, (mn.y + mx.y - ImGui::GetTextLineHeight()) * 0.5f), ImGui::GetColorU32(ImGuiCol_Text), mark); x += mw; }
+    style_pad_glyph(dl, ImVec2(x, (mn.y + mx.y - gh) * 0.5f), gh, s.id);
   }
   const bool hovered = ImGui::IsItemHovered();
   if (s.kind != Source::None && !listening &&

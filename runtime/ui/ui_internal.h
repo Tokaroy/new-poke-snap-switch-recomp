@@ -50,6 +50,10 @@ void saves_test_switch(const std::string& name);
 void style_shadow(ImDrawList* dl, ImVec2 pos, ImVec2 size, float round);
 float style_prompt(const char* glyph, const char* label);   // "A"/"B" make the orange chevron, longer text ("LB") a grey pill; stays on the line
 void style_footer_prompts(bool tabs, bool back);
+// Button icons setting: with Xbox or PlayStation chosen the menus draw those pictures for controller buttons (ImGui primitives).
+bool style_pad_glyphs();                                                          // Xbox or PlayStation pictures are on
+float style_pad_glyph_width(int pad_button, float h);                             // 0 = no glyph for this button (or Switch style)
+float style_pad_glyph(ImDrawList* dl, ImVec2 pos, float h, int pad_button);       // draws at pos (top-left), returns the width
 
 // ---- audio tab (ui_audio.cpp)
 void tab_audio();

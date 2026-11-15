@@ -1,0 +1,19 @@
+# Button icons mod (analysis/mods/button_icons.md): the F1 menu's own prompts and controller slots follow the Button icons setting.
+# Run: see analysis/mods/button_icons.md "Tests". Frames (NVN_FRAME_DUMP_POST=1, FULL=1, FROM=24, EVERY=2) hold the overlay.
+# Times: seconds after the first present. Xbox at 27, PlayStation at 37, Switch at 47.
+25 key F1 1
+26 expect_open 1
+26.5 tab Bindings
+27 opt button_icons xbox
+27.2 expect_opt button_icons xbox
+29 tab Display
+31 tab Controller
+33 tab Bindings
+37 opt button_icons playstation
+37.2 expect_opt button_icons playstation
+39 tab Display
+41 tab Controller
+43 tab Bindings
+47 opt button_icons switch
+47.2 expect_opt button_icons switch
+51 quit
