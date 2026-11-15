@@ -140,6 +140,17 @@ def main(argv=None):
     up.add_argument('--config', help='--startup: the launcher\'s config.json (holds the update_check switch)')
     up.add_argument('--yes', action='store_true', help='apply: install without the confirmation question')
     up.add_argument('--wait-pid', type=int, help='wait for this process (the launcher) to exit first')
+    st = sub.add_parser('setup', help='what SnapRecompSetup.exe runs: scan a game folder, run the whole setup (JSON-line progress), repair, uninstall')
+    st.add_argument('action', choices=('scan', 'run', 'repair', 'uninstall'))
+    st.add_argument('--folder', help='scan: the game folder the player chose')
+    st.add_argument('--keys', help='scan: a prod.keys file to use instead of the one next to the game files')
+    st.add_argument('--config', help='run: JSON file with the wizard choices')
+    st.add_argument('--root', help='where the work folder and extracted game data go (default %%LOCALAPPDATA%%\\SnapRecomp)')
+    st.add_argument('--tools-dir', help='where the build tools unpack (default %%LOCALAPPDATA%%\\SnapRecomp\\tools)')
+    st.add_argument('--offline-dir', action='append', default=[], help='folder with already downloaded, hash-checked tool archives')
+    st.add_argument('--yes', action='store_true', help='scan: allow fetching the small file reader (NSTool) when it is not bundled')
+    st.add_argument('--remove-tools', action='store_true', help='uninstall: also delete the downloaded build tools')
+    st.add_argument('--remove-saves', action='store_true', help='uninstall: also delete saves and settings in %%APPDATA%%\\SnapRecomp')
     b.add_argument('--upscalers', help='comma list of upscalers to fetch after the build (default: fsr); a license must be accepted with --accept-license')
     b.add_argument('--accept-license', action='append', default=[], help='upscaler whose vendor license you accept: fsr, dlss, xess (repeatable)')
     hdtex_cli = None
@@ -172,6 +183,10 @@ def main(argv=None):
 
     if a.cmd == 'update':
         return run_update(a)
+
+    if a.cmd == 'setup':
+        from snapbuild import setup_engine
+        return setup_engine.cli(a)
 
     if a.cmd == 'hdtex':
         if hdtex_cli is None:

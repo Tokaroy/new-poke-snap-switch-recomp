@@ -337,7 +337,7 @@ def build(opt, log):
     # romfs_root is read by the game; main_elf and sdk_elf are the game images the launcher passes as --main and --sdk.
     # builder_version, builder_dir, python and work let the launcher's updater find this builder again.
     conf = {'romfs_root': str(Path(res.romfs_root).resolve()), 'main_elf': str(elf_dir / 'main.elf'), 'sdk_elf': str(elf_dir / 'sdk.elf'),
-            'builder_version': builder_version(), 'builder_dir': str(BUILDER), 'python': sys.executable, 'work': str(work.resolve())}
+            'builder_version': builder_version(), 'builder_dir': str(BUILDER), 'python': str(py), 'work': str(work.resolve())}
     try:   # settings the launcher itself wrote into the old config.json survive a rebuild
         old_conf = json.loads((out / 'config.json').read_text(encoding='utf-8'))
         for k in LAUNCHER_KEYS:

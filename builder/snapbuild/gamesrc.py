@@ -512,8 +512,9 @@ def extracted_already(game_dir):
 # ------------------------------------------------------------------------------------------------ remembered choice
 
 def settings_path(base=None):
-    base = Path(base) if base else Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'SnapRecomp' / 'setup'
-    return base / 'settings.json'
+    if not base:
+        base = os.environ.get('SNAP_SETUP_DIR') or str(Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'SnapRecomp' / 'setup')
+    return Path(base) / 'settings.json'
 
 
 def load_settings(path=None):
