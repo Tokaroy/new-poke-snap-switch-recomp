@@ -956,7 +956,7 @@ int main(int argc, char **argv) {
     {   // launcher mode (builder release): no arguments and a config.json next to the exe (host/launcher.cpp)
         snap_launcher::Result lr;
         if (argc == 1 && snap_launcher::prepare(lr)) {
-            if (!lr.proceed) return 0;
+            if (!lr.proceed) return lr.exit_code;
             g_o.main_elf = lr.main_elf; g_o.sdk_elf = lr.sdk_elf; g_o.cmd = "run"; g_o.trace_file = lr.trace_file;
             if (!getenv("SNAP_HLE_CONFIG")) _putenv_s("SNAP_HLE_CONFIG", lr.config_path.c_str());
         }

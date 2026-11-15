@@ -124,7 +124,8 @@ section.
 
 Dear ImGui v1.93.0 (https://github.com/ocornut/imgui), Copyright (c) 2014-2026 Omar Cornut, MIT. Vendored without changes except `imconfig.h`
 (gamepad polling of the Win32 backend and the demo/debug windows are disabled; `imgui_demo.cpp` is not included) in
-`runtime/ui/third_party/imgui/` (core, `imgui_impl_vulkan`, `imgui_impl_win32`). The license text is `runtime/ui/third_party/imgui/LICENSE.txt`:
+`runtime/ui/third_party/imgui/` (core, `imgui_impl_vulkan`, `imgui_impl_win32`, and `imgui_impl_dx11`, which the launcher window uses together
+with the Win32 backend; same MIT entry). The license text is `runtime/ui/third_party/imgui/LICENSE.txt`:
 
 ```
 The MIT License (MIT)

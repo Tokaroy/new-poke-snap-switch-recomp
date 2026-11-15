@@ -8,11 +8,13 @@
 #include <windows.h>
 #include <d3d11.h>
 #include <dxgi.h>
+#include <shellapi.h>
 #include <tlhelp32.h>
 #include <wincodec.h>
 
 #include <algorithm>
 #include <cfloat>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -137,6 +139,12 @@ struct Page {
   std::vector<Item> items;
 };
 
+// One loose-file mod pack (docs/mods.md): a folder in the mods root with a pack.json, listed in mods.json.
+struct ModPack {
+  std::string id, name, version, author, desc;
+  bool enabled = false;
+};
+
 // The quality preset is not stored; it is worked out from these rows (the same table and values as runtime/ui/ui_options.cpp: keep them in step).
 struct PresetKey { const char* key; const char* def; };
 const PresetKey kPresetKeys[] = {
@@ -196,7 +204,15 @@ struct G {
   std::vector<Page> pages;
   size_t profile_idx = 0;
 
-  enum View { HOME, SETTINGS, SAVES, STEAM } view = HOME;
+  // Mods page and the shader-cache chip
+  std::vector<ModPack> mods;                          // visible packs in priority order (the first wins)
+  std::vector<std::pair<std::string, bool>> mods_keep;   // entries mods.json keeps that the page does not show (hidden system packs, missing folders)
+  std::string mods_root;
+  int mods_top = 0;
+  int cache_state = 0;           // 0 missing, 1 ready, 2 building
+  unsigned long long cache_bytes = 0;
+
+  enum View { HOME, SETTINGS, SAVES, STEAM, MODS } view = HOME;
   int home_sel = 0, tab = 0, row = 0;
   bool pulldown = false;
   int pd_sel = 0, pd_top = 0;
@@ -1064,20 +1080,162 @@ void steam_add() {
   }
 }
 
+// ---------------------------------------------------------------------------------------------------------------- mods
+// The same folder and mods.json the game reads (runtime/mods/mods_core.cpp): <root>\mods.json = {"packs":[{"id":"folder","enabled":true}, ...]} in
+// priority order, a plain string means enabled, each pack is a folder with a pack.json. A pack that is on disk but not listed is off.
+// "native-options" is the game's own PC settings tab; it is never shown and its entry is kept as it is. Changes apply at the next game start.
+std::string mods_root_dir() {
+  const char* e = std::getenv("SNAP_MODS_DIR");
+  if (e && *e) return e;
+  const char* ap = std::getenv("APPDATA");
+  return std::string(ap ? ap : ".") + "\\SnapRecomp\\mods";
+}
+std::string lower_s(std::string t) { for (char& c : t) c = (char)std::tolower((unsigned char)c); return t; }
+
+void load_mods() {
+  g.mods.clear();
+  g.mods_keep.clear();
+  g.mods_root = mods_root_dir();
+  JsonFile mj;
+  mj.path = g.mods_root + "\\mods.json";
+  mj.load();
+  std::vector<std::pair<std::string, bool>> order;
+  if (const hle::Json* arr = mj.j.get("packs")) {
+    if (arr->type == hle::Json::Arr) {
+      for (const hle::Json& e : arr->a) {
+        if (e.type == hle::Json::Str) order.push_back({e.s, true});
+        else if (e.type == hle::Json::Obj) {
+          const std::string id = e.get("id") ? e.get("id")->str() : e.get("folder") ? e.get("folder")->str() : "";
+          if (!id.empty()) order.push_back({id, e.get("enabled") ? e.get("enabled")->boolean(true) : true});
+        }
+      }
+    }
+  }
+  std::error_code ec;
+  auto meta = [&](ModPack& p) {
+    JsonFile pj;
+    pj.path = g.mods_root + "\\" + p.id + "\\pack.json";
+    pj.load();
+    auto f = [&](const char* k) { const hle::Json* v = pj.j.get(k); return v ? v->str() : std::string(); };
+    p.name = f("name"); p.version = f("version"); p.author = f("author"); p.desc = f("description");
+    if (p.name.empty()) p.name = p.id;
+  };
+  std::vector<std::string> seen;
+  auto known = [&](const std::string& id) { for (const std::string& t : seen) if (lower_s(t) == lower_s(id)) return true; return false; };
+  for (const auto& o : order) {
+    if (known(o.first)) continue;
+    seen.push_back(o.first);
+    if (o.first == "native-options" || !fs::is_directory(P(g.mods_root + "\\" + o.first), ec)) { g.mods_keep.push_back(o); continue; }
+    ModPack p;
+    p.id = o.first; p.enabled = o.second;
+    meta(p);
+    g.mods.push_back(p);
+  }
+  std::vector<std::string> extra;   // folders with a pack.json that mods.json does not list: off until switched on
+  for (fs::directory_iterator it(P(g.mods_root), ec), end; !ec && it != end; it.increment(ec)) {
+    std::error_code e2;
+    if (!it->is_directory(e2) || !fs::exists(it->path() / L"pack.json", e2)) continue;
+    const std::string id = narrow(it->path().filename().wstring());
+    if (id != "native-options" && !known(id)) extra.push_back(id);
+  }
+  std::sort(extra.begin(), extra.end());
+  for (const std::string& id : extra) {
+    ModPack p;
+    p.id = id;
+    meta(p);
+    g.mods.push_back(p);
+  }
+}
+
+void save_mods() {
+  JsonFile mj;
+  mj.path = g.mods_root + "\\mods.json";
+  mj.load();
+  hle::Json arr = hle::Json::array();
+  auto add = [&](const std::string& id, bool on) {
+    hle::Json o = hle::Json::object();
+    o.set("id", hle::Json::string(id));
+    o.set("enabled", hle::Json::boolean_(on));
+    arr.a.push_back(o);
+  };
+  for (const ModPack& p : g.mods) add(p.id, p.enabled);
+  for (const auto& k : g.mods_keep) add(k.first, k.second);
+  mj.j.set("packs", arr);
+  mj.save();
+}
+
+int mods_on() { int n = 0; for (const ModPack& p : g.mods) n += p.enabled ? 1 : 0; return n; }
+
+void mods_toast(const std::string& t) { g.toast = t; g.toast_until = ImGui::GetTime() + 2.5; }
+
+void mods_toggle(int i) {
+  if (i < 0 || i >= (int)g.mods.size()) return;
+  g.mods[(size_t)i].enabled = !g.mods[(size_t)i].enabled;
+  save_mods();
+  mods_toast(g.mods[(size_t)i].name + (g.mods[(size_t)i].enabled ? " is on. It loads at the next start." : " is off."));
+}
+void mods_move(int i, int d) {   // d -1 = higher priority
+  const int j = i + d;
+  if (i < 0 || j < 0 || i >= (int)g.mods.size() || j >= (int)g.mods.size()) return;
+  std::swap(g.mods[(size_t)i], g.mods[(size_t)j]);
+  save_mods();
+  g.row = j + 1;
+}
+void mods_open_folder() {
+  std::error_code ec;
+  fs::create_directories(P(g.mods_root), ec);
+  if (std::getenv("SNAP_LAUNCHER_NO_SHELL")) { mods_toast("Mods folder: " + g.mods_root); return; }   // test switch: never opens Explorer
+  ShellExecuteW(nullptr, L"explore", P(g.mods_root).wstring().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+// The shader cache the game fills (runtime/nvn/nvn_pipeline.cpp): <data dir>\shadercache, or SNAP_SHADERCACHE_DIR. Missing = no cache blob or keys yet;
+// Building = another copy of the game is writing into it right now (a file changed in the last minute, or a half-written .tmp);
+// Ready = the rest. The size is the whole folder.
+void refresh_cache() {
+  std::string dir;
+  const char* e = std::getenv("SNAP_SHADERCACHE_DIR");
+  dir = (e && *e) ? e : g.info->data_dir + "\\shadercache";
+  g.cache_state = 0;
+  g.cache_bytes = 0;
+  std::error_code ec;
+  bool have_blob = false, fresh = false;
+  const auto now = fs::file_time_type::clock::now();
+  int files = 0;
+  for (fs::recursive_directory_iterator it(P(dir), fs::directory_options::skip_permission_denied, ec), end; !ec && it != end && files < 50000; it.increment(ec), ++files) {
+    std::error_code e2;
+    if (!it->is_regular_file(e2)) continue;
+    g.cache_bytes += (unsigned long long)it->file_size(e2);
+    const std::wstring n = it->path().filename().wstring();
+    if (n == L"pipeline_cache.bin" || n == L"pipeline_keys.bin") have_blob = true;
+    const auto age = now - it->last_write_time(e2);
+    if (!e2 && age < std::chrono::seconds(60)) fresh = true;
+    if (n.size() > 4 && n.compare(n.size() - 4, 4, L".tmp") == 0) fresh = true;
+  }
+  g.cache_state = !have_blob ? 0 : fresh ? 2 : 1;
+}
+std::string size_text(unsigned long long b) {
+  char t[32];
+  if (b >= (1ull << 30)) std::snprintf(t, sizeof t, "%.1f GB", (double)b / (1ull << 30));
+  else if (b >= (1ull << 20)) std::snprintf(t, sizeof t, "%d MB", (int)((b + (1ull << 19)) >> 20));
+  else std::snprintf(t, sizeof t, "%d KB", (int)((b + 512) >> 10));
+  return t;
+}
+
 // ---------------------------------------------------------------------------------------------------------------- drawing
 struct Home { const char* label; const char* help; };
 const Home kHome[] = {
     {"Play", "Starts the game with the settings shown on the right. This window closes while you play. Left and right switch profile; the last slot creates a new one."},
     {"Settings", "Display, picture quality, upscaling, frame rate, sound and controls. Everything you change applies when you press Play."},
     {"Saves", "Open the save folder, or import and export a save for a save manager or an emulator."},
+    {"Mods", "Turn mod packs on or off, set which pack wins when two change the same file, and open the mods folder. Changes apply at the next start."},
     {"HD textures", "Sharper textures made from your own game files with a local AI model. Nothing is uploaded."},
     {"Add to Steam", "Adds Snap Recomp to your Steam library as its own game, with artwork, so you can start it from Big Picture or the Steam Deck."},
     {"Updates", "Check for a new version, or go back to the previous one. Nothing installs without you."},
     {"Game folder", "Pick a different folder with your extracted game files."},
 };
-constexpr int kHomeN = 7;
-const UiResult kHomeAct[kHomeN] = {UiResult::Play, UiResult::Quit, UiResult::Quit, UiResult::HdTextures, UiResult::Quit, UiResult::Updates, UiResult::GameFolder};
-enum { H_PLAY, H_SETTINGS, H_SAVES, H_HD, H_STEAM, H_UPDATES, H_FOLDER };
+constexpr int kHomeN = 8;
+const UiResult kHomeAct[kHomeN] = {UiResult::Play, UiResult::Quit, UiResult::Quit, UiResult::Quit, UiResult::HdTextures, UiResult::Quit, UiResult::Updates, UiResult::GameFolder};
+enum { H_PLAY, H_SETTINGS, H_SAVES, H_MODS, H_HD, H_STEAM, H_UPDATES, H_FOLDER };
 
 void hill(float base, float amp, float freq, float ph, ImU32 col) {
   std::vector<ImVec2> pts;
@@ -1324,16 +1482,22 @@ void draw_home() {
   // status chips
   std::vector<Chip> chips;
   chips.push_back({in.game_ok ? "Game files ready" : "Game folder needs attention", in.game_ok ? 0x5aa070u : 0xc84a3au, in.game_ok ? 0x5f5f5fu : 0xc84a3au, 0xffffffu});
-  if (!g.gpu_name.empty()) chips.push_back({g.gpu_name + (g.gpu_rtx && file_exists("nvngx_dlss.dll") ? " - DLSS available" : ""), 0x3fa9a0u, 0x5f5f5fu, 0xffffffu});
-  if (g.pad_found) chips.push_back({"Controller found", 0x5aa070u, 0x5f5f5fu, 0xffffffu});
+  {
+    static const char* const names[3] = {"Shader cache missing", "Shader cache ready", "Shader cache building"};
+    static const unsigned dots[3] = {0xe0a03au, 0x5aa070u, 0xe0733au};
+    chips.push_back({std::string(names[g.cache_state]) + (g.cache_state ? " (" + size_text(g.cache_bytes) + ")" : ""), dots[g.cache_state], 0x5f5f5fu, 0xffffffu});
+  }
   if (in.update_available) chips.push_back({"Update " + in.update_version, 0xe0733au, 0xb85a28u, 0xfcefe6u});
+  if (g.pad_found) chips.push_back({"Controller found", 0x5aa070u, 0x5f5f5fu, 0xffffffu});
+  if (!g.gpu_name.empty()) chips.push_back({g.gpu_name + (g.gpu_rtx && file_exists("nvngx_dlss.dll") ? " - DLSS available" : ""), 0x3fa9a0u, 0x5f5f5fu, 0xffffffu});
   float cx = 84, cy = 246;
+  int chip_rows = 1;
   for (const Chip& c : chips) {
     std::string t = c.text;
     float tw = text_w(15, t.c_str());
     if (tw > 330) { t = c.text; while (t.size() > 4 && text_w(15, (t + "..").c_str()) > 330) t.pop_back(); t += ".."; tw = text_w(15, t.c_str()); }
     const float w = tw + 44;
-    if (cx + w > 554 && cx > 84) { cx = 84; cy += 37; }
+    if (cx + w > 554 && cx > 84) { if (chip_rows >= 2) break; cx = 84; cy += 37; ++chip_rows; }   // two rows at most; the menu below needs the room
     shadow(cx, cy, w, 30, 15);
     rrect(cx, cy, w, 30, 15, C(c.bg));
     dl->AddCircleFilled(V(cx + 16, cy + 15), 5 * g.s, C(c.dot), 12);
@@ -1345,7 +1509,7 @@ void draw_home() {
   float y = cy + 30 + 12;
   for (int i = H_SETTINGS; i < kHomeN; ++i) {
     const bool sel = i == g.home_sel;
-    const float x = 84, w = 470, h = 46;
+    const float x = 84, w = 470, h = 40;
     if (hot(x, y, w, h)) {
       if (mouse_moved) g.home_sel = i;
       if (ImGui::IsMouseClicked(0)) { g.home_sel = i; enter(); }
@@ -1353,17 +1517,20 @@ void draw_home() {
     shadow(x, y, w, h, 18);
     rrect(x, y, w, h, 18, C(sel ? kYellow : 0xffffff));
     if (sel) { pattern(x + 18, y, w - 36, h); dl->AddRect(V(x, y), V(x + w, y + h), C(kOrange), 18 * g.s, 0, 3.5f * g.s); }
-    text(x + 22, y + h / 2, sel ? 24 : 22, C(sel ? kBrown : 0x6a6561), kHome[i].label);
+    text(x + 22, y + h / 2, sel ? 23 : 21, C(sel ? kBrown : 0x6a6561), kHome[i].label);
     std::string sub;
     if (i == H_SETTINGS) sub = std::to_string(g.pages.size()) + " pages";
     else if (i == H_SAVES) sub = in.profiles.empty() ? "" : std::to_string(in.profiles.size()) + (in.profiles.size() == 1 ? " profile" : " profiles");
+    else if (i == H_MODS) sub = g.mods.empty() ? "No packs yet" : std::to_string(mods_on()) + " of " + std::to_string(g.mods.size()) + " on";
     else if (i == H_STEAM) sub = g.steam_status == 0 ? "Steam not found" : g.steam_status == 2 ? "Added" : "Not added";
     else if (i == H_UPDATES) sub = in.update_available ? in.update_version + " ready" : in.version;
     else if (i == H_FOLDER) sub = in.game_ok ? "Ready" : "Needs attention";
     if (!sub.empty()) text(x + w - 22, y + h / 2, 15, C(sel ? 0x7a6440 : 0x9a9795), sub.c_str(), 2);
-    y += h + 6;
+    y += h + 5;
   }
 
+  // TODO(hd light maps): add an "HD light maps" row to this loadout and a toggle on the HD textures page once the hdtex session defines a runtime
+  // settings key for it (today the lighting level is builder-only, --set lighting.scale=).
   // the loadout card
   shadow(600, 128, 600, 492, 26);
   rrect(600, 128, 600, 492, 26, C(0xffffff));
@@ -1492,6 +1659,120 @@ void draw_steam() {
   }
 }
 
+void draw_mods() {
+  draw_home_bg();
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  diamond(122, 82, 56, C(0x8f8e90));
+  aperture(122, 82, 26, C(kCream));
+  text(180, 70, 42, C(0x6a6561), "Mods");
+  text(182, 106, 17, C(kGrey), g.mods.empty() ? "Loose-file mod packs" : "Packs higher in the list win when two change the same file");
+  const int n = (int)g.mods.size();
+  g.row = std::clamp(g.row, 0, n);
+  const bool moved = ImGui::GetIO().MouseDelta.x != 0 || ImGui::GetIO().MouseDelta.y != 0;
+  const bool click = ImGui::IsMouseClicked(0);
+  // row 0: the folder
+  {
+    const bool sel = g.row == 0;
+    const float x = 84, y = 142, w = 740, h = 62;
+    if (hot(x, y, w, h)) { if (moved) g.row = 0; if (click) { g.row = 0; mods_open_folder(); } }
+    shadow(x, y, w, h, 20);
+    rrect(x, y, w, h, 20, C(sel ? kYellow : 0xffffff));
+    if (sel) { pattern(x + 20, y, w - 40, h); dl->AddRect(V(x, y), V(x + w, y + h), C(kOrange), 20 * g.s, 0, 4 * g.s); }
+    text(x + 24, y + 22, sel ? 25 : 22, C(sel ? kBrown : 0x6a6561), "Open mods folder");
+    text_clip(x + 24, y + 46, 14, C(sel ? 0x7a6440 : 0x9a9795), g.mods_root.c_str(), w - 110);
+    if (sel) prompt(x + w - 20, y + h / 2, 44, "A");
+  }
+  // the packs
+  const int vis = 5;
+  if (g.row >= 1) { const int i = g.row - 1; if (i < g.mods_top) g.mods_top = i; if (i >= g.mods_top + vis) g.mods_top = i - vis + 1; }
+  g.mods_top = std::clamp(g.mods_top, 0, std::max(0, n - vis));
+  float y = 224;
+  if (n == 0) {
+    shadow(84, y, 740, 150, 22);
+    rrect(84, y, 740, 150, 22, C(0xffffff));
+    text(114, y + 36, 24, C(0x6a6561), "No mod packs yet");
+    text_wrap2(114, y + 96, 18, C(kGrey), "A pack is a folder with a pack.json inside. Drop it into the mods folder, then come back to this page.", 680);
+  }
+  for (int k = g.mods_top; k < n && k < g.mods_top + vis; ++k) {
+    const ModPack& p = g.mods[(size_t)k];
+    const bool sel = g.row == k + 1;
+    const float x = 84, w = 740, h = 62;
+    const float bx = x + w - 20 - 92;       // the On/Off pill
+    const float ux = bx - 14 - 40;          // move-down arrow; move-up arrow sits left of it
+    const float up_x = ux - 8 - 40;
+    if (hot(x, y, w, h)) {
+      if (moved) g.row = k + 1;
+      if (click) {
+        g.row = k + 1;
+        if (hot(bx, y + 13, 92, 36)) mods_toggle(k);
+        else if (hot(up_x, y + 11, 40, 40)) mods_move(k, -1);
+        else if (hot(ux, y + 11, 40, 40)) mods_move(k, +1);
+      }
+    }
+    shadow(x, y, w, h, 20);
+    rrect(x, y, w, h, 20, C(sel ? kYellow : 0xffffff));
+    if (sel) { pattern(x + 20, y, w - 40, h); dl->AddRect(V(x, y), V(x + w, y + h), C(kOrange), 20 * g.s, 0, 4 * g.s); }
+    dl->AddCircleFilled(V(x + 34, y + h / 2), 17 * g.s, C(p.enabled ? 0x96c283 : 0xb9b6b3), 24);
+    text(x + 34, y + h / 2, 18, C(0xffffff), std::to_string(k + 1).c_str(), 1);
+    text_clip(x + 66, y + 22, sel ? 24 : 22, C(sel ? kBrown : 0x6a6561), p.name.c_str(), up_x - 90);
+    std::string sub = p.version.empty() ? p.id : "v" + p.version + "  -  " + p.id;
+    text_clip(x + 66, y + 46, 14, C(sel ? 0x7a6440 : 0x9a9795), sub.c_str(), up_x - 90);
+    for (int a = 0; a < 2; ++a) {   // move up / move down
+      const float ax = a == 0 ? up_x : ux;
+      const bool can = a == 0 ? k > 0 : k < n - 1;
+      rrect(ax, y + 11, 40, 40, 12, C(can ? (hot(ax, y + 11, 40, 40) ? 0xe6e3df : 0xf0eeeb) : 0xf7f6f4));
+      const float cx = ax + 20, cy = y + 31, d = a == 0 ? -1.0f : 1.0f;
+      dl->AddTriangleFilled(V(cx - 8, cy - d * 4), V(cx + 8, cy - d * 4), V(cx, cy + d * 6), C(can ? 0x6a6561 : 0xd0cdc9));
+    }
+    rrect(bx, y + 13, 92, 36, 18, C(p.enabled ? 0x96c283 : 0xb9b6b3));
+    text(bx + 46, y + 31, 18, C(0xffffff), p.enabled ? "On" : "Off", 1);
+    y += h + 8;
+  }
+  if (n > 5) {   // scroll hint
+    char t[32];
+    std::snprintf(t, sizeof t, "%d - %d of %d", g.mods_top + 1, std::min(n, g.mods_top + vis), n);
+    text(824, 626, 15, C(kGrey), t, 2);
+  }
+  // the selected pack
+  {
+    const float x = 860, y0 = 142, w = 340, h = 460;
+    shadow(x, y0, w, h, 26);
+    rrect(x, y0, w, h, 26, C(0xffffff));
+    rrect(x, y0, w, 56, 26, C(0x96c283), ImDrawFlags_RoundCornersTop);
+    text(x + 24, y0 + 28, 22, C(0xffffff), g.row >= 1 && g.row <= n ? "Pack details" : "How packs work");
+    if (g.row >= 1 && g.row <= n) {
+      const ModPack& p = g.mods[(size_t)g.row - 1];
+      text_clip(x + 24, y0 + 90, 24, C(0x6a6561), p.name.c_str(), w - 48);
+      std::string by = std::string(p.version.empty() ? "" : "Version " + p.version) + (p.version.empty() || p.author.empty() ? "" : "  -  ") + (p.author.empty() ? "" : "by " + p.author);
+      if (!by.empty()) text_clip(x + 24, y0 + 122, 16, C(kGrey), by.c_str(), w - 48);
+      std::string d = p.desc.empty() ? "No description." : p.desc;
+      float ty = y0 + 164;
+      size_t pos = 0;
+      for (int line = 0; line < 6 && pos < d.size(); ++line, ty += 26) {   // plain word wrap, six lines
+        std::string a;
+        while (pos < d.size()) {
+          size_t sp = d.find(' ', pos);
+          std::string word = d.substr(pos, sp == std::string::npos ? std::string::npos : sp - pos);
+          std::string trial = a.empty() ? word : a + " " + word;
+          if (!a.empty() && text_w(17, trial.c_str()) > w - 48) break;
+          a = trial;
+          pos = sp == std::string::npos ? d.size() : sp + 1;
+        }
+        text(x + 24, ty, 17, C(0x6a6561), a.c_str());
+      }
+      text(x + 24, y0 + h - 76, 16, C(p.enabled ? 0x5f8a62 : kGrey), p.enabled ? "On: loads at the next start" : "Off");
+      text_clip(x + 24, y0 + h - 44, 14, C(0x9a9795), (g.mods_root + "\\" + p.id).c_str(), w - 48);
+    } else {
+      text_wrap2(x + 24, y0 + 110, 17, C(0x6a6561), "Each pack replaces game files, such as textures, text and menus, without touching the game itself.", w - 48);
+      text_wrap2(x + 24, y0 + 190, 17, C(0x6a6561), "The order is the priority: pack 1 wins over pack 2.", w - 48);
+      text_wrap2(x + 24, y0 + 270, 17, C(0x6a6561), "Changes apply the next time you press Play.", w - 48);
+    }
+  }
+  help_bar(g.row == 0 ? "Opens the mods folder in Explorer. Put each pack in its own folder with a pack.json."
+                       : "Enter turns the pack on or off. Q and E (or the arrows beside it) move it up or down the priority order. Changes apply at the next start.");
+  if (click && hot(1186, 656, 94, 64)) g.view = G::HOME;
+}
+
 void draw_saves() {
   draw_home_bg();
   ImDrawList* dl = ImGui::GetForegroundDrawList();
@@ -1578,6 +1859,7 @@ void handle_input() {
         case H_PLAY: g.result = UiResult::Play; g.done = true; break;
         case H_SETTINGS: g.view = G::SETTINGS; g.row = 0; break;
         case H_SAVES: g.view = G::SAVES; g.row = 0; break;
+        case H_MODS: load_mods(); g.view = G::MODS; g.row = 0; g.mods_top = 0; break;
         case H_STEAM:
           refresh_steam_status();
           g.steam_running = g.steam_status > 0 && steam_is_running();
@@ -1586,6 +1868,16 @@ void handle_input() {
         default: g.result = kHomeAct[g.home_sel]; g.done = true; break;
       }
     }
+    return;
+  }
+  if (g.view == G::MODS) {
+    if (back) { g.view = G::HOME; return; }
+    const int n = (int)g.mods.size();
+    if (up) g.row = (g.row + n) % (n + 1);
+    if (dn) g.row = (g.row + 1) % (n + 1);
+    if (ok) { if (g.row == 0) mods_open_folder(); else mods_toggle(g.row - 1); }
+    if (g.row >= 1 && prev) mods_move(g.row - 1, -1);
+    if (g.row >= 1 && next) mods_move(g.row - 1, +1);
     return;
   }
   if (g.view == G::SAVES) {
@@ -1715,6 +2007,7 @@ void apply_test_view(const std::string& v) {
     Item& it = g.pages[(size_t)g.tab].items[(size_t)g.row];
     g.pulldown = true; g.pd_sel = std::max(0, index_of(it, it.cur));
   } else if (v == "saves") { g.view = G::SAVES; g.row = 0; }
+  else if (v.rfind("mods", 0) == 0) { load_mods(); g.view = G::MODS; std::sscanf(v.c_str(), "mods:%d", &a); g.row = a; g.mods_top = 0; }
   else if (v == "steam" || v == "steam_run") {   // steam_run really does the job (against SNAP_STEAM_DIR) and shows the result
     refresh_steam_status(); g.steam_running = g.steam_status > 0 && steam_is_running(); g.steam_state = G::ST_ASK; g.view = G::STEAM;
     if (v == "steam_run") steam_add();
@@ -1829,6 +2122,8 @@ UiResult show(UiInfo& info) {
     }
     read_gpu_and_pad();
     refresh_steam_status();
+    load_mods();
+    refresh_cache();
   }
   if (!ok || !g.font) {
     if (ok) { ImGui_ImplDX11_Shutdown(); ImGui_ImplWin32_Shutdown(); }
@@ -1872,6 +2167,7 @@ UiResult show(UiInfo& info) {
     bool back = false;
     if (g.view == G::SETTINGS) draw_settings(&back);
     else if (g.view == G::SAVES) draw_saves();
+    else if (g.view == G::MODS) draw_mods();
     else if (g.view == G::STEAM) { g.block_hot = true; draw_home(); g.block_hot = false; draw_steam(); }
     else draw_home();
     ImGui::Render();

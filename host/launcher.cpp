@@ -26,7 +26,9 @@
 #include "hle/json_lite.h"
 #include "hle/save_port.h"
 #include "launcher.h"
+#include "elf_check.h"
 #include "launcher_ui.h"
+#include "loader.h"
 #include "ui_font.h"
 
 namespace fs = std::filesystem;
@@ -524,6 +526,8 @@ static bool hd_licenses(const hle::Json& cfg, const std::string& level) {
   return true;
 }
 
+// TODO(hd light maps): add an "HD light maps" toggle to this flow once the hdtex session ships a runtime settings key for it. Today the light-map
+// level is builder-only (--set lighting.scale=), so there is nothing for the launcher to read or write.
 static void hd_textures_flow(const fs::path& exe_dir, const fs::path& cfg_path, hle::Json& cfg) {
   if (builder_cmd(cfg, L"").empty()) {
     message("Snap Recomp", "The builder folder was not found, so the HD texture tool cannot start. Run the builder again (snap_builder.py build).", MB_ICONWARNING);
@@ -785,6 +789,14 @@ bool prepare(Result& r) {
             "). Run the builder again.", MB_ICONERROR);
     return true;
   }
+  for (const char* which : {"main", "sdk"}) {   // an empty or cut-off converted file gets a plain message here, not a crash in the loader
+    std::string why;
+    if (elf_check::check_file(std::string(which) == "main" ? r.main_elf.c_str() : r.sdk_elf.c_str(), which, why)) continue;
+    if (autoplay) { std::fprintf(stderr, "launcher: %s\n", why.c_str()); r.exit_code = 2; }
+    else message("Snap Recomp", why, MB_ICONERROR);
+    return true;
+  }
+  if (!autoplay) loader::g_fatal_hook = [](const char* m) { message("Snap Recomp", std::string(m), MB_ICONERROR); };   // a failure while loading shows the same way
   r.config_path = U8(cfg_path.wstring());
   r.proceed = true;
   // logs: %LOCALAPPDATA%\SnapRecomp\logs (stderr to a file; the trace file for the boot log)

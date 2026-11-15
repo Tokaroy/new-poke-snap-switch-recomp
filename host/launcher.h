@@ -10,6 +10,7 @@ namespace snap_launcher {
 struct Result {
   bool active = false;    // a config.json sits next to the exe: launcher mode
   bool proceed = false;   // start the game with the fields below; false = exit (quit, or a message was shown)
+  int exit_code = 0;      // the process exit code when proceed is false (2 when the converted game files are empty or damaged)
   std::string main_elf, sdk_elf, config_path, trace_file;
 };
 

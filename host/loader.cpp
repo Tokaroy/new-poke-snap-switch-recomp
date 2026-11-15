@@ -1,6 +1,7 @@
 // Two-module loader and runtime boundary (project code, ours). See host/loader.h and docs/runtime-boundary.md.
 // The ELF mapping and relocation code follows the host spike (host/spike.cpp), extended to two modules.
 #include "loader.h"
+#include "elf_check.h"
 
 #include <windows.h>
 
@@ -49,9 +50,11 @@ extern "C" void loader_init_hit(uint64_t a);
 static thread_local GuestThread *g_cur = nullptr;
 thread_local Cpu *loader::g_tls_cpu = nullptr;   // the Cpu of the last host call on this thread (crash reports)
 
+void (*g_fatal_hook)(const char *) = nullptr;
 static void die(const char *msg) {
     fprintf(stderr, "loader: %s\n", msg);
     fflush(stderr);
+    if (g_fatal_hook) g_fatal_hook(msg);   // the launcher shows it in a dialog
     exit(2);
 }
 
@@ -174,9 +177,10 @@ struct Sym { uint32_t name; uint8_t info, other; uint16_t shndx; uint64_t value,
 
 static std::vector<uint8_t> read_file(const char *path) {
     FILE *f = fopen(path, "rb");
-    if (!f) { fprintf(stderr, "loader: cannot open %s\n", path); exit(2); }
+    if (!f) { std::string m = std::string("cannot open ") + path; die(m.c_str()); }
     fseek(f, 0, SEEK_END);
     long n = ftell(f);
+    if (n < 0) die("cannot read a game file");
     fseek(f, 0, SEEK_SET);
     std::vector<uint8_t> v((size_t)n);
     if (fread(v.data(), 1, (size_t)n, f) != (size_t)n) die("short read");
@@ -189,8 +193,14 @@ static void map_module(GuestModule &m, const char *name, const char *path, uint6
     m.path = path;
     m.base = base;
     std::vector<uint8_t> raw = read_file(path);
+    {   // an empty, cut-off or wrong file ends here with a plain message, never in a crash below
+        std::string why;
+        if (!elf_check::check_bytes(raw.data(), raw.size(), why)) {
+            std::string m = std::string("The ") + name + " file " + why + ". Run the builder again to convert the game.";
+            die(m.c_str());
+        }
+    }
     auto *eh = (const Ehdr *)raw.data();
-    if (memcmp(eh->id, "\x7f" "ELF", 4) || eh->machine != 0xB7) die("not an AArch64 ELF");
     const Phdr *ph = (const Phdr *)(raw.data() + eh->phoff);
     uint64_t hi = 0, dynva = 0;
     for (int i = 0; i < eh->phnum; i++) {
@@ -211,6 +221,7 @@ static void map_module(GuestModule &m, const char *name, const char *path, uint6
     uint32_t nsyms = dyn.count(4) ? ((const uint32_t *)(base + dyn[4]))[1] : 0;   // DT_HASH nchain
     m.syms.reserve(nsyms);
     for (uint32_t i = 0; i < nsyms; i++) {
+        if ((uint64_t)((const uint8_t *)&syms[i] - (const uint8_t *)base) + sizeof(Sym) > m.span || dyn[5] + syms[i].name >= m.span) die("a game file has a damaged symbol table. Run the builder again to convert the game.");
         SymInfo s{strs + syms[i].name, syms[i].value, syms[i].size, syms[i].info, syms[i].shndx};
         if (s.shndx && !s.name.empty()) {
             m.defs.emplace(s.name, i);
@@ -294,6 +305,7 @@ static void relocate(GuestModule &m, int who) {
         const Rela *r = (const Rela *)(m.base + t.first);
         for (uint64_t i = 0; i < t.second / sizeof(Rela); i++) {
             uint32_t type = (uint32_t)(r[i].info & 0xFFFFFFFF), sym = (uint32_t)(r[i].info >> 32);
+            if (r[i].off + 8 > m.span || (sym && sym >= m.syms.size())) die("a game file has a damaged relocation table. Run the builder again to convert the game.");
             uint64_t *where = (uint64_t *)(m.base + r[i].off);
             if (type == 1027) { *where = m.base + r[i].addend; rs.relative++; continue; }
             if (type != 257 && type != 1025 && type != 1026) { rs.other++; continue; }

@@ -84,6 +84,10 @@ Thunk *add_stub(const std::string &name, void (*fn)(Cpu *, Thunk *));
 Thunk *find_override(const std::string &sym);
 uint64_t thunk_addr(const std::string &name);   // host function as a guest pointer
 
+// Set by the launcher: called with the message before the process exits on a fatal load error (empty or damaged game files), so the
+// message reaches the player in a dialog. The message always goes to stderr too.
+extern void (*g_fatal_hook)(const char *message);
+
 // Map, relocate and bind both modules. Returns false (message on stderr) on failure.
 bool load(const char *main_elf, const char *sdk_elf);
 
