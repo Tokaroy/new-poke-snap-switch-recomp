@@ -104,7 +104,7 @@ AMD_RAW = f'https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/FidelityF
 UPSCALERS = {
     'fsr': {
         'title': 'AMD FidelityFX Super Resolution',
-        'detail': 'FSR 3.1 on any Vulkan GPU; FSR 4 only where the AMD driver offers it (set SNAP_FSR4=1)',
+        'detail': 'FSR 3.1 on any Vulkan GPU; FSR 4 is used automatically on AMD graphics cards whose driver offers it',
         'vendor': 'AMD', 'default': True,
         'license': {'filename': 'AMD-FidelityFX-LICENSE.md', 'url': AMD_RAW + 'Kits/FidelityFX/docs/license.md',
                     'sha256': '32357259b965d6a8001e9e508ba60eda6034027c5923a7d226ffbaff813c2bfb', 'size': 65770},

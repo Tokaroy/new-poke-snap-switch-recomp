@@ -133,7 +133,7 @@ In the launcher, "Upscalers: FSR, DLSS, XeSS..." does the same with dialogs. FSR
 
 - The vendor's license is downloaded first and shown. You accept it yourself: the builder never accepts for you (`--accept-license <name>` means you read it and accept). Without acceptance nothing is downloaded or installed.
 - Each file comes from the official URL and is checked against the SHA-256 in `versions.json`, with a note where the value came from. AMD and NVIDIA publish no hashes, so those values were computed from the official files. A file that does not match is deleted.
-- Files land next to `SnapRecomp.exe`: `upscalers\amd_fidelityfx_upscaler_vk.dll` (FSR 3.1; FSR 4 only on hardware where AMD's driver offers it, with `SNAP_FSR4=1`), `nvngx_dlss.dll` (NVIDIA RTX cards) and `libxess.dll`. Licenses go to `licenses\upscalers`.
+- Files land next to `SnapRecomp.exe`: `upscalers\amd_fidelityfx_upscaler_vk.dll` (FSR 3.1 on any GPU; FSR 4 is picked automatically on AMD cards whose driver offers it, and `SNAP_FSR4=0` turns that off), `nvngx_dlss.dll` (NVIDIA RTX cards) and `libxess.dll`. Licenses go to `licenses\upscalers`.
 - If a file is missing the game still runs: that upscaler is hidden in the options and the next one is used.
 
 ## HD textures

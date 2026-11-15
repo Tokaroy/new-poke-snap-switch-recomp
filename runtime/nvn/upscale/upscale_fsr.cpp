@@ -4,8 +4,9 @@
 // downloads it from AMD's repository after the user accepts AMD's license; it is never part of our release zip. The API
 // headers (MIT) come from tools\amd\ffx_sdk_v2.4.0 when present (SNAP_HAVE_FFX_API, set by the build); without them, or without
 // the DLL, this backend reports itself unavailable and the front end falls back (the FSR option is then hidden).
-// Provider: the DLL offers several (FSR 3.1.x on any Vulkan GPU, 4.x only where the hardware qualifies). The default is the
-// newest 3.x provider, so a GPU that could run FSR 4 is never switched to it silently; SNAP_FSR4=1 prefers a 4.x provider.
+// Provider: the DLL offers several (FSR 3.1.x on any Vulkan GPU, 4.x only where the driver and hardware qualify). On an AMD GPU
+// the newest 4.x provider is used when offered (SNAP_FSR4=0 forbids it); every other GPU, or a failed 4.x context, uses the
+// newest 3.x provider. SNAP_FSR4=1 tries 4.x on any GPU that is offered one. Same DLL, same download and license as FSR 3.1.
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -31,6 +32,7 @@ struct State {
   DeviceCtx dc;
   ffxContext ctx = nullptr;
   uint64_t provider = 0; const char* providerName = "";
+  uint64_t provider3 = 0; const char* providerName3 = ""; bool is4 = false;   // 3.x kept as the fallback when a 4.x context fails
   bool providerChosen = false;
   uint32_t ow = 0, oh = 0, mw = 0, mh = 0, flags = 0;
   uint64_t evals = 0;
@@ -71,7 +73,7 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL ProcAddr(VkDevice dev, const char* name
 }
 }  // namespace
 
-// Lists the providers for this device (ffxQuery GET_VERSIONS) and picks one: the newest "3." by default, a "4." with SNAP_FSR4=1
+// Lists the providers for this device (ffxQuery GET_VERSIONS) and picks one: the newest "4." on an AMD GPU that is offered one, else the newest "3."
 // when one is offered. Keeps provider 0 (the DLL's own default) only when the query fails.
 void ChooseProvider(VkDeviceContext* dctx) {
   F.providerChosen = true;
@@ -87,7 +89,14 @@ void ChooseProvider(VkDeviceContext* dctx) {
   uint64_t cap = count;
   gv.outputCount = &cap; gv.versionIds = ids; gv.versionNames = names;
   if (F.query(nullptr, &gv.header) != FFX_API_RETURN_OK) { Logf("fsr: provider list failed: using the DLL default"); return; }
-  const bool want4 = getenv("SNAP_FSR4") && getenv("SNAP_FSR4")[0] == '1';
+  // FSR 4 is picked automatically on an AMD GPU (vendor 0x1002) when the driver offers a 4.x provider; SNAP_FSR4=0 forbids it,
+  // SNAP_FSR4=1 tries it on any GPU that is offered one. Everything else uses the newest 3.x provider.
+  const char* e4 = getenv("SNAP_FSR4");
+  VkPhysicalDeviceProperties props{};
+  vkGetPhysicalDeviceProperties(F.dc.phys, &props);
+  const bool amd = props.vendorID == 0x1002;
+  const bool want4 = (e4 && e4[0] == '1') || (amd && !(e4 && e4[0] == '0'));
+  Logf("fsr: GPU vendor 0x%04x, FSR 4 %s", props.vendorID, want4 ? "preferred" : "not preferred");
   int pick = -1, pick3 = -1, pick4 = -1;
   for (uint64_t i = 0; i < cap; i++) {
     Logf("fsr: provider %llu: %s", (unsigned long long)ids[i], names[i] ? names[i] : "?");
@@ -97,6 +106,8 @@ void ChooseProvider(VkDeviceContext* dctx) {
   }
   pick = (want4 && pick4 >= 0) ? pick4 : pick3;
   if (pick < 0) { Logf("fsr: no FSR 3.x provider offered on this device: FSR unavailable"); F.failed = true; return; }
+  if (pick3 >= 0) { F.provider3 = ids[pick3]; static char keep3[64]; strncpy(keep3, names[pick3] ? names[pick3] : "", sizeof keep3 - 1); F.providerName3 = keep3; }
+  F.is4 = (pick == pick4 && pick4 >= 0);
   F.provider = ids[pick];
   static char keep[64];
   strncpy(keep, names[pick] ? names[pick] : "", sizeof keep - 1);
@@ -162,6 +173,12 @@ bool Evaluate(const Eval& e) {
     cd.maxUpscaleSize = {e.ow, e.oh};
     cd.fpMessage = OnMessage;
     ffxReturnCode_t r = F.create(&F.ctx, &cd.header, nullptr);
+    if ((r != FFX_API_RETURN_OK || !F.ctx) && F.is4 && F.provider3) {
+      Logf("fsr: FSR 4 context creation failed (%u): falling back to %s", r, F.providerName3);
+      F.ctx = nullptr; F.is4 = false; F.provider = F.provider3; F.providerName = F.providerName3;
+      ov.versionId = F.provider;
+      r = F.create(&F.ctx, &cd.header, nullptr);
+    }
     if (r != FFX_API_RETURN_OK || !F.ctx) { Logf("fsr: context creation failed (%u): FSR off for this run", r); F.failed = true; F.ctx = nullptr; return false; }
     F.ow = e.ow; F.oh = e.oh; F.mw = e.w; F.mh = e.h; F.flags = flags;
     reset = true;
