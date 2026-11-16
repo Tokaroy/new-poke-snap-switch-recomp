@@ -4,7 +4,7 @@
 
 Publishes scripts/shader_harness (our code) against the Ryubing Ryujinx shader translator (MIT) for win-x64, self-contained, so
 the user needs no .NET SDK or runtime. The result goes to <out>/shader_harness/ (ShaderHarness.exe is what the game starts), with
-the translator's MIT license and a notice file. Run builder/release_prebuilt.py first (it recreates <out>), then this script,
+our GPL-3.0 license and section 7 permission, the translator's MIT license, and a notice file. Run builder/release_prebuilt.py first (it recreates <out>), then this script,
 then update the manifest with `release_prebuilt.py --manifest-only`.
 """
 import argparse
@@ -46,8 +46,12 @@ def main():
     if lic.exists():
         shutil.copyfile(lic, a.out / 'licenses' / 'Ryujinx-LICENSE.txt')
         shutil.copyfile(lic, dest / 'LICENSE-Ryujinx.txt')
+    shutil.copyfile(ROOT / 'LICENSE', dest / 'LICENSE-SnapRecomp.txt')
+    shutil.copyfile(ROOT / 'LICENSE-MIT', dest / 'LICENSE-SnapRecomp-MIT.txt')
     (dest / 'NOTICE.txt').write_text(
         'This folder holds a self-contained build of Snap Recomp\'s shader harness.\n'
+        'Our harness code from v1.2.0 is GPL-3.0 with the section 7 DLSS/Streamline/XeSS permission in LICENSE-SnapRecomp.txt.\n'
+        'Releases up to v1.1.0 were MIT; that text is in LICENSE-SnapRecomp-MIT.txt. Existing MIT component notices remain applicable.\n'
         'It links the Ryubing fork of the Ryujinx shader translator (Ryujinx.Graphics.Shader), MIT license, kept in LICENSE-Ryujinx.txt.\n'
         'The .NET runtime files are Microsoft\'s (MIT license, https://github.com/dotnet/runtime).\n', encoding='utf-8')
     exe = dest / 'ShaderHarness.exe'

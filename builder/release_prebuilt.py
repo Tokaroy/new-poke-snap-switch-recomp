@@ -71,6 +71,8 @@ def main():
         shutil.rmtree(out)
     for d in ('obj', 'include', 'lib', 'bin', 'res', 'licenses'):
         (out / d).mkdir(parents=True)
+    shutil.copyfile(ROOT / 'LICENSE', out / 'licenses' / 'SnapRecomp-LICENSE.txt')
+    shutil.copyfile(ROOT / 'LICENSE-MIT', out / 'licenses' / 'SnapRecomp-MIT-LICENSE.txt')
     objs = sorted((a.work / 'obj').glob('*.obj'))
     for o in objs:
         shutil.copyfile(o, out / 'obj' / o.name)
@@ -102,6 +104,7 @@ def main():
     clang = subprocess.run([str(LLVM / 'clang.exe'), '--version'], capture_output=True, text=True).stdout.splitlines()[0]
     manifest = {
         'format': 1,
+        'license': 'GPL-3.0 with section 7 additional permission (licenses/SnapRecomp-LICENSE.txt)',
         'runtime_abi': abi,
         'compiler': clang,
         'flags': 'non-LTO, non-PGO, -O2 -march=x86-64-v3 -fno-strict-aliasing, no debug info, SNAP_RELEASE_BUILD',
@@ -115,7 +118,9 @@ def main():
     for f in sorted(hroot.rglob('*')):
         if f.is_file() and f.suffix.lower() in ('.dll', '.exe'):
             manifest['dlls'].append({'name': f.name, 'path': f.relative_to(out).as_posix(), 'sha256': sha(f),
-                                     'license': 'MIT (Ryujinx translator, .NET runtime; see shader_harness/NOTICE.txt)'})
+                                     'license': ('GPL-3.0 with section 7 additional permission; MIT components (see shader_harness/NOTICE.txt)'
+                                                 if f.name in ('ShaderHarness.exe', 'ShaderHarness.dll') else
+                                                 'MIT (Ryujinx translator, .NET runtime; see shader_harness/NOTICE.txt)')})
     (out / 'manifest.json').write_text(json.dumps(manifest, indent=1) + '\n', encoding='utf-8')
     total = sum(f.stat().st_size for f in out.rglob('*') if f.is_file())
     print(f'staged {len(objs)} objects, {len(HEADERS)} headers, {len(manifest["dlls"])} DLLs: {total / 2**20:.1f} MB in {out}')

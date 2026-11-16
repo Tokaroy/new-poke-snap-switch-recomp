@@ -335,6 +335,10 @@ def build(opt, log):
         old = out / keep
         if old.exists():
             (shutil.copytree if old.is_dir() else shutil.copyfile)(old, stage / keep)
+    for name in ('LICENSE', 'LICENSE-MIT', 'THIRD_PARTY_NOTICES.md'):
+        shutil.copyfile(repo / name, stage / name)
+    if (pre / 'licenses').is_dir():
+        shutil.copytree(pre / 'licenses', stage / 'licenses', dirs_exist_ok=True)
     cfg = stage / 'config.json'
     # romfs_root is read by the game; main_elf and sdk_elf are the game images the launcher passes as --main and --sdk.
     # builder_version, builder_dir, python and work let the launcher's updater find this builder again.

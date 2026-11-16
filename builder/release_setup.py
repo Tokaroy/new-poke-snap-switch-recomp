@@ -6,10 +6,11 @@
 The exe is a small Win32 wizard (setup/setup_main.cpp) followed by a zip payload and an 16-byte trailer (size + "SNPSET01"):
 
   python/        the pinned python.org embeddable Python (no packages: the setup engine uses only the standard library)
-  builder/ recomp/ scripts/ prebuilt/ licenses/ README.md   the same files as the builder zip (release_package.collect)
+  builder/ recomp/ scripts/ prebuilt/ licenses/ README.md LICENSE LICENSE-MIT   the same files as the builder zip (release_package.collect)
   offline/       the small pinned tools shipped inside (NSTool, MIT); every large tool is fetched on the player's PC with a SHA-256 check
 
-No game data, keys, vendor upscaler binaries or Microsoft files are inside. The finished exe is leak scanned like the builder zip.
+Our code from v1.2.0 is GPL-3.0 with the section 7 additional permission in LICENSE. Releases up to v1.1.0 were MIT.
+Third-party components retain their own licenses. No game data, keys, vendor upscaler binaries or Microsoft files are inside. The finished exe is leak scanned like the builder zip.
 `--sign` writes SnapRecompSetup.exe.sig with the update key (release_sign.py)."""
 import argparse
 import hashlib

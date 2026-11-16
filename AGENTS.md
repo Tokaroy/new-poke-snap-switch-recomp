@@ -10,7 +10,9 @@ This is the durable project plan and working agreement. Read it before changing 
 - Make modding a first-class feature: texture/model/UI replacement, new Pokémon, new courses, additional content, and versioned native/content mod APIs.
 - Include game-themed settings and mod-management menus with strong controller, mouse, keyboard, and accessibility support.
 - Preserve photography correctness: scoring, saved photos, editing, and depth-based evaluation must not be corrupted by upscaling or temporal rendering.
-- Prefer MIT/Apache-2.0 code for the implementation. Use GPL/AGPL projects as references unless the project license is deliberately changed. Do not copy proprietary SDK code, leaked material, or NVIDIA binaries into the repository.
+- Our code from v1.2.0 is GPL-3.0 with the section 7 DLSS/Streamline/XeSS additional permission in LICENSE. Releases up to v1.1.0 remain MIT; retain existing MIT component notices.
+- Copied third-party code must be GPL-3.0-compatible (MIT, BSD, Apache-2.0, GPL-3.0). Plain GPL-3.0 code does not itself grant the proprietary-library permission; verify permission coverage before incorporating it into that combined work. Preserve third-party notices. Do not copy proprietary SDK code, leaked material, or NVIDIA binaries into the repository.
+- GPL-2.0-only code cannot be copied.
 - **Testing budget (owner, 2026-11-15).**
   - Per change, run: the HLE and CRC tests, one ride to the Score screen on the changed build, and the changed subsystem's own course plus Florio.
   - Don't rerun every course for every change. Don't re-confirm runs that already passed. Don't run a QA pass over all courses unless the coordinator asks for one.
@@ -508,7 +510,7 @@ User NSP/XCI
 ## Licensing and reference boundaries
 
 - Preferred implementation sources: LAS Recomp (MIT), TotK Recomp (MIT), YW4 Recomp (MIT), Kirikae (MIT/Apache-2.0), MacNativeGames/nxnative (MIT), NewSnap (ISC), and the older Apache-2.0 SwitchRecomp code preserved in Metroid Dread Recomp.
-- Reference only unless licensing changes: SMO Recomp and OpenSmash (GPL), ScarletNX (GPL), current SwitchRECOMP (AGPL with startup branding), and its GPL Vulkan renderer.
+- GPL reference sources (SMO Recomp, OpenSmash, ScarletNX and the GPL Vulkan renderer) require a file-specific compatibility and additional-permission check before copying. Current SwitchRECOMP is AGPL with startup branding; keep it reference-only unless its terms are deliberately accommodated.
 - `bgyss/SwitchRecomp` is a draft spec/Rust scaffold, not a working alternative engine. GitHub reports no license; do not reuse its code without clarification.
 - Useful architecture references:
   - TotK: https://github.com/valentderah/totk-pc-recomp/blob/main/docs/architecture.md

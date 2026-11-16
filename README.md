@@ -15,7 +15,7 @@
   <img alt="Game version: 2.0.1" src="https://img.shields.io/badge/game%20version-2.0.1-informational">
   <img alt="Status: early playable" src="https://img.shields.io/badge/status-early%20playable-yellow">
   <a href="https://github.com/finalpantasy/new-poke-snap-switch-recomp/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/finalpantasy/new-poke-snap-switch-recomp"></a>
-  <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue">
+  <img alt="License: GPL-3.0 with additional permission" src="https://img.shields.io/badge/license-GPL--3.0-blue">
 </p>
 
 <p align="center">
@@ -208,7 +208,7 @@ Each pair is captured at the same point on the ride, so the camera matches; the 
 
 ## Build it yourself
 
-Snap Recomp Builder turns your own copy of New Pokémon Snap 2.0.1 into `SnapRecomp.exe`. The easy way is `SnapRecompSetup.exe` from the [latest release](https://github.com/finalpantasy/new-poke-snap-switch-recomp/releases/latest): double-click it, pick your game folder and press Build. Setup takes a folder of extracted files (`main`, `sdk`, RomFS) or a folder with your dumped base game (XCI or NSP), the 2.0.1 update NSP and your `prod.keys`. It reads them in place and extracts only what it needs. The command-line route uses `SnapRecomp-Builder-v<version>-win-x64.zip` from the same page. Both hold only our MIT code and prebuilt runtime objects, no game data.
+Snap Recomp Builder turns your own copy of New Pokémon Snap 2.0.1 into `SnapRecomp.exe`. The easy way is `SnapRecompSetup.exe` from the [latest release](https://github.com/finalpantasy/new-poke-snap-switch-recomp/releases/latest): double-click it, pick your game folder and press Build. Setup takes a folder of extracted files (`main`, `sdk`, RomFS) or a folder with your dumped base game (XCI or NSP), the 2.0.1 update NSP and your `prod.keys`. It reads them in place and extracts only what it needs. The command-line route uses `SnapRecomp-Builder-v<version>-win-x64.zip` from the same page. Both hold only our code and prebuilt runtime objects, no game data. See the license and release-history notes below.
 
 <p align="center">
   <img src="builder/release/screenshots/setup_1_welcome.png" alt="Setup wizard, welcome page" width="49%">
@@ -407,6 +407,6 @@ The native settings tabs are patched into a copy of the game's own settings UI f
 
 ## License and credits
 
-MIT, see [LICENSE](LICENSE). The lifter and CPU runtime adapt TotK Recomp and LAS Recomp (both MIT); the shader harness builds on the Ryujinx shader translator; the SSBH layout follows ssbh_lib. The project logo is original artwork; its lettering is drawn from the Rubik typeface (SIL Open Font License 1.1). Full notices are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+GPL-3.0 with the section 7 DLSS/Streamline/XeSS additional permission, see [LICENSE](LICENSE). Releases up to and including v1.1.0 were MIT-licensed. Their MIT text is preserved in [LICENSE-MIT](LICENSE-MIT); existing MIT-covered components retain their notices. The lifter and CPU runtime adapt TotK Recomp and LAS Recomp (both MIT); the shader harness builds on the Ryujinx shader translator; the SSBH layout follows ssbh_lib. The project logo is original artwork; its lettering is drawn from the Rubik typeface (SIL Open Font License 1.1). Full notices are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 New Pokémon Snap is a trademark of Nintendo and The Pokémon Company. This project is unaffiliated with them.

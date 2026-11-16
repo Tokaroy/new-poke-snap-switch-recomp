@@ -12,6 +12,9 @@ listed in `accept_license`.
 Resumable: every stage checks what is already there (tools marker files, the extracted game, the build stamps), so running it again
 after a crash, a reboot or a closed window continues where it stopped.
 
+Our code from v1.2.0 is GPL-3.0 with the section 7 additional permission in the bundled LICENSE.
+Releases up to v1.1.0 were MIT; third-party components retain their own licenses.
+
 Nothing here downloads, requests or points to game files, keys or firmware. Keys are read in place by NSTool and never copied or logged.
 """
 import json

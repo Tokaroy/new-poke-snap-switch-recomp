@@ -57,6 +57,7 @@ def collect(prebuilt, recomp_dir=None):
     for p in sorted((ROOT / 'build' / 'release' / 'shots').glob('*.png')):   # real screenshots the README shows
         items.append((p, 'screenshots/' + p.name))
     items.append((ROOT / 'LICENSE', 'LICENSE'))
+    items.append((ROOT / 'LICENSE-MIT', 'LICENSE-MIT'))
     items.append((ROOT / 'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_NOTICES.md'))
     for p in sorted(Path(prebuilt, 'licenses').glob('*')):
         items.append((p, 'licenses/' + p.name))

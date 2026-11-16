@@ -137,7 +137,7 @@ The builder and the prebuilt folder always come from the same release. A number 
 ## Third-party binaries in the prebuilt folder
 
 - `SDL3.dll`: zlib license, text in `licenses/SDL3-LICENSE.txt`.
-- `shader_harness`: MIT, with its notice (`NOTICE.txt`) next to it.
+- `shader_harness`: our harness uses GPL-3.0 with the section 7 additional permission; the Ryujinx translator and .NET runtime retain their MIT licenses. The license texts and `NOTICE.txt` are next to it.
 
 `manifest.json` lists every DLL with its SHA-256 and license file, and `leak_scan.py` fails a package where a named license file is missing, and any package that contains an AMD, NVIDIA or Intel upscaler file.
 
@@ -188,4 +188,4 @@ The tests use fake inputs only.
 
 ## License
 
-MIT, like the rest of the project. Third-party notices are in `THIRD_PARTY_NOTICES.md`.
+GPL-3.0 with the section 7 DLSS/Streamline/XeSS additional permission, see `LICENSE`. Releases up to and including v1.1.0 were MIT-licensed. See `LICENSE-MIT` for that text. Third-party notices are in `THIRD_PARTY_NOTICES.md`.

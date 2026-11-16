@@ -113,4 +113,4 @@ An update is signed. A bad signature, a changed file or an older version is dele
 
 `builder\README.md` has the reference: every option, the build steps, the cache and the update details. `THIRD_PARTY_NOTICES.md` and the `licenses` folder list the third-party code and its licenses.
 
-MIT license, like the rest of the project.
+GPL-3.0 with the section 7 DLSS/Streamline/XeSS additional permission, see `LICENSE`. Releases up to and including v1.1.0 were MIT-licensed. See `LICENSE-MIT` for that text. Third-party components retain their own licenses.
