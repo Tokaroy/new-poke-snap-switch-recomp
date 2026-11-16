@@ -75,7 +75,7 @@ Run 2026-11-15 on the Florio route with `host/ab_capture.ps1` (hidden desktop, m
 
 Photo gating: the ab_capture photo gate reports INCONCLUSIVE (exit 11) for the color vision capture. It only detects effect draws on photo frames, and these effects run in the present pass, after the game has finished every render target the Evaluation screen and saved photos read. So photo content and scoring are unchanged by construction, but the gate could not show it with a pass. The Evaluation screen as displayed on the monitor is corrected like any other game screen.
 
-Not checked in game: a hold-to-toggle ride (covered by the HLE hub test only) and mono audio (covered by the row parsing test only).
+Not checked in game: a hold-to-toggle ride (covered by the HLE hub test only), mono audio (covered by the row parsing test only) and the launcher Accessibility page (it builds, but no screenshot was taken: the launcher only opens next to a launcher-mode `config.json`, which the test runs do not have, and the standalone launcher test target does not link yet).
 
 ## Not done, and why
 
