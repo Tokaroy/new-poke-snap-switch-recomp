@@ -25,6 +25,7 @@
 #include <unordered_set>
 
 #include "nvn_aa.h"
+#include "nvn_foliage.h"
 #include "nvn_internal.h"
 #include "nvn_pipeline.h"
 #include "nvn_rt.h"   // [rt]
@@ -364,6 +365,7 @@ bool BuildStage(Host* h, const ShaderData& sd, StageProg* out) {
   NoteSubgroup(sp.mod, words);
   if (stage == 0) sp.inputMask = SpvVertexInputMask(words);
   if (stage == 1) { sp.spv = words; sp.outLocs = SpvFragmentOutputs(words); }
+  if (stage == 0 && FoliageSwayKeepSpv()) sp.spv = words;   // vertex program kept for the wind sway wrapper (nvn_foliage.cpp)
   if (stage == 1 && getenv("SNAP_XLATE_AB")) LoadAbAlt(h, data, dataSize, stage, codeOff, (Rd32(sd.control, 0x718) & 1) != 0, key, &sp);
   // c[1]: the constant-data blob that follows the code (data section tail)
   sp.constSize = dataSize - constOff;
@@ -415,6 +417,7 @@ bool LoadStageFromCacheImpl(Host* h, const std::string& key, StageProg* out, boo
   NoteSubgroup(sp.mod, words);
   if (sp.stage == 0) sp.inputMask = SpvVertexInputMask(words);
   if (sp.stage == 1) { sp.spv = words; sp.outLocs = SpvFragmentOutputs(words); }
+  if (sp.stage == 0 && FoliageSwayKeepSpv()) sp.spv = words;
   *out = std::move(sp);
   return true;
 }

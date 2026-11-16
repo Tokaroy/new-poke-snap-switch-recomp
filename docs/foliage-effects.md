@@ -9,6 +9,8 @@ Three rows, all off by default, all display only (photo frames, shadow maps and 
 | Leaf translucency | `leaf_translucency` / `SNAP_LEAF_TRANSLUCENCY` | Off, Subtle 0.5, Strong 1 | Restart (live in the dev loop) | Back-lit glow on alpha-tested lit materials when the camera looks toward the sun |
 | Soft particles | `soft_particles` / `SNAP_SOFT_PARTICLES` | Off, On | Restart | The half-resolution particle layer is drawn at the scene's resolution |
 
+Wind sway (`SNAP_WIND_SWAY`, section 4) is in the code but has no menu row: it still darkens leaves, so it stays an environment variable for testing.
+
 ## What the game draws (Florio census, `analysis/foliage/census_florio.txt`, local only)
 
 * Scene colour is RGBA16F (NVN format `0x29`), depth `0x34`. Foliage, grass and fence cut-outs are **opaque, alpha-tested** draws: alpha func GREATER (5), reference 0.3 to 0.5, blend off,
@@ -46,6 +48,20 @@ one to one, so the particle depth test no longer has the half-resolution halo, a
 sampling of their own do not get a fade (that needs a new descriptor binding per shader; not done).
 The targets are sized at texture creation, so the row applies after restart.
 
+## 4. Wind sway (experimental, environment variable only)
+
+`SNAP_WIND_SWAY=0.5|1` wraps the vertex program of the same alpha-tested scene draws (`PatchVertexSway`, `FoliageSwayModule`): the wrapper runs the original main, rebuilds the world position from `gl_Position` with the per-view buffer
+(set 0 binding 4: view projection at vec4 16..19, its inverse at 20..23, absolute timer at vec4 42 `.w`), adds a horizontal wind displacement (slow gusts travelling downwind plus flutter) as `viewProjection * (dx, 0, dz, 0)`, and writes it back.
+Only `gl_Position` changes. The amplitude (world units, default 0.05 at full strength, `SNAP_WIND_AMP` overrides) and a time offset (`SNAP_WIND_PHASE` 0..7, for frozen frames) are specialization constants of the patched module. `SNAP_WIND_STATIC=1` freezes the field.
+`PipeDesc.pad2` bits 17..20 carry the level, bits 21..23 the phase offset. Photo frames keep the game's vertex shader.
+
+What the capture work established (`analysis/foliage/ab_sway_*.png`, local only):
+
+* The colour pass tests depth with GEQUAL against a colour-less pre-pass that writes depth. Swaying only the colour draw makes the leaves fail their own depth test (hatched black leaves even at a 1e-5 amplitude), so the pre-pass draws (no colour target, GEQUAL, depth write) get the same wrapper. Shadow maps (LESS) keep the game's shader. This fixed the hatching.
+* With a 1e-7 amplitude the swayed frame equals the Off frame (`ab_sway_tiny.png`), so the wrapper itself is neutral.
+* At 0.025 to 0.3 world units many leaves and ground plants still render dark or black (`ab_sway_default.png`, `ab_sway_fix3.png`), and the darkening does not scale with the amplitude. A static field (`ab_sway_static.png`) and also swaying the alpha-tested shadow casters (`ab_sway_shadows.png`) did not remove it. The cause is not found: something that lights the leaves still sees their original position.
+* Until that is fixed there is no menu row, no test row and no preset entry.
+
 ## Photo safety
 
 * `FoliagePipeBits` returns 0 on every `FxIsPhotoFrame()` present, so photo/Evaluation/360x240 draws use the original pipelines (identical `PipeDesc`, identical shader module).
@@ -54,18 +70,28 @@ The targets are sized at texture creation, so the row applies after restart.
 
 ## Proof and cost
 
-All files are in `analysis/foliage/` (local only, ignored by git). Strips are Off on the left, On on the right, one frozen frame per value from one `hostb_capture.ps1` run (`-Route core_florio_a -Moment ride8 -BuildDir build\woliage`), top row the full frame, bottom row a magnified crop.
+All files are in `analysis/foliage/` (local only, ignored by git). Strips are Off on the left, On on the right, one frozen frame per value from one `ab_capture.ps1` run (`-Route core_florio_a -Moment ride8`), top row the full frame, bottom row a magnified crop.
 
-| Effect | Strip | Changed pixels | Scene pass cost at 3840x2160 (RGBA16F scene passes, Off then On) |
-|---|---|---|---|
-| Leaf edge smoothing | `ab_aa_ride8.png` | 2.3%, edge pixels only; the animated portrait alone changes 2.4% in a control pair (5.9% with the first full width ramp) | 0.84 to 1.32 ms, control repeat 1.01 ms: about +0.4 ms |
-| Leaf translucency (Strong) | `ab_leaf_ride8.png` | 18.6% | 0.91 to 1.53 ms, control repeat 0.99 ms: about +0.6 ms |
-| Soft particles | `particles_off_on_ride20.png` (two runs; the targets are sized at creation) | not comparable across runs | Particle passes (half-resolution layer, `z` passes) 0.05 ms at the scene scale, about 0.2 ms at 4x the pixels; the frame has few particles |
+| Effect | Strip | Changed pixels |
+|---|---|---|
+| Leaf edge smoothing | `ab_aa_ride8.png` | 2.3%, edge pixels only; the animated portrait alone changes 2.4% in a control pair (5.9% with the first full width ramp) |
+| Leaf translucency (Strong) | `ab_leaf_ride8.png` | 18.6% |
+| Soft particles | `particles_off_on_ride20.png` (two runs; the targets are sized at creation) | not comparable across runs |
 
-GPU numbers come from the dev loop and move by about 1 ms run to run when other runs share the GPU, so read them as sizes, not exact costs. No exclusive `-Bench` was run.
+Cost at 3840x2160 (`SNAP_RENDER_SCALE=2`), one exclusive `ab_capture -Exclusive` run on a frozen Florio frame, mean GPU ms per frame over 60 presents (`ab_bench4k.png` / `.json`; the dev loop's named passes, so it excludes the CPU and the present):
+
+| State | GPU ms per frame |
+|---|---|
+| Off, control run at the end | 1.556 |
+| Leaf edge smoothing | 1.580 |
+| Leaf translucency (Strong) | 1.576 |
+| Wind sway (full) | 1.539 |
+| All three | 1.524 |
+
+All four are within 0.03 ms of the control, which is the run to run noise of this measurement; none of them has a cost measurable on this frame. The first value in the run (Off) read 4.63 ms: shader and pipeline warm-up, not a cost, so it is discarded. The earlier shared-slot figures (+0.4 ms and +0.6 ms) were noise from other runs sharing the GPU. The frame is one Florio view; a denser canopy would cost more. Soft particles are restart only and were not part of this run: their layer fill is 4x (the particle passes read 0.05 ms at the scene scale and about 0.2 ms at 4x the pixels in the shared-slot dev loop).
 
 Notes on the evidence:
 
 * `ab_leafdbg2_ride8.png` is the debug paint (`SNAP_LEAF_DEBUG=1`, `SNAP_LEAF_FLIP` 0/1). It showed that the light buffer holds the direction the light travels, so the first sign was wrong. At `ride8` the sun is off to one side and the term needs the wider lobe now in use; at `ride20` the camera looks into shade and the term changes no pixel (`ab_leaf_ride20.png`).
-* The soft particle strip has no visible dust or pollen in either state: `core_florio_a` at `ride8` and `ride20` has none in frame. The pass sizes in `ab_particles*_ride*.json` show the layer moving from 1920x1080 to 3840x2160 and no visual corruption appeared. A moment with a particle burst is still needed for a before/after picture of the soft fade.
+* The soft particle strip has no visible dust, pollen or spray in either state. Tried: `core_florio_a` at `ride8` and `ride20`, `core_volcano_0` at `ride30` and `ride70` (a snow scene, `ab_ab_volc*_{0,1}.png`), and `core_beach_0` at `beach_sea` (`ab_volc_beach_{0,1}.png`); two runs each with `SNAP_SOFT_PARTICLES` 0 and 1 at `SNAP_RENDER_SCALE=2`. The pass sizes in `ab_particles*_ride*.json` show the layer moving from 1920x1080 to 3840x2160 and no visual corruption appeared. A moment with a particle burst in frame is still missing, so the soft fade itself has no before/after picture.
 * Photo safety: `ab_capture` reads PHOTO-FRAME CHECK INCONCLUSIVE at `ride8` and `ride20` (shutter not accepted at a frozen moment), so the gating counters did not run. Instead the build logs `[foliage]` lines: a full `florio_eval` ride with all three rows on (`SNAP_FOLIAGE_AA=1 SNAP_LEAF_TRANSLUCENCY=1 SNAP_SOFT_PARTICLES=1`, run `nl-20261116_012343`) logs the rows as on, reaches `evaluation:Score` and `End`, and logs no photo frame draw that took a variant (`score_allon_florio_eval.png`: Dodrio, total 2,467, inside the 2,337 to 2,658 spread of unmodified runs; the photo differs run to run, so a total cannot isolate an effect). `FoliagePipeBits` returns 0 when `FxIsPhotoFrame()` is true, so a photo draw gets the identical pipeline and shader module.

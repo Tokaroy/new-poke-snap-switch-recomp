@@ -17,6 +17,7 @@
 
 #include "nvn_dev.h"
 #include "nvn_fx.h"
+#include "nvn_internal.h"
 
 namespace nvn {
 
@@ -27,6 +28,10 @@ struct Live {
   int aa = EnvOn("SNAP_FOLIAGE_AA") ? 1 : 0;
   float leaf = [] { const char* e = getenv("SNAP_LEAF_TRANSLUCENCY"); if (!e || !*e || _stricmp(e, "off") == 0) return 0.0f; const float f = (float)atof(e); return f < 0 ? 0.0f : f > 1 ? 1.0f : f; }();
   int soft = EnvOn("SNAP_SOFT_PARTICLES") ? 1 : 0;
+  float sway = [] { const char* e = getenv("SNAP_WIND_SWAY"); if (!e || !*e || _stricmp(e, "off") == 0) return 0.0f; const float f = (float)atof(e); return f < 0 ? 0.0f : f > 1 ? 1.0f : f; }();
+  int pick = 0;   // dev: one value runs one effect (cost runs): 1 edge smoothing, 2 translucency 1.0, 3 wind sway 1.0, 4 all three; 0 = the rows as set
+  int swayPhase = [] { const char* e = getenv("SNAP_WIND_PHASE"); const int v = e && *e ? atoi(e) : 0; return v < 0 ? 0 : v > 7 ? 7 : v; }();   // debug: time offset step 0..7 (0.35 s each) for frozen-frame strips
+  float swayAmp = [] { const char* e = getenv("SNAP_WIND_AMP"); const float f = e && *e ? (float)atof(e) : 0.0f; return f > 0 ? f : 0.0f; }();   // world units at full strength (0 = built in default)
   int leafFlip = EnvOn("SNAP_LEAF_FLIP") ? 1 : 0;      // debug: negate the camera-toward-light dot product
   int leafDebug = EnvOn("SNAP_LEAF_DEBUG") ? 1 : 0;    // debug: leaf term painted pure red (shows where it applies)
   Live() {
@@ -35,14 +40,20 @@ struct Live {
     dev_param_i("SNAP_FOLIAGE_AA", &aa, 0, 1, 0);
     dev_param_f("SNAP_LEAF_TRANSLUCENCY", &leaf, 0.0f, 1.0f, 0.0f);
     dev_param_i("SNAP_SOFT_PARTICLES", &soft, 0, 1, 0);
-    if (aa || leaf > 0 || soft) fprintf(stderr, "[foliage] on: leaf edge smoothing %d, leaf translucency %.2f, soft particles %d (photo frames keep the game's draw)\n", aa, leaf, soft);
+    dev_param_f("SNAP_WIND_SWAY", &sway, 0.0f, 1.0f, 0.0f);
+    dev_param_i("SNAP_WIND_PHASE", &swayPhase, 0, 7, 0);
+    dev_param_i("SNAP_FOLIAGE_PICK", &pick, 0, 4, 0);
+    if (aa || leaf > 0 || soft || sway > 0) fprintf(stderr, "[foliage] on: leaf edge smoothing %d, leaf translucency %.2f, soft particles %d, wind sway %.2f (photo frames keep the game's draw)\n", aa, leaf, soft, sway);
   }
 };
 Live& L() { static Live l; return l; }
 }  // namespace
-bool FoliageAaEnabled() { return L().aa != 0; }
-float FoliageLeafStrength() { const float f = L().leaf; return f < 0 ? 0.0f : f > 1 ? 1.0f : f; }
+bool FoliageAaEnabled() { const int p = L().pick; return p ? (p == 1 || p == 4) : L().aa != 0; }
+float FoliageLeafStrength() { const int p = L().pick; if (p) return (p == 2 || p == 4) ? 1.0f : 0.0f; const float f = L().leaf; return f < 0 ? 0.0f : f > 1 ? 1.0f : f; }
 bool SoftParticlesEnabled() { return L().soft != 0; }
+float FoliageSwayStrength() { const int p = L().pick; if (p) return (p == 3 || p == 4) ? 1.0f : 0.0f; const float f = L().sway; return f < 0 ? 0.0f : f > 1 ? 1.0f : f; }
+float FoliageSwayAmp() { return L().swayAmp; }
+int FoliageSwayPhase() { const int v = L().swayPhase; return v < 0 ? 0 : v > 7 ? 7 : v; }
 int FoliageLeafDebugFlags() { return (L().leafFlip ? 16 : 0) | (L().leafDebug ? 32 : 0); }
 
 // ---- hashed alpha / alpha to coverage (SPIR-V wrapper, like PatchAlphaTest in nvn_alpha.cpp) --------------------------------
@@ -285,17 +296,181 @@ bool PatchAlphaHash(const std::vector<uint32_t>& in, int func, bool a2c, bool ha
   return true;
 }
 
-// Pipeline bits for one draw (PipeDesc.pad2: bit 0 = hashed alpha edge, bit 1 = leaf debug flip, bits 4..7 = leaf gain level 0..8, 9 = debug paint; 0 = the game's own hard alpha test). Only
+// ---- wind sway (vertex wrapper) --------------------------------------------------------------------------------------------
+// The translated vertex module is wrapped like the fragment ones: the wrapper runs the original main, reads gl_Position back, rebuilds the world position from the
+// clip position with the per view buffer (set 0 binding 4 = PerViewCBuffer c3: viewProjection at vec4 16..19, its inverse at vec4 20..23, game timer at vec4 42 .z),
+// and adds a small wind displacement in world space (x, z only) as viewProjection * d. Only positions change, so every output the shader writes besides gl_Position is
+// untouched. Needs no knowledge of the shader's own inputs. The amplitude (world units) is specialization constant 0.
+// Returns false when the module has no gl_Position block member, no set 0 binding 4 uniform array or no GLSL.std450 import (the caller keeps the game vertex shader).
+bool PatchVertexSway(const std::vector<uint32_t>& in, std::vector<uint32_t>& out) {
+  if (in.size() < 6 || in[0] != 0x07230203) return false;
+  const uint32_t bound = in[3];
+  uint32_t entry = 0, posStruct = 0, posVar = 0, cb3 = 0, voidT = 0, fnT = 0, firstFn = 0, annotEnd = 0, glslSet = 0, intT = 0, vecT = 0, floatT = 0, uPtrF = 0, oPtrV = 0;
+  struct Ptr { uint32_t id, sc, pointee; };
+  std::vector<Ptr> ptrs;
+  struct Vec { uint32_t id, comp, n; };
+  std::vector<Vec> vecs;
+  std::vector<uint32_t> floats;
+  std::vector<std::pair<uint32_t, uint32_t>> varSc, bindOf, setOf;
+  size_t i = 5;
+  while (i < in.size()) {
+    const uint32_t wc = in[i] >> 16, op = in[i] & 0xFFFF;
+    if (!wc || i + wc > in.size()) return false;
+    switch (op) {
+      case kOpEntryPoint: if (in[i + 1] == 0 && !entry) entry = in[i + 2]; break;
+      case 11: if (wc >= 4 && !strncmp((const char*)&in[i + 2], "GLSL.std.450", 12)) glslSet = in[i + 1]; break;
+      case kOpDecorate:
+        if (wc >= 4 && in[i + 2] == 33) bindOf.push_back({in[i + 1], in[i + 3]});
+        if (wc >= 4 && in[i + 2] == 34) setOf.push_back({in[i + 1], in[i + 3]});
+        annotEnd = (uint32_t)(i + wc); break;
+      case kOpMemberDecorate:
+        if (wc == 5 && in[i + 2] == 0 && in[i + 3] == 11 && in[i + 4] == 0) posStruct = in[i + 1];   // BuiltIn Position on member 0
+        annotEnd = (uint32_t)(i + wc); break;
+      case kOpDecorationGroup: case kOpGroupDecorate: case kOpGroupMemberDecorate: annotEnd = (uint32_t)(i + wc); break;
+      case 21: if (wc >= 4 && in[i + 2] == 32 && !intT) intT = in[i + 1]; break;   // OpTypeInt 32
+      case kOpTypeFloat: if (in[i + 2] == 32) floats.push_back(in[i + 1]); break;
+      case kOpTypeVector: vecs.push_back({in[i + 1], in[i + 2], in[i + 3]}); break;
+      case kOpTypePointer: ptrs.push_back({in[i + 1], in[i + 2], in[i + 3]}); break;
+      case kOpVariable: varSc.push_back({in[i + 2], in[i + 1]}); break;
+      case kOpFunction: if (!firstFn) firstFn = (uint32_t)i; if (in[i + 2] == entry) { fnT = in[i + 4]; voidT = in[i + 1]; } break;
+      default: break;
+    }
+    i += wc;
+  }
+  if (!entry || !posStruct || !glslSet || !intT || !fnT || !firstFn || !annotEnd) return false;
+  auto lookup = [](const std::vector<std::pair<uint32_t, uint32_t>>& m, uint32_t v, uint32_t& val) { for (auto& e : m) if (e.first == v) { val = e.second; return true; } return false; };
+  for (auto& v : vecs) if (v.n == 4 && !vecT) for (uint32_t f : floats) if (f == v.comp) { vecT = v.id; floatT = f; }
+  if (!vecT) return false;
+  for (auto& v : varSc) for (auto& p : ptrs) if (p.id == v.second && p.sc == 3 && p.pointee == posStruct) posVar = v.first;
+  for (auto& b : bindOf) {
+    uint32_t st = 0, pt = 0;
+    if (b.second != 4 || !lookup(setOf, b.first, st) || st != 0 || !lookup(varSc, b.first, pt)) continue;
+    for (auto& p : ptrs) if (p.id == pt && p.sc == 2) cb3 = b.first;
+  }
+  if (!posVar || !cb3) return false;
+  for (auto& p : ptrs) { if (p.sc == 3 && p.pointee == vecT) oPtrV = p.id; if (p.sc == 2 && p.pointee == floatT) uPtrF = p.id; }
+  uint32_t next = bound;
+  auto nid = [&]() { return next++; };
+  const bool addO = !oPtrV, addU = !uPtrF;
+  if (addO) oPtrV = nid();
+  if (addU) uPtrF = nid();
+  const uint32_t newMain = nid(), lbl = nid(), callId = nid(), ampId = nid(), offId = nid(), tsId = nid();
+  std::vector<uint32_t> consts, body;
+  std::map<uint32_t, uint32_t> fcs, ics;
+  auto cf = [&](float v) { const uint32_t b = FBits(v); auto it = fcs.find(b); if (it != fcs.end()) return it->second; const uint32_t id = nid(); Emit(consts, kOpConstant, {floatT, id, b}); fcs[b] = id; return id; };
+  auto ci = [&](uint32_t v) { auto it = ics.find(v); if (it != ics.end()) return it->second; const uint32_t id = nid(); Emit(consts, kOpConstant, {intT, id, v}); ics[v] = id; return id; };
+  auto ld = [&](uint32_t idx, uint32_t comp) { const uint32_t pc = nid(), l = nid(); Emit(body, 65 /*OpAccessChain*/, {uPtrF, pc, cb3, ci(0), ci(idx), ci(comp)}); Emit(body, kOpLoad, {floatT, l, pc}); return l; };
+  auto bin = [&](uint32_t op, uint32_t a, uint32_t b) { const uint32_t r = nid(); Emit(body, op, {floatT, r, a, b}); return r; };
+  auto mul = [&](uint32_t a, uint32_t b) { return bin(kOpFMul, a, b); };
+  auto add = [&](uint32_t a, uint32_t b) { return bin(kOpFAdd, a, b); };
+  auto sub = [&](uint32_t a, uint32_t b) { return bin(kOpFSub, a, b); };
+  auto sine = [&](uint32_t a) { const uint32_t r = nid(); Emit(body, 12 /*OpExtInst*/, {floatT, r, glslSet, 13 /*Sin*/, a}); return r; };
+  auto mad = [&](float k, uint32_t a, uint32_t b) { return add(mul(cf(k), a), b); };   // k * a + b
+
+  Emit(body, kOpFunction, {voidT, newMain, 0, fnT});
+  Emit(body, kOpLabel, {lbl});
+  Emit(body, kOpFunctionCall, {voidT, callId, entry});
+  const uint32_t pp = nid(), clip = nid();
+  Emit(body, 65, {oPtrV, pp, posVar, ci(0)});
+  Emit(body, kOpLoad, {vecT, clip, pp});
+  uint32_t cl[4];
+  for (uint32_t k = 0; k < 4; k++) { cl[k] = nid(); Emit(body, kOpCompositeExtract, {floatT, cl[k], clip, k}); }
+  uint32_t w[4] = {0, 0, 0, 0};   // world = viewProjectionInverse * clip, components x, z, w
+  for (uint32_t k : {0u, 2u, 3u}) {
+    uint32_t s = mul(ld(20, k), cl[0]);
+    for (uint32_t j = 1; j < 4; j++) s = add(s, mul(ld(20 + j, k), cl[j]));
+    w[k] = s;
+  }
+  const uint32_t px = bin(kOpFDiv, w[0], w[3]), pz = bin(kOpFDiv, w[2], w[3]);
+  const uint32_t t = add(mul(ld(42, 3), tsId), offId);   // absolute timer (0x2ac) plus the debug phase offset (spec constant 1)
+  const uint32_t p = add(mul(cf(0.8f), px), mul(cf(0.6f), pz));     // distance along the wind
+  const uint32_t q = add(mul(cf(-0.6f), px), mul(cf(0.8f), pz));    // across the wind
+  const uint32_t gust = mad(0.5f, sine(sub(mul(cf(0.23f), t), mul(cf(0.045f), p))), cf(0.5f));            // 0..1, slow gusts travelling downwind
+  const uint32_t f1 = sine(add(add(mul(cf(2.3f), t), mul(cf(0.9f), p)), mul(cf(0.4f), q)));
+  const uint32_t f2 = sine(add(sub(mul(cf(3.7f), t), mul(cf(0.5f), p)), mul(cf(1.3f), q)));
+  const uint32_t fl = add(mul(cf(0.6f), f1), mul(cf(0.4f), f2));                                           // flutter, -1..1
+  const uint32_t f3 = sine(add(mul(cf(1.9f), t), mul(cf(0.7f), q)));
+  const uint32_t along = mul(ampId, add(mul(cf(0.5f), gust), mul(cf(0.5f), fl)));                          // lean with the gust plus flutter
+  const uint32_t across = mul(ampId, mul(cf(0.3f), f3));
+  const uint32_t dx = add(mul(cf(0.8f), along), mul(cf(-0.6f), across));
+  const uint32_t dz = add(mul(cf(0.6f), along), mul(cf(0.8f), across));
+  uint32_t nc[4];
+  for (uint32_t k = 0; k < 4; k++) nc[k] = add(cl[k], add(mul(dx, ld(16, k)), mul(dz, ld(18, k))));    // clip + viewProjection * (dx, 0, dz, 0)
+  const uint32_t nv = nid();
+  Emit(body, 80 /*OpCompositeConstruct*/, {vecT, nv, nc[0], nc[1], nc[2], nc[3]});
+  Emit(body, kOpStore, {pp, nv});
+  Emit(body, kOpReturn, {});
+  Emit(body, kOpFunctionEnd, {});
+
+  out.assign(in.begin(), in.begin() + 5);
+  size_t k = 5;
+  while (k < in.size() && k != annotEnd) {
+    const uint32_t wc = in[k] >> 16, op = in[k] & 0xFFFF;
+    const size_t base = out.size();
+    out.insert(out.end(), in.begin() + k, in.begin() + k + wc);
+    if (op == kOpEntryPoint && in[k + 2] == entry) out[base + 2] = newMain;
+    if (op == kOpExecutionMode && in[k + 1] == entry) out[base + 1] = newMain;
+    k += wc;
+  }
+  Emit(out, kOpDecorate, {ampId, 1, 0});   // SpecId 0: amplitude in world units
+  Emit(out, kOpDecorate, {tsId, 1, 2});   // SpecId 2: timer scale (1 normally, 0 = static field, debug)
+  Emit(out, kOpDecorate, {offId, 1, 1});   // SpecId 1: time offset in seconds (debug phase, 0 normally)
+  while (k < firstFn) { const uint32_t wc = in[k] >> 16; out.insert(out.end(), in.begin() + k, in.begin() + k + wc); k += wc; }
+  if (addO) Emit(out, kOpTypePointer, {oPtrV, 3, vecT});
+  if (addU) Emit(out, kOpTypePointer, {uPtrF, 2, floatT});
+  Emit(out, kOpSpecConstant, {floatT, ampId, FBits(0.05f)});
+  Emit(out, kOpSpecConstant, {floatT, offId, FBits(0.0f)});
+  Emit(out, kOpSpecConstant, {floatT, tsId, FBits(1.0f)});
+  out.insert(out.end(), consts.begin(), consts.end());
+  out.insert(out.end(), in.begin() + k, in.end());
+  out.insert(out.end(), body.begin(), body.end());
+  out[3] = next;
+  return true;
+}
+
+// One patched module per translated vertex shader (the amplitude is a specialization constant, so every level shares it). Null when the shader does not qualify.
+VkShaderModule FoliageSwayModule(Host* h, const StageProg& vs) {
+  static std::mutex mu;
+  static std::map<uint64_t, VkShaderModule> mods;
+  if (vs.spv.empty()) return VK_NULL_HANDLE;
+  uint64_t key = 1469598103934665603ull;
+  for (uint32_t w : vs.spv) { key ^= w; key *= 1099511628211ull; }
+  std::lock_guard<std::mutex> lk(mu);
+  auto it = mods.find(key);
+  if (it != mods.end()) return it->second;
+  VkShaderModule m = VK_NULL_HANDLE;
+  std::vector<uint32_t> out;
+  if (PatchVertexSway(vs.spv, out)) {
+    VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    mi.codeSize = out.size() * 4; mi.pCode = out.data();
+    if (vkCreateShaderModule(h->device, &mi, nullptr, &m) == VK_SUCCESS) { std::lock_guard<std::mutex> pl(h->pipeMutex); h->variantMods.push_back(m); }
+    else { m = VK_NULL_HANDLE; fprintf(stderr, "[foliage] wind sway: vkCreateShaderModule failed for vertex program %.12s\n", vs.key); }
+  } else {
+    static int n; if (n++ < 6) fprintf(stderr, "[foliage] wind sway: vertex program %.12s has no gl_Position block / per-view buffer: not swayed\n", vs.key);
+  }
+  mods[key] = m;
+  return m;
+}
+
+bool FoliageSwayKeepSpv() { return FoliageSwayStrength() > 0.0f || dev_on(); }
+
+// Pipeline bits for one draw (PipeDesc.pad2: bit 0 = hashed alpha edge, bit 1 = leaf debug flip, bits 4..7 = leaf gain level 0..8, 9 = debug paint, bits 17..20 = wind sway level 0..8; 0 = the game's own hard alpha test). Only
 // opaque alpha-tested draws into the RGBA16F scene colour with a depth test qualify (blended particles, shadow casters, UI, the photo/Evaluation
 // targets and 8 bit targets differ), and no photo frame does. The bits are part of the pipeline-key bytes, so the persisted cache stays valid for 0.
-uint32_t FoliagePipeBits(int alphaFunc, float alphaRef, int32_t colorVkFmt, int32_t depthVkFmt, bool depthTest, int nColor, bool blend0) {
-  if (alphaFunc == 0 || nColor < 1 || depthVkFmt == 0 || !depthTest || blend0 || alphaRef < 0.15f) return 0;
-  if (colorVkFmt != 97 /* VK_FORMAT_R16G16B16A16_SFLOAT */) return 0;
+uint32_t FoliagePipeBits(int alphaFunc, float alphaRef, int32_t colorVkFmt, int32_t depthVkFmt, bool depthTest, int nColor, bool blend0, int depthFunc, bool depthWrite) {
+  if (alphaFunc == 0 || depthVkFmt == 0 || !depthTest || blend0) return 0;
   if (alphaFunc != 2 && alphaFunc != 4 && alphaFunc != 5 && alphaFunc != 7) return 0;
+  if (nColor < 1) {   // the scene's colour-less depth pre-pass (reverse Z, GEQUAL, writes depth): the colour pass tests against its depth with GEQUAL, so it must move with the sway or the leaves z-fight themselves
+    if (!depthWrite || depthFunc != 7 || FxIsPhotoFrame()) return 0;
+    const int sw = (int)(FoliageSwayStrength() * 8.0f + 0.5f);
+    return sw > 0 ? (((uint32_t)sw << 17) | ((uint32_t)FoliageSwayPhase() << 21)) : 0u;
+  }
+  if (alphaRef < 0.15f || colorVkFmt != 97 /* VK_FORMAT_R16G16B16A16_SFLOAT */) return 0;
   const bool aa = FoliageAaEnabled();
   const int dbg = FoliageLeafDebugFlags();
   const int leaf = (dbg & 32) ? 9 : (int)(FoliageLeafStrength() * 8.0f + 0.5f);
-  if (!aa && leaf <= 0) return 0;
+  const int sway = (int)(FoliageSwayStrength() * 8.0f + 0.5f);   // 0..8: wind sway level, pad2 bits 17..20
+  if (!aa && leaf <= 0 && sway <= 0) return 0;
   static std::atomic<int> s_photoKept{0}, s_ran{0};
   if (FxIsPhotoFrame()) {
     const int n = ++s_photoKept;
@@ -304,7 +479,7 @@ uint32_t FoliagePipeBits(int alphaFunc, float alphaRef, int32_t colorVkFmt, int3
   }
   ++s_ran;
   FxNoteRan();   // an effect variant is drawing this frame (A/B capture gating counters)
-  return (aa ? 1u : 0u) | ((uint32_t)std::min(leaf, 9) << 4) | ((dbg & 16) ? 2u : 0u);   // bit 1 = debug flip (bits 8..16 belong to the parallax rows)
+  return (aa ? 1u : 0u) | ((uint32_t)std::min(leaf, 9) << 4) | ((dbg & 16) ? 2u : 0u) | ((uint32_t)sway << 17) | (sway > 0 ? (uint32_t)FoliageSwayPhase() << 21 : 0u);   // bit 1 = debug flip (bits 8..16 belong to the parallax rows, 17..20 the wind sway level)
 }
 
 namespace {

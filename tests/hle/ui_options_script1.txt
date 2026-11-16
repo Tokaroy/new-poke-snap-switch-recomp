@@ -96,7 +96,7 @@
 30 opt gfx_render_scale 1.50
 30.2 opt gfx_aa smaa
 30.4 opt gfx_aniso 8
-30.6 opt gfx_sharpen 0.30
+30.6 opt gfx_sharpen 0.50
 30.8 opt gfx_ui_font 2
 30.9 opt gfx_full_rate_anim 1
 30.91 opt gfx_lod_dist 2.00
@@ -128,8 +128,8 @@
 # lens effects (2026-11-15, runtime/nvn/nvn_lens_fx.cpp): restart rows
 31.444 opt gfx_bokeh_dof 1
 31.445 opt gfx_motion_blur 0.5
-# photo_export is off by default now (runtime/hle/visual_defaults.h, original look, 2026-11-13), so the test turns it ON to stay a change
-31.6 opt photo_export 1
+# photo_export and gfx_sharpen defaults now come from runtime/hle/visual_defaults.h (Enhanced look: photo_export on, sharpen 0.30), so the test sets values that differ from them
+31.6 opt photo_export 0
 31.7 opt neo_speed 2.00
 31.75 opt film 100
 31.76 opt skip_cutscenes 1
@@ -142,7 +142,7 @@
 32.2 mods move beta -1
 32.4 expect_mods beta:1,alpha:0
 32.5 expect_opt gfx_preset custom
-32.6 expect_pending 29
+32.6 expect_pending rows
 33 expect_opt gfx_render_scale 1.50
 34 tab Graphics
 38 scroll 0.5

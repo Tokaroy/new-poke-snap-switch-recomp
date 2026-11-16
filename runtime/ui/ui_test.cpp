@@ -23,6 +23,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <map>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -52,6 +53,7 @@ struct Release {
 };
 std::vector<Cmd> g_cmds;
 std::vector<Release> g_rel;
+std::map<std::string, std::string> g_rows_first;   // restart rows this script changed -> value before the first change (expect_pending rows)
 bool g_loaded = false, g_active = false;
 double g_t0 = 0;
 int g_checks = 0, g_failed = 0;
@@ -186,6 +188,8 @@ void run(const std::string& line, double t) {
     std::string k, v;
     is >> k >> v;
     if (v == "-") v.clear();
+    std::string when;
+    if (options_test_option_when(k, &when) && when == "restart" && !g_rows_first.count(k)) g_rows_first[k] = options_test_get(k);
     check(options_test_set(k, v), "set option " + k + " = '" + v + "'");
   } else if (cmd == "expect_opt") {   // expect_opt <key> <value|->
     std::string k, v;
@@ -202,10 +206,15 @@ void run(const std::string& line, double t) {
     is >> k >> w;
     check(options_test_option_when(k, &got) && got == w, "option " + k + " is " + w + " (is '" + got + "')");
   } else if (cmd == "expect_pending") {   // expect_pending <n>: settings that wait for a restart
-    int n = 0;
-    is >> n;
+    std::string arg;
+    is >> arg;
     std::string names;
     const int got = options_pending_restart(&names);
+    int n = 0;
+    if (arg == "rows") {   // expect_pending rows: count the restart rows this script changed (value now != value before its first change), so rows added by other work do not move the number
+      for (const auto& kv : g_rows_first) if (options_test_get(kv.first) != kv.second) ++n;
+      if (names.find("Mods") != std::string::npos) ++n;   // the mods order has its own check (expect_mods)
+    } else n = std::atoi(arg.c_str());
     check(got == n, "pending restart options == " + std::to_string(n) + " (is " + std::to_string(got) + ": " + names + ")");
   } else if (cmd == "expect_env") {   // expect_env <NAME> <value|->: the env var the game reads at start
     std::string n, v;

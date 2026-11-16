@@ -51,7 +51,6 @@ These are not part of any preset, so picking one never moves them:
 Only rows that are committed are mapped. These have rows in the working tree but are not committed yet, so no preset touches them. Each is added to the Max column in the commit that lands it:
 
 - Parallax detail (`gfx_pom`)
-- Wind sway (`wind_sway`)
 
 Balanced and Enhanced turn none of the effect rows on: Enhanced is what a new install runs, and Balanced is meant to cost less than it. Only Max turns the effects on. No frame measurements back this split yet; move a row into Balanced when its cost is known to be small.
 

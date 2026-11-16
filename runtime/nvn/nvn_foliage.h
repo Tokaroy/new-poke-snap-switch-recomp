@@ -12,6 +12,13 @@
 
 namespace nvn {
 
+struct Host;
+struct StageProg;
+}  // namespace nvn
+struct VkShaderModule_T;   // same handle type as vulkan.h (64 bit), so this header needs no Vulkan include
+typedef VkShaderModule_T* VkShaderModule;
+namespace nvn {
+
 struct FoliageTex { int binding; uint32_t fmt, w, h; };
 struct FoliageDrawInfo {
   int present;
@@ -29,8 +36,17 @@ void FoliageLogDraw(const FoliageDrawInfo& d);   // debug census (SNAP_FOLIAGE_L
 // SPIR-V wrapper for alpha-tested fragment modules (nvn_foliage.cpp): `in` is the translated module, `out` replaces it; spec constant 0 = alpha reference.
 // hash: dithered / covered edge; leaf: 0..8 back-lit gain level (needs the scene light and camera constant buffers; ignored when the module has none).
 bool PatchAlphaHash(const std::vector<uint32_t>& in, int func, bool a2c, bool hash, int leaf, std::vector<uint32_t>& out);
+// Wind sway (SNAP_WIND_SWAY, 0..1): vertex wrapper that adds a small world-space wind displacement to alpha-tested scene draws (nvn_foliage.cpp). PipeDesc.pad2 bits 17..20 = level 0..8;
+// the pipeline builder asks FoliageSwayModule for the patched vertex module (null = keep the game one) and passes FoliageSwayAmpFor(level) as specialization constant 0.
+bool PatchVertexSway(const std::vector<uint32_t>& in, std::vector<uint32_t>& out);
+VkShaderModule FoliageSwayModule(Host* h, const StageProg& vs);
+float FoliageSwayStrength();
+int FoliageSwayPhase();   // SNAP_WIND_PHASE debug time offset step 0..7 (pad2 bits 21..23, 0.35 s each; frozen-frame strips)
+float FoliageSwayAmp();   // SNAP_WIND_AMP override (world units at full strength), 0 = built in default
+inline float FoliageSwayAmpFor(int level) { const float a = FoliageSwayAmp(); return (a > 0 ? a : 0.05f) * (float)level * 0.125f; }
+bool FoliageSwayKeepSpv();   // true when vertex programs keep their SPIR-V for the wrapper (sway on, or the dev loop)
 // PipeDesc.pad2 value for one draw (0 = the game's own hard alpha test; bit 0 = hashed edge, bits 4..7 = leaf gain level); formats are Vulkan format values.
-uint32_t FoliagePipeBits(int alphaFunc, float alphaRef, int32_t colorVkFmt, int32_t depthVkFmt, bool depthTest, int nColor, bool blend0);
+uint32_t FoliagePipeBits(int alphaFunc, float alphaRef, int32_t colorVkFmt, int32_t depthVkFmt, bool depthTest, int nColor, bool blend0, int depthFunc = 0, bool depthWrite = false);   // depthFunc/depthWrite: the scene depth pre-pass (no colour target) joins the wind sway
 
 // Full-resolution particles (SNAP_SOFT_PARTICLES): the game draws particles into 960x540 targets (RGBA16F colour + 32 bit float depth, a downsample
 // of the scene depth) and composites them back; those targets are made `boost` times larger so the particle layer has the scene's resolution.

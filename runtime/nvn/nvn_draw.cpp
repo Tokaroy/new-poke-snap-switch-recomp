@@ -305,7 +305,7 @@ static void MakePipeDesc(PipeDesc& pd, DrawState& d, VkPrimitiveTopology topo, c
   if (!(rt.samples > 1)) pd.samples = d.ms.samples > 1 ? d.ms.samples : 1;
   {   // pad2 bit 0: hashed / covered alpha edge for alpha-tested scene draws (SNAP_FOLIAGE_AA, nvn_foliage.cpp); 0 = the game's own test
     DsSt dsv; dsv.bits = d.ds.bits;
-    pd.pad2 = FoliagePipeBits(pd.alphaFunc, pd.alphaRef, pd.nColor ? pd.colorFmt[0] : 0, pd.depthFmt, DsGet(dsv, DS_DT, 1) != 0, pd.nColor, (pd.blendEn & 1u) != 0);
+    pd.pad2 = FoliagePipeBits(pd.alphaFunc, pd.alphaRef, pd.nColor ? pd.colorFmt[0] : 0, pd.depthFmt, DsGet(dsv, DS_DT, 1) != 0, pd.nColor, (pd.blendEn & 1u) != 0, (int)DsGet(dsv, DS_DF, 4), DsGet(dsv, DS_DW, 1) != 0);
   }
 }
 
@@ -344,6 +344,9 @@ VkPipeline CreateGraphicsPipelineImpl(Host* h, const PipeDesc& pd, StageProg* co
   float alphaRefVal = pd.alphaRef;
   VkSpecializationMapEntry alphaMap{0, 0, 4};
   VkSpecializationInfo alphaSpec{};
+  float swayVals[3] = {};   // SNAP_WIND_SWAY (nvn_foliage.cpp): vertex wrapper amplitude and debug time offset, specialization constants 0 and 1 of the patched vertex module
+  const VkSpecializationMapEntry swayMap[3] = {{0, 0, 4}, {1, 4, 4}, {2, 8, 4}};
+  VkSpecializationInfo swaySpec{};
   for (int s : {0, 3, 4, 2, 1}) {
     if (!valid(s)) continue;
     VkPipelineShaderStageCreateInfo si{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
@@ -351,6 +354,13 @@ VkPipeline CreateGraphicsPipelineImpl(Host* h, const PipeDesc& pd, StageProg* co
                                                   VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, VK_SHADER_STAGE_COMPUTE_BIT};
     si.stage = bits[s]; si.module = st[s]->mod; si.pName = "main";
     PinSubgroup32(&si, &sgPin[s], st[s]->mod);
+    if (s == 0 && ((pd.pad2 >> 17) & 15u) != 0) {   // SNAP_WIND_SWAY: alpha-tested scene draws get the wind displacement wrapper (pad2 bits 17..20 = level)
+      if (VkShaderModule sm = FoliageSwayModule(h, *st[0])) {
+        swayVals[0] = FoliageSwayAmpFor((int)((pd.pad2 >> 17) & 15u)); swayVals[1] = (float)((pd.pad2 >> 21) & 7u) * 0.35f; { static const bool stat = getenv("SNAP_WIND_STATIC") != nullptr; swayVals[2] = stat ? 0.0f : 1.0f; }   // amplitude, debug time offset
+        swaySpec.dataSize = 12; swaySpec.pData = swayVals; swaySpec.mapEntryCount = 3; swaySpec.pMapEntries = swayMap;
+        si.module = sm; si.pSpecializationInfo = &swaySpec;
+      }
+    }
     if (s == 1) {
       StageProg& fp = *st[1];
       uint32_t intKindBits = 0; int intKinds[8] = {};   // [vkval] attachments with an integer format: 1 uint, 2 sint (2 bits each from bit 16)

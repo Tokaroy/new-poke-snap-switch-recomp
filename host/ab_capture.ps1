@@ -11,6 +11,7 @@
 #   -Values   list set one after the other (default off,on). The first value is repeated at the end as a control (noise floor); -NoControl skips it.
 #   -Set      launch-time configuration, NAME=value (e.g. SNAP_LIGHTING=enhanced SNAP_RENDER_SCALE=2)
 #   -Settle   presents to wait after each change (default 12; raise it for temporal effects)   -Window  presents timed per value (default 24)
+#   -Exclusive take all run slots (clean GPU timing for a cost run; one at a time on this PC)
 #   -PerfCsv  time with SNAP_PERF_SHARED rows instead of the dev loop's named passes
 #   -NoPhoto  skip the photo-frame check   -Name  output base name (default the moment)   -OutDir  default analysis\<effect>   -BuildDir  a worker build
 # Takes one normal run slot through host\run_boot.ps1 (host\locks.ps1 fair queue, not exclusive). Exit code: 0 PASS, 10 photo FAIL, 11 photo INCONCLUSIVE,
@@ -18,7 +19,7 @@
 [CmdletBinding(PositionalBinding=$false)]
 param([Parameter(Mandatory)][string]$Route, [Parameter(Mandatory)][string]$Moment, [Parameter(Mandatory)][string]$Effect,
       [string[]]$Values = @('off', 'on'), [string[]]$Set = @(), [int]$Settle = 12, [int]$Window = 24, [switch]$NoPhoto, [switch]$NoControl,
-      [string]$Name, [string]$OutDir, [string]$BuildDir, [int]$Timeout = 590, [switch]$KeepRun, [switch]$PerfCsv)
+      [string]$Name, [string]$OutDir, [string]$BuildDir, [int]$Timeout = 590, [switch]$KeepRun, [switch]$PerfCsv, [switch]$Exclusive)
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 Set-Location $root
@@ -64,7 +65,7 @@ $runId = $null; $bootExit = 0
 # One normal run slot from the fair queue, taken here; run_boot then runs with -NoLock in its own scratch dir (build\runs\slotnl<pid>), so the exe copy
 # never collides with another run that shares slot 0's folder when the slot count is capped.
 . (Join-Path $root 'host\locks.ps1')
-$slots = Enter-RunSlots 'ab_capture'
+$slots = Enter-RunSlots 'ab_capture' -Exclusive:$Exclusive
 if ($null -eq $slots) { Write-Host 'ab_capture: could not get a run slot'; exit 20 }
 $nlName = $null
 try {
