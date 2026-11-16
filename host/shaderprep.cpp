@@ -6,6 +6,7 @@
 #include "shaderprep.h"
 
 #include <windows.h>
+#include <dxgi.h>
 
 #include <algorithm>
 #include <chrono>
@@ -110,6 +111,7 @@ bool pipeline_row(const std::string& k) {
 }
 
 std::string g_settings;   // settings_hash() of the player's settings, taken when this preparation started (written to prepare.json)
+std::string g_driver;     // driver_stamp(), the same moment
 
 void write_progress(const std::string& dir, const char* state, int index, int total, const std::string& course, int ok, int failed, long long started,
                     const std::vector<Result>& res) {
@@ -117,7 +119,7 @@ void write_progress(const std::string& dir, const char* state, int index, int to
   std::string t = "{\"format\": 1, \"state\": \"" + std::string(state) + "\", \"index\": " + std::to_string(index) + ", \"total\": " + std::to_string(total) +
                   ", \"course\": \"" + course + "\", \"ok\": " + std::to_string(ok) + ", \"failed\": " + std::to_string(failed) +
                   ", \"started\": " + std::to_string(started) + ", \"updated\": " + std::to_string(now) + ", \"pipelines\": " + std::to_string(known_pipelines(dir)) +
-                  ", \"seconds\": " + std::to_string(now - started) + ", \"settings\": \"" + g_settings + "\", \"results\": [";
+                  ", \"seconds\": " + std::to_string(now - started) + ", \"settings\": \"" + g_settings + "\", \"driver\": \"" + g_driver + "\", \"results\": [";
   for (size_t i = 0; i < res.size(); i++) {
     char b[200];
     std::snprintf(b, sizeof b, "%s{\"key\": \"%s\", \"exit\": %lu, \"seconds\": %.0f, \"new_pipelines\": %ld}", i ? ", " : "", res[i].key.c_str(), res[i].exit_code, res[i].seconds, res[i].new_pipelines);
@@ -177,6 +179,30 @@ std::string settings_hash(const std::string& data_root) {
   return b;
 }
 
+std::string driver_stamp() {
+  static const std::string s = []() -> std::string {
+    std::string out;
+    IDXGIFactory1* f = nullptr;
+    if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)&f)) || !f) return out;
+    IDXGIAdapter1* a = nullptr;
+    for (UINT i = 0; f->EnumAdapters1(i, &a) == S_OK; ++i) {
+      DXGI_ADAPTER_DESC1 d{};
+      a->GetDesc1(&d);
+      if (d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) { a->Release(); continue; }
+      LARGE_INTEGER umd{};
+      a->CheckInterfaceSupport(__uuidof(IDXGIDevice), &umd);   // the user-mode driver version; stays 0 when the system will not say
+      char b[96];
+      std::snprintf(b, sizeof b, "%04x:%04x:%llx", d.VendorId, d.DeviceId, (unsigned long long)umd.QuadPart);
+      out = b;
+      a->Release();
+      break;
+    }
+    f->Release();
+    return out;
+  }();
+  return s;
+}
+
 bool read_progress(const std::string& dir, Progress& p) {
   std::string t, e;
   hle::Json j;
@@ -191,6 +217,7 @@ bool read_progress(const std::string& dir, Progress& p) {
   p.pipelines = j.get("pipelines") ? (unsigned)j.get("pipelines")->num() : 0;
   p.updated = j.get("updated") ? (long long)j.get("updated")->num() : 0;
   p.settings = j.get("settings") ? j.get("settings")->str() : "";
+  p.driver = j.get("driver") ? j.get("driver")->str() : "";
   if (p.state == 1 && (long long)std::time(nullptr) - p.updated > 20 * 60) p.state = 3;   // the process died without writing a last state
   hle::Json s;
   if (read_text(P(dir) / L"status.json", t) && hle::json_parse(t, s, e)) {
@@ -251,7 +278,8 @@ int run_cli(const std::vector<std::string>& args) {
 
   Progress was;
   g_settings = settings_hash(hle::config().data_root);
-  if (!force && read_progress(dir, was) && was.state == 2 && only.empty() && (was.settings.empty() || was.settings == g_settings)) {
+  g_driver = driver_stamp();
+  if (!force && read_progress(dir, was) && was.state == 2 && only.empty() && (was.settings.empty() || was.settings == g_settings) && (was.driver.empty() || g_driver.empty() || was.driver == g_driver)) {
     std::printf("shaderprep: the shader cache is already prepared (%u pipelines); use --force to run it again\n", was.pipelines);
     return 0;
   }

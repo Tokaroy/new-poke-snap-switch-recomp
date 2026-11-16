@@ -19,7 +19,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <chrono>
+#include <ctime>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <sstream>
 #include <string>
@@ -95,8 +98,14 @@ extern "C" int snap_launchmark_check(char* why, int cap);   // host/mods/crashlo
 
 namespace snap_launcher {
 
-// Returns an empty string when the romfs folder passes, else the message to show.
-std::string check_romfs(const std::string& root, const hle::Json& data, std::atomic<int>* files_seen = nullptr) {
+// A check file that matched, kept so the next start can stat just these instead of walking the whole folder.
+struct Matched { std::string rel; long long size = 0, mtime = 0; };
+
+// Returns an empty string when the romfs folder passes, else the message to show. The walk stops as soon as every check file has matched.
+// Modified time in milliseconds. The remembered result stores it as a JSON number (a double), and the file clock's own 100 ns count is too big for that.
+static long long mtime_ms(fs::file_time_type t) { return (long long)std::chrono::duration_cast<std::chrono::milliseconds>(t.time_since_epoch()).count(); }
+
+std::string check_romfs(const std::string& root, const hle::Json& data, std::atomic<int>* files_seen = nullptr, std::vector<Matched>* matched = nullptr) {
   std::error_code ec;
   if (!fs::is_directory(fs::u8path(root), ec))
     return "The game folder cannot be found:\n" + root + "\n\nIs the drive or network share connected? Use \"Change game folder\" to pick it again.";
@@ -115,9 +124,13 @@ std::string check_romfs(const std::string& root, const hle::Json& data, std::ato
     if (!it->is_regular_file(e2)) continue;
     ++files;
     if (files_seen && (files & 63) == 0) files_seen->store((int)files, std::memory_order_relaxed);
-    std::string rel = lower(U8(fs::relative(it->path(), base, e2).generic_wstring()));
-    auto f = want.find(sha256_hex(rel));
-    if (f != want.end() && (long long)it->file_size(e2) == f->second) ++ok;
+    const std::string rel_raw = U8(fs::relative(it->path(), base, e2).generic_wstring());
+    auto f = want.find(sha256_hex(lower(rel_raw)));
+    if (f != want.end() && (long long)it->file_size(e2) == f->second) {
+      ++ok;
+      if (matched) matched->push_back({rel_raw, f->second, mtime_ms(it->last_write_time(e2))});
+      if (ok == want.size()) break;   // every check file is there: the rest of the folder does not matter
+    }
   }
   if (ok == want.size()) return "";
   if (files == 0) return "The game folder is empty:\n" + root + "\n\nUse \"Change game folder\" to pick the extracted romfs again.";
@@ -792,11 +805,100 @@ static int ask(const UpdateNotice& notice) {
 static std::shared_ptr<snap_launcher::UiVerify> s_verify;
 static std::string s_verify_root;
 
-static std::shared_ptr<snap_launcher::UiVerify> start_verify(const std::string& root, const hle::Json& data) {
+// What a passed check leaves behind (<data dir>\verify_cache.json): the folder, the exe it passed under, when, and the check files with their size and
+// modified time. The next start only looks at those few files; the folder is walked again when the folder, the exe (an update) or any of them changed,
+// or when the player asks. Nothing in the game folder is read for the check, only names, sizes and times.
+struct VerifyCfg { std::string cache_file, exe_stamp; };
+
+static std::string launcher_data_dir() {
+  auto env = [](const char* n) { const char* e = std::getenv(n); return std::string(e && *e ? e : ""); };
+  return !env("SNAP_CONFIG_DIR").empty() ? env("SNAP_CONFIG_DIR") : (!env("APPDATA").empty() ? env("APPDATA") + "\\SnapRecomp" : hle::config().data_root);
+}
+
+static VerifyCfg verify_cfg(const std::string& data_dir, const hle::Json& cfg) {
+  VerifyCfg c;
+  c.cache_file = data_dir + "\\verify_cache.json";
+  wchar_t mp[MAX_PATH * 2] = {};
+  GetModuleFileNameW(nullptr, mp, (DWORD)(sizeof mp / sizeof mp[0]));
+  std::error_code ec;
+  const auto sz = fs::file_size(mp, ec);
+  const auto mt = fs::last_write_time(mp, ec).time_since_epoch().count();
+  c.exe_stamp = (cfg.get("builder_version") ? cfg.get("builder_version")->str() : std::string()) + "|" + std::to_string((long long)sz) + "|" + std::to_string((long long)mt);
+  return c;
+}
+
+static std::string jstr(const std::string& s) {
+  std::string o = "\"";
+  for (char c : s) { if (c == '\\' || c == '"') o += '\\'; o += c; }
+  return o + "\"";
+}
+
+// The whole check for one folder, on the calling thread: the remembered result first, the walk when it does not hold. Returns the message ("" = passed).
+static std::string verify_now(snap_launcher::UiVerify& v, const std::string& root, const hle::Json& data, const VerifyCfg& vc, bool force) {
+  const auto t0 = std::chrono::steady_clock::now();
+  auto done_ms = [&]() { return (int)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count(); };
+  if (const hle::Json* fc = data.get("file_count")) v.total.store((int)fc->num());
+  const hle::Json* sents = data.get("sentinels");
+  const size_t nwant = sents ? sents->a.size() : 0;
+  int why = force ? 5 : 1;
+  if (!force && nwant && !vc.cache_file.empty()) {
+    std::ifstream in(vc.cache_file, std::ios::binary);
+    std::string t((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()), e;
+    hle::Json j;
+    if (!t.empty() && hle::json_parse(t, j, e) && j.type == hle::Json::Obj) {
+      auto str = [&](const char* k) { return j.get(k) ? j.get(k)->str() : std::string(); };
+      const hle::Json* files = j.get("files");
+      if (_stricmp(str("root").c_str(), root.c_str()) != 0) why = 3;
+      else if (str("exe") != vc.exe_stamp || !files || files->a.size() != nwant) why = 2;
+      else {
+        bool same = true;
+        std::error_code ec;
+        for (const auto& f : files->a) {
+          const fs::path p = fs::u8path(root) / fs::u8path(f.get("p") ? f.get("p")->str() : std::string());
+          const auto sz = fs::file_size(p, ec);
+          const bool bad1 = (bool)ec;
+          ec.clear();
+          const long long mt = snap_launcher::mtime_ms(fs::last_write_time(p, ec));
+          if (bad1 || ec || (long long)sz != (f.get("s") ? (long long)f.get("s")->num() : -1) || mt != (f.get("m") ? (long long)f.get("m")->num() : -1)) { same = false; break; }
+        }
+        if (same) {
+          v.at.store(j.get("at") ? (long long)j.get("at")->num() : 0);
+          v.ms.store(done_ms());
+          return "";
+        }
+        why = 4;
+      }
+    }
+  }
+  v.why.store(why);
+  std::vector<snap_launcher::Matched> m;
+  const std::string msg = snap_launcher::check_romfs(root, data, &v.files, &m);
+  v.ms.store(done_ms());
+  if (msg.empty()) {
+    const long long now = (long long)std::time(nullptr);
+    v.at.store(now);
+    if (!vc.cache_file.empty() && !m.empty()) {
+      std::string o = "{\"v\":1,\"root\":" + jstr(root) + ",\"exe\":" + jstr(vc.exe_stamp) + ",\"at\":" + std::to_string(now) + ",\"files\":[";
+      for (size_t i = 0; i < m.size(); ++i)
+        o += std::string(i ? "," : "") + "{\"p\":" + jstr(m[i].rel) + ",\"s\":" + std::to_string(m[i].size) + ",\"m\":" + std::to_string(m[i].mtime) + "}";
+      o += "]}\n";
+      std::error_code ec;
+      fs::create_directories(fs::u8path(vc.cache_file).parent_path(), ec);
+      std::ofstream f(fs::u8path(vc.cache_file), std::ios::binary | std::ios::trunc);
+      f << o;
+    }
+  } else if (!vc.cache_file.empty()) {
+    std::error_code ec;
+    fs::remove(fs::u8path(vc.cache_file), ec);   // a folder that failed is not remembered
+  }
+  return msg;
+}
+
+static std::shared_ptr<snap_launcher::UiVerify> start_verify(const std::string& root, const hle::Json& data, const VerifyCfg& vc, bool force) {
   auto v = std::make_shared<snap_launcher::UiVerify>();
   hle::Json d = data;   // the worker outlives the caller's reference
-  std::thread([v, root, d]() {
-    v->msg = snap_launcher::check_romfs(root, d, &v->files);
+  std::thread([v, root, d, vc, force]() {
+    v->msg = verify_now(*v, root, d, vc, force);
     v->state.store(v->msg.empty() ? 1 : 2, std::memory_order_release);
   }).detach();
   return v;
@@ -819,9 +921,10 @@ static int ask_themed(const UpdateNotice& notice, const fs::path& cfg_path, cons
   ui.version = cfg.get("builder_version") ? cfg.get("builder_version")->str() : "";
   ui.update_available = notice.available;
   ui.update_version = notice.latest;
-  if (!s_verify || romfs != s_verify_root) { s_verify = start_verify(romfs, data); s_verify_root = romfs; }
+  const VerifyCfg vcfg = verify_cfg(ui.data_dir, cfg);
+  if (!s_verify || romfs != s_verify_root) { s_verify = start_verify(romfs, data, vcfg, false); s_verify_root = romfs; }
   ui.verify = s_verify;
-  ui.verify_again = [&ui, romfs, data]() { s_verify = start_verify(romfs, data); ui.verify = s_verify; };
+  ui.verify_again = [&ui, romfs, data, vcfg]() { s_verify = start_verify(romfs, data, vcfg, true); ui.verify = s_verify; };
   ui.game_ok = s_verify->state.load() != 2;
   ui.game_msg = s_verify->state.load() == 2 ? s_verify->msg : std::string();
   std::string root;
@@ -982,10 +1085,11 @@ bool prepare(Result& r) {
     if (choice == 2) {
       std::string p = pick_folder(romfs);
       if (p.empty()) continue;
-      std::string bad = check_romfs(p, data);
+      auto uv = std::make_shared<snap_launcher::UiVerify>();
+      std::string bad = verify_now(*uv, p, data, verify_cfg(launcher_data_dir(), cfg), true);
       if (!bad.empty()) { message("Snap Recomp", bad, MB_ICONWARNING); continue; }
       cfg.set("romfs_root", hle::Json::string(p));
-      s_verify = std::make_shared<snap_launcher::UiVerify>();   // that folder was just checked: no second pass
+      s_verify = uv;   // that folder was just checked: no second pass
       s_verify->state.store(1);
       s_verify_root = p;
       std::string text;
@@ -995,12 +1099,17 @@ bool prepare(Result& r) {
       continue;
     }
     std::string bad;
-    if (!(s_verify && s_verify_root == romfs && s_verify->state.load() == 1)) bad = check_romfs(romfs, data);   // the themed window already passed this folder: not twice
+    if (!(s_verify && s_verify_root == romfs && s_verify->state.load() == 1)) {   // the themed window already passed this folder: not twice
+      snap_launcher::UiVerify uv;
+      bad = verify_now(uv, romfs, data, verify_cfg(launcher_data_dir(), cfg), false);
+      if (autoplay) std::fprintf(stderr, "launcher: game folder %s in %d ms (%s)\n", bad.empty() ? "passed" : "failed", uv.ms.load(), uv.why.load() ? "walked the folder" : "remembered result");
+    }
     if (!bad.empty()) {
       if (autoplay) { std::fprintf(stderr, "launcher: %s\n", bad.c_str()); return true; }
       message("Snap Recomp", bad, MB_ICONWARNING);
       continue;
     }
+    if (autoplay && std::getenv("SNAP_LAUNCHER_VERIFY_ONLY")) return true;   // test switch: time the game folder check, then stop without starting the game
     break;
   }
   auto s = [&](const char* k) { return cfg.get(k) ? cfg.get(k)->str() : std::string(); };

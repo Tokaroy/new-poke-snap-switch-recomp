@@ -14,6 +14,7 @@
 #include <wincodec.h>
 
 #include <algorithm>
+#include <ctime>
 #include <cfloat>
 #include <chrono>
 #include <cmath>
@@ -227,6 +228,7 @@ struct G {
   std::string cache_dir;
   snap_shaderprep::Progress prep;   // <shadercache>\prepare.json (host/shaderprep.cpp): the first-run "prepare shaders" sweep
   double prep_at = 0;               // ImGui time of the last refresh_cache()
+  bool prep_driver = false;         // the stale reason is a new graphics driver (the driver's own shader cache does not carry over)
   bool prep_stale = false;          // prepared, but with other shadow / foliage / parallax / effect settings than the player has now
 
   enum View { HOME, SETTINGS, SAVES, STEAM, MODS, ALBUM } view = HOME;
@@ -737,7 +739,9 @@ int access_ui_percent() {
 void fit_window() {
   using GetDpi = UINT(WINAPI*)(HWND);
   GetDpi gd = (GetDpi)GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow");
-  const float sc = (gd ? gd(g.hwnd) / 96.0f : 1.0f) * (float)access_ui_percent() / 100.0f;
+  const char* dpi_test = std::getenv("SNAP_LAUNCHER_DPI");   // test hook: pretend the display is at this DPI (96 = 100%, 144 = 150%, 192 = 200%)
+  const int dpi_forced = dpi_test ? std::atoi(dpi_test) : 0;
+  const float sc = (dpi_forced >= 96 && dpi_forced <= 384 ? dpi_forced / 96.0f : gd ? gd(g.hwnd) / 96.0f : 1.0f) * (float)access_ui_percent() / 100.0f;
   g.tb = std::round(34.0f * sc);
   RECT r{0, 0, (LONG)(1280 * sc), (LONG)(720 * sc + g.tb)};   // the title bar is ours, so the client area is the whole window
   RECT wa{};
@@ -785,7 +789,7 @@ void build_pages() {
     p.items.push_back(choice("Mute in background", "mute_in_background", S_WIN, "1", {{"1", "On"}, {"0", "Off"}},
                              "Silences the game while another window is in front.", E_BOOL));
     p.items.push_back(choice("When the game closes", "return_to_launcher", S_CFG, "off", {{"off", "Close everything"}, {"on", "Back to this launcher"}},
-                             "Back to this launcher opens it again once the game has closed (saves and settings are written first). Close everything just ends."));
+                             "Back to this launcher opens it again once the game has closed (saves and settings are written first). Close everything just ends. If the game crashes, the launcher always comes back and offers safe mode."));
     g.pages.push_back(p);
   }
   // Picture: the four rows in the order the picture is made (Look, then how many pixels, then the edge smoothing, then the upscaler's share), each
@@ -1468,6 +1472,8 @@ void refresh_cache() {
   g.prep_stale = g.prep.state == 2 && !g.prep.settings.empty() && g.prep.settings != snap_shaderprep::settings_hash(g.info->data_dir);   // the picture settings changed since the sweep
   g.cache_state = 0;
   g.cache_bytes = 0;
+  g.prep_driver = g.prep.state == 2 && !g.prep.driver.empty() && !snap_shaderprep::driver_stamp().empty() && g.prep.driver != snap_shaderprep::driver_stamp();   // the graphics driver changed since the sweep
+  if (g.prep_driver) g.prep_stale = true;
   std::error_code ec;
   bool have_blob = false, fresh = false;
   const auto now = fs::file_time_type::clock::now();
@@ -1509,14 +1515,44 @@ const Home kHome[] = {
 };
 constexpr int kHomeN = 10;
 // 0 = still checking the game folder, 1 = passed, 2 = needs attention (UiInfo::verify, else the plain game_ok flag)
-// Test switch: SNAP_LAUNCHER_UI_CHECKING=1 shows the "checking" look for a picture.
+// Test switch: SNAP_LAUNCHER_UI_CHECKING=1 shows the "checking" look for a picture; "2:24:63" also shows reason 2, 24 of 63 files.
 int verify_state() {
-  static const bool force_checking = std::getenv("SNAP_LAUNCHER_UI_CHECKING") != nullptr;
-  if (force_checking) return 0;
+  static const char* const forced = std::getenv("SNAP_LAUNCHER_UI_CHECKING");
+  static const bool force_checking = forced != nullptr;
+  if (force_checking) {
+    int why = 0, n = 0, t = 0;
+    if (g.info->verify && std::sscanf(forced, "%d:%d:%d", &why, &n, &t) == 3) { g.info->verify->why.store(why); g.info->verify->files.store(n); g.info->verify->total.store(t); }
+    return 0;
+  }
   return g.info->verify ? g.info->verify->state.load() : (g.info->game_ok ? 1 : 2);
 }
 // Play waits for the check; when it failed the same button takes you to the folder picker instead.
 void go_play(bool safe = false) {
+// Words for the verify state: why a full look was needed, how long ago the folder last passed, how far along the look is.
+const char* verify_why_text(int why) {
+  switch (why) {
+    case 1: return "First check of this folder";
+    case 2: return "Update installed";
+    case 3: return "Game folder changed";
+    case 4: return "Game files changed";
+    case 5: return "Checked again on request";
+    default: return "";
+  }
+}
+std::string ago_text(long long at) {
+  if (at <= 0) return "";
+  const long long d = (long long)std::time(nullptr) - at;
+  if (d < 90) return "just now";
+  if (d < 3600) return std::to_string(d / 60) + " min ago";
+  if (d < 86400) return std::to_string(d / 3600) + " h ago";
+  return std::to_string(d / 86400) + (d < 2 * 86400 ? " day ago" : " days ago");
+}
+// 0..1 when the folder's file count is known (the builder publishes it), else -1: the bar then just moves, steadily.
+float verify_fraction() {
+  if (!g.info->verify) return -1.f;
+  const int t = g.info->verify->total.load(), n = g.info->verify->files.load();
+  return t > 0 ? std::min(1.f, (float)n / (float)t) : -1.f;
+}
   const int vs = verify_state();
   if (vs == 0) { g.toast = "Still checking your game files"; g.toast_until = ImGui::GetTime() + 2.5; return; }
   g.result = vs == 2 ? UiResult::GameFolder : safe ? UiResult::SafeMode : UiResult::Play;   // safe mode: docs/safe-mode.md
@@ -1717,7 +1753,7 @@ void draw_home_bg() {
   diamond(1130, 250, 120, C(0xd8d3ce, 140));
 }
 
-struct Chip { std::string text; unsigned dot, fg, bg; };
+struct Chip { std::string text; unsigned dot, fg, bg; float bar = -2.f; };   // bar: -2 none, -1 steady moving bar (amount unknown), 0..1 the real amount
 
 // (page, row) of the first item that matches, for the loadout rows that jump to a setting
 bool find_pos(bool (*pred)(const Item&), int& pg, int& row) {
@@ -1830,23 +1866,29 @@ void draw_home() {
     diamond(x + 66, y + h / 2, 46, C(0x8f8e90));
     aperture(x + 66, y + h / 2, 22, C(kCream));
     const int vs = verify_state();
-    text(x + 134, y + 44, 48, C(kBrown), vs == 0 ? "Checking" : vs == 2 ? "Fix folder" : "Play");
+    text(x + 134, y + 44, 48, C(kBrown), vs == 0 ? "Verify" : vs == 2 ? "Fix folder" : "Play");
     std::string pl;
-    if (vs == 0) {   // the game folder is being checked: a bar under the label, Play comes back by itself
+    if (vs == 0) {   // the game folder is being verified: a bar under the label, Play comes back by itself
       const int n = in.verify ? in.verify->files.load() : 0;
-      pl = "Looking at your game files" + (n ? " (" + std::to_string(n) + ")" : std::string());
+      const int why = in.verify ? in.verify->why.load() : 0;
+      const float fr = verify_fraction();
+      pl = std::string(why ? verify_why_text(why) : "Looking at your game files") + (n ? " - " + std::to_string(n) + (in.verify && in.verify->total.load() ? " of " + std::to_string(in.verify->total.load()) : std::string()) + " files" : std::string());
       const double t = ImGui::GetTime();
-      const float bx = x + 134, bw = w - 168, by = y + 76;
+      const float bx = x + 134, bw = w - 168, by = y + 72;
       rrect(bx, by, bw, 6, 3, C(0xe9c96a));
-      const float seg = bw * 0.28f, pos = (float)std::fmod(t * 0.8, 1.0) * (bw + seg) - seg;
-      rrect(bx + std::max(0.f, pos), by, std::min(bw, pos + seg) - std::max(0.f, pos), 6, 3, C(kOrange));
+      if (fr >= 0.f) {   // the real amount
+        rrect(bx, by, std::max(6.f, bw * fr), 6, 3, C(kOrange));
+      } else {           // amount not known: a steady moving bar
+        const float seg = bw * 0.28f, pos = (float)std::fmod(t * 0.8, 1.0) * (bw + seg) - seg;
+        rrect(bx + std::max(0.f, pos), by, std::min(bw, pos + seg) - std::max(0.f, pos), 6, 3, C(kOrange));
+      }
     } else if (vs == 2) {
       pl = "Press to pick the game folder again";
     } else if (!in.profiles.empty()) {
       pl = g.profile_idx < in.profiles.size() ? in.profiles[g.profile_idx].name : "+ New profile";
       if (sel) pl = "<  " + pl + "  >";
     }
-    if (!pl.empty()) text_clip(x + 134, y + (vs == 0 ? 96 : 86), 19, C(0x7a6440), pl.c_str(), w - 150);
+    if (!pl.empty()) text_clip(x + 134, y + (vs == 0 ? 90 : 86), 19, C(0x7a6440), pl.c_str(), w - 150);
   }
 
   // status chips
@@ -1854,8 +1896,10 @@ void draw_home() {
   {
     const int vs = verify_state();
     const int n = in.verify ? in.verify->files.load() : 0;
-    if (vs == 0) chips.push_back({"Checking game files" + (n ? " (" + std::to_string(n) + ")" : std::string()), 0xe0a03au, 0x5f5f5fu, 0xffffffu});
-    else chips.push_back({vs == 1 ? "Game files ready" : "Game folder needs attention", vs == 1 ? 0x5aa070u : 0xc84a3au, vs == 1 ? 0x5f5f5fu : 0xc84a3au, 0xffffffu});
+    const long long vat = in.verify ? in.verify->at.load() : 0;
+    const std::string when = vs == 1 && vat > 0 ? " (" + ago_text(vat) + ")" : std::string();
+    if (vs == 0) chips.push_back({"Verifying game files" + (n ? " (" + std::to_string(n) + ")" : std::string()), 0xe0a03au, 0x5f5f5fu, 0xffffffu, verify_fraction()});
+    else chips.push_back({(vs == 1 ? "Game files ready" + when : std::string("Game folder needs attention")), vs == 1 ? 0x5aa070u : 0xc84a3au, vs == 1 ? 0x5f5f5fu : 0xc84a3au, 0xffffffu});
   }
   bool prep_chip_click = false;   // the shader chip starts or stops the first-run preparation (host/shaderprep.cpp)
   {
@@ -1864,12 +1908,13 @@ void draw_home() {
     const snap_shaderprep::Progress& pp = g.prep;
     std::string t = std::string(names[g.cache_state]) + (g.cache_state ? " (" + size_text(g.cache_bytes) + ")" : "");
     unsigned dot = dots[g.cache_state];
-    if (pp.state == 1) { t = "Preparing shaders " + std::to_string(pp.index) + " of " + std::to_string(pp.total) + " - press to stop"; dot = 0xe0733au; prep_chip_click = true; }
-    else if (pp.state == 2 && g.prep_stale) { t = "Settings changed - press to prepare shaders again"; dot = 0xe0a03au; prep_chip_click = true; }
+    float bar = -2.f;
+    if (pp.state == 1) { t = "Preparing shaders " + std::to_string(pp.index) + " of " + std::to_string(pp.total) + " - press to stop"; dot = 0xe0733au; prep_chip_click = true; bar = pp.total > 0 ? std::min(1.f, (float)std::max(0, pp.index - 1) / (float)pp.total) : -1.f; }
+    else if (pp.state == 2 && g.prep_stale) { t = g.prep_driver ? "Graphics driver changed - press to prepare shaders again" : "Settings changed - press to prepare shaders again"; dot = 0xe0a03au; prep_chip_click = true; }
     else if (pp.state == 2) t = "Shaders prepared (" + std::to_string(pp.pipelines) + " pipelines)";
     else if (pp.state == 3 || pp.state == 4) { t = std::string(pp.state == 3 ? "Shader preparation stopped" : "Shader preparation had problems") + " - press to retry"; dot = 0xe0a03au; prep_chip_click = true; }
     else { t += " - press to prepare"; prep_chip_click = true; }
-    chips.push_back({t, dot, 0x5f5f5fu, 0xffffffu});
+    chips.push_back({t, dot, 0x5f5f5fu, 0xffffffu, bar});
   }
   if (in.update_available) chips.push_back({"Update " + in.update_version, 0xe0733au, 0xb85a28u, 0xfcefe6u});
   if (g.pad_found) chips.push_back({"Controller found", 0x5aa070u, 0x5f5f5fu, 0xffffffu});
@@ -1909,6 +1954,12 @@ void draw_home() {
     text(cx + 30, cy + 15, 15, C(c.fg), t.c_str());
     cx += w + 8;
   }
+    if (c.bar > -2.f) {   // a thin bar along the bottom of the chip: the real amount, or a steady moving one when it is not known
+      const float bx = cx + 20, bw = w - 40, by = cy + 25;
+      rrect(bx, by, bw, 3, 1.5f, C(0xe9c96a));
+      if (c.bar >= 0.f) rrect(bx, by, std::max(3.f, bw * c.bar), 3, 1.5f, C(kOrange));
+      else { const float seg = bw * 0.3f, pos = (float)std::fmod(ImGui::GetTime() * 0.8, 1.0) * (bw + seg) - seg; rrect(bx + std::max(0.f, pos), by, std::min(bw, pos + seg) - std::max(0.f, pos), 3, 1.5f, C(kOrange)); }
+    }
 
   // the menu rows
   float y = cy + 30 + 12;
@@ -1932,7 +1983,7 @@ void draw_home() {
     else if (i == H_STEAM) sub = g.steam_status == 0 ? "Steam not found" : g.steam_status == 2 ? "Added" : "Not added";
     else if (i == H_UPDATES) sub = in.update_available ? in.update_version + " ready" : in.version;
     else if (i == H_BENCH) sub = "About 2 min";
-    else if (i == H_FOLDER) sub = verify_state() == 0 ? "Checking" : verify_state() == 1 ? "Ready" : "Needs attention";
+    else if (i == H_FOLDER) sub = verify_state() == 0 ? "Verifying" : verify_state() == 1 ? (in.verify && in.verify->at.load() > 0 ? "Verified " + ago_text(in.verify->at.load()) : std::string("Ready")) : "Needs attention";
     if (!sub.empty()) text(x + w - 22, y + h / 2, 15, C(sel ? 0x7a6440 : 0x9a9795), sub.c_str(), 2);
     y += h + 3;
   }

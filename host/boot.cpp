@@ -128,6 +128,7 @@ static void crash_host_stack(const CONTEXT *src) {
     }
 }
 extern "C" void snap_crashlog_seh(EXCEPTION_POINTERS *ep, const char *guest, int stage);   // host/mods/crashlog.cpp: _crash.txt (stage 1 early, 2 after the stack was printed)
+extern "C" void snap_launcher_crash_return();   // below, with maybe_return_to_launcher
 static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep) {
     Cpu *g_cpu_dbg = g_tls_cpu ? g_tls_cpu : ::g_cpu_dbg;
     char crash_guest[400] = "";
@@ -177,6 +178,7 @@ static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep) {
     }
     fflush(stderr);
     snap_crashlog_seh(ep, crash_guest, 2);
+    snap_launcher_crash_return();   // a game the launcher started: bring the launcher back with the safe mode offer
     return EXCEPTION_EXECUTE_HANDLER;
 }
 
@@ -536,23 +538,52 @@ static void snapshot_start_env() {
         FreeEnvironmentStringsW(e);
     }
 }
+// Starts this exe again as the launcher. wait_pid != 0: the new process first waits for that process to end (SNAP_WAIT_PID), so the launch marker of a
+// crashed run no longer has a live owner when the launcher looks at it and offers safe mode.
+static void start_launcher_again(DWORD wait_pid) {
+    wchar_t mp[MAX_PATH * 2] = {};
+    GetModuleFileNameW(nullptr, mp, (DWORD)(sizeof mp / sizeof mp[0]));
+    std::wstring cmd = L"\"" + std::wstring(mp) + L"\"";
+    std::wstring dir = std::filesystem::path(mp).parent_path().wstring();
+    std::wstring env = g_start_env;   // each NAME=value ends in NUL, one more NUL at the end
+    if (wait_pid && !env.empty()) {
+        env.pop_back();
+        env += L"SNAP_WAIT_PID=" + std::to_wstring(wait_pid);
+        env.push_back(L'\0');
+        env.push_back(L'\0');
+    }
+    STARTUPINFOW si{};
+    si.cb = sizeof si;
+    PROCESS_INFORMATION pi{};
+    if (CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_UNICODE_ENVIRONMENT, env.empty() ? nullptr : (LPVOID)env.data(), dir.c_str(), &si, &pi)) {
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    }
+}
 static void maybe_return_to_launcher() {
     static bool done = false;
     if (!g_return_to_launcher || done) return;
     done = true;
     const char* e = getenv("SNAP_RETURN_TO_LAUNCHER");
     if (!e || !(e[0] == '1' || _stricmp(e, "on") == 0)) return;
-    wchar_t mp[MAX_PATH * 2] = {};
-    GetModuleFileNameW(nullptr, mp, (DWORD)(sizeof mp / sizeof mp[0]));
-    std::wstring cmd = L"\"" + std::wstring(mp) + L"\"";
-    std::wstring dir = std::filesystem::path(mp).parent_path().wstring();
-    STARTUPINFOW si{};
-    si.cb = sizeof si;
-    PROCESS_INFORMATION pi{};
-    if (CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_UNICODE_ENVIRONMENT, g_start_env.empty() ? nullptr : (LPVOID)g_start_env.data(), dir.c_str(), &si, &pi)) {
-        CloseHandle(pi.hThread);
-        CloseHandle(pi.hProcess);
-    }
+    start_launcher_again(0);
+}
+// A crash of a game the launcher started brings the launcher back whatever the "When the game closes" choice is: the launcher then reads the
+// launch marker and the crash file and offers safe mode (docs/safe-mode.md). Called from the crash filter after _crash.txt is written.
+extern "C" void snap_launcher_crash_return() {
+    static bool done = false;
+    if (!g_return_to_launcher || done) return;
+    done = true;
+    start_launcher_again(GetCurrentProcessId());
+}
+// Main of a launcher started after a crash: let the crashed process finish dying first (at most 15 s).
+static void wait_for_previous_run() {
+    char b[32] = {};
+    if (!GetEnvironmentVariableA("SNAP_WAIT_PID", b, sizeof b)) return;
+    SetEnvironmentVariableA("SNAP_WAIT_PID", nullptr);
+    const DWORD pid = (DWORD)strtoul(b, nullptr, 10);
+    if (!pid) return;
+    if (HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, pid)) { WaitForSingleObject(h, 15000); CloseHandle(h); }
 }
 static LRESULT CALLBACK game_wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
     { LRESULT wr = 0; if (snap_window_proc(h, m, w, l, &wr)) return wr; }   // host/window_opts.cpp: F11, focus, mute, remembered placement
@@ -1022,6 +1053,7 @@ static void attach_parent_console() {
 
 int main(int argc, char **argv) {
     attach_parent_console();
+    wait_for_previous_run();
     snapshot_start_env();
     if (!cpu_has_v3()) { fprintf(stderr, "boot: this build needs an x86-64-v3 CPU (AVX2, BMI2, FMA); this CPU lacks it\n"); return 2; }
     static char errbuf[1 << 16];

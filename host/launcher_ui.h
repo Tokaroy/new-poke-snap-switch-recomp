@@ -20,10 +20,15 @@ struct UiProfile {
 };
 
 // The game-folder check runs on a worker thread so the window opens at once. state: 0 checking, 1 passed, 2 needs attention; msg is written before
-// state leaves 0; files counts the files looked at so far.
+// state leaves 0; files counts the files looked at so far, total is how many the folder should hold (0 = not known: the bar is then steady, not a
+// fraction). why says why a full look was needed (codes below); it stays 0 when the remembered result still held and nothing was read. at is when the folder last passed (unix seconds), ms how long the check took.
 struct UiVerify {
   std::atomic<int> state{0};
   std::atomic<int> files{0};
+  std::atomic<int> total{0};
+  std::atomic<long long> at{0};
+  std::atomic<int> ms{0};
+  std::atomic<int> why{0};   // 0 = nothing was read (the remembered result held) or not decided yet, 1 first check, 2 update installed, 3 game folder changed, 4 files changed, 5 you asked
   std::string msg;
 };
 

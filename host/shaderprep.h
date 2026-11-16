@@ -35,11 +35,15 @@ struct Progress {
   unsigned pipelines = 0;   // keys known (prepare.json), status.json "ready" when present
   unsigned ready = 0;
   std::string settings;     // settings_hash() of the player's settings when the sweep started (empty in an older file)
+  std::string driver;       // driver_stamp() when the sweep started (empty in an older file: then a driver change cannot be told)
   long long updated = 0;    // unix time of the last write: a "running" file older than 20 minutes is treated as stopped
 };
 // A short hash of the settings.cfg rows that change pipelines (shadow, foliage, parallax, anti-aliasing, effect switches) in the profile the game
 // would start with. prepare.json keeps the value of the sweep; the launcher compares it with the current one and offers to prepare again.
 std::string settings_hash(const std::string& data_root);
+// The graphics adapter and its user-mode driver version ("10de:2684:1f00000000f1eee"), from DXGI. The driver's own pipeline cache is only good for
+// the driver that made it, so a different stamp means the prepared shaders are stale. Empty when no hardware adapter answers.
+std::string driver_stamp();
 // Reads <cache_dir>\prepare.json and status.json; false when there is no prepare.json.
 bool read_progress(const std::string& cache_dir, Progress& p);
 // Starts `<this exe> --prepare-shaders` as its own below-normal, windowless process. False with `err` when it could not be started.
