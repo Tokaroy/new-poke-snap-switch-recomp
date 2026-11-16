@@ -435,6 +435,11 @@ void ensure_init() {
 // ---- core entry points used by backends --------------------------------------------------------------------------
 namespace snap_audio {
 
+// Mono audio (Accessibility, hle/access.h): defined in runtime/hle/access.cpp; a build without the HLE layer (audio tests) gets "off".
+extern "C" int snap_access_mono(void);
+extern "C" int snap_access_mono_none(void) { return 0; }
+#pragma comment(linker, "/alternatename:snap_access_mono=snap_access_mono_none")
+
 void core_mix(float* dst, uint32_t frames) {
   Globals& g = G();
   const uint32_t dc = g.devChannels.load(std::memory_order_relaxed);
@@ -455,6 +460,16 @@ void core_mix(float* dst, uint32_t frames) {
     s.inUse.store(0, std::memory_order_seq_cst);
   }
   if (g.upmixOn && dc >= 6) g.upmix.process(dst, dc, frames);
+  if (snap_access_mono()) {   // left and right pairs (front, and the surround pairs of a 5.1 / 7.1 mix) play their average; centre and LFE stay
+    for (uint32_t f = 0; f < frames; ++f) {
+      float* fr = dst + (size_t)f * dc;
+      for (uint32_t c = 0; c + 1 < dc; c += 2) {
+        if (dc >= 6 && (c == 2)) continue;   // centre + LFE are not a pair
+        const float m = 0.5f * (fr[c] + fr[c + 1]);
+        fr[c] = fr[c + 1] = m;
+      }
+    }
+  }
   // master x device volume, ramped over the block
   const float target = g.muted.load(std::memory_order_relaxed) ? 0.0f : g.vol[SNAP_VOL_MASTER].load(std::memory_order_relaxed) * g.deviceVol[g.activeDevice].load(std::memory_order_relaxed);
   const float start = g.curGain;
