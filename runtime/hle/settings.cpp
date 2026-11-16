@@ -116,8 +116,8 @@ const struct { const char* key; const char* env; } kEnvKeys[] = {
     {"skip_cutscenes", "SNAP_SKIP_CUTSCENES"},
     {"fps_target", "SNAP_FPS"},   // Frame rate target row (90 / 120 / 144; "default" = 60, the game's own); host/mods/highfps.cpp, uipace.cpp
     {"gfx_bokeh_dof", "SNAP_BOKEH_DOF"}, {"gfx_motion_blur", "SNAP_MOTION_BLUR"},   // lens effect rows (runtime/nvn/nvn_lens_fx.cpp; strength, unset = off; restart)
-};
     {"frame_generation", "SNAP_FRAMEGEN"},   // FSR frame generation row ("1" or unset = off; runtime/nvn/nvn_framegen.cpp; restart)
+};
 
 // F1 post-process rows: key -> render pass names (comma list) the host switches off through SNAP_PASS_OFF.
 const struct { const char* key; const char* passes; } kPassKeys[] = {
