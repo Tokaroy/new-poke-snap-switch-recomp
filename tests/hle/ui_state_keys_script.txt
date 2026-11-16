@@ -1,3 +1,0 @@
-60 press key:F5 0.3
-67 press key:F8 0.3
-76 quit

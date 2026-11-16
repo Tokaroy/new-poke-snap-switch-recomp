@@ -156,7 +156,7 @@ try {
     Fresh 'exclusive'
     Set-Content (Path 'build\slots\max.txt') '1'
     $held = @(Enter-RunSlots 'exclusive' -Exclusive -WaitSec 1)
-    Assert (($held -join ',') -eq '0,1,2,3') 'exclusive reserves all physical slots despite cap'
+    Assert (($held -join ',') -eq '0,1,2,3,4,5,6,7') 'exclusive reserves all physical slots despite cap'
     Exit-RunSlots
     Assert (-not (Test-Path (Path 'build\slots\exclusive.lock'))) 'exclusive gate released'
     Assert (@(Get-ChildItem (Path 'build\slots') -Filter '*.lock').Count -eq 0) 'all exclusive slots released'
@@ -171,7 +171,7 @@ try {
     Fresh 'daytime-exclusive'
     Set-Content (Path 'build\slots\max.txt') '1'
     $env:SNAP_LOCK_OWNER = 'pc-in-use'
-    foreach ($n in 1..3) { Assert (Try-TakeLock (Path "build\slots\run$n.lock") 'closed') 'create daytime reservation' }
+    foreach ($n in 1..7) { Assert (Try-TakeLock (Path "build\slots\run$n.lock") 'closed') 'create daytime reservation' }
     $env:SNAP_LOCK_OWNER = 'test'
     $held = @(Enter-RunSlots 'daytime bench' -Exclusive -WaitSec 1)
     Assert (($held -join ',') -eq '0') 'daytime exclusive owns only slot zero'
@@ -179,7 +179,7 @@ try {
     Exit-RunSlots
     Assert (-not (Test-Path (Path 'build\slots\exclusive.lock'))) 'one-slot exclusive releases its gate'
     Assert (-not (Test-Path (Path 'build\slots\run0.lock'))) 'one-slot exclusive releases slot zero'
-    foreach ($n in 1..3) { Assert ((Get-LockText (Path "build\slots\run$n.lock")) -like 'pc-in-use pid=*') 'daytime reservations remain untouched' }
+    foreach ($n in 1..7) { Assert ((Get-LockText (Path "build\slots\run$n.lock")) -like 'pc-in-use pid=*') 'daytime reservations remain untouched' }
     $daytime = Spawn 'exclusive' 'daytime-child'
     Wait-For { Test-Path (Path "result-$($daytime.Id)") } 'daytime exclusive child acquired'
     Assert ((Get-Content (Path "result-$($daytime.Id)")) -eq '0') 'exclusive child accepts above-cap daytime holds'

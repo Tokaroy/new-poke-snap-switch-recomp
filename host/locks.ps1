@@ -3,6 +3,7 @@
 # Stale = dead PID or older than 20 minutes; unfinished files get 12 seconds.
 if (-not $script:LockRoot) { $script:LockRoot = if ($root) { "$root" } else { (Resolve-Path (Join-Path $PSScriptRoot '..')).Path } }
 $script:LockMax = 4
+$script:LockPhys = 8   # physical run slots run0..run7; build\slots\max.txt caps how many are open (default 4)
 if (-not $script:LockMutexWaitMs) { $script:LockMutexWaitMs = 10000 }
 if (-not $script:LockMutexName) { $script:LockMutexName = 'Global\SnapRecompLocks' }
 
@@ -10,7 +11,7 @@ function Get-LockText([string]$Path) { try { (Get-Content -LiteralPath $Path -Er
 function Get-RunSlotCap {
     $cap = 0
     $text = Get-LockText (Join-Path $script:LockRoot 'build\slots\max.txt')
-    $script:LockMax = if ($null -ne $text -and [int]::TryParse($text.Trim(), [ref]$cap) -and $cap -ge 1 -and $cap -le 4) { $cap } else { 4 }
+    $script:LockMax = if ($null -ne $text -and [int]::TryParse($text.Trim(), [ref]$cap) -and $cap -ge 1 -and $cap -le $script:LockPhys) { $cap } else { 4 }
     return $script:LockMax
 }
 
@@ -82,7 +83,7 @@ function Take-BuildLock([string]$What = 'build', [int]$WaitSec = 1800) {
     return $false
 }
 function Get-SlotOwners {
-    (0..3 | ForEach-Object { $f = Join-Path $script:LockRoot "build\slots\run$_.lock"; "run$_=" + $(if (Test-Path $f) { Get-LockText $f } else { 'free' }) }) -join ' | '
+    (0..($script:LockPhys - 1) | ForEach-Object { $f = Join-Path $script:LockRoot "build\slots\run$_.lock"; "run$_=" + $(if (Test-Path $f) { Get-LockText $f } else { 'free' }) }) -join ' | '
 }
 
 function Get-LiveQueueTickets([string]$QueueDir) {
@@ -143,14 +144,14 @@ function Enter-RunSlots([string]$What, [switch]$Exclusive, [int]$WaitSec = 3600)
                     if ($haveX) {
                         $got = @($got | Where-Object { (Get-LockText (Join-Path $dir "run$_.lock")) -match "(?:^| )pid=$PID(?: |$)" })
                         $parked = @()
-                        foreach ($n in 0..3) {
+                        foreach ($n in 0..($script:LockPhys - 1)) {
                             if ($got -contains $n) { continue }
                             $path = Join-Path $dir "run$n.lock"
                             if ($n -ge $cap -and (Get-LockText $path) -match '^pc-in-use pid=\d+(?: |$)' -and -not (Test-LockStale $path)) {
                                 $parked += $n
                             } elseif (Try-TakeLock $path "$What (exclusive)") { $got += $n }
                         }
-                        if ($got.Count + $parked.Count -eq 4 -and (Get-RunSlotCap) -eq $cap) {
+                        if ($got.Count + $parked.Count -eq $script:LockPhys -and (Get-RunSlotCap) -eq $cap) {
                             $script:SlotsHeld = $got; $script:ExclusiveHeld = $true; $success = $true; return $got
                         }
                     }
