@@ -1,6 +1,6 @@
 # Level editor plan
 
-Status (2026-11-14): milestone 1 works. `tools/level-editor` is a read-only Rust course viewer that opens any `LC_*` course pack from the local unpacked data, lists its parts, and draws the course geometry, the camera rail, other paths and the spawn points in a 3D view. Everything past milestone 1 below is a plan, not built.
+Status (2026-11-14): milestones 1 to 3 work (see Milestones; new course IDs are deferred). `tools/level-editor` opens any `LC_*` course pack from the local unpacked data, lists its parts, and draws the course geometry, the camera rail, other paths and the spawn points in a 3D view. It also edits placements and the rail and exports a mod pack. Milestones 4 to 6 are plans, not built.
 
 This tool was an owner to-do that was parked until the core game and graphics work land (AGENTS.md, "New Pokémon and courses"). Rust work on the recompiler itself is paused (owner, 2026-11-12); this editor is a separate tool and does not touch the recompiler, the runtime or `main`.
 
@@ -162,9 +162,23 @@ The owner's goal: anyone can make their own course without reading this document
 - Registry editing: course list entry, unlock rules, research entries, scoring parameters, text in all languages.
 - Batch tools: a command line and a script API (Rust or Lua) for scatter placement, procedural paths and bulk edits.
 
-The beginner layer only offers what the advanced layer has proven in game, so a beginner can never build a course that crashes.
+The beginner layer only offers what the advanced layer has proven in game, so the aim is that a beginner never builds a course that crashes.
 
 Built so far (2026-11-14): the Beginner and Advanced toggle, moving Pokémon and scenery with snap to ground, face the rail, undo and redo, plain-word checks (under the ground, far from the rail), and saving as a mod pack that switches itself on. The Advanced layer shows raw values with byte offsets, full scale and the level file list. Milestone 3 added the "Add a Pokémon" palette (one button per species in the course), Make a copy (Ctrl+D) and Remove (Delete) for added objects, and rail bending: show the rail points, drag one and its neighbors follow on a smooth curve, with the ride length against the original, the change in ride time in seconds (at the 0.82 units a second measured in game) and checks for sharp new bends, bunched points and rail under the ground. "Reset the rail" puts every point back in one undo step.
+
+## Owner list (2026-11-15)
+
+Order from the coordinator. Effort is working time including the in-game proof. Imported user assets stay local (mod packs and a local import folder) and never go into the repository.
+
+| # | Item | Effort | Depends on |
+|---|---|---|---|
+| 1 | Ease of use: move and rotate gizmo with grid and angle snapping, a search box over species, scenery models and the object list, a tooltip on every control. Undo and redo already cover every edit; new actions join it. | 3 to 4 h | nothing |
+| 2 | Terrain painting: raise, lower, smooth and flatten brushes on the ground mesh, and texture-layer painting. | 2 to 4 days | 2a: decode the ground collision (`DC4A8177`) and navmesh (`navmshb`) well enough to rewrite them, or Pokémon walk on the old ground. 2b: how ground materials blend layers (vertex color or textures). Lightmaps stay baked, so reshaped ground keeps its old shading until there is a bake path. |
+| 3 | Object placement: click to place on the surface, a scatter brush with random scale and rotation, align to the slope. | 0.5 to 1 day | `grow.rs` clones (built) |
+| 4 | Scenery import: glTF and OBJ first (`gltf`, `tobj`, both MIT/Apache), FBX later (binary only, `fbxcel-dom`). SSBH out through `ssbh_data`; materials chosen from the game's existing presets; textures through the NUTEXB writer from the HD texture work; collision from the mesh after 2a. | 2 to 3 days | New file names need the loader to serve entries that are not in the archive (deferred 2026-11-14). Without it an import can only replace an existing model's files. |
+| 5 | Pokémon import: a custom model plus a rig mapped onto an existing species' skeleton, so its animations and behavior carry over. | Reskin of an existing species: 3 to 4 days. New species ID: 1 to 2 weeks. | Reskin: 4's mesh writer. New ID: loader new entries, registry rows, save identity checks (milestone 4). |
+| 6 | Procedural tools: rule-based scatter by slope, height and distance to the rail or a path, with a seed. | 0.5 day | 3 |
+| 7 | Random course from a seed: terrain, rail, scenery and spawn points, playable to the end. | 1 to 2 weeks | 2 and 4. First version replaces an existing course through a mod pack (Florio's slot); its own course ID needs the deferred loader and registry work. |
 
 ## Milestones
 

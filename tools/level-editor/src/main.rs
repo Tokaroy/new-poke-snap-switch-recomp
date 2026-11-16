@@ -14,6 +14,7 @@ mod course;
 mod edit;
 mod fb;
 mod geom;
+mod gizmo;
 mod headless;
 mod grow;
 mod layout;
