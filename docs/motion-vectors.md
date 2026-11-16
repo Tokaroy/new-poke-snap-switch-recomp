@@ -3,7 +3,7 @@
 Read-only study, 2026-11-12. Static analysis plus reads of the shipped shader reflection. No code was changed and the game was not run. Addresses are module offsets of `main` (build `DDB900FF...`) unless noted.
 Confidence: H = several independent facts agree, M = one solid fact plus inference, L = guess that needs a run.
 
-Overlap note: another worker is writing the upscaler front end in `runtime/nvn/upscale/` (`upscaler.h`, `upscale_nvn.h`, `upscale_dlss.cpp`, `shaders/upscale_mv.comp`) while this study was done. It already does tier 0 below (camera-only vectors from depth, jitter through viewports). Section 6 says what this study adds and what to check against that code.
+Overlap note: another worker was writing the upscaler front end in `runtime/nvn/upscale/` (`upscaler.h`, `upscale_nvn.h`, `upscale_dlss.cpp`, `shaders/upscale_mv.comp`) while this study was done. It already does tier 0 below (camera-only vectors from depth, jitter through viewports). Section 6 says what this study adds and what to check against that code.
 
 ## 1. Findings
 

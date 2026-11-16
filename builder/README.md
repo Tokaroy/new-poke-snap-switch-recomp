@@ -6,11 +6,26 @@ This builder turns your own copy of the game into a native Windows program. It r
 
 The project contains no game data and does not help you get any. You need a legal copy of the game, version 2.0.1, and you extract the files from it yourself with your own tools.
 
-Status: building is command-line only (a window for picking the files comes later). The finished `SnapRecomp.exe` is its own launcher with a small window: Play, game folder, saves, upscalers, HD textures and updates (see "Starting the game" below).
+You can build two ways. `SnapRecompSetup.exe` (on the release page) is a one-click window: pick your game folder and press Build (see "One-click setup" below). The command line, described in the rest of this file, does the same job. The finished `SnapRecomp.exe` is its own launcher with a window: Play, settings, saves, mods, HD textures, Add to Steam and updates (see "Starting the game" below).
+
+## One-click setup
+
+`SnapRecompSetup.exe` finds your game files, downloads the pinned build tools, builds the game and adds a desktop and a Start menu shortcut. It needs no terminal, no Python and no Visual Studio. The game folder can hold the extracted `main`, `sdk` and RomFS, or your dumped base game (XCI or NSP), your update NSPs and your `prod.keys`. With a raw dump, setup picks the base game and the 2.0.1 update by title ID, ignores older updates and extracts only what it needs into its own work folder. It reads your dump and keys in place: keys are never copied and never written to a log. The Microsoft C runtime and Windows SDK files come from Microsoft after you accept their license in the wizard. Plan on about 30 GB of free disk space and about an hour for the first build. Setup also repairs and uninstalls.
+
+<p align="center">
+  <img src="release/screenshots/setup_1_welcome.png" alt="Setup wizard, welcome page" width="49%">
+  <img src="release/screenshots/setup_3_options.png" alt="Setup wizard, options page with the Microsoft license accepted" width="49%">
+</p>
+<p align="center">
+  <img src="release/screenshots/setup_4_build.png" alt="Setup wizard, build page with a progress bar and a time estimate" width="49%">
+  <img src="release/screenshots/setup_5_done.png" alt="Setup wizard, done page with the Play now button" width="49%">
+</p>
+
+The wizard runs `python builder/snap_builder.py setup scan|run|repair|uninstall`, which prints one JSON object per line. The screenshots use sample text for the game files and the progress.
 
 ## What you supply
 
-Extract with your own tools, from your own copy of game version 2.0.1 (the base game with the 2.0.1 update applied):
+For the command-line build, extract with your own tools, from your own copy of game version 2.0.1 (the base game with the 2.0.1 update applied):
 
 1. `main`, the program's main module file (an NSO).
 2. `sdk`, the second module file from the same folder (an NSO).
@@ -27,7 +42,7 @@ Nothing you supply is copied, uploaded or shipped. The builder reads your files 
 | Windows 10 or 11, 64-bit | The PC needs AVX2 (any CPU since about 2015). |
 | Vulkan 1.3 graphics driver | To run the game. Needed for the smoke test at the end of the build. |
 | LLVM 23 (clang and lld) | Pass its `bin` folder with `--llvm`, or let `fetch` download it (see "Fetching the tools"). |
-| Visual Studio Build Tools 2022 | The C++ tools and the Windows SDK. Free from Microsoft. The final link needs their system libraries. |
+| Microsoft C runtime and Windows SDK files | Either Visual Studio Build Tools 2022 (free from Microsoft) or the files the `winsdk` command fetches (see "Fetching the tools"). `--winsdk auto` uses Visual Studio when it is installed. The final link needs these system libraries. |
 | Python 3.14 | With `capstone`, `pyelftools`, `numpy` and `lz4`. Pass it with `--python`, or let `pyenv` build one. |
 | Function lists, or Ghidra | See "Function lists" below. |
 | Disk and memory | About 3 GB of free disk for the work folder. 8 GB of RAM is the minimum for the build. The Ghidra step needs 16 GB or more (12 GB heap). |
@@ -45,6 +60,7 @@ python builder/snap_builder.py pyenv
 - `fetch` asks before every download, shows the URL and the size, checks the SHA-256 while the file arrives, and deletes the file if it does not match. `--yes` answers yes to every question. Without a terminal and without `--yes` it downloads nothing.
 - Files you already have are used without asking when their hash matches. `--offline-dir <folder>` points at a folder of downloaded files, so a PC without internet can use them.
 - Tools unpack into `%LOCALAPPDATA%\SnapRecomp\tools` (change it with `--tools-dir`). The builder looks there after its own `tools` folder.
+- `winsdk --accept-license` fetches the Microsoft C runtime and Windows SDK files with the pinned xwin, from Microsoft's own servers, after you accept Microsoft's license (the license link is in `python builder/snap_builder.py winsdk --help`). Use it when Visual Studio Build Tools is not installed. `build --winsdk vs|xwin|auto` chooses the source, and `auto` (the default) takes Visual Studio first.
 - `pyenv` builds a Python with `capstone`, `pyelftools`, `numpy` and `lz4` from pinned wheels. pip runs with `--require-hashes`, `--no-deps` and `--no-index`, so it installs only the pinned files. It uses the pinned python.org embeddable Python, or `--base-python <python.exe>` makes a venv of Python 3.14 you already have.
 - The download sizes are large: LLVM is about 0.9 GB, Ghidra 0.6 GB and the JDK 0.2 GB. Ghidra, its Switch loader and the JDK are only needed when you do not pass `--maps`.
 - No Vulkan SDK is needed. The prebuilt folder carries a small import library for the Vulkan loader, which comes with your graphics driver.
@@ -55,6 +71,12 @@ Check your files first (takes about a second):
 
 ```
 python builder/snap_builder.py check --main <main> --sdk <sdk> --romfs <romfs folder>
+```
+
+Full install check, in plain words (game files and the built program; every part is optional):
+
+```
+python builder/snap_builder.py check --install-check --main <main> --sdk <sdk> --romfs <romfs folder> --install-dir <out folder>
 ```
 
 Build:
@@ -72,12 +94,6 @@ A rebuild never touches a working `out/` until the new build is proven. The buil
 ## Steps
 
 Each step records what it used. If you run the builder again with the same work folder, finished steps are skipped, and an interrupted compile resumes where it stopped.
-
-Full install check, in plain words (game files and the built program; every part is optional):
-
-```
-python builder/snap_builder.py check --install-check --main <main> --sdk <sdk> --romfs <romfs folder> --install-dir <out folder>
-```
 
 The function lists and the generated C are also kept in a private cache, `%LOCALAPPDATA%\SnapRecomp\cache` (`--cache-dir` moves it, `--no-cache` skips it). Entries are keyed on the hashes of your game files and the builder's own inputs, so a new work folder with the same game files restores them instead of running Ghidra or the lifter again. The cache holds game-derived files on your PC only. It refuses a folder it did not create, keeps two entries per kind and stays under 1 GiB.
 
@@ -158,6 +174,10 @@ The launcher looks for a new release of this builder once a day when it starts. 
 - Going back: launcher, Updates, "Go back to the previous version", or `python builder/snap_builder.py update rollback --work <work folder>`. The previous build is kept, and the two newest builder versions are kept.
 - Limits in v1: no key rotation, no resume of an interrupted download (it starts again), no delta updates.
 
+## Install check
+
+2026-11-15: `check --install-check` hashes your main and sdk files, the RomFS and the built folder against `install_hashes.json` and `versions.json`, and names what is wrong: modified, a known older version, missing or a mixed update. It prints one summary line first and exits with 0 only when nothing is wrong. The launcher has the same check on the Gameplay page ("Check install...") and the problem report carries it as `install_check.txt`. The builder writes `install_record.json` next to the exe for that. Downloads now check the byte count and retry three times with a short wait before they fail.
+
 ## Tests
 
 ```
@@ -169,7 +189,3 @@ The tests use fake inputs only.
 ## License
 
 MIT, like the rest of the project. Third-party notices are in `THIRD_PARTY_NOTICES.md`.
-## Install check
-
-2026-11-15: `check --install-check` hashes your main and sdk files, the RomFS and the built folder against `install_hashes.json` and `versions.json`, and names what is wrong: modified, a known older version, missing or a mixed update. It prints one summary line first and exits with 0 only when nothing is wrong. The launcher has the same check on the Gameplay page ("Check install...") and the problem report carries it as `install_check.txt`. The builder writes `install_record.json` next to the exe for that. Downloads now check the byte count and retry three times with a short wait before they fail.
-

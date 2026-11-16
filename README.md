@@ -54,7 +54,7 @@ Early playable. The game boots to the title screen and the lab hub, all 14 cours
 | Saves | Works | Written atomically with generations and backups. Every crash stage tested left the old or the new save, never a torn one |
 | Audio, video, text | Works | Title, hub, map, Florio ride and photo select have music, shutter and ambience with no clipping. Cutscenes are in-engine, so there are no video files. English text and score numbers read correctly |
 | Input | Partial | Keyboard, mouse and controllers (XInput, plus SDL3 when built with it). Rumble works on the host side with scripted test values, but no game action was seen producing vibration yet. Gyro was tested only with a scripted route, because no test pad reports a gyro |
-| Frame rate | Works | Capped at 60 fps, like the original. A Florio ride held 60.0 fps on an RTX 4090. Frame rate drops when several test instances share one PC; that case has no clean benchmark yet |
+| Frame rate | Works | 60 fps by default, like the original; the targets above 60 are listed under Features. A Florio ride held 60.0 fps on an RTX 4090. Frame rate drops when several test instances share one PC; that case has no clean benchmark yet |
 | Vulkan validation | Works | Title, hub, Florio, Reef, Jungle, Beach and Snowfields rides and photo select gave no synchronization hazards and no other validation errors after one startup pipeline error was fixed |
 
 **Known problems**
@@ -76,13 +76,14 @@ Early playable. The game boots to the title screen and the lab hub, all 14 cours
 - Quality presets: Very Low, Low, Default (follows the Look), High, Ultra, Maximum and Custom.
 - Upscalers: NVIDIA DLSS and DLAA, AMD FSR and Intel XeSS, each with quality modes. The vendor SDK files are not in this repo or the release zip. The builder and the launcher download them to your PC from the vendors only after you read and accept each license, and check them against pinned hashes. An upscaler that is not installed is hidden.
 - HD photos (on in the Enhanced look, display only): photos taken under a scaled frame (4K, DLAA, DLSS, FSR or render scale above 1) also get a 2160x1440 copy. It is shown in the photo select preview, the score screen and the album. Turn it off with the "HD photos" row in the Photos settings tab, or choose the Original look. The game's own save, JPEG and score inputs do not change.
+- Enhanced lighting, off by default ("Lighting preset" row on the F1 Graphics page and in the launcher): soft shadows that sharpen where an object touches the ground (PCSS), ambient occlusion (GTAO), contact shadows and a larger shadow map. It costs frame time at 4K. The occlusion and contact passes are skipped on photo frames.
 - HDR output (HDR10 and scRGB, with fallback to SDR), peak and paper-white settings.
 - Render scale from 0.5x to 4x, shadow resolution up to 8192, ambient occlusion options.
 - Optional color looks (Neutral, Vivid, Warm, Cool) and per-pass switches for bloom, depth of field, film grain and chromatic aberration.
 
 ### Frame rate and HD textures
 
-- Frame rate target: 60 (the game's own), 90, 120 or 144 fps, under Options > Frame rate target. Menus, dialogue and the interface keep their original speed. The frame rate limit is a separate setting (Off, 30 to 240).
+- Frame rate target: 60 (the game's own), 90, 120, 144, 165 or 240 fps, under Options > Frame rate target. Menus, dialogue and the interface keep their original speed. The frame rate limit is a separate setting (Off, 30 to 240).
 - Local AI HD textures: the builder upscales the textures your own copy loads, on your own GPU, and installs them as a mod pack. Levels are Off, Sharp, HD, Ultra and Custom, and F8 in game switches between original and HD. Nothing is uploaded.
 - A built-in updater checks for a new release once a day. Nothing installs until you click. Every update is signed (Ed25519) and can be rolled back.
 
@@ -153,17 +154,23 @@ Captured from the native build running on Windows. They show the running game on
       <sub>PC options</sub>
     </td>
   </tr>
+  <tr>
+    <td align="center" colspan="2">
+      <img src="docs/screenshots/f1-menu.webp" alt="The F1 menu over a Florio ride, Graphics page: Look, Quality preset, Internal resolution, Anti-aliasing, SMAA quality, Performance scaling, Sharpening and Frame generation rows" width="60%"><br>
+      <sub>F1 menu, Graphics page, open during a ride</sub>
+    </td>
+  </tr>
 </table>
 
 ### Comparisons
 
-All frames are from separate runs of the same build at a 4K window, captured at the same point on the ride. The camera matches; the Pokémon move on their own. Zoom strips are 2x crops of the full 4K frame.
+Each pair is captured at the same point on the ride, so the camera matches; the Pokémon move on their own. The Florio frames for the Original look, the Enhanced look and the lighting preset come from one recent build at a 4K window, and the lighting pair is one run with the preset switched live. The Beach, lab, anti-aliasing and upscaler frames are from earlier captures. Zoom strips are 2x crops of the full 4K frame.
 
 **Original look vs Enhanced.** Original is the game's own 1080p image scaled to 4K. Enhanced adds supersampling (sized to the output so 4K still holds its frame rate), SMAA, CAS sharpening and 16x anisotropic filtering.
 
 <img src="docs/screenshots/compare/look-florio.webp" alt="Florio at 4K, split screen: Original look on the left, Enhanced on the right" width="100%">
 <img src="docs/screenshots/compare/look-florio-zoom.webp" alt="Florio foliage at 2x: stair-stepped leaf edges in Original, clean edges in Enhanced" width="100%">
-<sub>Florio: Enhanced removes the stair steps on leaf edges and sharpens the ground.</sub>
+<sub>Florio: Enhanced removes the stair steps on grass and leaf edges and sharpens the ground.</sub>
 
 <details>
 <summary>Blushing Beach and the lab</summary>
@@ -178,6 +185,11 @@ All frames are from separate runs of the same build at a 4K window, captured at 
 
 </details>
 
+**Enhanced lighting.** The Enhanced look with the lighting preset off and on, at the same point of the ride. The occlusion shows between the leaves and under the trees.
+
+<img src="docs/screenshots/compare/lighting-florio.webp" alt="Florio at 4K, split screen: lighting preset off on the left, on on the right" width="100%">
+<img src="docs/screenshots/compare/lighting-florio-zoom.webp" alt="Grass at 2x: flat shading with the lighting preset off, shaded depth between the blades with it on" width="100%">
+
 **Anti-aliasing at native 4K.** The game's own AA, SSAA + SMAA (the Enhanced default) and DLAA.
 
 <img src="docs/screenshots/compare/aa-native.webp" alt="Florio at 4K with the game's AA, SSAA plus SMAA, and DLAA" width="100%">
@@ -190,21 +202,30 @@ All frames are from separate runs of the same build at a 4K window, captured at 
 
 ## Build it yourself
 
-Snap Recomp Builder turns your own copy of New Pokémon Snap 2.0.1 into `SnapRecomp.exe`. Download `SnapRecomp-Builder-v1.0.0-win-x64.zip` from the [latest release](https://github.com/finalpantasy/new-poke-snap-switch-recomp/releases/latest). It holds only our MIT code and prebuilt runtime objects, no game data.
+Snap Recomp Builder turns your own copy of New Pokémon Snap 2.0.1 into `SnapRecomp.exe`. The easy way is `SnapRecompSetup.exe` from the [latest release](https://github.com/finalpantasy/new-poke-snap-switch-recomp/releases/latest): double-click it, pick your game folder and press Build. Setup takes a folder of extracted files (`main`, `sdk`, RomFS) or a folder with your dumped base game (XCI or NSP), the 2.0.1 update NSP and your `prod.keys`. It reads them in place and extracts only what it needs. The command-line route uses `SnapRecomp-Builder-v<version>-win-x64.zip` from the same page. Both hold only our MIT code and prebuilt runtime objects, no game data.
 
-You need Windows 10 or 11 x64, a Vulkan 1.3 driver, Python 3.14, Visual Studio Build Tools 2022 and about 13 GB of free disk (tools 2 GB, scratch 4 GB, shader cache 7 GB). You also need the game's `main` and `sdk` files and the patched RomFS folder, extracted from your own copy with your own tools.
+<p align="center">
+  <img src="builder/release/screenshots/setup_1_welcome.png" alt="Setup wizard, welcome page" width="49%">
+  <img src="builder/release/screenshots/setup_3_options.png" alt="Setup wizard, options page with the Microsoft license accepted" width="49%">
+</p>
 
-<p align="center"><img src="docs/screenshots/launcher.webp" alt="The Snap Recomp launcher: Play, game folder, saves, upscalers, HD textures and updates" width="520"></p>
+For the command-line route you need Windows 10 or 11 x64, a Vulkan 1.3 driver, Python 3.14 and about 15 GB of free disk (the one-click setup needs about 30 GB, because it also keeps the extracted game data). You do not need Visual Studio: `python builder\snap_builder.py winsdk --accept-license` fetches Microsoft's C runtime and Windows SDK files with a pinned xwin, and `build --winsdk auto|vs|xwin` picks between that and Visual Studio Build Tools 2022 when it is installed. You also need the game's `main` and `sdk` files and the patched RomFS folder, extracted from your own copy with your own tools.
 
 1. `python builder\snap_builder.py check --main <main> --sdk <sdk> --romfs <romfs folder>`
 2. `python builder\snap_builder.py fetch llvm ghidra switch_loader jdk`
 3. `python builder\snap_builder.py pyenv`
+   Without Visual Studio Build Tools, also run `python builder\snap_builder.py winsdk --accept-license` once.
 4. `python builder\snap_builder.py build --main <main> --sdk <sdk> --romfs <romfs folder> --work <new empty folder>`
 5. Double-click `<work folder>\out\SnapRecomp.exe`.
 
 The first build takes 25 to 50 minutes, most of it Ghidra and compiling. The first start translates shaders and takes several minutes.
 
-You run the build from a terminal. The finished `SnapRecomp.exe` opens its own launcher window, with Play, the game folder, saves and upscalers.
+The command-line route runs in a terminal; the one-click setup needs none. The finished `SnapRecomp.exe` opens its own launcher window: Play, settings, saves, mods, HD textures, Add to Steam, updates and the game folder.
+
+<p align="center">
+  <img src="docs/screenshots/launcher.webp" alt="The Snap Recomp launcher home page: the Play tile, status chips, a list of pages and the loadout card with Look, Window, Frame pacing, Resolution, Anti-aliasing, Quality and Sound" width="49%">
+  <img src="docs/screenshots/launcher-settings.webp" alt="The launcher's Picture settings page: Look, Internal resolution, Anti-aliasing, SMAA quality, Performance scaling, Sharpening and Quality preset" width="49%">
+</p>
 
 ### HD textures
 
@@ -298,20 +319,20 @@ A value set by hand always wins over a menu choice and over `SNAP_VISUALS`.
 | --- | --- | --- |
 | `SNAP_VISUALS` | `enhanced` (default), `original` | Switches the visual defaults together (anti-aliasing, sharpening, anisotropic filtering, UI font, PNG export, HD photos). See `host/README.md` for the table |
 | `SNAP_PROFILE` | save profile name | Picks the save profile, the same as `play.ps1 -Profile "<name>"` |
+| `SNAP_RETURN_TO_LAUNCHER` | `1` | After a game started from the launcher window closes, open the launcher again instead of ending. The Display page of the launcher has the same switch (key `return_to_launcher`) |
 | `SNAP_AA` | `original` (default), `fxaa`, `off`, `smaa`, `ssaa2`, joined with `+` or `,` | Anti-aliasing, for example `ssaa2+smaa` |
 | `SNAP_RENDER_SCALE` | number | Explicit render scale, never capped |
 | `SNAP_SHARPEN` | 0 to 1 | CAS sharpening strength |
+| `SNAP_SMAA_QUALITY` | `low`, `medium`, `high` (default), `ultra` | SMAA preset: edge threshold, search steps, corner rounding (the reference presets) |
 | `SNAP_ANISO` | `0` (default, the game's own) or `1` to `16` | Anisotropic filtering |
 | `SNAP_UPSCALER` | `off`, `dlss`, `dlaa`, `fsr`, `xess` | Upscaler backend. Falls back through DLSS, FSR and XeSS |
 | `SNAP_UPSCALE_QUALITY` | `native`, `quality`, `balanced`, `performance` | Upscaler quality |
 | `SNAP_HDR` | `off`, `hdr10`, `scrgb` | HDR output. Peak and paper white (in nits) use `SNAP_HDR_PEAK_NITS` and `SNAP_HDR_PAPER_NITS` |
 | `SNAP_PHOTO_EXPORT` | 0, 1 | PNG copies of photos. The folder is `SNAP_PHOTO_DIR` |
 | `SNAP_UI_FONT_SCALE` | `off`, `auto`, 1 to 4 | Sharper menu text. `auto` gives 2x at 1440p and above |
-| `SNAP_RETURN_TO_LAUNCHER` | `1` | After a game started from the launcher window closes, open the launcher again instead of ending. The Display page of the launcher has the same switch (key `return_to_launcher`) |
 | `SNAP_FAST_BOOT` | 1 | Turns the frame limiter off during loading (about 28% faster to the title logo) |
 | `SNAP_MODS_DIR` | path | Mod pack folder |
 | `SNAP_CONFIG_DIR` | path | Where `input.json` and `window.json` live |
-| `SNAP_SMAA_QUALITY` | `low`, `medium`, `high` (default), `ultra` | SMAA preset: edge threshold, search steps, corner rounding (the reference presets) |
 
 </details>
 

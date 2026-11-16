@@ -4,7 +4,7 @@ Goal: preview higher-resolution textures, and later better models, outside the g
 
 Everything produced from game data stays local, under `build/hd/`, which is git-ignored. The repo holds only code.
 
-## Phase 1: textures and preview (now)
+## Phase 1: textures and preview (HD work paused 2026-11-14, see "Paused" at the end)
 
 There are two parts, joined by the cache layout below.
 

@@ -66,7 +66,7 @@ Used by 21 shaders, for example `3452202033` (`CH_107`; also `CH_074`, `CH_108`,
 
 ## 2. Normal maps on bodies that have none
 
-Short answer: yes, but it takes a changed material file, not only a texture, for most species. Whether it works in game was not tested.
+Short answer: yes, but it takes a changed material file, not only a texture, for most species. Whether it works in game was not tested when this section was written; the "Material swap mod: result" section below tested it.
 
 What decides it (`scripts/hd/matinst_census.py` style census over 760 materials, run 2026-11-12):
 
@@ -85,7 +85,7 @@ So a body normal map needs this chain:
 What the mod loader can do (`runtime/mods/mods.cpp`):
 
 - It replaces any DRP entry by archive, name and extension id, not only textures. The hook swaps the entry chunk for a host-built uncompressed one (`mods.cpp:1-12`), and `docs/mods.md:3,27-30` says textures, models, FlatBuffers, Lua, UI and text. Only nutexb files are structure-checked (`mods.cpp:93`).
-- A matinstb or numatb replacement is mechanically the same path, but no non-texture Pokémon mod has been run in game yet. Treat step 1 and 2 as untested.
+- A matinstb or numatb replacement is mechanically the same path, but when this section was written no non-texture Pokémon mod had been run in game. Steps 1 and 2 were untested then; see "Material swap mod: result" below.
 - A new entry name that the game never requests (a `_nor` for a material that had none) is not loaded by itself; only an overridden entry is served. The slot has to come from the replaced matinstb.
 
 ## 3. Fur, parallax, subsurface, rim, emissive
@@ -160,5 +160,5 @@ Tested 2026-11-13 on Dodrio (`CH_007` Body, same program binaries as Bidoof Body
 
 - B channel of `_par` as a specular mask is inferred from data flow. A pixel test (solid B = 0 and B = 1 on a Bidoof body, `SNAP_MODS_AB`) would settle it.
 - Normal alpha as a subsurface weight is inferred.
-- No non-texture Pokémon mod (matinstb, numatb) has been loaded in game.
+- A matinstb/numatb mod loaded in game only on Dodrio and Bidoof (see "Material swap mod: result"); other species are untested.
 - Which of the 51 exact-twin shaders matches a given material's lighting is not known.

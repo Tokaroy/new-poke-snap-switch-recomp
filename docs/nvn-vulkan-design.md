@@ -1,6 +1,6 @@
 # NVN to Vulkan layer: design (milestones 1 and 2)
 
-Status: milestone 1 implemented (`runtime/nvn/`, test in `tests/nvn/`). Phase 0 of `analysis/runtime/nvn_usage.md` (present a cleared frame) works with Vulkan validation clean. Phases 1 and 2 are designed here and not built.
+Status: milestone 1 implemented (`runtime/nvn/`, test in `tests/nvn/`). Phase 0 of `analysis/runtime/nvn_usage.md` (present a cleared frame) works with Vulkan validation clean. Phases 1 and 2 were built later as milestones 2 and 3 (below).
 
 ## Scope and ABI
 

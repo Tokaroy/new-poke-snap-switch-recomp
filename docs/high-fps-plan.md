@@ -216,7 +216,7 @@ independent of everything else except key names and can run beside WP1.
 Default for every row is the current behavior. Each row maps to a SNAP_* switch and a saved
 setting; the environment variable wins when set.
 
-1. Frame rate target: 60 (default), 120, 144, Match display. Key SNAP_FPS. Match display
+1. Frame rate target (built 2026-11-15 as `fps_target` in `runtime/ui/ui_options.cpp`: default, 90, 120, 144, 165, 240, restart, saved as SNAP_FPS; Match display not built): 60 (default), 120, 144, Match display. Key SNAP_FPS. Match display
    picks the display refresh rounded to a rate the pace model can lock (or 60 if none).
    The options UI already has "Frame rate limit" (`frame_cap`, SNAP_WINDOW_FRAME_CAP; runtime\ui\ui_options.cpp, owned by the
    options worker). The new row sits beside it: effective rate = min(target, cap) (nvn_vk.cpp already takes max(period,

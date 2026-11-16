@@ -10,10 +10,10 @@ Every piece has its own env switch and falls back to the original path.
 | --- | --- | --- |
 | PCSS soft shadows | `runtime/nvn/nvn_shadowpcf.cpp` | The receiver fragment SPIR-V is rewritten: a blocker search (8 taps) finds the average occluder depth, the penumbra width follows blocker distance, then 16 Vogel-disk PCF taps. Shadows are sharp at the contact point and soften with distance. Valid (`spirv-val`) on all 856 receiver shaders at 4, 8, 16 and 32 taps with and without PCSS (`tests/nvn/pcf_test.sh`). Applies to the moving shadow map and to static maps. |
 | Shadow map from render scale | `runtime/hle/lighting_preset.h` | Smallest power of two at or above 1080 x render scale (2048 to 8192); Maximum is one step larger. Shadow distance 2x (Maximum 4x). |
-| GTAO | `runtime/nvn/nvn_lighting_fx.cpp`, `shaders/lfx_ao.frag` | Ground-truth AO (Jimenez et al. 2016 technique, own implementation): 8 steps, 2 slices (Maximum 3), per-pixel noise shifted every frame, normals from depth. |
-| Denoise | `shaders/lfx_resolve.frag` | Depth-aware 5x5 bilateral blur, then temporal accumulation with reprojection (previous matrix x inverse current), disocclusion rejection and neighborhood clamp. |
-| Contact shadows | same pass, `shaders/lfx_ao.frag` | The `contact.frag` march with the artifacts fixed: per-pixel dithered start, slope-scaled bias, fade at screen borders and with distance, and the same denoise as AO. |
-| Composite | `shaders/lfx_comp.frag` | Multiplies the linear HDR scene colour (pre-tonemap slot) by `ao * contact`. |
+| GTAO | `runtime/nvn/nvn_lighting_fx.cpp`, `runtime/nvn/shaders/lfx_ao.frag` | Ground-truth AO (Jimenez et al. 2016 technique, own implementation): 8 steps, 2 slices (Maximum 3), per-pixel noise shifted every frame, normals from depth. |
+| Denoise | `runtime/nvn/shaders/lfx_resolve.frag` | Depth-aware 5x5 bilateral blur, then temporal accumulation with reprojection (previous matrix x inverse current), disocclusion rejection and neighborhood clamp. |
+| Contact shadows | same pass, `runtime/nvn/shaders/lfx_ao.frag` | The `runtime/nvn/shaders/contact.frag` march with the artifacts fixed: per-pixel dithered start, slope-scaled bias, fade at screen borders and with distance, and the same denoise as AO. |
+| Composite | `runtime/nvn/shaders/lfx_comp.frag` | Multiplies the linear HDR scene colour (pre-tonemap slot) by `ao * contact`. |
 
 The AO and contact passes run in the Fx pre-tonemap slot at the first blended draw, so sky and particles are not darkened, and they are skipped on
 photo frames (`FxIsPhotoFrame`), so the photo itself and its scoring never see them. The shadow changes (map size, distance, PCSS) do apply to photo frames; they change shadow pixels only.

@@ -1,6 +1,6 @@
 # Mod ideas for the personal PC recomp (research, 2026-11-11)
 
-Read-only research. Nothing here was run or built. Every row cites where it lives in our data, and every claim is tagged with the source it comes from. Where a field or function is not identified, the row says so and is marked TRACE (needs a dynamic trace or a data diff before building).
+Read-only research when written. Rows with a Status, Done or Implemented note were updated later with run results. Every row cites where it lives in our data, and every claim is tagged with the source it comes from. Where a field or function is not identified, the row says so and is marked TRACE (needs a dynamic trace or a data diff before building).
 
 ## Legend
 

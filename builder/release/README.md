@@ -52,8 +52,8 @@ Everything above can be done from a terminal. The sections below describe that r
 | Windows 10 or 11, 64-bit | The CPU needs AVX2 (any CPU since about 2015). |
 | A Vulkan 1.3 graphics driver | Needed to run the game and for the last build step. |
 | Python 3.14 | Only to start the builder. The builder installs its own pinned Python packages with `pyenv`. Python 3.14 is what was tested. |
-| Visual Studio Build Tools 2022 | The "Desktop development with C++" workload (Windows SDK included). Free from Microsoft. |
-| Your game files | `main` and `sdk` from the game's program files, and the patched RomFS folder, all from version 2.0.1. |
+| Microsoft C runtime and Windows SDK files | Either Visual Studio Build Tools 2022 (the "Desktop development with C++" workload, free from Microsoft), or the files that `python builder\snap_builder.py winsdk --accept-license` downloads from Microsoft after you accept their license. `build --winsdk auto` (the default) uses Visual Studio when it is installed. |
+| Your game files | For the command line: `main` and `sdk` from the game's program files, and the patched RomFS folder, all from version 2.0.1. `SnapRecompSetup.exe` also takes your dumped base game (XCI or NSP), the update NSPs and your `prod.keys`. |
 | Disk and memory | About 15 GB free on the drive that holds the tools, the work folder and the caches (measured on a clean PC: the unpacked tools 5.5 GB plus 1.6 GB of kept downloads, the work folder 3 GB, the builder's caches 0.6 GB, and the shader cache about 2 GB after the first start). 16 GB of RAM for the Ghidra step, 8 GB without it. |
 | Internet, once | To download the pinned build tools and, if you choose, upscalers. |
 
@@ -85,7 +85,7 @@ Open a terminal in the folder you unzipped. Every command below is one line.
    python builder\snap_builder.py build --main <main> --sdk <sdk> --romfs <romfs folder> --work <new empty folder>
    ```
 
-   The builder finds the tools and the Python from steps 2 and 3. The build ends with a smoke test: it starts the new `SnapRecomp.exe` on a scratch profile and waits for the title screen. If the check fails, nothing is switched and the log (`builder.log` in the work folder) says why.
+   The builder finds the tools and the Python from steps 2 and 3. Without Visual Studio Build Tools, run `python builder\snap_builder.py winsdk --accept-license` once before this step. The build ends with a smoke test: it starts the new `SnapRecomp.exe` on a scratch profile and waits for the title screen. If the check fails, nothing is switched and the log (`builder.log` in the work folder) says why.
 
 5. Double-click `<work folder>\out\SnapRecomp.exe`. It opens the launcher: Play, change the game folder, open the save folder, import or export a save, upscalers, HD textures, updates.
 
