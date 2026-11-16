@@ -475,6 +475,10 @@ void state_sched_save(SchedSnap &s) {
     s.overflow = g_overflow;
     s.seq = g_seq;
 }
+void state_thread_retire(Thread *t) {
+    auto it = g_by_tt.find(t->tt);
+    if (it != g_by_tt.end() && it->second == t) g_by_tt.erase(it);   // its guest address may be handed to a new thread; the handle stays taken
+}
 void state_sched_restore(const SchedSnap &s) {
     g_keyq = s.keyq;
     g_cores = s.cores;

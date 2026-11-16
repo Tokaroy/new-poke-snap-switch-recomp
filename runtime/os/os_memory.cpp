@@ -41,6 +41,12 @@ std::mutex g_mm;
 struct Region { uint64_t size, committed; };
 std::map<uint64_t, Region> g_regions;              // VAMM address regions by base
 uint64_t g_reserved_total = 0, g_committed_total = 0;
+// Save states: while a state exists, a region the game frees keeps its address reserved (pages decommitted) instead of going back to the OS, so a load
+// can bring the region back at the same address; without this the host heap tends to take the freed address and the load has to be refused.
+std::map<uint64_t, uint64_t> g_limbo;   // base -> size
+uint64_t g_limbo_bytes = 0;
+bool g_limbo_on = false;
+constexpr uint64_t LIMBO_MAX = 8ull << 40;   // address space only (the pages are decommitted); a sanity bound, not a budget
 
 uint64_t page_up(uint64_t v) { return (v + PAGE - 1) & ~(PAGE - 1); }
 
@@ -216,7 +222,13 @@ uint32_t vamm_free_region(uint64_t a) {
         }
         return R_INVALID_RANGE;
     }
-    VirtualFree((void *)(uintptr_t)a, 0, MEM_RELEASE);
+    if (g_limbo_on && g_limbo_bytes + it->second.size <= LIMBO_MAX) {
+        VirtualFree((void *)(uintptr_t)a, 0, MEM_DECOMMIT);
+        g_limbo[a] = it->second.size;
+        g_limbo_bytes += it->second.size;
+    } else {
+        VirtualFree((void *)(uintptr_t)a, 0, MEM_RELEASE);
+    }
     g_reserved_total -= it->second.size;
     g_committed_total -= std::min(g_committed_total, it->second.committed);
     g_regions.erase(it);
@@ -422,6 +434,13 @@ void state_mem_save(MemBook &m) {   // save states
     m.heap_size = g_heap_size;
     m.blocks = g_heap_blocks;
 }
+void state_mem_arm() {   // a state was just saved: regions released from now on stay reserved; those kept for an older state are let go
+    std::lock_guard<std::mutex> lk(g_mm);
+    for (auto &kv : g_limbo) VirtualFree((void *)(uintptr_t)kv.first, 0, MEM_RELEASE);
+    g_limbo.clear();
+    g_limbo_bytes = 0;
+    g_limbo_on = true;
+}
 std::string state_mem_check(const MemBook &m) {
     std::lock_guard<std::mutex> lk(g_mm);
     if (g_heap_base != m.heap_base || g_heap_size != m.heap_size) return "the memory heap size changed";
@@ -431,9 +450,25 @@ std::string state_mem_check(const MemBook &m) {
             if (it->second.size != kv.second.first) return "a VAMM region changed size";
             continue;
         }
-        for (uint64_t a = kv.first; a < kv.first + kv.second.first;) {   // released since the save: its addresses must still be free
+        auto lb = g_limbo.find(kv.first);
+        if (lb != g_limbo.end() && lb->second == kv.second.first) continue;   // still reserved: the load takes it back as it is
+        for (uint64_t a = kv.first; a < kv.first + kv.second.first;) {   // released since the save: its addresses must be free, or held by a region made since (the load releases that first)
+            auto nw = g_regions.upper_bound(a);
+            if (nw != g_regions.begin()) {
+                --nw;
+                if (nw->first <= a && a < nw->first + nw->second.size && !m.regions.count(nw->first)) {
+                    a = nw->first + nw->second.size;
+                    continue;
+                }
+            }
             MEMORY_BASIC_INFORMATION mi;
-            if (!VirtualQuery((void *)(uintptr_t)a, &mi, sizeof mi) || mi.State != MEM_FREE) return "the address of a released VAMM region is in use";
+            if (!VirtualQuery((void *)(uintptr_t)a, &mi, sizeof mi) || mi.State != MEM_FREE) {
+                char b[300];
+                snprintf(b, sizeof b, "the address of a released VAMM region is in use (region %llx+%llx; at %llx: state %lx type %lx alloc base %llx size %llx; kept %zu regions %llu MiB, %s)", (unsigned long long)kv.first,
+                         (unsigned long long)kv.second.first, (unsigned long long)a, (unsigned long)mi.State, (unsigned long)mi.Type, (unsigned long long)(uintptr_t)mi.AllocationBase,
+                         (unsigned long long)mi.RegionSize, g_limbo.size(), (unsigned long long)(g_limbo_bytes >> 20), g_limbo_on ? "armed" : "not armed");
+                return b;
+            }
             a = (uint64_t)(uintptr_t)mi.BaseAddress + mi.RegionSize;
         }
     }
@@ -445,9 +480,18 @@ std::string state_mem_restore(const MemBook &m) {
         if (!m.regions.count(kv.first)) VirtualFree((void *)(uintptr_t)kv.first, 0, MEM_RELEASE);
     for (auto &kv : m.regions) {
         if (g_regions.count(kv.first)) continue;
+        auto lb = g_limbo.find(kv.first);
+        if (lb != g_limbo.end() && lb->second == kv.second.first) {   // kept reserved since the game freed it
+            g_limbo_bytes -= lb->second;
+            g_limbo.erase(lb);
+            continue;
+        }
         if (!VirtualAlloc((void *)(uintptr_t)kv.first, kv.second.first, MEM_RESERVE | ww_flag(), PAGE_NOACCESS))
             return "cannot re-reserve a released VAMM region";
     }
+    for (auto &kv : g_limbo) VirtualFree((void *)(uintptr_t)kv.first, 0, MEM_RELEASE);   // freed since the save and never in it
+    g_limbo.clear();
+    g_limbo_bytes = 0;
     g_regions.clear();
     for (auto &kv : m.regions) g_regions[kv.first] = Region{kv.second.first, kv.second.second};
     g_reserved_total = m.reserved;

@@ -13,6 +13,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 extern "C" void snap_os_mem_stats(uint64_t *out);
@@ -284,6 +285,10 @@ __asm__(
 namespace {
 enum { PH_IDLE = 0, PH_DRAIN = 1, PH_CAPTURE = 2, PH_RESTORE = 3 };
 
+// Threads the game made after the save, parked by a load across the end-of-course Evaluation (and the like). Their guest memory is gone with
+// the load, so they never run again: gate_block keeps them waiting. Their Thread objects are never freed. Under G.
+std::unordered_set<Thread *> g_retired;
+
 inline uint64_t gs_read(uint32_t off) {
     uint64_t v;
     __asm__ volatile("movq %%gs:(%1), %0" : "=r"(v) : "r"((uint64_t)off));
@@ -428,7 +433,7 @@ void gate_block(Thread *t, Lock &lk, int site) {
     note(t, site);
     for (;;) {
         const int ph = g_sphase.load();
-        if (ph == PH_IDLE) return;
+        if (ph == PH_IDLE && !g_retired.count(t)) return;
         if (ph == PH_CAPTURE || ph == PH_RESTORE) {
             if (TState *ts = ts_of(t)) {
                 if (ph == PH_CAPTURE && ts->cap_gen != g_cap_gen) capture_point(ts);
@@ -572,6 +577,7 @@ bool do_save(std::string &why) {
         state_sched_save(g_slot.sched);
         state_sync_save(g_slot.sync);
         state_mem_save(g_slot.mem);
+        state_mem_arm();
         g_slot.fibers = state_fibers();
         auto add_f = [&](Fiber *f) {
             FRec r;
@@ -610,18 +616,24 @@ bool writable_now(const Rng &r) {
     return true;
 }
 
+std::vector<Thread *> g_extras;   // load_refusal's result: guest threads made since the save
+
 // Checks, under G with every thread parked, that what the save saw is still there. Returns an empty string when a load can go ahead.
 std::string load_refusal() {
     if (!g_slot.valid) return "no saved state";
     std::vector<Thread *> gt = guest_threads();
-    if (gt.size() != g_slot.ts.size()) return "thread count changed (" + std::to_string(g_slot.ts.size()) + " -> " + std::to_string(gt.size()) + ")";
-    for (Thread *t : gt)
-        if (!g_slot.by_thread.count(t)) return "a thread was created since the save";
     for (TState &s : g_slot.ts)
         if (s.t->exited || !s.t->started) return "a thread exited since the save";
+    g_extras.clear();   // guest threads made since the save: the load retires them (their memory goes back to what it was)
+    for (Thread *t : gt)
+        if (!g_slot.by_thread.count(t)) g_extras.push_back(t);
+    if (gt.size() != g_slot.ts.size() + g_extras.size()) return "a thread of the saved state is gone (" + std::to_string(g_slot.ts.size()) + " saved, " + std::to_string(gt.size() - g_extras.size()) + " left)";
     SchedSnap now;
     state_sched_save(now);
-    if (now.by_tt.size() != g_slot.sched.by_tt.size()) return "thread table changed";
+    for (auto &kv : g_slot.sched.by_tt) {   // every thread of the saved state is still in the table; ones made since may sit beside them
+        auto it = now.by_tt.find(kv.first);
+        if (it == now.by_tt.end() || it->second != kv.second) return "thread table changed";
+    }
     if (state_fibers() != g_slot.fibers) return "the fiber set changed";
     for (FRec &r : g_slot.frecs) {
         const uint64_t cur = r.f->host ? r.f->host->serial : 0;
@@ -629,14 +641,45 @@ std::string load_refusal() {
     }
     std::string m = state_mem_check(g_slot.mem);   // regions made since the save are released by the load; regions released since must have free addresses
     if (!m.empty()) return m;
-    MemBook now_mem;
-    state_mem_save(now_mem);
     for (Rng &r : g_slot.ranges) {
         if (writable_now(r)) continue;
-        bool released = false;   // inside a VAMM region that was released since: the load re-reserves and recommits it
-        for (auto &kv : g_slot.mem.regions)
-            if (r.base >= kv.first && r.base + r.size <= kv.first + kv.second.first && !now_mem.regions.count(kv.first)) released = true;
-        if (!released) return "memory at " + std::to_string(r.base) + " is no longer committed";
+        // Every byte of the range must sit in a VAMM region of the saved state or in the memory heap (a merged range can span several): a region
+        // released since is re-reserved and a freed page decommitted is recommitted by the load. Anything else is host memory that must still be there.
+        uint64_t pos = r.base, bad = 0;
+        const uint64_t end = r.base + r.size;
+        while (pos < end) {
+            uint64_t next = 0;
+            auto it = g_slot.mem.regions.upper_bound(pos);
+            if (it != g_slot.mem.regions.begin()) {
+                --it;
+                if (pos < it->first + it->second.first) next = it->first + it->second.first;
+            }
+            if (!next && g_slot.mem.heap_base && pos >= g_slot.mem.heap_base && pos < g_slot.mem.heap_base + g_slot.mem.heap_size) next = g_slot.mem.heap_base + g_slot.mem.heap_size;
+            if (!next) { bad = pos; break; }
+            pos = next;
+        }
+        const bool in_region = !bad;
+        if (!in_region) {
+            MEMORY_BASIC_INFORMATION mi = {};
+            VirtualQuery((void *)(uintptr_t)bad, &mi, sizeof mi);
+            std::string who;   // which saved object sat there
+            for (Thread *t : every_thread()) {
+                const uint64_t st = gld<uint64_t>(t->tt + TT_STACK), ss = gld<uint64_t>(t->tt + TT_STACK_SIZE);
+                if ((uint64_t)(uintptr_t)t->tlr == bad) who = " (tlr of ";
+                else if (t->tt == bad) who = " (tt of ";
+                else if (t->own_fiber == bad) who = " (own fiber of ";
+                else if ((uint64_t)(uintptr_t)t->cpu == bad) who = " (cpu of ";
+                else if (st && bad >= st && bad < st + ss) who = " (stack of ";
+                else continue;
+                who += tname(t);
+                who += t->is_host ? ", host)" : ")";
+                break;
+            }
+            char b[240];
+            snprintf(b, sizeof b, "host memory at %llx (range %llx+%llx) is no longer committed (now state %lx type %lx alloc base %llx)%s", (unsigned long long)bad, (unsigned long long)r.base, (unsigned long long)r.size,
+                     (unsigned long)mi.State, (unsigned long)mi.Type, (unsigned long long)(uintptr_t)mi.AllocationBase, who.c_str());
+            return b;
+        }
     }
     return "";
 }
@@ -687,9 +730,22 @@ bool do_load(std::string &why) {
         const std::string mr = state_mem_restore(g_slot.mem);
         if (!mr.empty()) fatal("load state: %s", mr.c_str());   // load_refusal checked the addresses; the threads are already on side stacks
         for (Rng &r : g_slot.ranges) {
-            if (!writable_now(r) && !VirtualAlloc((void *)(uintptr_t)r.base, r.size, MEM_COMMIT, PAGE_READWRITE))
-                fatal("load state: cannot recommit %llu bytes at %llx", (unsigned long long)r.size, (unsigned long long)r.base);
+            if (!writable_now(r)) {   // recommit run by run: a merged range can span several reservations
+                for (uint64_t a = r.base; a < r.base + r.size;) {
+                    MEMORY_BASIC_INFORMATION mi;
+                    if (!VirtualQuery((void *)(uintptr_t)a, &mi, sizeof mi)) fatal("load state: cannot query %llx while recommitting", (unsigned long long)a);
+                    const uint64_t b = (std::min)(r.base + r.size, (uint64_t)(uintptr_t)mi.BaseAddress + mi.RegionSize);
+                    if (!(mi.State == MEM_COMMIT && writable(mi.Protect)) && !VirtualAlloc((void *)(uintptr_t)a, b - a, MEM_COMMIT, PAGE_READWRITE))
+                        fatal("load state: cannot recommit %llu bytes at %llx (error %lu, state %lx, alloc base %llx; saved range %llx+%llx)", (unsigned long long)(b - a), (unsigned long long)a,
+                              GetLastError(), (unsigned long)mi.State, (unsigned long long)(uintptr_t)mi.AllocationBase, (unsigned long long)r.base, (unsigned long long)r.size);
+                    a = b;
+                }
+            }
             memcpy((void *)(uintptr_t)r.base, r.buf, r.size);
+        }
+        for (Thread *t : g_extras) {
+            g_retired.insert(t);
+            state_thread_retire(t);
         }
         state_sched_restore(g_slot.sched);
         state_sync_restore(g_slot.sync);

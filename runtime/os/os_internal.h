@@ -202,6 +202,7 @@ struct MemBook {   // os_memory.cpp: the VAMM and heap bookkeeping
     std::map<uint64_t, uint64_t> blocks;
 };
 void state_mem_save(MemBook &m);
+void state_mem_arm();   // after a save: freed VAMM regions keep their address until the next save or a load
 std::string state_mem_check(const MemBook &saved);     // dry run: "" when a load can put the VAMM and heap back, else why not
 std::string state_mem_restore(const MemBook &saved);   // releases regions made since the save, re-reserves released ones, restores the bookkeeping
 
