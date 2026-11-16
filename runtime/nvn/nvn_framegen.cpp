@@ -297,6 +297,7 @@ bool FgBeginPresent(Host*, TextureImpl* src, bool hdr) {
   const bool was = G.active;
   bool want = G.dtEma > 0 && snap_framegen::RateGate(1.0 / G.dtEma, PanelHz(), was, (uint64_t)now, &G.sinceNs);
   if (ForceOn() && G.dtEma > 0) want = true;
+  { const char* pz = getenv("SNAP_FRAMEGEN_PAUSE"); if (pz && pz[0] && pz[0] != '0') want = false; }   // live switch for tests (ab_capture -Effect SNAP_FRAMEGEN_PAUSE -Values 1,0)
   if (hdr) want = false;
   G.active = want;
   if (G.active != was) Logf("framegen: %s (base %.1f fps, panel %.1f Hz)", want ? "on" : "off", G.dtEma > 0 ? 1.0 / G.dtEma : 0.0, PanelHz());
