@@ -40,8 +40,8 @@ snap_builder.py hdtex --level hd --cats shadow --from-data <unpacked game root> 
 - `shadow` is its own texture category. The textures pack never builds it; the HD shadows pack (`hd-shadows`) only builds it.
 - Levels: Sharp and HD 2x, Ultra 4x, Custom `shadow.scale=N` (`shadow.strength=0` is plain enlargement, de-ringed).
 - `process_shadow`: Lanczos enlargement kept inside the original's local min/max (no ringing, the amount of shadow stays the
-  game's), then hard edges, and only those, are steepened by the scale; soft half-tones stay plain. A mip chain is added so
-  the larger textures do not shimmer.
+  game's), then hard edges, and only those, are steepened by the scale; soft half-tones stay plain. Like the originals, the
+  output keeps one mip level.
 - `--from-data` scans the unpacked course packs for `^Shadow.nutexb` (4,578 files across 275 packs) instead of the texture
   cache, so nothing has to be played first.
 - Background: BelowNormal, `--pause-game` waits while `SnapRecomp.exe` or `snap_boot.exe` runs, progress and estimate
@@ -49,6 +49,19 @@ snap_builder.py hdtex --level hd --cats shadow --from-data <unpacked game root> 
 
 Result on Florio Day (crops of the same texture, original at 4x nearest | plain Lanczos | Stage A): Stage A keeps the
 game's edges where Lanczos blurs them and is smoother than nearest. `D:\snap-hdshadows\cmp_stageA.png` (local only).
+
+### In-game check (Florio Day, 2026-11-15)
+
+Two frozen-time captures of the same rail position with `host/ab_capture.ps1`, one with an empty mods folder and one with the
+HD shadows pack (`host/routes/hds_florio.txt` is `core_florio_a` without the camera sweep, so both runs show the same view).
+The pack loads, every ground and tree shadow is where it was, and nothing is missing or shifted. At 4K on this view the two
+frames are not visibly different: the ground shadows here are mostly soft and come from the light maps, the Laplacian energy
+of the ground band is the same (19.76 against 19.76), so Stage A's gain shows up only on the hard-edged cut-outs, which are
+clearest in the texture crops (`cmp_stageA.png`). Stage B has to beat that before it is rolled out.
+
+Harness caveat: `SNAP_MODS_AB` (the same-frame mod swap) drops the ground shadows in the swapped frame even for a same-size
+re-encode of the original alpha, so it cannot judge Shadow textures. Use separate frozen-time runs as above. The photo
+check stays inconclusive on this route (it takes few shots to keep film).
 
 ## Stage B: a real re-bake on the GPU (in progress)
 
@@ -70,7 +83,7 @@ Fitted by `calib` (azimuth, elevation in degrees, balanced accuracy against the 
 
 | Course | Azimuth | Elevation | Fit |
 | --- | --- | --- | --- |
-| LC_001_A (Florio Day) | to be fitted | to be fitted | to be fitted |
+| LC_001_A (Florio Day) | about 5 to 6 | about 45 to 48 | balanced accuracy 0.87 to 0.92 per model |
 
 ## Pieces
 
