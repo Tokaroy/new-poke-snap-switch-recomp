@@ -375,9 +375,9 @@ The settings whose defaults differ from the original game live in one table. The
 
 `SNAP_LOD_BIAS` is not a row: its automatic mode only follows a render scale above 1 and does nothing at 1x, so both profiles behave the same. The ssaa2 scale depends on who chose it. The Enhanced default (no `SNAP_AA` set) renders min(2x the window height, 2160 lines) over 1080, so the cost follows the output: 1080p renders 2160 lines (2x per side), 1440p 2160 (1.5x), 2160p 2160 (1.0x, with SMAA and sharpening); `SNAP_SSAA_BUDGET_H=<lines>` changes the budget and `0` removes it (the old 2x of the window); the log line `aa: ssaa2 auto: ...` shows the result. A player-chosen `SNAP_AA=ssaa2...` (the High, Ultra and Maximum presets, or the AA row) keeps the full 2x of the window height, capped at 3.0 (5760 x 3240) and 8192 px per side, so a 2160p window renders at 3.0, not 4.0 (log line `aa: ssaa2 scale capped ...`). An explicit `SNAP_RENDER_SCALE` is never capped. The window height used for this (and by the upscaler) is `SNAP_WINDOW_H`, else the primary monitor height when the window is borderless or maximized (`SNAP_WINDOW_MODE` or `window.json`; read once at start, so a later F11 does not change it), else the `window.json` windowed height, else 720. With no `mods.json`, no mod pack is enabled except `native-options` (the PC tabs in the game's Settings screen); `mods.json` can still disable it.
 
-## Graphics quality presets (F1 > Graphics > Quality preset)
+## Detail preset (F1 > Graphics > Detail preset)
 
-The row picks Very Low, Low, Default, High, Ultra or Maximum and sets nine rows at once (Default erases them, so they follow the Look); it shows Custom when the rows match no preset (the preset itself is not stored). All rows need a restart. Blank = the row's default.
+The Detail preset row (key `gfx_preset`, called Quality preset before the Graphics preset row arrived; see `docs/presets.md` for that row) picks Very Low, Low, Default, High, Ultra or Maximum and sets nine rows at once (Default erases them, so they follow the Look); it shows Custom when the rows match no preset (the preset itself is not stored). All rows need a restart. Blank = the row's default.
 
 | Row (env) | Very Low | Low | Default | High | Ultra | Maximum |
 |---|---|---|---|---|---|---|

@@ -41,7 +41,8 @@ The upscaler cell depends on the PC. Balanced and Max pick it from the files ins
 
 These are not part of any preset, so picking one never moves them:
 
-- Draw distance, detail distance, always-full-detail and full-rate animation: photo scoring is unverified for them.
+- Draw distance, always-full-detail and full-rate animation: photo scoring is unverified for them.
+- Detail distance: display-only (photo scoring keeps the game's models), but it costs speed, so it stays a separate choice.
 - Frame generation and motion blur: a matter of taste or hardware, not of quality level.
 - HDR, color, HUD scale, the frame rate limit, vsync and the display mode: set per screen, not per look.
 - Shadow resolution, shadow distance, texture sharpness and the render-pass switches: the older **Detail preset** row (F1 and the launcher) owns these.
@@ -52,9 +53,28 @@ Only rows that are committed are mapped. These have rows in the working tree but
 
 - Parallax detail (`gfx_pom`)
 
-Balanced and Enhanced turn none of the effect rows on: Enhanced is what a new install runs, and Balanced is meant to cost less than it. Only Max turns the effects on. No frame measurements back this split yet; move a row into Balanced when its cost is known to be small.
+Balanced and Enhanced turn none of the effect rows on: Enhanced is what a new install runs, and Balanced is meant to cost less than it. Only Max turns the effects on. The cost of that split is measured below (Balanced is lighter than Enhanced); move a row into Balanced when its own cost is known to be small.
 
 To add one: put a row in the `rows()` table in `runtime/hle/presets.h` (the value for Max, `""` for the others), and the test checks it.
+
+## What each preset costs
+
+Measured 2026-11-16 on the Florio Nature Park ride (`host/routes/bench_florio.txt`, about 3.6 minutes of riding), 2560x1440 window (`SNAP_WINDOW_W/H`), the NVIDIA upscaler installed. Each preset ran twice: a warm-up run that fills the shader cache, then the measured run, alone on the PC (the benchmark takes every run slot). The build was the working tree of that day, so it holds other people's uncommitted work too. One measured run per preset.
+
+| Preset | Avg fps | 1% low fps | GPU busy per frame (mean) | GPU busy share of the ride |
+|---|---|---|---|---|
+| Original | 60.0 | 50.1 | 2.28 ms | 14% |
+| Balanced | 59.4 | 26.0 | 3.25 ms | 19% |
+| Enhanced | 58.1 | 13.6 | 3.79 ms | 22% |
+| Max | 100.7 (target 120) | 13.5 | 3.31 ms | 33% |
+
+How to read it:
+
+- **Balanced is lighter than Enhanced**, so it keeps its place: 0.5 ms less GPU time per frame (3.25 against 3.79 ms), 3 points less GPU busy share. DLSS at Quality draws about 960 lines where Enhanced draws 2160 lines and scales them down. No change to the table is needed.
+- The 60 fps limit hides most of the difference: Original, Balanced and Enhanced all sit at about 60 fps, so GPU time is the number that tells them apart.
+- **Max** draws at the window's own 1440 lines (DLAA) instead of Enhanced's 2160, which pays for part of the effects: its GPU time per frame is about Enhanced's, at 100 fps instead of 60, so the GPU is busy a third of the time. The gap to 120 fps is not GPU time; the cause (CPU work or frame pacing) was not measured.
+- The 1% low figures are dominated by hitches (pipeline builds, streaming) and by whatever else the PC was doing, so do not rank presets by them. Max has three frames of 16 to 19 seconds around present 10408 (left out of the 100.7 fps and the 1% low; with them Max reads 80.4 fps and a 1% low of 3.1), during the minutes the owner was using the PC. Treat the Max row as a first estimate and rerun it on an idle PC.
+- GPU busy is the per-frame `gpu_busy_ms` of the SNAP_PERF log, summed over the ride window between the route's `ride` and `ride_end` waits; avg fps and 1% low come from `dt_ms` over the same frames.
 
 ## Older rows
 

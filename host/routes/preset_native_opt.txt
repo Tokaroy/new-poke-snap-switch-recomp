@@ -1,0 +1,49 @@
+# fixture: post_tutorial
+# Graphics preset row in the game's Settings screen (native PC tab "Quality", first row; runtime/hle/presets.h, docs/presets.md).
+# Same opening as pic_native_opt.txt. Shots: (1) the tab as it opens, preset Enhanced on a fresh settings file; (2) A opens the pulldown, Down, A picks Max:
+# the rows below follow (Anti-aliasing, SMAA quality Ultra); (3) A, Up x3, A picks Original: Look reads Original; (4) A, Down x2, A picks Enhanced again;
+# (5) Down x4 to SMAA quality, A, Down, A picks Ultra, Up x5 back to the preset row (focus returns to the last row after the pulldown closes): it now reads Custom.
+# Run with SNAP_MODS_DIR=<mods root holding native-options>, SNAP_NATIVE_OPT_SETTINGS=<settings.cfg>, SNAP_NATIVE_OPT_TRACE=1.
+repeat @f200 @f1400 100 8 ZL
+repeat @f1700 @f30000 240 8 Up
+repeat @f1730 @f30000 240 8 A
+anchor options
+@f120 8 A
+@f300 8 R
+@f370 8 R
+@f440 8 R
+@f510 8 R
+@f650 8 R
+@f800 40 shot=20
+@f900 8 A
+@f1000 8 Down
+@f1080 8 A
+@f1200 40 shot=20
+@f1300 8 A
+@f1400 8 Up
+@f1470 8 Up
+@f1540 8 Up
+@f1610 8 A
+@f1730 40 shot=20
+@f1830 8 A
+@f1930 8 Down
+@f2000 8 Down
+@f2070 8 A
+@f2190 40 shot=20
+@f2290 8 Down
+@f2350 8 Down
+@f2410 8 Down
+@f2470 8 Down
+@f2540 8 A
+@f2620 8 Down
+@f2690 8 A
+@f2800 8 Up
+@f2860 8 Up
+@f2920 8 Up
+@f2980 8 Up
+@f3040 8 Up
+@f3200 40 shot=20
+@f3330 40 shot=20
+@f3450 8 B
+@f3700 8 B
+end @f3800

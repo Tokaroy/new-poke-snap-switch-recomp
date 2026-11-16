@@ -381,7 +381,7 @@ void go_tab(Cpu* c, uint64_t handler, uint64_t player, int t) {
     }
     set_state(c, player, desc);
     for (const Row& r : tab.rows) {
-        if (r.widget == 'p') redraw_row(c, player, r);   // back from a popup the player keeps the old pulldown texts
+        if (r.widget == 'p' || r.widget == 'c') redraw_row(c, player, r);   // back from a popup the player keeps the old pulldown texts; a preset pick also moves two-choice rows (Look)
         if (r.widget != 'n') continue;
         int v = slider_of(r);   // the cursor lands on the knob of the value (on 0: dot 1, so Right/Left still work)
         for (int d = 1; d <= 10; d++) { char n[40]; snprintf(n, sizeof n, "PcT%dS%dN_%02d", t, r.slot, d); mark(c, player, tab.state, n, d == (v < 1 ? 1 : v)); }
