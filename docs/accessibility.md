@@ -82,7 +82,7 @@ Color vision and the photo score. Three complete Florio evaluation runs on the s
 
 - The runs are not repeatable photo to photo. Which Pokémon is in the best photo and how it is framed change every run, so two Off runs already differ by 955 points. The On total sits inside that spread, and the one Vivillon pair (Off and On) has the same Pose score (500) with different Size, Direction and Placement values, which come from the framing of two different photos. A single pair of runs cannot prove "unchanged".
 - The evidence that scores are unchanged is structural: color vision runs in the present pass, after the game has rendered every target that Evaluation and saved photos read. In the On run the Score screen is tinted on the monitor (the stamp turns pink instead of orange), and the Score still appears with the same rows and a total.
-- A same-photo check would need a save state taken at the Evaluation screen, loaded twice. Not done.
+- A same-photo check (one evaluation, loaded twice, color vision Off then On) cannot be done with the save states as they are. Tried 2026-11-16 with `host/routes/access_samephoto.txt`: save at the end of the ride (film 0, before photo select; accepted, 2,534 MiB), play on through photo select and the Evaluation to the end screen, then load. The load is refused: `state load 'ck': REFUSED: thread count changed (42 -> 47)` (run `analysis/boot/runs/0-20261116_024010`, local). Loads are also refused during the Evaluation itself (`docs/save-states.md`). A save taken before photo select therefore cannot be replayed through a second evaluation, and the Evaluation screen cannot be saved. The structural argument above stays the evidence.
 
 ## Not done, and why
 
