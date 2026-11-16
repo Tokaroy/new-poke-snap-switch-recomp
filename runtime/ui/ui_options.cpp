@@ -40,6 +40,7 @@ extern "C" void snap_vsync_set(const char* mode);   // runtime/nvn/nvn_vk.cpp [v
 extern "C" const char* snap_vsync_get();
 extern "C" void snap_contact_shadows_set(int on);   // runtime/nvn/nvn_contact.cpp: live, the next scene frame
 extern "C" int snap_contact_shadows_get();
+extern "C" int snap_problem_report(const char* who, char* path_out, int path_cap, char* why_out, int why_cap);   // host/mods/problem_report.cpp
 
 namespace snap::ui {
 
@@ -445,6 +446,13 @@ std::vector<Opt>& display_opts() {
       {"button_icons", "Button icons", kChoice, kLive,
        "Which button pictures the game's prompts show. Automatic follows the connected controller (PlayStation, Xbox, Switch Pro; no controller shows the Switch pictures). The picture is the button you press with your current controls, so a remapped button shows its new picture. Menus and hints change at once. Cosmetic only.", "auto",
        {{"auto", "Automatic (matches the controller)"}, {"switch", "Switch (as the game ships)"}, {"xbox", "Xbox"}, {"playstation", "PlayStation"}}, 0, 0, "", "SNAP_BUTTON_ICONS"},
+      // docs/player-options.md: controller only (the keyboard keeps its keys); the prompts' pictures follow. input.json "controller.swap_ab" is the base value this row overrides.
+      {"swap_ab", "Swap A and B", kToggle, kLive,
+       "Swaps confirm and back on the controller: the south button confirms and the east button goes back, like on an Xbox or PlayStation pad. The game's button pictures follow. The keyboard is not changed.", "0", {}, 0, 0, "", "SNAP_SWAP_AB"},
+      {"", "Discord", kSection, kLive, "", ""},
+      // docs/player-options.md: host/mods/discord_presence.cpp talks to the Discord app on this PC over its local pipe; nothing else is contacted.
+      {"discord_presence", "Discord Rich Presence", kToggle, kLive,
+       "Shows the course you are riding and what you are doing on your Discord profile while the game runs. It talks only to the Discord app on this PC. Off by default.", "0", {}, 0, 0, "", "SNAP_DISCORD_PRESENCE"},
       {"", "Focus", kSection, kLive, "", ""},
       {"win_pause", "Pause when unfocused", kToggle, kLive,
        "Freezes the game while you are in another window, so nothing happens while you are away. Remembered in window.json.", "1", {}, 0, 0, "", "SNAP_WINDOW_PAUSE", get_pause, set_pause},
@@ -453,6 +461,12 @@ std::vector<Opt>& display_opts() {
       {"", "Start-up", kSection, kLive, "", ""},
       {"fast_boot", "Fast boot", kToggle, kRestart,
        "Skips the frame limiter during the first minute of loading, so the title screen comes up sooner (about 16 s faster here). Gameplay is not affected.", "0", {}, 0, 0, "", "SNAP_FAST_BOOT"},
+      {"", "Language", kSection, kLive, "", ""},
+      // docs/player-options.md. Only the languages the game ships text for; Auto maps the Windows display language to the closest one (else English).
+      {"game_language", "Game language", kChoice, kRestart,
+       "The language of the game's own menus and text. Auto follows your Windows display language and falls back to English. Voices stay as chosen in the game.", "auto",
+       {{"auto", "Auto (Windows language)"}, {"en", "English"}, {"ja", "Japanese"}, {"fr", "French"}, {"de", "German"}, {"it", "Italian"}, {"es", "Spanish"}, {"ko", "Korean"},
+        {"zh-hans", "Chinese (Simplified)"}, {"zh-hant", "Chinese (Traditional)"}}, 0, 0, "", "SNAP_GAME_LANGUAGE"},
   };
   return v;
 }
@@ -964,7 +978,22 @@ void tab_graphics() {
 
 void tab_display() {
   static const Opt* remembered = nullptr;
-  two_pane("disp", display_opts(), &remembered, nullptr);
+  two_pane("disp", display_opts(), &remembered, [] {
+    // docs/player-options.md: host/mods/problem_report.cpp. One zip on the Desktop; never uploaded.
+    static std::string msg;
+    static bool ok = false;
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+    if (ImGui::Button("Create problem report")) {
+      char path[1024] = {}, why[512] = {};
+      ok = snap_problem_report("game", path, (int)sizeof path, why, (int)sizeof why) != 0;
+      msg = ok ? std::string("Saved on your Desktop: ") + path : std::string("Could not make the report: ") + why;
+    }
+    ImGui::SameLine();
+    ImGui::TextColored(theme().text_dim, "A zip with the logs, settings and PC specs. No game files or saves; your user name is removed; nothing is uploaded.");
+    if (!msg.empty()) ImGui::TextColored(ok ? theme().good : theme().error, "%s", msg.c_str());
+  });
 }
 
 void tab_photos() {

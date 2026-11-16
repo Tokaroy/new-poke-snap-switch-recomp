@@ -33,7 +33,7 @@ struct UiInfo {
   std::string update_version, update_detail;
 };
 
-enum class UiResult { Failed, Quit, Play, GameFolder, OpenSaves, ImportSave, ExportSave, Upscalers, HdTextures, Updates };
+enum class UiResult { Failed, Quit, Play, GameFolder, OpenSaves, ImportSave, ExportSave, Upscalers, HdTextures, Updates, ProblemReport };
 
 // Shows the window and runs until the user picks something that needs the caller (or closes it). Failed = the window or D3D11 could not be
 // created; the caller falls back to the task-dialog launcher. Test switches: SNAP_LAUNCHER_UI_SHOT=<file.bmp> with SNAP_LAUNCHER_UI_VIEW=

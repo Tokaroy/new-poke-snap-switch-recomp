@@ -830,8 +830,27 @@ void build_pages() {
     p.items.push_back(choice("Button icons", "button_icons", S_CFG, "auto",
                              {{"auto", "Automatic"}, {"switch", "Switch"}, {"xbox", "Xbox"}, {"playstation", "PlayStation"}},
                              "Which controller buttons the game shows. Automatic follows the controller you connect."));
+    p.items.push_back(choice("Swap A and B", "swap_ab", S_CFG, "0", {{"0", "Off"}, {"1", "On"}},
+                             "Swaps confirm and back on the controller: the south button confirms and the east button goes back, like an Xbox or PlayStation pad. The game's button pictures follow."));
     p.items.push_back(choice("Rumble", "rumble_on", S_CFG, "1", {{"1", "On"}, {"0", "Off"}}, "Controller vibration."));
     p.items.push_back(choice("Motion aiming (gyro)", "gyro_on", S_CFG, "0", {{"0", "Off"}, {"1", "On"}}, "Aim the camera by moving a controller that has motion sensors."));
+    g.pages.push_back(p);
+  }
+  // Gameplay
+  {
+    Page p; p.name = "Gameplay";
+    // docs/player-options.md: only the languages the game ships text for; Auto = the Windows display language mapped to the closest one, else English
+    p.items.push_back(choice("Game language", "game_language", S_CFG, "auto",
+                             {{"auto", "Auto (Windows language)"}, {"en", "English"}, {"ja", "Japanese"}, {"fr", "French"}, {"de", "German"}, {"it", "Italian"}, {"es", "Spanish"}, {"ko", "Korean"},
+                              {"zh-hans", "Chinese (Simplified)"}, {"zh-hant", "Chinese (Traditional)"}},
+                             "The language of the game's own menus and text. Auto follows your Windows display language and falls back to English. Takes effect the next time the game starts."));
+    p.items.push_back(choice("Discord Rich Presence", "discord_presence", S_CFG, "0", {{"0", "Off"}, {"1", "On"}},
+                             "Shows the course you are riding and what you are doing on your Discord profile while the game runs. It talks only to the Discord app on this PC."));
+    {
+      Item rep; rep.label = "Create problem report...";rep.kind = K_ACTION; rep.act = UiResult::ProblemReport;
+      rep.help = "Saves one zip on your Desktop with the logs, your settings and your PC's specs (Windows, graphics card and driver) for a bug report. Your user name and folders are removed; no game files or saves go in. Nothing is uploaded.";
+      p.items.push_back(rep);
+    }
     g.pages.push_back(p);
   }
   // Accessibility (docs/accessibility.md): every row starts off; the same rows and keys as the F1 menu's Accessibility tab

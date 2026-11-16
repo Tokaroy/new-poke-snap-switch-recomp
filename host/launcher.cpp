@@ -26,6 +26,7 @@
 #include "hle/json_lite.h"
 #include "hle/save_port.h"
 #include "launcher.h"
+#include "mods/problem_report.h"
 #include "elf_check.h"
 #include "launcher_ui.h"
 #include "loader.h"
@@ -709,6 +710,7 @@ static int ask_themed(const UpdateNotice& notice, const fs::path& cfg_path, cons
     case R::ExportSave: return 6;
     case R::Updates: return 7;
     case R::HdTextures: return 8;
+    case R::ProblemReport: return 10;
     default: return 0;
   }
 }
@@ -753,6 +755,16 @@ bool prepare(Result& r) {
     if (choice == 0) return true;   // quit
     if (choice == 7) { if (updates_flow(cfg_path, cfg, notice)) return true; continue; }
     if (choice == 8) { hd_textures_flow(exe_dir, cfg_path, cfg); continue; }
+    if (choice == 10) {   // host/mods/problem_report.cpp: one zip on the Desktop; never uploads
+      char path[1024] = {}, why[512] = {};
+      if (snap_problem_report("launcher", path, (int)sizeof path, why, (int)sizeof why)) {
+        message("Snap Recomp", std::string("The problem report is on your Desktop:\n") + path + "\n\nOpen the zip to see exactly what is in it, then attach it to your bug report. Nothing was uploaded.", MB_ICONINFORMATION);
+        ShellExecuteW(nullptr, L"open", L"explorer.exe", (L"/select,\"" + W(path) + L"\"").c_str(), nullptr, SW_SHOWNORMAL);
+      } else {
+        message("Snap Recomp", std::string("The problem report could not be made: ") + why, MB_ICONWARNING);
+      }
+      continue;
+    }
     if (choice == 4) { offer_upscalers(exe_dir, data, false); continue; }
     if (choice == 5) { import_save_flow(cfg_path); continue; }
     if (choice == 6) { export_save_flow(cfg_path); continue; }
