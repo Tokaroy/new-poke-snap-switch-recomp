@@ -98,6 +98,9 @@ C API (callable from any thread; applied on the window thread, saved): `snap_win
 `snap_window_get/set_pause_on_focus_loss`, `snap_window_get/set_mute_in_background`, `snap_window_frame_cap/set_frame_cap`, `snap_window_focused/paused`.
 Test helper: `SNAP_WINDOW_TEST="blur@60,focus@75,f11@90,f11@95"` sends WM_ACTIVATE (`blur`, `focus`), WM_KILLFOCUS (`kill`), WM_SETFOCUS (`setfocus`), F11 and Alt+Enter (`altenter`) to the window
 at those seconds and logs `[window] test:` lines (paused, master volume, client size) to `boot_stderr.log`. `SNAP_AUDIO_LEVELS=<file>` logs the real output level per second.
+`keydown:<key>` and `keyup:<key>` (`escape`, `tab`, `p` ...) hold or release a host key, and `wait:<cond>` (a route wait condition such as `ride>=25` or `ui=main_menu`, no `@time`) waits for the game before the
+times of the later events start counting: `SNAP_WINDOW_TEST="wait:ride>=25,blur@3,keydown:escape@4,keydown:tab@5,focus@6,keyup:escape@7,keyup:tab@8"` is a snipping tool whose Esc closes it. Keys held across a focus change
+are ignored until released, and Esc and the left mouse button for 300 ms after the focus is back (`SNAP_FOCUS_GUARD=0` turns that off, `SNAP_FOCUS_GUARD_LOG=1` logs Plus and B presses; docs/controls.md, `tests\hle\run_focus_test.ps1`).
 
 Focus test (2026-11-12, `SNAP_WINDOW_TEST="blur@70,focus@90"`, run `analysis\boot\runs\0-20261112_034536`, audio levels in `analysis\boot\audio_levels_win.txt`): blur at 70 s logged `paused=1 master=0.00`; the trace has
 no `present` lines between present #3780 (69.9 s) and #3810 (90.7 s), so the guest advanced 0.5 s while 20 s of wall time passed (guest ticks frozen, game thread blocked in the present hook);

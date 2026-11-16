@@ -1,0 +1,7 @@
+# fixture: post_tutorial
+# Focus-guard check, menu side (tests\hle\run_focus_test.ps1): slow A taps get past the title to the lab hub main menu, then the window test (SNAP_WINDOW_TEST) leaves the
+# window with Esc and Tab going down while it is in the background and comes back with both still down.
+wait ui=title timeout=150
+repeat @f60 @f20000 120 8 A
+wait ui=main_menu timeout=90
+end 40

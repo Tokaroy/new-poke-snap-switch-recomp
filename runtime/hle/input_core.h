@@ -209,6 +209,10 @@ class Hub {
   // no keyboard focus, no key or mouse button reaches the game; after it comes back, keys and buttons that are already down stay ignored until released, and Esc and
   // the left button stay ignored for 300 ms (the Esc that closes a snipping tool, the click that brings the window back). SNAP_FOCUS_GUARD=0 turns this off.
   void set_window_focus(bool focused);
+  // Window focus as the window thread sees it (host/window_opts.cpp: WM_ACTIVATE / WM_SETFOCUS / WM_KILLFOCUS). While it is false, or the backend says the window has
+  // no keyboard focus, no key or mouse button reaches the game; after it comes back, keys and buttons that are already down stay ignored until released, and Esc and
+  // the left button stay ignored for 300 ms (the Esc that closes a snipping tool, the click that brings the window back). SNAP_FOCUS_GUARD=0 turns this off.
+  void set_window_focus(bool focused);
   bool menu_open() const { return menu_open_.load(); }
   bool consume_menu_toggle();                            // true once per Back+Start chord held 0.5 s
   bool cursor_hidden() const { return cursor_hidden_.load(); }
@@ -253,6 +257,11 @@ class Hub {
   Source cap_src_;
   RawInput inject_;                                                     // injected sources (test hook)
   uint64_t wheel_up_until_ns_ = 0, wheel_down_until_ns_ = 0;
+  std::atomic<bool> win_focus_{true};                                   // set_window_focus
+  bool guard_prev_ = true;                                              // the last poll saw the window focused (false after a blur, even one no poll saw)
+  std::bitset<kKeyCount> guard_keys_;                                   // keys that were down when the focus came back: ignored until released
+  uint8_t guard_mouse_ = 0;                                             // the same for the mouse buttons
+  uint64_t guard_until_ns_ = 0;                                         // Esc and the left button are ignored until then
   std::atomic<bool> win_focus_{true};                                   // set_window_focus
   bool guard_prev_ = true;                                              // the last poll saw the window focused (false after a blur, even one no poll saw)
   std::bitset<kKeyCount> guard_keys_;                                   // keys that were down when the focus came back: ignored until released

@@ -2156,6 +2156,64 @@ static void test_profiles() {
   CHECK(!pr::active().on);
 }
 
+// ---- focus guard (Hub::poll, set_window_focus): leaving for a snipping tool or Alt+Tab must not press Plus / B / touch when the window comes back
+static void test_focus_guard() {
+  g_test = "focus_guard";
+  using namespace input;
+  static RawInput raw;
+  raw = RawInput{};
+  Hub h;
+  h.set_backend(std::make_unique<FakeBackend>(&raw));
+  h.set_mapping(Mapping::defaults());
+  auto poll = [&]() { std::this_thread::sleep_for(std::chrono::milliseconds(3)); h.poll(1); };
+  auto nap = [](int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); };
+  const int kTab = key_from_name("Tab"), kEsc = key_from_name("Escape");
+  const uint64_t plus = 1ull << kPlus, back = 1ull << kB;
+  poll();
+  raw.keys.set(kTab); poll();
+  CHECK(h.pad().buttons & plus);   // baseline: Tab is Plus
+  raw.keys.reset(kTab); poll();
+  CHECK(!(h.pad().buttons & plus));
+  // the window thread says "blur": Tab and Esc go down for the other window and are still down when the focus comes back (Alt+Tab, a snipping tool's Esc)
+  h.set_window_focus(false);
+  raw.keys.set(kTab); raw.keys.set(kEsc); raw.mouse_in_window = true; raw.mouse_buttons = 1; poll();
+  CHECK(!(h.pad().buttons & (plus | back)));
+  CHECK_EQ(h.touch().count, 0);
+  CHECK(h.raw().keys.none() && h.raw().mouse_buttons == 0);
+  h.set_window_focus(true);
+  poll();
+  CHECK(!(h.pad().buttons & (plus | back)));   // still held: ignored until released
+  CHECK_EQ(h.touch().count, 0);
+  raw.keys.reset(kEsc); raw.mouse_buttons = 0; poll();
+  raw.keys.set(kEsc); raw.mouse_buttons = 1; poll();   // Esc and a click again inside the 300 ms after the focus came back
+  CHECK(!(h.pad().buttons & (plus | back)));
+  CHECK_EQ(h.touch().count, 0);
+  raw.keys.reset(kEsc); raw.mouse_buttons = 0; raw.keys.reset(kTab); poll();
+  raw.keys.set(kTab); poll();   // Tab released and pressed again: a real press
+  CHECK(h.pad().buttons & plus);
+  raw.keys.reset(kTab); poll();
+  nap(320);
+  raw.keys.set(kEsc); raw.mouse_buttons = 1; poll();   // after the 300 ms
+  CHECK(h.pad().buttons & back);
+  CHECK_EQ(h.touch().count, 1);
+  raw.keys.reset(kEsc); raw.mouse_buttons = 0; poll();
+  // the backend's own focus flag (the real window lost the foreground): the same rules
+  raw.focused = false; raw.keys.set(kTab); poll();
+  CHECK(!(h.pad().buttons & plus));
+  raw.focused = true; poll();
+  CHECK(!(h.pad().buttons & plus));
+  raw.keys.reset(kTab); poll();
+  raw.keys.set(kTab); poll();
+  CHECK(h.pad().buttons & plus);
+  raw.keys.reset(kTab); poll();
+  // a blur that no poll saw (the game threads were frozen): the window thread's note is enough
+  h.set_window_focus(false);
+  h.set_window_focus(true);
+  raw.keys.set(kTab); poll();
+  CHECK(!(h.pad().buttons & plus));
+  raw.keys.reset(kTab); poll();
+}
+
 // ---- free camera input (runtime/hle/freecam.cpp): hotkeys, an idle pad while on, accumulated movement, route tokens
 static void test_freecam() {
   g_test = "freecam";
@@ -2875,6 +2933,7 @@ int main(int argc, char** argv) {
       {"saveport.real_table", sp_test::test_real_table},
 #endif
       {"padfx", test_padfx},
+      {"focus_guard", test_focus_guard},
       {"freecam", test_freecam},
       {"modhooks", test_modhooks},
       {"services", test_services},

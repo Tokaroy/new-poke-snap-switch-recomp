@@ -1,0 +1,8 @@
+# fixture: post_tutorial
+# Focus-guard check, ride side (tests\hle\run_focus_test.ps1): into the Florio course (the same A taps as ab_pause), then the window test (SNAP_WINDOW_TEST) leaves the
+# window with Esc and Tab going down while it is in the background and comes back with both still down. On a ride Esc and Tab are both Plus (the pause menu).
+repeat @f300 @f30000 120 8 A
+wait ui=map_select timeout=240
+repeat @f60 @f30000 120 8 A
+wait ride>=25 timeout=300
+end 40

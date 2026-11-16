@@ -35,6 +35,16 @@ Alt+Tab, Win+Shift+S and a third-party snipping tool take the keyboard focus, an
 
 Gamepads are not affected. `SNAP_FOCUS_GUARD=0` turns the guard off (for tests); `SNAP_FOCUS_GUARD_LOG=1` logs every Plus and B press the game is about to see.
 
+## Switching to another app
+
+Alt+Tab, Win+Shift+S and a third-party snipping tool take the keyboard focus, and the keys you press for them (Tab, Shift, and the Esc that closes a snipping tool) can still be down when the game window comes back. Esc is Plus on a ride and Tab is Plus everywhere, so the pause menu used to open. The input hub (`runtime/hle/input_core.cpp`, `Hub::poll`, fed by `Hub::set_window_focus` from `host/window_opts.cpp`) now:
+
+- ignores every key and mouse button while the window is in the background;
+- after the focus is back, ignores each key and button that is already down until it is released (a key you pressed again counts as new);
+- ignores Esc and the left mouse button for 300 ms after the focus is back, so the Esc that closes a snipping tool and the click that brings the window back do not reach the game.
+
+Gamepads are not affected. `SNAP_FOCUS_GUARD=0` turns the guard off (for tests); `SNAP_FOCUS_GUARD_LOG=1` logs every Plus and B press the game is about to see.
+
 ## Button prompts
 
 The Xbox and PlayStation pictures of the button-icons setting already follow the controller binds: the picture shown for a Switch input is the first controller source bound to it, and it changes when you rebind (`runtime/hle/btn_icons.cpp`, `glyph_of_action`, fed by the same mapping through `icons::set_mapping`). Keyboard binds have no prompt pictures: the game draws its own Switch pictures for a keyboard player. That needs new art and is not done.
@@ -43,6 +53,7 @@ Message text ("Press X to run a scan") is drawn from the font, not from a pictur
 
 ## Tests
 
+- `tests\hle\run_focus_test.ps1` (hidden runs, 4 of them): the menu and a Florio ride, each with the guard off (the "before": the held Esc and Tab press B and Plus when the window comes back, and on a ride open the pause menu) and on (nothing presses, then a real Tab press still works). `SNAP_WINDOW_TEST` replays the leaving: `wait:ride>=25,blur@3,keydown:escape@4,keydown:tab@5,focus@6,keyup:escape@7,keyup:tab@8` (host/README.md, "Window options"). The unit test is `focus_guard` in `tests\hle\hle_tests.cpp`.
 - `tests\hle\run_focus_test.ps1` (hidden runs, 4 of them): the menu and a Florio ride, each with the guard off (the "before": the held Esc and Tab press B and Plus when the window comes back, and on a ride open the pause menu) and on (nothing presses, then a real Tab press still works). `SNAP_WINDOW_TEST` replays the leaving: `wait:ride>=25,blur@3,keydown:escape@4,keydown:tab@5,focus@6,keyup:escape@7,keyup:tab@8` (host/README.md, "Window options"). The unit test is `focus_guard` in `tests\hle\hle_tests.cpp`.
 - `tests\hle\run_binds_ui.ps1` (hidden run, 15 checks): F1 > Bindings, rebind A to P, rebind B slot 2 to P (a conflict), check both binds are kept, "reset all", check the defaults. It dumps frames to `analysis\ui\binds_dump`.
 - `tests\hle\run_rebind_proof.ps1`: a hidden run of `host/routes/rebind_shutter.txt` with an `input.json` that binds A to `pad:east` and `key:P` only. The route rides Florio, holds the old shutter key L (the film counter must stay at 72 for 200 presents), then P (the counter drops: a photo was taken).

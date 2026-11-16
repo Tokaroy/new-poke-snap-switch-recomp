@@ -14,10 +14,12 @@
 #include <string>
 #include <vector>
 
+#include "hle/input_core.h"
 #include "hle/json_lite.h"
 #include "audio/audio_out.h"
 #include "nvn/nvn_host.h"
 
+extern "C" int snap_route_cond(const char* c, char* why, int n);   // runtime/hle/input_core.cpp: a route "wait" condition
 extern "C" void os_time_pause(int on);   // runtime/os/os_kernel.cpp: freeze guest ticks
 namespace hle { void oe_post_message(uint32_t msg); }   // runtime/hle/services_sys.cpp: applet notification queue
 
@@ -179,6 +181,7 @@ void restore_after_crash() {
 // ---- focus
 void set_focus(bool focused, const char* why) {
     if (g_focused.exchange(focused) == focused) return;
+    hle::input::hub().set_window_focus(focused);   // keys held for another window must not reach the game when it comes back
     Settings s; { std::lock_guard<std::mutex> lk(g_mu); s = g_s; }
     std::fprintf(stderr, "[window] focus %s (%s): pause=%d mute=%d notify=%d\n", focused ? "gained" : "lost", why, s.pause_on_focus_loss, s.mute_in_background, s.game_notify);
     if (!focused) {
@@ -241,6 +244,10 @@ void do_toggle(HWND h) {
 
 // ---- test helper: SNAP_WINDOW_TEST="blur@60,focus@75,f11@90,f11@95" (seconds after the window exists). It sends the same messages the OS
 // sends, from another thread, and logs the state (boot_stderr.log lines starting "[window] test").
+// keydown:<key> and keyup:<key> (key names as in input.json: escape, tab, p ...) hold or release a host key through the input hub. wait:<cond> (a route "wait" condition:
+// ui=main_menu, ride>=25 ...; no "@time", at most 600 s) waits for the game state, then the clock of the next events restarts:
+// "wait:ride>=25,blur@3,keydown:escape@4,keydown:tab@5,focus@6,keyup:escape@7,keyup:tab@8" replays leaving for a snipping tool whose Esc closes it, on a ride.
+// Pair it with SNAP_FOCUS_GUARD_LOG=1 (logs every Plus / B press) and SNAP_FOCUS_GUARD=0 for the "before" run (tests\hle\run_focus_test.ps1).
 DWORD WINAPI test_thread(LPVOID p) {
     std::string spec = (const char*)p; free(p);
     struct Ev { double t; std::string name; };
@@ -249,11 +256,20 @@ DWORD WINAPI test_thread(LPVOID p) {
     while (i < spec.size()) {
         size_t e = spec.find(',', i); if (e == std::string::npos) e = spec.size();
         std::string tok = spec.substr(i, e - i); i = e + 1;
+        if (tok.rfind("wait:", 0) == 0) { evs.push_back({0, tok}); continue; }
         size_t at = tok.find('@'); if (at == std::string::npos) continue;
         evs.push_back({std::atof(tok.c_str() + at + 1), tok.substr(0, at)});
     }
     ULONGLONG t0 = GetTickCount64();
     for (auto& ev : evs) {
+        if (ev.name.rfind("wait:", 0) == 0) {   // no "@time": the clock restarts when the condition holds
+            char why[160] = "";
+            int i = 0;
+            while (i < 12000 && !snap_route_cond(ev.name.c_str() + 5, why, sizeof why)) { Sleep(50); ++i; }
+            std::fprintf(stderr, "[window] test: %s %s (%s)\n", ev.name.c_str(), i < 12000 ? "met" : "TIMED OUT", why);
+            t0 = GetTickCount64();
+            continue;
+        }
         while ((GetTickCount64() - t0) < (ULONGLONG)(ev.t * 1000)) Sleep(50);
         std::fprintf(stderr, "[window] test: %s at t=%.1f (paused=%d, master=%.2f)\n", ev.name.c_str(), ev.t, (int)g_paused.load(), snap_audio_get_volume(SNAP_VOL_MASTER));
         if (ev.name == "blur") SendMessageW(g_hwnd, WM_ACTIVATE, WA_INACTIVE, 0);
@@ -262,6 +278,11 @@ DWORD WINAPI test_thread(LPVOID p) {
         else if (ev.name == "setfocus") SendMessageW(g_hwnd, WM_SETFOCUS, 0, 0);
         else if (ev.name == "f11") SendMessageW(g_hwnd, WM_KEYDOWN, VK_F11, 0);
         else if (ev.name == "altenter") SendMessageW(g_hwnd, WM_SYSKEYDOWN, VK_RETURN, 1 << 29);
+        else if (ev.name.rfind("keydown:", 0) == 0 || ev.name.rfind("keyup:", 0) == 0) {
+            const bool down = ev.name[3] == 'd';
+            const int k = hle::input::key_from_name(ev.name.substr(ev.name.find(':') + 1));
+            if (k > 0) hle::input::hub().inject_source(hle::input::Source{hle::input::Source::KeyboardKey, k}, down);
+        }
         Sleep(1500);
         RECT r; GetClientRect(g_hwnd, &r);
         std::fprintf(stderr, "[window] test: after %s: paused=%d master=%.2f client=%ldx%ld mode=%d\n", ev.name.c_str(), (int)g_paused.load(), snap_audio_get_volume(SNAP_VOL_MASTER), r.right, r.bottom, snap_window_get_mode());
