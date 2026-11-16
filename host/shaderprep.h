@@ -16,7 +16,7 @@
 //
 // <shadercache>\prepare.json (written after every course; the launcher's chip reads it):
 //   {"format":1,"state":"running|done|partial|stopped|failed","index":3,"total":14,"course":"Blushing Beach","ok":2,"failed":0,"started":<unix>,
-//    "updated":<unix>,"pipelines":<keys known>,"seconds":<elapsed>,"results":[{"key":"florio","exit":0,"seconds":88,"new_pipelines":812}, ...]}
+//    "updated":<unix>,"settings":"<settings_hash>","pipelines":<keys known>,"seconds":<elapsed>,"results":[{"key":"florio","exit":0,"seconds":88,"new_pipelines":812}, ...]}
 // "done" is only written when every course ran ("partial" after a --courses subset, shown as stopped); the pipeline service deletes the file when the cache is wiped for another build or translator.
 #pragma once
 #include <string>
@@ -34,8 +34,12 @@ struct Progress {
   std::string course;
   unsigned pipelines = 0;   // keys known (prepare.json), status.json "ready" when present
   unsigned ready = 0;
+  std::string settings;     // settings_hash() of the player's settings when the sweep started (empty in an older file)
   long long updated = 0;    // unix time of the last write: a "running" file older than 20 minutes is treated as stopped
 };
+// A short hash of the settings.cfg rows that change pipelines (shadow, foliage, parallax, anti-aliasing, effect switches) in the profile the game
+// would start with. prepare.json keeps the value of the sweep; the launcher compares it with the current one and offers to prepare again.
+std::string settings_hash(const std::string& data_root);
 // Reads <cache_dir>\prepare.json and status.json; false when there is no prepare.json.
 bool read_progress(const std::string& cache_dir, Progress& p);
 // Starts `<this exe> --prepare-shaders` as its own below-normal, windowless process. False with `err` when it could not be started.

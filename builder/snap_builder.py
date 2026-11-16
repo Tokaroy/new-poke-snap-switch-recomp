@@ -105,6 +105,7 @@ def main(argv=None):
     b.add_argument('--winsdk', default='auto', choices=('auto', 'vs', 'xwin'), help='where the C runtime and Windows SDK files come from: Visual Studio Build Tools (vs), the files fetched by the winsdk command (xwin), or whichever exists (auto)')
     b.add_argument('--jobs', type=int, default=0, help='parallel compile jobs (default: from CPUs and RAM, at most 8)')
     b.add_argument('--skip-smoke', action='store_true', help='do not start the game at the end')
+    b.add_argument('--prepare-shaders', action='store_true', help='after the build, start the shader preparation in the background (about 30 to 40 minutes; the launcher shows progress)')
     b.add_argument('--harness', help='ShaderHarness.dll for the smoke run')
     b.add_argument('--ghost', help='developer use: hidden-desktop launcher script for the smoke run')
     b.add_argument('--smoke-timeout', type=int, default=1200, help='seconds to wait for the title screen')

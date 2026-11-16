@@ -56,6 +56,7 @@ class Options:
         self.prebuilt = None
         self.jobs = 0
         self.skip_smoke = False
+        self.prepare_shaders = False   # start the shader preparation (SnapRecomp.exe --prepare-shaders) in the background after the build
         self.harness = None
         self.ghost = None
         self.force = []
@@ -395,6 +396,8 @@ def build(opt, log):
             return stage / 'SnapRecomp.exe', (False, info)
     promote(work, stage, build_id, log)
     write_last_build(work, opt, stamps, smoke_seconds)
+    if opt.prepare_shaders:
+        start_prepare_shaders(out / 'SnapRecomp.exe', log)
     return out / 'SnapRecomp.exe', ((True, info) if ok else None)
 
 
@@ -482,6 +485,18 @@ def check_maps(maps_dir, table, log):
 
 
 # ------------------------------------------------------------------------------------------------ smoke run
+
+def start_prepare_shaders(exe, log):
+    """Start `SnapRecomp.exe --prepare-shaders` (host/shaderprep.cpp) as its own windowless, below-normal process and return at once: it plays one
+    hidden ride per course (about 30 to 40 minutes) to fill this PC's shader cache, and the launcher's shader chip shows its progress. The cache is
+    made here, on the player's PC; nothing of it is part of the build."""
+    try:
+        subprocess.Popen([str(exe), '--prepare-shaders'], cwd=str(Path(exe).parent), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         creationflags=BELOW_NORMAL | CREATE_NO_WINDOW | 0x8, close_fds=True)   # 0x8 = DETACHED_PROCESS
+        log.write('shader preparation started in the background (the launcher shows its progress)')
+    except OSError as e:
+        log.write(f'could not start the shader preparation: {e}. Press the shader chip in the launcher to run it.')
+
 
 def smoke(opt, exe, cfg, work, table, log):
     """Start the exe on a scratch profile, wait for the title screen marker, stop it. Returns (reached, message)."""

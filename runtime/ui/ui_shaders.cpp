@@ -164,6 +164,7 @@ void draw_shader_screen(ImVec2 size) {
         ImGui::TextColored(t.text_dim, tr("Compile now covers the shaders this game has already used on this PC, about %s. Shaders it has not used yet are still built while you play."), minutes_text(est).c_str());
       } else {
         ImGui::TextColored(t.conflict, "%s", tr("Compile now is not available yet. This is the first run on this PC, so no shaders have been recorded and there is no list to compile in advance. The game records them as you play, and from the next launch you can compile them all at startup (F1 > Graphics)."));
+        ImGui::TextColored(t.text_dim, "%s", tr("To record them without playing, press the shader chip on the launcher's home screen. It plays one hidden ride per course in the background."));
       }
       ImGui::Spacing();
       ImGui::Spacing();

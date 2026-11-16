@@ -29,6 +29,10 @@ SnapRecomp.exe --prepare-shaders --force          run again when already prepare
 
 A development build without `config.json` passes extra arguments on to the game (`--main ... run`). `SNAP_PREP_TIMEOUT=<s>` limits one course (default 900). `SNAP_PREP_KEEP=1` keeps the scratch folder and the per-course logs.
 
+## Builder
+
+`snap_builder.py build --prepare-shaders` (off by default) starts the sweep in the background right after the new build is promoted, so a fresh install has its cache after about half an hour. The builder does not wait for it; the launcher chip shows progress. The setup wizard does not turn it on: the chip on the launcher home screen is the normal way.
+
 ## Cache identity and wipe
 
 `cache_stamp.txt` in the cache folder holds two lines.
@@ -47,6 +51,8 @@ When a full sweep ends and the player has not chosen a precompile mode yet, it w
 ## Settings and the cache
 
 The sweep plays on a scratch profile that copies the player's own graphics settings (the same rule as the benchmark). A pipeline key includes shader-affecting settings: the soft-shadow taps, the shadow-distance factor of the Enhanced look, ray-traced shadows and parallax each add bits to the key. A cache prepared with one set of settings therefore does not cover another. After changing those settings, run prepare again (the old keys stay, the new ones are added).
+
+`prepare.json` keeps a short hash of the rows that matter (`settings`: the graphics, ray-tracing, atmosphere, water, foliage, leaf and effect rows of the player's `settings.cfg`, not sound, window or control rows). The launcher compares it with the current settings at every refresh. When they differ the chip reads "Settings changed - press to prepare shaders again" and the next press runs a new sweep. `--prepare-shaders` without `--force` also runs again when the hash differs.
 
 ## Limits
 

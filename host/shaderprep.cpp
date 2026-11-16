@@ -15,11 +15,13 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <sstream>
 
 #include "benchmark.h"
 #include "hle/hle_config.h"
 #include "hle/json_lite.h"
+#include "hle/profiles.h"
 #include "prep_routes_data.h"
 
 namespace fs = std::filesystem;
@@ -96,13 +98,26 @@ unsigned known_pipelines(const std::string& dir) {
   return k ? (unsigned)k->num() : 0;
 }
 
+// Which settings.cfg rows change the pipeline keys or switch whole passes (and so their pipelines) on or off. A cache prepared with other values of
+// these leaves the new ones to compile on first use. Everything else (sound, window, controls, speeds, strengths of live effects) is left out.
+bool pipeline_row(const std::string& k) {
+  static const char* const skip[] = {"gfx_ui_font", "gfx_hdr_peak", "gfx_hdr_paper", "gfx_sharpen", "gfx_fov", "gfx_draw_dist", "gfx_lod_dist", "gfx_lod_bias",
+                                     "gfx_lod_force0", "gfx_full_rate_anim", "gfx_aniso", "gfx_render_scale", "gfx_upscale_quality", "gfx_smaa_quality"};
+  for (const char* x : skip) if (k == x) return false;
+  static const char* const pre[] = {"gfx_", "rt_", "atmos_", "water_", "ssao_", "foliage_", "leaf_", "wind_"};
+  for (const char* x : pre) if (k.rfind(x, 0) == 0) return true;
+  return k == "soft_particles" || k == "contact_shadows" || k == "look" || k == "frame_generation";
+}
+
+std::string g_settings;   // settings_hash() of the player's settings, taken when this preparation started (written to prepare.json)
+
 void write_progress(const std::string& dir, const char* state, int index, int total, const std::string& course, int ok, int failed, long long started,
                     const std::vector<Result>& res) {
   const long long now = (long long)std::time(nullptr);
   std::string t = "{\"format\": 1, \"state\": \"" + std::string(state) + "\", \"index\": " + std::to_string(index) + ", \"total\": " + std::to_string(total) +
                   ", \"course\": \"" + course + "\", \"ok\": " + std::to_string(ok) + ", \"failed\": " + std::to_string(failed) +
                   ", \"started\": " + std::to_string(started) + ", \"updated\": " + std::to_string(now) + ", \"pipelines\": " + std::to_string(known_pipelines(dir)) +
-                  ", \"seconds\": " + std::to_string(now - started) + ", \"results\": [";
+                  ", \"seconds\": " + std::to_string(now - started) + ", \"settings\": \"" + g_settings + "\", \"results\": [";
   for (size_t i = 0; i < res.size(); i++) {
     char b[200];
     std::snprintf(b, sizeof b, "%s{\"key\": \"%s\", \"exit\": %lu, \"seconds\": %.0f, \"new_pipelines\": %ld}", i ? ", " : "", res[i].key.c_str(), res[i].exit_code, res[i].seconds, res[i].new_pipelines);
@@ -131,6 +146,37 @@ bool wanted(int argc, char** argv) {
   return false;
 }
 
+std::string settings_hash(const std::string& data_root) {
+  // the row source is the one the scratch profile copies (host/benchmark.cpp make_scratch): SNAP_PROFILES_DIR or <data root>\profiles, the profile the game starts with
+  const std::string root = !env("SNAP_PROFILES_DIR").empty() ? env("SNAP_PROFILES_DIR") : data_root + "\\profiles";
+  std::map<std::string, std::string> rows;
+  if (env("SNAP_SAVE_DIR").empty() || !env("SNAP_PROFILES_DIR").empty()) {
+    hle::profiles::Store st(root);
+    st.load();
+    const std::string want = env("SNAP_PROFILE");
+    const hle::profiles::Profile* pf = want.empty() ? st.find(st.last_used()) : st.find(want);
+    if (!pf && !st.list().empty() && want.empty()) pf = &st.list().front();
+    std::string t;
+    if (pf && read_text(P(root) / P(pf->id) / L"settings.cfg", t)) {
+      std::istringstream is(t);
+      std::string line;
+      while (std::getline(is, line)) {
+        while (!line.empty() && line.back() == '\r') line.pop_back();
+        const size_t eq = line.find('=');
+        if (line.empty() || line[0] == '#' || eq == std::string::npos) continue;
+        const std::string k = line.substr(0, eq);
+        if (pipeline_row(k)) rows[k] = line.substr(eq + 1);
+      }
+    }
+  }
+  unsigned long long h = 1469598103934665603ull;   // FNV-1a over the sorted "key=value" rows
+  auto mix = [&](const std::string& x) { for (unsigned char c : x) { h ^= c; h *= 1099511628211ull; } h ^= 0x0a; h *= 1099511628211ull; };
+  for (const auto& kv : rows) mix(kv.first + "=" + kv.second);
+  char b[24];
+  std::snprintf(b, sizeof b, "%016llx", h);
+  return b;
+}
+
 bool read_progress(const std::string& dir, Progress& p) {
   std::string t, e;
   hle::Json j;
@@ -144,6 +190,7 @@ bool read_progress(const std::string& dir, Progress& p) {
   p.course = j.get("course") ? j.get("course")->str() : "";
   p.pipelines = j.get("pipelines") ? (unsigned)j.get("pipelines")->num() : 0;
   p.updated = j.get("updated") ? (long long)j.get("updated")->num() : 0;
+  p.settings = j.get("settings") ? j.get("settings")->str() : "";
   if (p.state == 1 && (long long)std::time(nullptr) - p.updated > 20 * 60) p.state = 3;   // the process died without writing a last state
   hle::Json s;
   if (read_text(P(dir) / L"status.json", t) && hle::json_parse(t, s, e)) {
@@ -203,7 +250,8 @@ int run_cli(const std::vector<std::string>& args) {
   SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS);
 
   Progress was;
-  if (!force && read_progress(dir, was) && was.state == 2 && only.empty()) {
+  g_settings = settings_hash(hle::config().data_root);
+  if (!force && read_progress(dir, was) && was.state == 2 && only.empty() && (was.settings.empty() || was.settings == g_settings)) {
     std::printf("shaderprep: the shader cache is already prepared (%u pipelines); use --force to run it again\n", was.pipelines);
     return 0;
   }
