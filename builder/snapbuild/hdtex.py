@@ -58,17 +58,18 @@ def load_pins(path=None):
 # denoise (0 = off .. 1 = full 1xDeJPG pass first). Data maps (normal, mask, emissive) and effects get no AI. Light maps
 # (the Lighting row) get the HDR-safe light map path; their directional terms (lightdir) are never changed.
 
-DATA_CATS = ('normal', 'mask', 'emissive', 'effect', 'lightmap', 'lightdir')
+DATA_CATS = ('normal', 'mask', 'emissive', 'effect', 'lightmap', 'lightdir', 'shadow')
 LIGHT_MODEL = 'aomr2'   # light map bench 2026-11-15: least ringing and flat-area noise of the pinned models (HD-TEXTURES.md)
 
 
-def _lv(scenery, creature, ui, data=0, lighting=0, boost=0.0):
+def _lv(scenery, creature, ui, data=0, lighting=0, boost=0.0, shadow=0):
     out = {
         'scenery': dict(scale=scenery, model='nomos2-plksr', strength=1.0, denoise=0.0),
         'creature': dict(scale=creature, model='texture-dat2', strength=0.5, denoise=0.0),
         'ui': dict(scale=ui, model='spanimation2', strength=1.0, denoise=0.0),
         'lightmap': dict(scale=lighting, model=LIGHT_MODEL, strength=1.0),
         'lightdir': dict(scale=0),
+        'shadow': dict(scale=shadow, strength=1.0),   # HD shadows row: only built with --cats shadow (its own pack)
     }
     for c in ('normal', 'mask', 'emissive', 'effect'):
         out[c] = dict(scale=data)
@@ -77,9 +78,9 @@ def _lv(scenery, creature, ui, data=0, lighting=0, boost=0.0):
 
 
 LEVELS = {
-    'sharp': _lv(2, 0, 2),
-    'hd': _lv(4, 2, 2, lighting=2),
-    'ultra': _lv(4, 4, 4, data=2, lighting=4, boost=0.7),
+    'sharp': _lv(2, 0, 2, shadow=2),
+    'hd': _lv(4, 2, 2, lighting=2, shadow=2),
+    'ultra': _lv(4, 4, 4, data=2, lighting=4, boost=0.7, shadow=4),
 }
 DEFAULT_LEVEL = 'hd'
 MAX_EDGE = 4096
@@ -107,10 +108,11 @@ def level_settings(level, overrides=(), base='hd'):
 
 # ---- cache index -----------------------------------------------------------------------------------------------------
 
-def read_index(cache):
-    """{rel: (size, crc)} from the cache's index.tsv (last line wins), only files that still exist with that size."""
+def read_index(cache, index=None):
+    """{rel: (size, crc)} from the cache's index.tsv (last line wins), only files that still exist with that size.
+    index: another index file for the same folder (the game-files scan of --from-data)."""
     out = {}
-    p = Path(cache) / 'index.tsv'
+    p = Path(index) if index else Path(cache) / 'index.tsv'
     if not p.exists():
         return out
     for line in p.read_text(encoding='utf-8', errors='replace').splitlines():
@@ -118,6 +120,26 @@ def read_index(cache):
         if len(f) >= 3 and f[1].isdigit():
             out[f[0]] = (int(f[1]), f[2])
     return {r: v for r, v in out.items() if (Path(cache) / r).is_file() and (Path(cache) / r).stat().st_size == v[0]}
+
+
+def scan_data(root, index_path, subdir='nx/Pack/LevelComposite/master', suffixes=('^Shadow.nutexb',)):
+    """Index of the course textures straight from the player's unpacked game files (no play-through): every file under
+    root/subdir/<pack>/ whose name ends with one of suffixes. Writes index_path (rel, size, change stamp) and returns the
+    number of files. The 'crc' column is size and modified time: enough to see that a source changed."""
+    base = Path(root) / subdir
+    lines = []
+    if base.is_dir():
+        for pack in sorted(os.listdir(base)):
+            d = base / pack
+            if not d.is_dir():
+                continue
+            with os.scandir(d) as it:
+                for e in it:
+                    if e.name.endswith(suffixes):
+                        st = e.stat()
+                        lines.append(f'{subdir}/{pack}/{e.name}' + chr(9) + f'{st.st_size}' + chr(9) + f'{st.st_size:x}-{st.st_mtime_ns:x}')
+    write_atomic(index_path, (chr(10).join(lines) + chr(10)).encode('utf-8'))
+    return len(lines)
 
 
 # ---- planning -----------------------------------------------------------------------------------------------------------
@@ -176,9 +198,10 @@ def species_id(token):
     raise ValueError(f'"{token}": give a National Pokedex number (25) or a creature id (CH_025)')
 
 
-def plan(cache, settings, models_sha, bc7=False, exclude=(), max_edge=MAX_EDGE, only=None):
-    """-> (items to build, counts by category incl. skipped). models_sha: {model id: sha256} for the state key."""
-    idx = read_index(cache)
+def plan(cache, settings, models_sha, bc7=False, exclude=(), max_edge=MAX_EDGE, only=None, cats=None, index=None):
+    """-> (items to build, counts by category incl. skipped). models_sha: {model id: sha256} for the state key.
+    cats: only these categories (default: everything except 'shadow', which has its own pack and row)."""
+    idx = read_index(cache, index)
     excl = {species_id(x) for x in exclude}
     items, counts = [], {}
     for rel in sorted(idx):
@@ -194,7 +217,7 @@ def plan(cache, settings, models_sha, bc7=False, exclude=(), max_edge=MAX_EDGE, 
             continue
         cat = hc.classify(rel, t)
         counts[cat] = counts.get(cat, 0) + 1
-        if cat in ('skip', 'lightdir') or hc.species(rel) in excl:
+        if cat in ('skip', 'lightdir') or hc.species(rel) in excl or (cat not in cats if cats else cat == 'shadow'):
             continue
         cs = settings[cat]
         scale = int(cs.get('scale', 0))
@@ -204,7 +227,7 @@ def plan(cache, settings, models_sha, bc7=False, exclude=(), max_edge=MAX_EDGE, 
         if (ow, oh) == (t.w, t.h):
             continue
         ofmt = out_format(t.fmt, cat, bc7)
-        mips = 1 if t.mips == 1 else im.mip_count(ow, oh)
+        mips = 1 if t.mips == 1 and cat != 'shadow' else im.mip_count(ow, oh)   # shadows gain a chain: at 2x to 4x they would shimmer
         it = Item(rel, cat, t.fmt, t.w, t.h, t.mips, idx[rel][0], ofmt, ow, oh, mips, nutexb_bytes(ofmt, ow, oh, mips), scale,
                   cs.get('model', ''), float(cs.get('strength', 1.0)), float(cs.get('denoise', 0.0)),
                   float(settings.get('_boost', 0.0)) if cat == 'scenery' else 0.0)
@@ -237,7 +260,7 @@ LIGHT_S_PER_MPX = 2.0     # light maps: fill, gate, energy match and the BC6H en
 
 
 def course_of(rel):
-    m = re.match(r'nx/pack/levelcomposite/master/(lc_\d{3})', rel)
+    m = re.match(r'nx/pack/levelcomposite/master/(lc_\d{3})', rel, re.I)
     return m.group(1) if m else ''
 
 
@@ -452,6 +475,40 @@ def process_filter(it, px, wrap):
     return [to_store(l, srgb) for l in im.mip_chain(g, it.out_mips, 'color')]
 
 
+def _box(x, fn, r=1):
+    """Min or max filter over a (2r+1)^2 window of a 2-D array, edges repeated."""
+    h, w = x.shape
+    p = np.pad(x, r, mode='edge')
+    out = None
+    for dy in range(2 * r + 1):
+        for dx in range(2 * r + 1):
+            v = p[dy:dy + h, dx:dx + w]
+            out = v if out is None else fn(out, v)
+    return out
+
+
+def process_shadow(it, px, wrap):
+    """HD shadows, no AI: the game's per-mesh shadow maps hold the shadow in alpha (black colour). Lanczos enlargement, kept
+    inside the original's local min/max (no ringing, the amount of shadow stays the game's), then the hard edges, and only
+    those, are steepened by the scale so the ramp stays as narrow in texels as it was: crisp where the bake was crisp,
+    plain enlargement where it was a soft half-tone. strength 0 is plain Lanczos."""
+    a = px[..., 3].astype(np.float32) / 255
+    h, w = a.shape
+    base = np.clip(im.resize(a, it.out_w, it.out_h), 0, 1)
+    yi = np.clip(((np.arange(it.out_h) + 0.5) * h / it.out_h).astype(int), 0, h - 1)
+    xi = np.clip(((np.arange(it.out_w) + 0.5) * w / it.out_w).astype(int), 0, w - 1)
+    lo = _box(a, np.minimum)[yi][:, xi]
+    hi = _box(a, np.maximum)[yi][:, xi]
+    b = np.clip(base, lo, hi)
+    rng = hi - lo
+    edge = np.clip((rng - 0.35) / 0.3, 0, 1) * float(max(min(it.strength, 1.0), 0.0))
+    gain = 1.0 + (float(it.scale) - 1.0) * edge
+    t = np.clip((b - lo) / np.maximum(rng, 1e-3), 0, 1)
+    out = np.clip(lo + np.clip((t - 0.5) * gain + 0.5, 0, 1) * rng, 0, 1)
+    img = np.concatenate([np.zeros((it.out_h, it.out_w, 3), np.float32), out[..., None]], -1)
+    return [to_store(l, nb.FORMATS[it.src_fmt][4]) for l in im.mip_chain(img, it.out_mips, 'color')]
+
+
 # Light maps (the Lighting row). Studied against MatyMeatBoy/NewSnapRecomp newsnap/hdshadows.py (MIT, commit 10e5a20); no code
 # taken. Differences: float log input (no 8-bit step), directional terms found by name (^1^..^3^) not by sign, filled
 # gutters kept (no dark seams), the model gated to shadow edges, and texconv's full BC6H encoder.
@@ -649,6 +706,31 @@ def wait_for_locks(lock_dir, say, poll=20.0, sleep=time.sleep):
         sleep(poll)
 
 
+GAME_EXES = ('snaprecomp.exe', 'snap_boot.exe')
+
+
+def game_running():
+    """True while a game process (the release SnapRecomp.exe or a development snap_boot.exe) is running."""
+    try:
+        out = subprocess.run(['tasklist', '/FO', 'CSV', '/NH'], capture_output=True, text=True, timeout=30,
+                             creationflags=NO_WINDOW).stdout.lower()
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return any(f'"{n}"' in out for n in GAME_EXES)
+
+
+def wait_for_game(say, poll=15.0, sleep=time.sleep):
+    """Blocks while the game runs, so the background build never competes with it for the GPU. Returns the seconds waited."""
+    t0 = time.perf_counter()
+    told = False
+    while game_running():
+        if not told:
+            say('paused while the game is running; the build goes on when you quit it')
+            told = True
+        sleep(poll)
+    return time.perf_counter() - t0
+
+
 def below_normal():
     try:
         k = ctypes.windll.kernel32
@@ -674,6 +756,8 @@ class RunOptions:
     limit: int = 0
     level: str = DEFAULT_LEVEL
     settings: dict = None
+    pause_game: bool = False     # background build: wait while the game runs
+    pack_meta: dict = None       # pack.json of a pack that is not hd-ai-textures
 
 
 def batches(todo, n, mpx):
@@ -694,7 +778,7 @@ def run(items, o, say=print):
     work, pack = Path(o.work), Path(o.pack)
     work.mkdir(parents=True, exist_ok=True)
     pack.mkdir(parents=True, exist_ok=True)
-    write_atomic(pack / 'pack.json', (json.dumps(pack_json(o.level, o.settings), indent=1) + '\n').encode())
+    write_atomic(pack / 'pack.json', (json.dumps((o.pack_meta or pack_json(o.level, o.settings)), indent=1) + '\n').encode())
     st = load_state(work)
     retire_stale(pack, work, st, {it.rel for it in items}, say)
     todo = []
@@ -718,6 +802,8 @@ def run(items, o, say=print):
     tmp = work / 'tmp'
     for b0, batch in batches(todo, o.batch, o.batch_mpx):
         paused += wait_for_locks(o.lock_dir, say)
+        if o.pause_game:
+            paused += wait_for_game(say)
         shutil.rmtree(tmp, ignore_errors=True)
         (tmp / 'src').mkdir(parents=True)
         # 1. decode level 0 of every source (one texconv run per decode format)
@@ -772,6 +858,9 @@ def run(items, o, say=print):
                     in_dx = nb.DXGI_RGBA8_SRGB if nb.FORMATS[it.src_fmt][4] else nb.DXGI_RGBA8
                 elif it.cat == 'normal':
                     levels, in_dx = process_normal(it, p, wrap[it.rel]), nb.DXGI_RGBA8
+                elif it.cat == 'shadow':
+                    levels = process_shadow(it, p, False)
+                    in_dx = nb.DXGI_RGBA8_SRGB if nb.FORMATS[it.src_fmt][4] else nb.DXGI_RGBA8
                 elif it.cat == 'lightmap':
                     r = ai.get(it.rel)
                     levels = process_lightmap(it, p, wrap[it.rel], r[0] if r else None, light.get(it.rel), r[1] if r else 1)

@@ -7,8 +7,9 @@ Rules come from the census of all 28,369 textures of game version 2.0.1 (format,
   ui        everything under common/ui (menus, icons, silhouettes, stamps, text) and *_thumbnail: the UI model or a font-safe filter
   effect    FX_* particles, gradients and flashes: soft by design, Lanczos only
   normal    BC5 or *_nor / *_n: upscaled as vectors and renormalised, no AI
-  mask      parameter maps, single-channel data, splat/route masks (*_par, BC4, *_A/_B/_Route*) and the courses' baked
-            per-mesh shadow maps (*^Shadow: black RGB, the shadow in alpha), no AI
+  mask      parameter maps, single-channel data, splat/route masks (*_par, BC4, *_A/_B/_Route*), no AI
+  shadow    the courses' baked per-mesh sun-shadow maps (*^Shadow: black RGB, the shadow in alpha): edge-aware alpha upscale
+            (HD shadows row), never touched by the other rows
   emissive  *_emi*: Lanczos, no AI (glow shapes must not grow detail)
   lightmap  BC6H light maps (the ^0^Lightmap of each set, and any other BC6H without an _emi suffix): the light the
             courses bake, shadows included. HDR-safe AI (Lighting row): log space, gated to shadow edges, energy kept
@@ -17,7 +18,7 @@ Rules come from the census of all 28,369 textures of game version 2.0.1 (format,
 """
 import re
 
-CATEGORIES = ('creature', 'scenery', 'ui', 'effect', 'normal', 'mask', 'emissive', 'lightmap', 'lightdir', 'skip')
+CATEGORIES = ('creature', 'scenery', 'ui', 'effect', 'normal', 'mask', 'shadow', 'emissive', 'lightmap', 'lightdir', 'skip')
 AI_CATEGORIES = ('creature', 'scenery', 'ui')
 
 _SKIP_SUFFIX = re.compile(r'_(curve|dither|cubemap|specular|lut|noise)\d*$', re.I)
@@ -49,9 +50,9 @@ def classify(rel, tex):
         return 'normal'
     if _EMI.search(s):
         return 'emissive'
-    if kind in ('bc4', 'r8'):
-        return 'mask'
     if r.endswith('^shadow.nutexb'):
+        return 'shadow'
+    if kind in ('bc4', 'r8'):
         return 'mask'
     if r.startswith('common/ui/') or s.lower().endswith('_thumbnail'):
         return 'ui'

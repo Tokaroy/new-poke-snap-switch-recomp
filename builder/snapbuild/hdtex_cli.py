@@ -27,6 +27,8 @@ from pathlib import Path
 from . import fetch, hdtex as H, hdtex_setup as S, hdtex_classify as hc
 
 ROUTES = H.BUILDER / 'hdtex_routes'
+PACK_META = {'hd-shadows': {'name': 'HD shadows (made on this PC)', 'version': '1', 'author': 'Snap Recomp Builder',
+                            'description': 'Sharper baked sun shadows for every course, made from your own game files. Not for sharing.'}}
 
 
 def add_args(p):
@@ -58,6 +60,10 @@ def add_args(p):
     p.add_argument('--only', help='only textures whose path matches this regular expression (testing)')
     p.add_argument('--ab-originals', action='store_true', help='also write the originals for the in-game A/B (SNAP_MODS_AB_ORIG)')
     p.add_argument('--pause-locks', help='developer use: pause while a *.lock in this folder names a timing run')
+    p.add_argument('--from-data', metavar='ROOT', help='read the course textures straight from your unpacked game files (no play-through); with --cats')
+    p.add_argument('--cats', help='only these texture categories, comma list (shadow = the HD shadows row, lightmap = the Lighting row)')
+    p.add_argument('--pack-id', default=H.PACK_ID, help='mod pack to write (default hd-ai-textures; HD shadows uses hd-shadows)')
+    p.add_argument('--pause-game', action='store_true', help='background build: wait while the game is running')
     p.add_argument('--report', help='write the run report (JSON) here as well')
     p.add_argument('--licenses', action='store_true', help='list the licenses the level needs and which are accepted')
     p.add_argument('--json', action='store_true', help='machine-readable output for the launcher (see the module help)')
@@ -255,7 +261,7 @@ def _main(a, table, say, emit):
         say('Nothing to do: pass --level, --capture, --collect, --status or --licenses (see --help).')
         return 2
     if a.level == 'off':
-        changed = H.set_enabled(mods, False)
+        changed = H.set_enabled(mods, False, a.pack_id)
         say('HD AI textures are off.' + ('' if changed else ' (They were not set up.)') + ' No file was deleted; --level <level> turns them back on.')
         if emit:
             emit({'done': {'level': 'off', 'enabled': False}})
@@ -268,8 +274,10 @@ def _main(a, table, say, emit):
     except ValueError as e:
         say(str(e))
         return 2
-    used = sorted({settings[c]['model'] for c in hc.AI_CATEGORIES + ('lightmap',) if settings[c].get('scale', 0) > 1 and settings[c].get('model')} |
-                  ({'dejpg'} if any(settings[c].get('denoise') for c in hc.AI_CATEGORIES) else set()))
+    only_cats = [c.strip() for c in a.cats.split(',') if c.strip()] if a.cats else None
+    ai_cats = tuple(c for c in hc.AI_CATEGORIES + ('lightmap',) if not only_cats or c in only_cats)
+    used = sorted({settings[c]['model'] for c in ai_cats if settings[c].get('scale', 0) > 1 and settings[c].get('model')} |
+                  ({'dejpg'} if any(settings[c].get('denoise') for c in ai_cats) else set()))
     for mid in used:
         if mid not in pins['models']:
             say(f'unknown model "{mid}". Models: ' + ', '.join(f'{k} ({v["title"]}, {v["license"]["name"]})' for k, v in pins['models'].items()))
@@ -288,14 +296,24 @@ def _main(a, table, say, emit):
         return 0
     sha = {m: S.model_sha(pins, m) for m in used}
     bc7 = {'off': False, 'on': True, 'all': 'all'}[a.bc7]
-    items, counts = H.plan(cache, settings, sha, bc7=bc7, exclude=exclude, max_edge=a.max_edge, only=a.only)
+    cats = [c.strip() for c in a.cats.split(',') if c.strip()] if a.cats else None
+    index = None
+    if a.from_data:
+        suffixes = tuple(({'shadow': '^Shadow.nutexb', 'lightmap': '^0^Lightmap.nutexb'}[c]) for c in (cats or ['shadow']) if c in ('shadow', 'lightmap'))
+        if not suffixes:
+            say('--from-data reads the course shadow and light map textures: pass --cats shadow and/or lightmap.')
+            return 2
+        cache, index = Path(a.from_data), work / 'data-index.tsv'
+        work.mkdir(parents=True, exist_ok=True)
+        say(f'{H.scan_data(cache, index, suffixes=suffixes)} course textures found in {cache}')
+    items, counts = H.plan(cache, settings, sha, bc7=bc7, exclude=exclude, max_edge=a.max_edge, only=a.only, cats=cats, index=index)
     if not counts:
         say(f'The texture cache {cache} is empty. Capture first: --collect <SnapRecomp.exe>, or --capture on and play.')
         if emit and a.dry_run:
             emit({'plan': {'level': a.level, 'textures': 0, 'captured': 0, 'fits': True, 'empty_cache': True}})
         return 1
     est = H.estimate(items)
-    left = H.pending(items, work, mods / H.PACK_ID)   # a rebuild only makes what changed: time only those
+    left = H.pending(items, work, mods / a.pack_id)   # a rebuild only makes what changed: time only those
     el = H.estimate(left)
     est['seconds'], est['left'] = el['seconds'], len(left)
     for c, v in est['by_cat'].items():
@@ -323,7 +341,8 @@ def _main(a, table, say, emit):
 
     # The AI engine needs onnxruntime: build tools/hdtex-python once and run this command again inside it.
     try:
-        import onnxruntime  # noqa: F401
+        if used:
+            import onnxruntime  # noqa: F401
     except ImportError:
         if os.environ.get('SNAP_HDTEX_CHILD'):
             say('onnxruntime is missing in the HD textures Python')
@@ -356,16 +375,17 @@ def _main(a, table, say, emit):
         f = probe_speed(make, used, say)
         est = H.estimate(left, probe=f)
         say(f'Corrected estimate: about {est["seconds"] / 60:.0f} min')
-    o = H.RunOptions(cache=cache, work=work, pack=mods / H.PACK_ID, texconv=tc, make_engine=make,
+    o = H.RunOptions(cache=cache, work=work, pack=mods / a.pack_id, texconv=tc, make_engine=make,
                      model_scale=lambda m: pins['models'][m]['scale'], lock_dir=a.pause_locks or '', ab_orig=a.ab_originals,
-                     limit=a.limit, level=a.level, settings=settings)
+                     limit=a.limit, level=a.level, settings=settings, pause_game=a.pause_game,
+                     pack_meta=PACK_META.get(a.pack_id))
     rep = H.run(items, o, say)
     rep.update(level=a.level, settings=settings, estimate=est, date=time.strftime('%Y-%m-%d %H:%M'))
     body = (json.dumps(rep, indent=1, default=str) + '\n').encode()
     H.write_atomic(work / 'last_run.json', body)
     if a.report:
         H.write_atomic(Path(a.report), body)
-    H.set_enabled(mods, True)
+    H.set_enabled(mods, True, a.pack_id)
     if emit:
         emit({'done': {k: rep.get(k) for k in ('level', 'built', 'failed', 'up_to_date', 'seconds')} | {'enabled': True, 'pack': str(o.pack)}})
     say(f'Done: {rep["built"]} built, {rep["failed"]} failed, {rep["up_to_date"]} already up to date, {rep["seconds"] / 60:.1f} min. '

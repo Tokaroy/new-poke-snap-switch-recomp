@@ -116,7 +116,7 @@ class ClassifyTests(unittest.TestCase):
             ('nx/pack/resident/master/fx.drp/FX_Spark01.nutexb', 0x4a5): 'effect',
             ('nx/pack/resident/master/a.drp/T_Rock_mask.nutexb', 0x180): 'mask',
             ('nx/pack/resident/master/a.drp/T_Sky_cubemap.nutexb', 0x485): 'skip',
-            ('nx/pack/levelcomposite/master/lc_999_z.drp/LV_A^SM_Ground1^42^groundShape^0^Shadow.nutexb', 0x4a5): 'mask',
+            ('nx/pack/levelcomposite/master/lc_999_z.drp/LV_A^SM_Ground1^42^groundShape^0^Shadow.nutexb', 0x4a5): 'shadow',
             ('nx/pack/levelcomposite/master/lc_101.drp/LV_ENV_101_1_A^SM_ENV_Rock^Rock01^3^0^Lightmap.nutexb', 0x4d7): 'lightmap',
             ('nx/pack/levelcomposite/master/lc_101.drp/LV_ENV_101_1_A^SM_ENV_Rock^Rock01^3^2^Lightmap.nutexb', 0x4d7): 'lightdir',
             ('nx/pack/levelcomposite/master/lc_101.drp/LV_ENV_101_1_A^SM_ENV_Rock^Rock01^3^1^LIGHTMAP.nutexb', 0x4d7): 'lightdir',
@@ -457,6 +457,75 @@ class LightmapTests(unittest.TestCase):
 
     def test_directional_never_planned(self):
         self.assertEqual(H.level_settings('ultra')['lightdir']['scale'], 0)
+
+
+class ShadowTests(unittest.TestCase):
+    """The HD shadows row: its own category and pack, edge-aware alpha upscale, game files read in place, pause while the game runs."""
+    def mask(self, n=64):
+        y, x = np.mgrid[0:n, 0:n]
+        a = ((x * 0.7 + y * 0.4) % 23 < 9).astype(np.float32) * 255     # hard diagonal bars
+        a[10:14, 10:14] = 128                                             # one soft half-tone patch
+        px = np.zeros((n, n, 4), np.uint8)
+        px[..., 3] = a
+        return px
+
+    def item(self, n, scale, strength=1.0):
+        return H.Item('s', 'shadow', 0x4a5, n, n, 1, 0, 0x4a5, scale * n, scale * n, im.mip_count(scale * n, scale * n), 0, scale, '', strength)
+
+    def test_process_keeps_the_games_shadow_and_sharpens_edges(self):
+        px = self.mask()
+        n = px.shape[0]
+        a = px[..., 3].astype(np.float32) / 255
+        out = H.process_shadow(self.item(n, 2), px, False)
+        self.assertEqual(len(out), im.mip_count(2 * n, 2 * n))
+        o = out[0]
+        self.assertEqual((o.shape, o.dtype), ((2 * n, 2 * n, 4), np.uint8))
+        self.assertEqual(int(o[..., :3].max()), 0)                       # colour stays black
+        got = o[..., 3].astype(np.float32) / 255
+        self.assertLess(abs(got.mean() - a.mean()), 0.02)                # the amount of shadow is the game's
+        plain = np.clip(im.resize(a, 2 * n, 2 * n), 0, 1)
+        self.assertLess(np.minimum(got, 1 - got).sum(), np.minimum(plain, 1 - plain).sum())   # fewer half-tone texels than plain Lanczos
+        lo = np.repeat(np.repeat(a, 2, 0), 2, 1)
+        self.assertTrue(((got >= lo.min() - 1e-6) & (got <= 1 + 1e-6)).all())
+        off = H.process_shadow(self.item(n, 2, 0.0), px, False)[0][..., 3].astype(np.float32) / 255
+        self.assertLess(np.abs(off - plain).max(), 0.15)                 # strength 0: plain enlargement, only de-ringed
+
+    def test_planned_only_with_cats_and_gets_mips(self):
+        t = Path(tempfile.mkdtemp())
+        rel = 'nx/Pack/LevelComposite/master/LC_001_A.drp/LV^M^1^s^0^Shadow.nutexb'
+        write_cache(t, {rel: make_nutexb(0x4a5, 128, 128, 1)[0]})
+        items, counts = H.plan(t, H.level_settings('hd'), {})
+        self.assertEqual((items, counts), ([], {'shadow': 1}))           # the textures pack never builds shadows
+        items, _ = H.plan(t, H.level_settings('hd'), {}, cats=['shadow'])
+        self.assertEqual(len(items), 1)
+        self.assertEqual((items[0].out_w, items[0].out_fmt, items[0].out_mips), (256, 0x4a5, im.mip_count(256, 256)))
+        items, _ = H.plan(t, H.level_settings('ultra'), {}, cats=['shadow'])
+        self.assertEqual(items[0].out_w, 512)
+        items, _ = H.plan(t, H.level_settings('custom', ['shadow.scale=0']), {}, cats=['shadow'])
+        self.assertEqual(items, [])
+
+    def test_scan_data_reads_game_files_in_place(self):
+        root = Path(tempfile.mkdtemp())
+        d = root / 'nx/Pack/LevelComposite/master/LC_002_A.drp'
+        d.mkdir(parents=True)
+        (d / 'a^Shadow.nutexb').write_bytes(b'x' * 10)
+        (d / 'a^0^Lightmap.nutexb').write_bytes(b'y' * 5)
+        (d / 'a_col.nutexb').write_bytes(b'z')
+        idx = root / 'idx.tsv'
+        self.assertEqual(H.scan_data(root, idx), 1)
+        got = H.read_index(root, idx)
+        self.assertEqual(list(got), ['nx/Pack/LevelComposite/master/LC_002_A.drp/a^Shadow.nutexb'])
+        self.assertEqual(got[next(iter(got))][0], 10)
+
+    def test_waits_while_the_game_runs(self):
+        states = iter([True, True, False])
+        real, H.game_running = H.game_running, lambda: next(states)
+        try:
+            said, slept = [], []
+            H.wait_for_game(said.append, poll=0.0, sleep=slept.append)
+            self.assertEqual((len(said), len(slept)), (1, 2))
+        finally:
+            H.game_running = real
 
 
 class NearestEngine:
