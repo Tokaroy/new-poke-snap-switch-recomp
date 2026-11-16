@@ -10,6 +10,7 @@ so a re-run only redoes what changed and an interrupted run resumes where it sto
 import ctypes
 import hashlib
 import json
+from concurrent.futures import ThreadPoolExecutor
 import os
 import re
 import shutil
@@ -181,6 +182,7 @@ def nutexb_bytes(fmt, w, h, mips):
     return nb.layout(w, h, bpb, bw, bh, mips)[1] + nb.FOOTER
 
 
+SHADOW_THREADS = 2
 SHADOW_MAX_EDGE = 2048   # sun-shadow maps stop at 2048: a 4096 map is 16 MB, and about 80 of the 4,562 originals are already 2048
 
 
@@ -508,6 +510,10 @@ def process_shadow(it, px, wrap):
     gain = 1.0 + (float(it.scale) - 1.0) * edge
     t = np.clip((b - lo) / np.maximum(rng, 1e-3), 0, 1)
     out = np.clip(lo + np.clip((t - 0.5) * gain + 0.5, 0, 1) * rng, 0, 1)
+    if it.out_mips == 1:   # the usual case: black colour, so no sRGB step and no float RGBA
+        q = np.zeros((it.out_h, it.out_w, 4), np.uint8)
+        q[..., 3] = (out * 255 + 0.5).astype(np.uint8)
+        return [q]
     img = np.concatenate([np.zeros((it.out_h, it.out_w, 3), np.float32), out[..., None]], -1)
     return [to_store(l, nb.FORMATS[it.src_fmt][4]) for l in im.mip_chain(img, it.out_mips, 'color')]
 
@@ -852,6 +858,8 @@ def run(items, o, say=print):
                 ai[k] = (v if k in light else v.astype(np.float16), got)   # light maps stay float32: log light must not band
         # 3. per-category processing, mips, then one texconv encode run per output format
         enc = {}
+        pool = ThreadPoolExecutor(SHADOW_THREADS)   # numpy releases the GIL in the resize: two threads halve the shadow time
+        pre = {it.rel: pool.submit(process_shadow, it, px[it.rel], False) for it in batch if it.cat == 'shadow'}
         for i, it in enumerate(batch):
             try:
                 p = px[it.rel]
@@ -862,7 +870,7 @@ def run(items, o, say=print):
                 elif it.cat == 'normal':
                     levels, in_dx = process_normal(it, p, wrap[it.rel]), nb.DXGI_RGBA8
                 elif it.cat == 'shadow':
-                    levels = process_shadow(it, p, False)
+                    levels = pre[it.rel].result()
                     in_dx = nb.DXGI_RGBA8_SRGB if nb.FORMATS[it.src_fmt][4] else nb.DXGI_RGBA8
                 elif it.cat == 'lightmap':
                     r = ai.get(it.rel)
@@ -879,6 +887,7 @@ def run(items, o, say=print):
             except Exception as e:   # one bad texture must not stop the run
                 failed += 1
                 say(f'  {it.rel}: {type(e).__name__}: {e}')
+        pool.shutdown()
         for (dx, one), lst in enc.items():
             extra = (('-at', '0.5') if dx in (71, 72) else ()) + (('-m', '1') if one else ())
             od = tmp / f'enc{dx}_{int(one)}'
