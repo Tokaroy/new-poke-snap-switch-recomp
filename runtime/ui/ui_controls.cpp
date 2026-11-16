@@ -238,7 +238,7 @@ void reset_button(Device d) {
 }
 
 // ---- tabs ------------------------------------------------------------------------------------------------------------
-const char* const kTabs[] = {"Bindings", "Mouse", "Controller", "Accessibility", "Audio", "Graphics", "Display", "Photos", "Mods", "Saves", "Cheats", "Test input", "Tuning"};
+const char* const kTabs[] = {"Bindings", "Mouse", "Controller", "Accessibility", "Audio", "Graphics", "Display", "Photos", "Mods", "Saves", "Save state", "Cheats", "Test input", "Tuning"};
 constexpr int kTabCount = (int)(sizeof kTabs / sizeof kTabs[0]);
 int tab_count() { return dev_on() ? kTabCount : kTabCount - 1; }   // "Tuning" (ui_tune.cpp) exists only with SNAP_DEV=1
 
@@ -603,6 +603,11 @@ void draw_menu(ImVec2 size, bool* want_close) {
     }
     if (begin_tab("Saves")) {
       if (ImGui::BeginChild("p", ImVec2(0, -footer_h))) tab_saves();
+      ImGui::EndChild();
+      ImGui::EndTabItem();
+    }
+    if (begin_tab("Save state")) {
+      if (ImGui::BeginChild("p", ImVec2(0, -footer_h))) tab_savestate();
       ImGui::EndChild();
       ImGui::EndTabItem();
     }

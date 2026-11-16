@@ -445,7 +445,8 @@ static void ui_present_impl(const SnapUiFrame* f) {
   const bool perf = fps_overlay_tick();   // performance overlay (ui_fps.cpp); one atomic load when Off
   const bool tune = tune_tick();          // SNAP_DEV=1 dev layer (ui_tune.cpp): GPU cost overlay, shader errors; one cached bool when off
   const bool safe = safe_banner_on();     // safe-mode banner (ui_fps.cpp)
-  if (!open && !shader && !toast && !perf && !tune && !safe && !shiny_fx_active() && !shiny_badges_active()) return;
+  const bool stnote = state_note_on();    // save state note (ui_savestate.cpp)
+  if (!open && !shader && !toast && !perf && !tune && !safe && !stnote && !shiny_fx_active() && !shiny_badges_active()) return;
   if (!init_imgui(f)) return;
   if (open || shader) hubr.poll(8);   // keeps rebinding and the live readout fresh even when the game is not polling
 
@@ -477,6 +478,7 @@ static void ui_present_impl(const SnapUiFrame* f) {
     if (!open && !shader) { draw_shiny_fx(size); draw_shiny_badges(size); }   // shiny capture effect (ui_shiny.cpp)
     if (tune && !shader) draw_tune_overlay(size);   // never in the game's own photos (host overlay)
     if (safe && !shader) draw_safe_banner(size);
+    if (stnote && !shader) draw_state_note(size);   // host overlay: never in the game's own photos
     if (perf && !shader) draw_fps_overlay(size);   // over the game and the F1 menu; never in the game's own photos (host overlay)
     ImGui::Render();
     dd = ImGui::GetDrawData();

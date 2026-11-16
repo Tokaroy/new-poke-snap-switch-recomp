@@ -9,6 +9,7 @@ Date: 2026-11-15. Five options for players: game language, problem report, A/B s
 | Check install | Gameplay page, "Check install..." | none | none | none | n/a |
 | Swap A and B | Controls page | Display tab, Controller | `swap_ab` | `SNAP_SWAP_AB` | off (follows `input.json`) |
 | Discord Rich Presence | Gameplay page | Display tab, Discord | `discord_presence` | `SNAP_DISCORD_PRESENCE` | off |
+| Save state / Load state | none | Save state tab (buttons), F5 save, F8 load | none | none (tests: `SNAP_CHECKPOINT`, see `docs/save-states.md`) | one in-memory slot, this run only |
 
 ## Game language
 

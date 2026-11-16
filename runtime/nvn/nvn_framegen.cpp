@@ -174,6 +174,9 @@ bool ForceOn() { static const bool f = [] { const char* e = getenv("SNAP_FRAMEGE
 bool LogOn() { static const bool f = [] { const char* e = getenv("SNAP_FRAMEGEN_LOG"); return e && e[0] == '1'; }(); return f; }
 }  // namespace
 
+// a save state was loaded (runtime/nvn/nvn_state.cpp): the next frame starts a new history
+extern "C" void snap_framegen_state_loaded() { G.prevPrepared = false; }
+
 bool FgWanted() { return snap_framegen::Wanted(); }
 const char* FgNotice() {   // null while frame generation is fine; once it turned itself off, the reason (a stable string)
   std::lock_guard<std::mutex> lk(g_noticeMu);

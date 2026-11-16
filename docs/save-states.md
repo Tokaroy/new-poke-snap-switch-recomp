@@ -263,3 +263,11 @@ One in-RAM slot per process. A save drains every guest thread (about 0.5 to 1 s,
 - A load rewinds the game, not the host: the script clock and present count keep running, and the HLE film mirror is reset (`route_state_loaded`). Wait for something the game reports again after the load (a photo taken, `ride`) before checking it.
 - Example: `host/routes/savestate_florio.txt` rides, saves, takes photos and loads three times; the film counter goes 67 back to 70 each time (run `3-20261116_014027`).
 - Names are labels only (one slot); a load of another name than the saved one is refused.
+
+## 7. Save state and Load state for players (stage 3, built)
+
+- Keys: F5 saves, F8 loads (any time the game window has focus, menu open or not). F1 > "Save state" has the same two buttons, the state of the slot and the last result. Both go through the same worker as the test-run interface in section 6, slot name `player`.
+- One slot, in memory, this run only: nothing is written to disk, a new save replaces the old state, closing the game drops it. The tab says so, and every save shows a note at the bottom of the screen ("State saved. F8 loads it again. One slot, kept until you close the game.").
+- A refused load or save shows the reason in the same note (for example a window or queue set changed since the save) and the game goes on unchanged.
+- A load rewinds the game, not your files: the game's save data and album stay as they are on disk, and the physical pad reads idle for 150 ms so a held button does not carry over. Audio fades in over 50 ms; the temporal upscaler and frame generation start a new history, so there is no ghosting from the moment that was left.
+- The note is a host overlay: it is never part of the game's own photos or of F12 screenshots.

@@ -443,6 +443,9 @@ void TakeCamera(const uint8_t* p) {
 
 }  // namespace
 
+// a save state was loaded (runtime/nvn/nvn_state.cpp): the camera and the scene jumped, so the history is thrown away
+extern "C" void snap_upscale_state_loaded() { U.reset = true; }
+
 // ---- NVN entry points -----------------------------------------------------------------------------------------------
 static int WindowHeightPx() { return HostWindowHeight(); }   // nvn_aa.cpp: SNAP_WINDOW_H, window.json, else 720 (one source for AA and the upscaler)
 

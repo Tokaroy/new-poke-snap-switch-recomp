@@ -1289,6 +1289,14 @@ void Hub::poll(int min_interval_ms) {
     if (down && !prev) g_shot_req = true;
     prev = down;
   }
+  {  // save states (docs/save-states.md): F5 saves the one slot, F8 loads it; edge-triggered, the worker thread does the work
+    static const int kF5 = key_from_name("F5"), kF8 = key_from_name("F8");
+    static bool prev5 = false, prev8 = false;
+    const bool d5 = r.focused && kF5 > 0 && r.keys.test((size_t)kF5), d8 = r.focused && kF8 > 0 && r.keys.test((size_t)kF8);
+    if (d5 && !prev5) snap_state_request(1, "player");
+    if (d8 && !prev8) snap_state_request(2, "player");
+    prev5 = d5; prev8 = d8;
+  }
   // rebinding capture
   if (capturing_.load()) {
     for (size_t i = 0; i < cap_ignore_.size();) {   // forget held sources once released

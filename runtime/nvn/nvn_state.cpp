@@ -32,6 +32,8 @@ namespace hle::input { extern std::atomic<bool> g_shot_req; void route_state_loa
 
 extern "C" void snap_fs_state_save();                          // runtime/hle/fs.cpp: which files and directories are open
 extern "C" void snap_fs_state_load(int* closed, int* reopened);
+extern "C" void snap_upscale_state_loaded();    // runtime/nvn/upscale/upscale.cpp: temporal history reset
+extern "C" void snap_framegen_state_loaded();   // runtime/nvn/nvn_framegen.cpp
 
 extern "C" {
 struct SnapStateHooks {
@@ -169,6 +171,7 @@ int PreLoad(char *why, int cap) {
 
 void PostLoad() {   // guest memory is restored; the GPU is idle; every guest thread is parked
   std::lock_guard<std::mutex> lk(g_mu);
+  snap_upscale_state_loaded(); snap_framegen_state_loaded();   // the camera jumped: no temporal history across a load
   hle::input::route_state_loaded();   // the HLE route signals (film counter) were reported for the state that is gone
   // 1. objects made since the save: the restored guest names none of them
   std::vector<Zombie> dead;
