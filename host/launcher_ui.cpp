@@ -775,8 +775,8 @@ void build_pages() {
   {
     Page p; p.name = "Upscaling";   // the upscaler itself is the Anti-aliasing row and its share the Performance scaling row (Picture page); this page holds what goes with it
     {
-      Item fg = choice("Frame generation (FSR)", "frame_generation", S_CFG, "default", {{"default", "Off"}, {"1", "On"}},
-                       "AMD FSR frame generation adds a computed frame between two real ones, so 60 fps looks like about 120 on a fast screen. Menus and the HUD stay out of it, photos and scoring never see it, and it turns itself off under about 50 fps. It adds about one frame of delay. Needs the frame generation files: use Install upscalers below.");
+      Item fg = choice("Frame generation", "frame_generation", S_CFG, "default", {{"default", "Off"}, {"fsr", "AMD FSR"}},
+                       "AMD FSR frame generation adds a computed frame between two real ones, so 60 fps looks like about 120 on a fast screen. Menus and the HUD stay out of it, photos and scoring never see it, and it turns itself off under about 50 fps. It adds about one frame of delay. If it ever fails it turns itself off for that session and says so in the in-game F1 menu. To undo it, set Off here (or remove SNAP_FRAMEGEN). Needs the frame generation files: use Install upscalers below.");
       fg.ch[1].avail = file_exists("upscalers\\amd_fidelityfx_framegeneration_vk.dll");
       if (!fg.ch[1].avail) fg.ch[1].label += " (not installed)";
       p.items.push_back(fg);
@@ -802,7 +802,7 @@ void build_pages() {
       p.items.push_back(pc);
     }
     p.items.push_back(choice("Frame rate target", "fps_target", S_CFG, "default",
-                             {{"default", "60 (the game's own)"}, {"90", "90"}, {"120", "120"}, {"144", "144"}, {"165", "165"}, {"240", "240"}},
+                             {{"default", "60 (the game's own)"}, {"72", "72"}, {"90", "90"}, {"120", "120"}, {"144", "144"}, {"165", "165"}, {"240", "240"}},
                              "How fast the game runs. 90 to 240 run the game itself faster and need a fast processor. Menus and dialogue keep their original speed."));
     p.items.push_back(choice("Frame rate limit", "frame_cap", S_WIN, "0",
                              {{"0", "Off (the game's pacing)"}, {"30", "30"}, {"45", "45"}, {"60", "60"}, {"75", "75"}, {"90", "90"}, {"120", "120"}, {"144", "144"}, {"165", "165"}, {"240", "240"}},

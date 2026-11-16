@@ -1,0 +1,15 @@
+# fixture: unlock_all
+# Frame generation stress route: Florio ride with a fast right-stick pan (full left, full right, 0.7 s each) and shutter taps, so the HUD, the
+# reticle and the photo button prompts cross a quickly moving scene. Ends 60 s after the ride starts. Run it with SNAP_FRAMEGEN=fsr SNAP_FPS=72
+# and NVN_FRAME_DUMP_GEN=1 NVN_FRAME_DUMP_FULL=1 NVN_FRAME_DUMP_FROM=<s> NVN_FRAME_DUMP_TO=<s+0.3> NVN_FRAME_DUMP_EVERY=0 to read generated frames mid-pan.
+wait ui=title timeout=240
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=300
+@f240 6 A
+wait ui=map_select:CourseSelect timeout=60
+@f180 6 A
+wait ride timeout=300
+repeat 0 60 1.5 0.067 A
+repeat 0 60 1.4 0.7 rx=1
+repeat 0.7 60 1.4 0.7 rx=-1
+end 60

@@ -310,11 +310,11 @@ std::vector<Opt>& graphics_opts() {
        "off", {}, 0, 0, "", "SNAP_UPSCALE_QUALITY", get_perf, set_perf, perf_choices, nullptr, note_perf},
       {"gfx_sharpen", "Sharpening", kSlider, kRestart,
        "A gentle sharpening pass after anti-aliasing. 0 is off. Too much makes edges look hard.", snapdef::def("SNAP_SHARPEN"), {}, 0.0f, 1.0f, "%.2f", "SNAP_SHARPEN", nullptr, nullptr, nullptr, "SNAP_SHARPEN", note_sharpen},
-      {"frame_generation", "Frame generation (FSR)", kChoice, kRestart,
+      {"frame_generation", "Frame generation", kChoice, kRestart,
        "AMD FSR frame generation shows an extra, computed frame between two real ones, so a 60 fps game looks like about 120 on a 120 Hz or faster screen. The menus and HUD are kept out of it. "
-       "It adds about one frame of delay, never touches photos or scoring, and turns itself off while the game runs under about 50 fps. It does not count toward the real frame rate in the Frame rate target row. "
+       "It adds about one frame of delay, never touches photos or scoring, and turns itself off while the game runs under about 50 fps. It does not count toward the real frame rate in the Frame rate target row. If it ever fails it turns itself off for that session and says so under the options; to undo it, set Off here or remove SNAP_FRAMEGEN. "
        "Needs the FSR files from the launcher's Upscalers entry (a one-time download you accept).", "default",
-       {{"default", "Off"}, {"1", "On"}}, 0, 0, "", "SNAP_FRAMEGEN"},
+       {{"default", "Off"}, {"fsr", "AMD FSR"}}, 0, 0, "", "SNAP_FRAMEGEN"},
       {"", "Textures and shadows", kSection, kLive, "", ""},
       {"gfx_aniso", "Anisotropic filtering", kChoice, kRestart,
        "Keeps ground and walls sharp when you look at them from a shallow angle. The original game does not force any (Off keeps its own filtering); 16x costs almost nothing on a PC GPU.",
@@ -404,7 +404,7 @@ std::vector<Opt>& graphics_opts() {
       {"fps_target", "Frame rate target", kChoice, kRestart,
        "How fast the game runs. Default is the game's own 60 FPS. 90, 120, 144, 165 and 240 run the game itself faster and need a fast CPU; the menus and dialogue keep their original speed. "
        "The frame rate limit below still applies. On a variable refresh rate (G-Sync, FreeSync) monitor any of them is smooth.", "default",
-       {{"default", "60 (the game's own)"}, {"90", "90"}, {"120", "120"}, {"144", "144"}, {"165", "165"}, {"240", "240"}}, 0, 0, "", "SNAP_FPS"},
+       {{"default", "60 (the game's own)"}, {"72", "72"}, {"90", "90"}, {"120", "120"}, {"144", "144"}, {"165", "165"}, {"240", "240"}}, 0, 0, "", "SNAP_FPS"},
       {"frame_cap", "Frame rate limit", kChoice, kLive,
        "Stops the game from drawing faster than this. Off keeps the game's own 60 FPS pacing. Remembered in window.json.", "0",
        {{"0", "Off (the game's pacing)"}, {"30", "30"}, {"45", "45"}, {"60", "60"}, {"75", "75"}, {"90", "90"}, {"120", "120"}, {"144", "144"}, {"165", "165"}, {"240", "240"}}, 0, 0, "",

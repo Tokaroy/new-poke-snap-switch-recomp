@@ -25,6 +25,9 @@ bool FgWanted();                       // SNAP_FRAMEGEN=fsr (or 1), read once
 void FgDeviceCreated(Host* h);         // loads the DLL and creates the DLL's device context (after the upscaler's DeviceCreated)
 void FgDestroy(Host* h);               // device is going away
 void FgForgetTexture(const TextureImpl* t);   // DestroyTexture: drops a pending frame keyed by that window texture
+const char* FgNotice();                // null while frame generation is fine; once it turned itself off this session, the reason for the F1 menu
+void FgFail(const char* why);          // turns frame generation off for this session (a present or swapchain error): one log line, normal frames go on
+bool FgForcedFail(const char* stage);  // SNAP_FRAMEGEN_FAIL=init|prepare|generate|present (tests): true when that stage is to fail
 bool FgActive();                       // the rate gate currently lets frames be prepared and generated
 
 // Scene inputs of one frame (upscale.cpp Resolve, recorded on cx.cb after the motion-vector pass).

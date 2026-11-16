@@ -17,6 +17,7 @@
 #include <condition_variable>
 #include <deque>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <unordered_map>
 
@@ -118,6 +119,7 @@ void FreeAll(Host* h) {
 }
 
 // Caller holds G.mu.
+void Fail(const char* why);   // live fallback, defined below
 bool EnsureImages(uint32_t w, uint32_t hh, VkFormat unorm) {
   if (G.dw == w && G.dh == hh && G.unorm == unorm && G.out.img) return true;
   Host* h = G.h;
@@ -130,13 +132,23 @@ bool EnsureImages(uint32_t w, uint32_t hh, VkFormat unorm) {
   ok = ok && MakeImg(h, G.pres, w, hh, unorm, colorIn);
   ok = ok && MakeImg(h, G.out, w, hh, unorm, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
   ok = ok && MakeImg(h, G.show, w, hh, Srgb(unorm), VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
-  if (!ok) { FreeAll(h); G.failed = true; Logf("framegen: image creation failed (%ux%u): frame generation off for this run", w, hh); return false; }
+  if (!ok) { FreeAll(h); Fail("image creation failed"); return false; }
   G.dw = w; G.dh = hh; G.unorm = unorm; G.srgb = Srgb(unorm);
   Logf("framegen: images %ux%u created", w, hh);
   return true;
 }
 
-void Fail(const char* why) { G.failed = true; G.active = false; Logf("framegen: %s: frame generation off for this run", why); }
+// Live fallback (2026-11-16): any frame generation error turns it off for the rest of the session and leaves normal presents. One log line,
+// and a sentence for the F1 menu (FgNotice). SNAP_FRAMEGEN_FAIL=init|prepare|generate|present forces that stage to fail (tests).
+std::mutex g_noticeMu; std::string g_notice;
+void Fail(const char* why) {
+  if (G.failed) return;   // the first cause is the one that is told
+  G.failed = true; G.active = false;
+  Logf("framegen: %s: frame generation off for this run", why);
+  std::lock_guard<std::mutex> lk(g_noticeMu);
+  g_notice = why;
+}
+bool Forced(const char* stage) { static const char* e = getenv("SNAP_FRAMEGEN_FAIL"); return e && !strcmp(e, stage); }
 
 void Norm(float* v) {
   const float l = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
@@ -163,14 +175,21 @@ bool LogOn() { static const bool f = [] { const char* e = getenv("SNAP_FRAMEGEN_
 }  // namespace
 
 bool FgWanted() { return snap_framegen::Wanted(); }
+const char* FgNotice() {   // null while frame generation is fine; once it turned itself off, the reason (a stable string)
+  std::lock_guard<std::mutex> lk(g_noticeMu);
+  return g_notice.empty() ? nullptr : g_notice.c_str();
+}
+void FgFail(const char* why) { Fail(why); }
+bool FgForcedFail(const char* stage) { return Forced(stage); }
 
 void FgDeviceCreated(Host* h) {
   if (!snap_framegen::Wanted()) return;
   G.h = h;
-  if (!snap_framegen::Load()) { G.failed = true; return; }
+  if (Forced("init")) { Fail("forced failure at init (SNAP_FRAMEGEN_FAIL=init)"); return; }
+  if (!snap_framegen::Load()) { Fail("the frame generation files could not be loaded"); return; }
   snap_upscale::DeviceCtx c;
   c.instance = h->instance; c.phys = h->phys; c.device = h->device; c.queue = h->queue; c.family = h->family;
-  if (!snap_framegen::Init(c)) { G.failed = true; Logf("framegen: initialization failed: frame generation unavailable"); return; }
+  if (!snap_framegen::Init(c)) { Fail("initialization failed"); return; }
   G.ready = true;
   if (const char* t = getenv("SNAP_FRAMEGEN_TRACE")) if (*t) { G.trace = fopen(t, "w"); if (G.trace) fprintf(G.trace, "t_ms,generated,active\n"); }
   Logf("framegen: ready (panel %.1f Hz%s)", PanelHz(), ForceOn() ? ", rate gate forced open" : "");
@@ -200,11 +219,12 @@ bool FgPrepare(ReplayCtx& cx, const FgScene& s) {
   if (!G.ready || G.failed || !snap_framegen::Usable()) return false;
   std::lock_guard<std::mutex> lk(G.mu);
   if (!G.active || G.hdr || !s.display || !s.display->fi || !s.display->image) { G.prevPrepared = false; return false; }
+  if (Forced("prepare")) { Fail("forced failure at prepare (SNAP_FRAMEGEN_FAIL=prepare)"); return false; }
   const VkFormat un = Unorm(s.display->fi->vk);
   if (un == VK_FORMAT_UNDEFINED) { Fail("window texture format is not RGBA8"); return false; }
   const uint32_t dw = s.display->HW(), dh = s.display->HH();
   if (!EnsureImages(dw, dh, un)) return false;
-  if (!snap_framegen::EnsureContext(dw, dh, std::max(s.rw, 1u), std::max(s.rh, 1u), un)) { G.prevPrepared = false; if (snap_framegen::Failures() > 3) G.failed = true; return false; }
+  if (!snap_framegen::EnsureContext(dw, dh, std::max(s.rw, 1u), std::max(s.rh, 1u), un)) { G.prevPrepared = false; if (snap_framegen::Failures() > 3) Fail("the frame generation library reported repeated errors"); return false; }
   const int64_t now = NowNs();
   snap_framegen::PrepareIn in;
   in.cb = cx.cb;
@@ -225,7 +245,7 @@ bool FgPrepare(ReplayCtx& cx, const FgScene& s) {
   Cross(in.right, in.fwd, in.up); Norm(in.up);
   in.depthIsDsReadOnly = true;
   const uint64_t id = snap_framegen::Prepare(in);
-  if (!id) { G.prevPrepared = false; if (snap_framegen::Failures() > 3) G.failed = true; return false; }
+  if (!id) { G.prevPrepared = false; if (snap_framegen::Failures() > 3) Fail("the frame generation library reported repeated errors"); return false; }
   Pend p; p.id = id; p.reset = in.reset;
   G.pend[s.display] = p;
   G.prevPrepared = true; G.prepared++;
@@ -301,10 +321,11 @@ VkImage FgRecordGenerate(Host*, VkCommandBuffer cb, TextureImpl* src) {
   gi.present = {G.pres.img, G.pres.view, G.unorm};
   gi.out = {G.out.img, G.out.view, G.unorm};
   gi.w = G.dw; gi.h = G.dh; gi.reset = G.cur.reset;
-  const bool ok = snap_framegen::Generate(gi);
+  const bool ok = !Forced("generate") && snap_framegen::Generate(gi);
+  if (Forced("generate")) Fail("forced failure at generate (SNAP_FRAMEGEN_FAIL=generate)");
   G.dispatched++;
   // the DLL leaves what it was told: `pres` and the hud image back in SHADER_READ_ONLY, `out` in GENERAL
-  if (!ok) { if (snap_framegen::Failures() > 3) G.failed = true; return VK_NULL_HANDLE; }
+  if (!ok) { if (snap_framegen::Failures() > 3) Fail("the frame generation library reported repeated errors"); return VK_NULL_HANDLE; }
   if (!G.curShow) return VK_NULL_HANDLE;
   ImgBar(cb, G.out, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
   ImgBar(cb, G.show, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);

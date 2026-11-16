@@ -2076,7 +2076,8 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
     snap_pace::Presented(w->swapchain, pr);
     if (pr == VK_ERROR_OUT_OF_DATE_KHR || pr == VK_SUBOPTIMAL_KHR) w->needRecreate = true;
     else if (pr == VK_ERROR_DEVICE_LOST || pr == VK_ERROR_SURFACE_LOST_KHR) FatalGpuLoss("vkQueuePresentKHR", pr);
-    else if (pr < 0) LogError("vkQueuePresentKHR failed: %d", (int)pr);
+    else if (pr < 0) { LogError("vkQueuePresentKHR failed: %d", (int)pr); if (FgWanted()) FgFail("a present failed"); }
+    if (generatedFrame && FgWanted() && FgForcedFail("present")) FgFail("forced failure at present (SNAP_FRAMEGEN_FAIL=present)");
     if (FgWanted()) FgNotePresent(generatedFrame);   // [framegen]
   };
   if (fgThr) {
