@@ -1,0 +1,28 @@
+# Accessibility tab (docs/accessibility.md): open F1, set every row as the controls do, check the stored values, and let the overlay frames show the tab at
+# 100 percent, then 150 percent with high contrast, then 200 percent. Run: tests\hle\run_access_ui.ps1 (frames go to analysis\ui\access_dump).
+24 key F1 1
+24.5 expect_open 1
+25 tab Accessibility
+25.2 expect_tab Accessibility
+27.5 opt access_cvd deuteranopia
+27.6 opt access_cvd_strength 60
+27.7 opt access_flash gentle
+27.8 opt access_mono 1
+28 expect_opt access_cvd deuteranopia
+28 expect_opt access_cvd_strength 60
+28 expect_opt access_flash gentle
+28 expect_opt access_mono 1
+30.5 opt access_ui_size 150
+30.6 opt access_contrast 1
+31 expect_opt access_ui_size 150
+31 expect_opt access_contrast 1
+33.5 opt access_ui_size 200
+34 expect_opt access_ui_size 200
+37 opt access_cvd off
+37 opt access_flash off
+37 opt access_mono 0
+37 opt access_contrast 0
+37 opt access_ui_size 100
+37.5 expect_opt access_cvd off
+37.5 expect_opt access_ui_size 100
+38 quit

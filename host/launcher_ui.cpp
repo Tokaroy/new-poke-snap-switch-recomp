@@ -231,8 +231,10 @@ G g;
 // design-space helpers ---------------------------------------------------------------------------------------------
 ImVec2 V(float x, float y) { return ImVec2(g.ox + x * g.s, g.oy + y * g.s); }
 ImU32 C(unsigned hex, int a = 255) { return IM_COL32((hex >> 16) & 255, (hex >> 8) & 255, hex & 255, a); }
-const unsigned kCream = 0xf4f2f0, kWhite = 0xfcfcfc, kPanel = 0x6e7180, kTab = 0x9a9da7, kRow = 0x989899, kGreen = 0xb6d291, kYellow = 0xf8dc56,
-               kOrange = 0xf8ab79, kOrDark = 0xda743a, kText = 0x646464, kBrown = 0x4f3d29, kGrey = 0x8b8a8b;
+// The palette is variable so the Accessibility page's high-contrast row can swap it (apply_access below).
+unsigned kCream = 0xf4f2f0, kWhite = 0xfcfcfc, kPanel = 0x6e7180, kTab = 0x9a9da7, kRow = 0x989899, kGreen = 0xb6d291, kYellow = 0xf8dc56,
+         kOrange = 0xf8ab79, kOrDark = 0xda743a, kText = 0x646464, kBrown = 0x4f3d29, kGrey = 0x8b8a8b;
+bool g_hc = false;
 
 float text_w(float sz, const char* t) { return g.font->CalcTextSizeA(sz * g.s, FLT_MAX, 0.0f, t).x / g.s; }
 // Draws text with its left edge (al 0), centre (1) or right edge (2) at x and its vertical centre at y, in design units.
@@ -593,6 +595,8 @@ int index_of(const Item& it, const std::string& v) {
   return -1;
 }
 
+void access_changed();   // below
+
 void choose(Item& it, int idx) {
   if (idx < 0 || idx >= (int)it.ch.size() || !it.ch[(size_t)idx].avail) return;
   const bool was_vrr = it.key == "monitor" && get_pacing() == "vrr";
@@ -613,6 +617,7 @@ void choose(Item& it, int idx) {
     refresh_defaults();
   }
   if (it.kind == K_LOOK || it.kind == K_AA || it.kind == K_PERF) refresh_defaults();
+  if (it.key.rfind("access_", 0) == 0) access_changed();
   // a preset, the Look, the pacing, the monitor and the render scale each change what other rows show
   refresh_values();
 }
@@ -643,10 +648,40 @@ void reset_page(Page& p) {
   read_display();
   refresh_defaults();
   refresh_values();
+  access_changed();
 }
 
 struct Mon { RECT r; };
 BOOL CALLBACK mon_cb(HMONITOR, HDC, LPRECT r, LPARAM lp) { ((std::vector<Mon>*)lp)->push_back({*r}); return TRUE; }
+
+// Accessibility rows that change the launcher itself: the text size (the window grows, up to the work area) and the high-contrast palette. A SNAP_ACCESS_*
+// variable set by hand wins over the saved value, like in the game.
+std::string access_value(const char* key, const char* env) {
+  const char* e = std::getenv(env);
+  return e && *e ? std::string(e) : g.cfg.get(key, "");
+}
+int access_ui_percent() {
+  const int n = std::atoi(access_value("access_ui_size", "SNAP_ACCESS_UI_SIZE").c_str());
+  return n >= 175 ? 200 : n >= 138 ? 150 : n >= 113 ? 125 : 100;
+}
+void fit_window() {
+  using GetDpi = UINT(WINAPI*)(HWND);
+  GetDpi gd = (GetDpi)GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow");
+  const float sc = (gd ? gd(g.hwnd) / 96.0f : 1.0f) * (float)access_ui_percent() / 100.0f;
+  RECT r{0, 0, (LONG)(1280 * sc), (LONG)(720 * sc)};
+  AdjustWindowRectEx(&r, (DWORD)GetWindowLongW(g.hwnd, GWL_STYLE), FALSE, 0);
+  RECT wa{};
+  SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
+  const int w = std::min<int>(r.right - r.left, wa.right - wa.left), h = std::min<int>(r.bottom - r.top, wa.bottom - wa.top);
+  SetWindowPos(g.hwnd, nullptr, wa.left + (wa.right - wa.left - w) / 2, wa.top + (wa.bottom - wa.top - h) / 2, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+}
+void apply_access_palette() {
+  const std::string c = access_value("access_contrast", "SNAP_ACCESS_CONTRAST");
+  g_hc = !(c.empty() || c == "0" || c == "off");
+  if (g_hc) { kPanel = 0x000000; kTab = 0x383838; kRow = 0x1e1e1e; kGreen = 0x1654d9; kText = 0x000000; kBrown = 0x000000; kGrey = 0x202020; }
+  else { kPanel = 0x6e7180; kTab = 0x9a9da7; kRow = 0x989899; kGreen = 0xb6d291; kText = 0x646464; kBrown = 0x4f3d29; kGrey = 0x8b8a8b; }
+}
+void access_changed() { apply_access_palette(); if (g.hwnd && !IsZoomed(g.hwnd)) fit_window(); }
 
 void build_pages() {
   g.pages.clear();
@@ -797,6 +832,26 @@ void build_pages() {
                              "Which controller buttons the game shows. Automatic follows the controller you connect."));
     p.items.push_back(choice("Rumble", "rumble_on", S_CFG, "1", {{"1", "On"}, {"0", "Off"}}, "Controller vibration."));
     p.items.push_back(choice("Motion aiming (gyro)", "gyro_on", S_CFG, "0", {{"0", "Off"}, {"1", "On"}}, "Aim the camera by moving a controller that has motion sensors."));
+    g.pages.push_back(p);
+  }
+  // Accessibility (docs/accessibility.md): every row starts off; the same rows and keys as the F1 menu's Accessibility tab
+  {
+    Page p; p.name = "Accessibility";
+    p.items.push_back(choice("Color vision", "access_cvd", S_CFG, "off", {{"off", "Off"}, {"protanopia", "Protanopia"}, {"deuteranopia", "Deuteranopia"}, {"tritanopia", "Tritanopia"}},
+                             "Shifts colors that are hard to tell apart into ones you can see, over the whole game picture including the HUD. Photos and photo scores are not changed."));
+    std::vector<Ch> strength;
+    for (int i = 10; i <= 100; i += 10) { char v[8], l[8]; std::snprintf(v, sizeof v, "%d", i); std::snprintf(l, sizeof l, "%d%%", i); strength.push_back({v, l}); }
+    p.items.push_back(choice("Correction strength", "access_cvd_strength", S_CFG, "100", strength, "How much of the color shift is applied. 100% is the full correction."));
+    p.items.push_back(choice("Reduce flashing", "access_flash", S_CFG, "off", {{"off", "Off"}, {"gentle", "Gentle"}, {"standard", "Standard"}, {"strong", "Strong"}},
+                             "Limits how fast the whole picture can brighten or darken, so bright bursts and camera flashes fade in over a few frames."));
+    p.items.push_back(choice("Text and menu size", "access_ui_size", S_CFG, "100", {{"100", "100%"}, {"125", "125%"}, {"150", "150%"}, {"200", "200%"}},
+                             "Makes this launcher and the in-game F1 menu bigger. The launcher window grows up to the size of your screen."));
+    p.items.push_back(choice("High-contrast menus", "access_contrast", S_CFG, "0", {{"0", "Off"}, {"1", "On"}},
+                             "Black panels with white text and a bright selection, for this launcher and the F1 menu."));
+    p.items.push_back(choice("Hold to toggle", "access_toggle", S_CFG, "off",
+                             {{"off", "Off"}, {"ZL", "ZL (zoom)"}, {"ZR", "ZR (shutter)"}, {"ZL,ZR", "ZL and ZR"}, {"ZL,ZR,L,R,X,Y,A,B", "Every action button"}},
+                             "A press holds the button down until the next press, for buttons the game wants held. Applies the next time the game starts."));
+    p.items.push_back(choice("Mono audio", "access_mono", S_CFG, "0", {{"0", "Off"}, {"1", "On"}}, "Plays the same sound in both ears."));
     g.pages.push_back(p);
   }
   refresh_values();
@@ -1436,7 +1491,7 @@ void draw_settings(bool* click_back) {
     pointed(rx, y, rw, rh, 22, C(sel ? kGreen : kRow));
     if (!it.note.empty() && it.kind != K_ACTION) {
       text(rx + 44, y + rh * 0.36f, 21, C(0xf7f7f7), it.label.c_str());
-      text_clip(rx + 44, y + rh * 0.76f, 14, C(sel ? 0x4a5a38 : 0xffffff), it.note.c_str(), 590.0f);
+      text_clip(rx + 44, y + rh * 0.76f, 14, C(sel && !g_hc ? 0x4a5a38 : 0xffffff), it.note.c_str(), 590.0f);
     } else {
       text(rx + 44, y + rh / 2, 21, C(0xf7f7f7), it.label.c_str());
     }
@@ -2235,16 +2290,8 @@ UiResult show(UiInfo& info) {
   const DWORD style = WS_OVERLAPPEDWINDOW;
   g.hwnd = CreateWindowExW(0, wc.lpszClassName, L"Snap Recomp", style, CW_USEDEFAULT, CW_USEDEFAULT, 1280, 720, nullptr, nullptr, wc.hInstance, nullptr);
   if (!g.hwnd) { UnregisterClassW(wc.lpszClassName, wc.hInstance); restore(); return UiResult::Failed; }
-  {
-    GetDpi gd = (GetDpi)GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow");
-    const float sc = gd ? gd(g.hwnd) / 96.0f : 1.0f;
-    RECT r{0, 0, (LONG)(1280 * sc), (LONG)(720 * sc)};
-    AdjustWindowRectEx(&r, style, FALSE, 0);
-    RECT wa{};
-    SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
-    const int w = std::min<int>(r.right - r.left, wa.right - wa.left), h = std::min<int>(r.bottom - r.top, wa.bottom - wa.top);
-    SetWindowPos(g.hwnd, nullptr, wa.left + (wa.right - wa.left - w) / 2, wa.top + (wa.bottom - wa.top - h) / 2, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
-  }
+  apply_access_palette();
+  fit_window();
   RECT cr{};
   GetClientRect(g.hwnd, &cr);
   g.rw = (UINT)(cr.right - cr.left); g.rh = (UINT)(cr.bottom - cr.top);
