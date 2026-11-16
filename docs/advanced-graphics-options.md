@@ -87,7 +87,7 @@ SNAP_VISUALS: `enhanced` (default since 2026-11-15) and `original` only change t
 
 Hand-set env wins: `runtime/hle/settings.cpp` exports a saved key to its `SNAP_*` variable only when that variable is not already set. So an env var set by hand always beats the menu value, and the menu shows its saved value with no sign of the override. The F1 overlay has an "env wins" warning; the native menu does not. Plan: document this in `host/README.md`, and add an optional chunk that appends a short "(env)" marker to the row's current-value text when the env var is set at start.
 
-Existing behaviors to keep in mind: an explicit `SNAP_RENDER_SCALE` beats `ssaa2` and turns it into smaa; an upscaler turns AA off and sharpening to 0 unless `SNAP_AA` / `SNAP_SHARPEN` are set. Help text for those rows should say so in one clause.
+Existing behaviors to keep in mind: the Enhanced default `ssaa2` is sized to the output (2160-line budget, so 4K renders 1.0x plus SMAA) while a chosen `ssaa2` keeps the full 2x; an explicit `SNAP_RENDER_SCALE` beats `ssaa2` and turns it into smaa; an upscaler turns AA off and sharpening to 0 unless `SNAP_AA` / `SNAP_SHARPEN` are set. Help text for those rows should say so in one clause.
 
 ## 6. Reserved slots for the lighting / RT stream
 

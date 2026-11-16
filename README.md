@@ -71,7 +71,7 @@ Early playable. The game boots to the title screen and the lab hub, all 14 cours
 
 ### Look and graphics
 
-- The default look is Enhanced: 2x supersampling plus SMAA, CAS sharpening, 16x anisotropic filtering, automatic UI font supersampling, PNG photo export (lossless, with a JSON sidecar) and HD photos.
+- The default look is Enhanced: supersampling (2x at 1080p, 1.5x at 1440p, 1x of the output at 4K, all plus SMAA), CAS sharpening, 16x anisotropic filtering, automatic UI font supersampling, PNG photo export (lossless, with a JSON sidecar) and HD photos.
 - One "Look" row (first row of the Quality tab, in the game's Settings screen and in the F1 menu) switches between Enhanced and Original. Original is the game as shipped: its own FXAA, no sharpening, no forced anisotropic filtering, no PNG files, no HD photos. The row sets all of them together; you can still change any single row afterwards. A choice you already saved keeps working: only settings you never changed follow the new default. `SNAP_VISUALS=original` does the same from the command line (see [Running and settings](#running-and-settings)).
 - Quality presets: Very Low, Low, Default (follows the Look), High, Ultra, Maximum and Custom.
 - Upscalers: NVIDIA DLSS and DLAA, AMD FSR and Intel XeSS, each with quality modes. The vendor SDK files are not in this repo or the release zip. The builder and the launcher download them to your PC from the vendors only after you read and accept each license, and check them against pinned hashes. An upscaler that is not installed is hidden.
@@ -159,7 +159,7 @@ Captured from the native build running on Windows. They show the running game on
 
 All frames are from separate runs of the same build at a 4K window, captured at the same point on the ride. The camera matches; the Pokémon move on their own. Zoom strips are 2x crops of the full 4K frame.
 
-**Original look vs Enhanced.** Original is the game's own 1080p image scaled to 4K. Enhanced adds supersampling, SMAA, CAS sharpening and 16x anisotropic filtering.
+**Original look vs Enhanced.** Original is the game's own 1080p image scaled to 4K. Enhanced adds supersampling (sized to the output so 4K still holds its frame rate), SMAA, CAS sharpening and 16x anisotropic filtering.
 
 <img src="docs/screenshots/compare/look-florio.webp" alt="Florio at 4K, split screen: Original look on the left, Enhanced on the right" width="100%">
 <img src="docs/screenshots/compare/look-florio-zoom.webp" alt="Florio foliage at 2x: stair-stepped leaf edges in Original, clean edges in Enhanced" width="100%">
