@@ -45,6 +45,7 @@ def main():
     # code-generation switches (host/README.md "PGO and ThinLTO"); pair them with the same flags on recomp/snap_build.py --cflags
     ap.add_argument('--pgo-gen', action='store_true', help='instrumented build (-fprofile-generate, host/pgo.cpp dump thread)')
     ap.add_argument('--pgo-use', default='auto', help="optimize with this .profdata; 'auto' (default) = build/pgo/snap.profdata if it exists, 'off' = none")
+    ap.add_argument('--gui-subsystem', action='store_true', help='link as a Windows-subsystem program like the shipped SnapRecomp.exe (no console window; it attaches to the parent terminal when there is one). Default: console, so `& snap_boot.exe` in a shell waits for the game')
     ap.add_argument('--lto', choices=('', 'thin'), default='', help='ThinLTO for the host objects and the final link')
     ap.add_argument('--cflags-extra', default='', help='extra flags for the host compile (e.g. -O3)')
     ap.add_argument('--release-objs', default='', metavar='DIR',
@@ -72,7 +73,7 @@ def main():
         cov.write_bytes(bak)   # the coverage table is the HLE owner's; only the stub file is ours
     shutil.copyfile(ROOT / 'generated' / 'hle_unimplemented.cpp', ROOT / 'generated' / 'unimplemented.cpp')
 
-    srcs = [(ROOT / 'host' / f, 17) for f in ('loader.cpp', 'hooks.cpp', 'boot.cpp', 'abi_audio.cpp', 'window_opts.cpp', 'pgo.cpp', 'launcher.cpp', 'launcher_upscalers.cpp', 'launcher_ui.cpp', 'elf_check.cpp')]
+    srcs = [(ROOT / 'host' / f, 17) for f in ('loader.cpp', 'hooks.cpp', 'boot.cpp', 'abi_audio.cpp', 'window_opts.cpp', 'pgo.cpp', 'launcher.cpp', 'launcher_upscalers.cpp', 'launcher_ui.cpp', 'elf_check.cpp', 'benchmark.cpp', 'album.cpp')]
     srcs += [(p, 20) for p in sorted((ROOT / 'runtime' / 'os').glob('*.cpp'))]
     srcs += [(p, 20) for p in sorted((ROOT / 'host' / 'mods').glob('*.cpp'))]   # draw-distance mods 26 and 27 (host/mods/lodanim.cpp)
     for d in ('hle', 'audio', 'nvn', 'mods'):
@@ -169,6 +170,8 @@ def main():
     lflags = [c for c in cg if not c.startswith('-fprofile-use')]
     if args.lto:   # ThinLTO backends (bitcode libs from snap_build.py -flto=thin): BelowNormal like the rest, at most --jobs threads
         lflags += ['-Wl,/opt:lldltojobs=' + str(jobs), '-Wl,/lldltocache:' + str(out / 'ltocache')]
+    if args.gui_subsystem:
+        lflags += ['-Wl,/subsystem:windows', '-Wl,/entry:mainCRTStartup']   # host/boot.cpp attach_parent_console() keeps terminal output working
     r = subprocess.run([str(LLVM / 'clang++.exe'), '-fuse-ld=lld', '-g', '-Wl,/manifest:embed', '-Wl,/manifestinput:' + str(ROOT / 'host' / 'snap_utf8.manifest'), '-Wl,/map:' + str(out / (args.name + '.map')), '-Wl,/debug', '-o', str(exe)] + lflags + [str(o) for o in objs] + res + libs,
                        env=env, creationflags=BELOW_NORMAL)
     if r.returncode:

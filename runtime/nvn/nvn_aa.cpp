@@ -9,6 +9,7 @@
 //   * SNAP_AA=smaa: right after any of those programs draws (AaAfterDraw, called from DoDraw), the render target is copied to a scratch image and SMAA 1x
 //     (edge detection, blend weights, neighborhood blend; reference SMAA.hlsl compiled with dxc, area/search textures from the reference scripts) writes
 //     the result back in place. UI draws later, so text is untouched.
+//   * SNAP_SMAA_QUALITY=low|medium|high|ultra picks the SMAA preset (threshold, search steps, corner rounding); default high.
 //   * SNAP_SHARPEN=s: CAS (FidelityFX algorithm) after the AA step, also before the UI.
 // Everything runs in the replaying command buffer; no other guest-visible state changes. Photos and the Evaluation pass read their own targets.
 #include <algorithm>
@@ -30,6 +31,18 @@
 namespace nvn {
 int g_aaMode = AA_FXAA;
 float g_aaSharpen = 0.0f;
+// SNAP_SMAA_QUALITY=low|medium|high|ultra (default high): the reference SMAA.hlsl presets as run-time values for the pass shaders (push constants q):
+// edge threshold, search steps, diagonal search steps, corner rounding. Low and Medium have no diagonal or corner handling in the reference: 0 diagonal
+// steps finds no diagonal and corner rounding 100 leaves corners alone, which is the same picture.
+float g_smaaQ[4] = {0.10f, 16.f, 8.f, 25.f};
+void SmaaPreset(const char* name) {
+  std::string n = name ? name : "";
+  for (auto& ch : n) ch = (char)tolower((unsigned char)ch);
+  const float low[4] = {0.15f, 4.f, 0.f, 100.f}, med[4] = {0.10f, 8.f, 0.f, 100.f}, high[4] = {0.10f, 16.f, 8.f, 25.f}, ultra[4] = {0.05f, 32.f, 16.f, 25.f};
+  const float* q = n == "low" ? low : n == "medium" ? med : n == "ultra" ? ultra : high;
+  if (!n.empty() && n != "low" && n != "medium" && n != "high" && n != "ultra") fprintf(stderr, "aa: unknown SNAP_SMAA_QUALITY '%s' (low, medium, high, ultra)\n", n.c_str());
+  memcpy(g_smaaQ, q, sizeof g_smaaQ);
+}
 // Window client height in pixels: SNAP_WINDOW_H, else window.json "height", else 720 (host/window_opts.cpp's default windowed size).
 // Shared with the upscaler (upscale.cpp used its own copy that fell back to 1080).
 int HostWindowHeight() {
@@ -185,7 +198,7 @@ bool Setup(Host* h) {
   for (int i = 0; i < 6; i++) bn[i] = {(uint32_t)i, i < 4 ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE : VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
   VkDescriptorSetLayoutCreateInfo dl{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO}; dl.bindingCount = 6; dl.pBindings = bn;
   if (vkCreateDescriptorSetLayout(d, &dl, nullptr, &g.dsl) != VK_SUCCESS) return false;
-  VkPushConstantRange pr{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 16};
+  VkPushConstantRange pr{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32};   // (1/w, 1/h, w, h or the CAS strength) and the SMAA preset
   VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
   pli.setLayoutCount = 1; pli.pSetLayouts = &g.dsl; pli.pushConstantRangeCount = 1; pli.pPushConstantRanges = &pr;
   if (vkCreatePipelineLayout(d, &pli, nullptr, &g.pl) != VK_SUCCESS) return false;
@@ -322,7 +335,8 @@ void FullPass(ReplayCtx& cx, VkImageView target, uint32_t w, uint32_t hh, VkAtta
   vkCmdSetViewport(cx.cb, 0, 1, &vp); vkCmdSetScissor(cx.cb, 0, 1, &sc);
   vkCmdBindPipeline(cx.cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
   vkCmdBindDescriptorSets(cx.cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g.pl, 0, 1, &set, 0, nullptr);
-  vkCmdPushConstants(cx.cb, g.pl, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 16, pc);
+  const float all[8] = {pc[0], pc[1], pc[2], pc[3], g_smaaQ[0], g_smaaQ[1], g_smaaQ[2], g_smaaQ[3]};
+  vkCmdPushConstants(cx.cb, g.pl, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32, all);
   vkCmdDraw(cx.cb, 3, 1, 0, 0);
   vkCmdEndRendering(cx.cb);
 }
@@ -338,6 +352,20 @@ static float SsaaScale(int windowH) {
   const float cap = std::min(kSsaaMaxScale, 8192.0f / 1920.0f);
   const float v = std::clamp(want, 1.0f, cap);
   if (v < want) fprintf(stderr, "aa: ssaa2 scale capped %.3f -> %.3f (window height %d, max %.2f = %.0fx%.0f)\n", want, v, windowH, cap, 1920 * v, 1080 * v);
+  return v;
+}
+// The Enhanced look's own supersampling (SNAP_AA unset, the default "ssaa2,smaa" of hle/visual_defaults.h) is relative to the OUTPUT and has a pixel
+// budget, so it still holds the frame target on a big screen: render height = min(2 x window height, max(window height, kSsaaBudgetH)).
+//   1080p -> 2.0x per side (2160 lines), 1440p -> 1.5x (2160), 2160p -> 1.0x (2160) plus SMAA and sharpening.
+// A player's own ssaa2 choice (SNAP_AA set by hand or by a saved gfx_aa) keeps the full 2x of SsaaScale above.
+// SNAP_SSAA_BUDGET_H overrides the budget (render height in lines; 0 = no budget, the full 2x).
+constexpr float kSsaaBudgetH = 2160.0f;
+static float SsaaAutoScale(int windowH) {
+  float budget = kSsaaBudgetH;
+  if (const char* b = getenv("SNAP_SSAA_BUDGET_H")) budget = (float)atof(b);   // 0 = no budget
+  const float v = snapdef::ssaa_auto_scale(windowH, budget, std::min(kSsaaMaxScale, 8192.0f / 1920.0f));
+  const float H = (float)std::max(windowH, 1);
+  fprintf(stderr, "aa: ssaa2 auto: window height %d, render %.0f lines (%.2fx the output), scale %.3f = %.0fx%.0f\n", windowH, 1080.0f * v, 1080.0f * v / H, v, 1920 * v, 1080 * v);
   return v;
 }
 // Called when the AA step gives up (setup, pipeline or scratch-image failure): drop the supersampling scale it raised, which has no benefit
@@ -359,6 +387,7 @@ float AaParseEnv() {
     std::string s = e ? e : snapdef::get("SNAP_AA");
     if (!e && getenv("SNAP_RENDER_SCALE") && s.find("ssaa2") != std::string::npos) s = "smaa";
     g_aaSharpen = std::clamp((float)atof(snapdef::get("SNAP_SHARPEN")), 0.0f, 1.0f);
+    SmaaPreset(getenv("SNAP_SMAA_QUALITY"));
     for (auto& ch : s) { ch = (char)tolower((unsigned char)ch); if (ch == '+') ch = ','; }
     size_t pos = 0;
     while (pos <= s.size()) {
@@ -367,11 +396,12 @@ float AaParseEnv() {
       if (t == "smaa") g_aaMode = AA_SMAA;
       else if (t == "none") g_aaMode = AA_OFF;   // the game's FXAA removed, nothing in its place
       else if (t == "off" || t == "original" || t == "fxaa" || t.empty()) g_aaMode = AA_FXAA;   // the game's own FXAA, untouched
-      else if (t == "ssaa2") scale = SsaaScale(HostWindowHeight());
+      else if (t == "ssaa2") scale = e ? SsaaScale(HostWindowHeight()) : SsaaAutoScale(HostWindowHeight());   // e: the player's own choice
       else fprintf(stderr, "aa: unknown SNAP_AA token '%s' (fxaa, off, smaa, ssaa2)\n", t.c_str());
     }
   }
-  fprintf(stderr, "aa: mode %s, sharpen %.2f, ssaa render scale %.3f\n", g_aaMode == AA_SMAA ? "smaa" : g_aaMode == AA_OFF ? "off" : "fxaa", g_aaSharpen, scale);
+  fprintf(stderr, "aa: mode %s, sharpen %.2f, ssaa render scale %.3f, smaa threshold %.2f steps %.0f/%.0f corners %.0f\n", g_aaMode == AA_SMAA ? "smaa" : g_aaMode == AA_OFF ? "off" : "fxaa",
+          g_aaSharpen, scale, g_smaaQ[0], g_smaaQ[1], g_smaaQ[2], g_smaaQ[3]);
   g_ssaaScale = scale;
   return scale;
 }

@@ -64,6 +64,10 @@ int main() {
   { Cfg c; c.upscaler = "dlaa"; c.aa = "smaa"; EXPECT(note_aa(c, x).find("Also on") == 0); }
   { Cfg c; c.upscaler = "dlaa"; EXPECT(!note_sharpen(c).empty()); c.sharpen_set = true; EXPECT(note_sharpen(c).empty()); EXPECT(note_sharpen(Cfg{}).empty()); }
   { Cfg c; EXPECT(auto_label(c, x) == "Automatic (3840 x 2160)"); EXPECT(note_resolution(c, x).find("Automatic: 2x supersampling") == 0); Ctx o = x; o.enhanced = false; EXPECT(auto_label(c, o) == "Automatic (1920 x 1080)"); }
+  { Cfg c; EXPECT(note_smaa(c, x).empty()); c.aa = "smaa"; EXPECT(note_smaa(c, x).empty()); c.aa = "ssaa2,smaa"; EXPECT(note_smaa(c, x).empty());   // SMAA in use: nothing overrides the row
+    c.aa = "off"; EXPECT(note_smaa(c, x).find("Not used: the game's own FXAA") == 0); c.aa = "none"; EXPECT(note_smaa(c, x).find("Not used: anti-aliasing is off") == 0);
+    Ctx o = x; o.enhanced = false; EXPECT(note_smaa(Cfg{}, o).find("Not used: the game's own FXAA") == 0);                                  // the Original look's default is FXAA
+    EXPECT(note_smaa(with_aa(Cfg{}, "dlaa"), x).find("Not used: an upscaler") == 0); }
 
   std::printf(g_fail ? "picture_rows_test: %d FAILED\n" : "picture_rows_test: all passed\n", g_fail);
   return g_fail ? 1 : 0;

@@ -1,11 +1,16 @@
 // SMAA 1x passes for runtime/nvn/nvn_aa.cpp. Wrapper around the reference SMAA.hlsl (Jimenez et al., MIT; see THIRD_PARTY_NOTICES.md),
 // which this build reads from build/smaa_ref/SMAA.hlsl (fetched by host/mods/shaders/build_aa_shaders.ps1; not stored in the repo).
 // Descriptor set 0: 0 colorTex, 1 second input (edges or blend weights), 2 areaTex, 3 searchTex, 4 linear sampler, 5 point sampler.
-// Push constants: rt = (1/w, 1/h, w, h).
+// Push constants: rt = (1/w, 1/h, w, h); q = the quality preset: (edge threshold, search steps, diagonal search steps, corner rounding 0..100).
+// The reference presets (SMAA.hlsl): Low 0.15 / 4 / no diagonals / no corners, Medium 0.1 / 8 / no diagonals / no corners, High 0.1 / 16 / 8 / 25,
+// Ultra 0.05 / 32 / 16 / 25. Here they are run-time values (nvn_aa.cpp SmaaPreset): 0 diagonal steps finds no diagonal, and corner rounding 100 leaves corners alone.
 #define SMAA_CUSTOM_SL
-#define SMAA_PRESET_HIGH
-[[vk::push_constant]] struct { float4 rt; } g_pc;
+[[vk::push_constant]] struct { float4 rt; float4 q; } g_pc;
 #define SMAA_RT_METRICS g_pc.rt
+#define SMAA_THRESHOLD g_pc.q.x
+#define SMAA_MAX_SEARCH_STEPS g_pc.q.y
+#define SMAA_MAX_SEARCH_STEPS_DIAG g_pc.q.z
+#define SMAA_CORNER_ROUNDING g_pc.q.w
 [[vk::binding(4, 0)]] SamplerState LinearSampler;
 [[vk::binding(5, 0)]] SamplerState PointSampler;
 #define SMAATexture2D(tex) Texture2D tex

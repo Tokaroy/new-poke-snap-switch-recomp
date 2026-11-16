@@ -294,7 +294,7 @@ def build(opt, log):
     linkdir = work / 'build' / 'link'
     linkdir.mkdir(parents=True, exist_ok=True)
     exe_link = linkdir / 'SnapRecomp.exe'
-    link_key = sha256_text(compile_keys['main'], compile_keys['sdk'], sha256_file(pre / 'manifest.json'), vk.stat().st_size)
+    link_key = sha256_text(compile_keys['main'], compile_keys['sdk'], sha256_file(pre / 'manifest.json'), vk.stat().st_size, 'windows-subsystem')   # the subsystem is part of the key: an older cached console-subsystem link is not reused
 
     def do_link():
         env = link_env
@@ -310,6 +310,7 @@ def build(opt, log):
             run([llvm / 'llvm-rc.exe', '/FO', work / 'build' / 'snap_icon.res', rc.name], log, cwd=str(rc.parent), what='compile icon resource')
             res_file = [work / 'build' / 'snap_icon.res']
         cmd = [llvm / 'clang++.exe', '-fuse-ld=lld', '-Wl,/manifest:embed', '-Wl,/manifestinput:' + str(pre / 'res' / 'snap_utf8.manifest'),
+               '-Wl,/subsystem:windows', '-Wl,/entry:mainCRTStartup',   # no console window on double-click; host/boot.cpp attaches to the parent terminal when there is one
                '-o', exe_link] + objs + res_file + libs
         run(cmd, log, env=env, timeout=30 * 60, what='link SnapRecomp.exe')
     step('link', link_key, [exe_link], do_link)

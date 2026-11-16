@@ -310,6 +310,7 @@ A value set by hand always wins over a menu choice and over `SNAP_VISUALS`.
 | `SNAP_FAST_BOOT` | 1 | Turns the frame limiter off during loading (about 28% faster to the title logo) |
 | `SNAP_MODS_DIR` | path | Mod pack folder |
 | `SNAP_CONFIG_DIR` | path | Where `input.json` and `window.json` live |
+| `SNAP_SMAA_QUALITY` | `low`, `medium`, `high` (default), `ultra` | SMAA preset: edge threshold, search steps, corner rounding (the reference presets) |
 
 </details>
 

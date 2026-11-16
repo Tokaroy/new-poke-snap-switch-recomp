@@ -186,6 +186,7 @@ Choices perf_choices() { return {{"off", "Off"}, {"quality", "Quality"}, {"balan
 
 // ---- quality presets. The preset is not stored: it is worked out from the eleven rows below, so changing any row by hand shows "Custom" and
 // setting the rows to a preset's values shows that preset. "" in the table = the row's default (the key is erased, the game's own behavior).
+std::string note_smaa() { return snappic::note_smaa(pic_cfg(), pic_ctx()); }
 // Normal is all defaults. Left out on purpose: draw distance and full-rate animation (photo scores unverified), the lighting preset and
 // upscaler rows (other workers), and the HDR/color rows (not quality).
 struct PresetKey { const char* key; const char* def; const char* vis = nullptr; };   // vis: the visual_defaults.h row the default comes from (follows the Look)
@@ -326,6 +327,9 @@ std::vector<Opt>& graphics_opts() {
       {"gfx_shadow_dist", "Shadow distance", kChoice, kRestart,
        "How far the moving shadows reach (runtime/nvn/nvn_draw.cpp ShadowDistanceOnBind). The same shadow map covers more ground, so shadows get softer; pair it with a higher shadow resolution. Costs no GPU time.", "default",
        {{"default", "1x (the game's own)"}, {"1.5", "1.5x"}, {"2", "2x"}, {"3", "3x"}, {"4", "4x"}, {"6", "6x"}, {"8", "8x"}, {"12", "12x"}, {"16", "16x"}}, 0, 0, "", "SNAP_SHADOW_DISTANCE"},
+      {"gfx_smaa_quality", "SMAA quality", kChoice, kRestart,
+       "Only SMAA reads this. Low is the fastest and misses fine edges. Medium is a good balance. High is the default. Ultra catches the faintest edges and costs the most. Low and Medium skip diagonal and corner handling. Takes effect when SMAA is the anti-aliasing in use.",
+       "high", {{"low", "Low"}, {"medium", "Medium"}, {"high", "High"}, {"ultra", "Ultra"}}, 0, 0, "", "SNAP_SMAA_QUALITY", nullptr, nullptr, nullptr, nullptr, note_smaa},
       {"contact_shadows", "Contact shadows", kChoice, kLive,
        "Thin screen-space shadows where Pokemon and objects touch the ground, traced toward the sun (runtime/nvn/nvn_contact.cpp). Only frames with the sun's moving shadows get them. Off is the game's own look.", "default",
        {{"default", "Off"}, {"1", "On"}}, 0, 0, "", "SNAP_CONTACT_SHADOWS", get_contact, set_contact},

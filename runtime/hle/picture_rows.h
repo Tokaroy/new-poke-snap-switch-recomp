@@ -147,6 +147,14 @@ inline std::string note_aa(const Cfg& c, const Ctx& x) {
   if (c.aa.empty() && x.enhanced && explicit_scale(c) > 0.f) return "In effect: SMAA. Supersampling steps aside for a set resolution";
   return "";
 }
+// The SMAA quality row (Low, Medium, High, Ultra; runtime/nvn/nvn_aa.cpp SmaaPreset): only SMAA reads it.
+inline std::string note_smaa(const Cfg& c, const Ctx& x) {
+  const Eff e = effective(c, x);
+  if (e.aa == "SMAA") return "";
+  if (e.upscaled) return "Not used: an upscaler is on";
+  if (e.aa == "None") return "Not used: anti-aliasing is off";
+  return "Not used: the game's own FXAA is on";
+}
 inline std::string note_perf(const Cfg& c, const Ctx& x) {
   if (!on(c)) return "";
   const Eff e = effective(c, x);

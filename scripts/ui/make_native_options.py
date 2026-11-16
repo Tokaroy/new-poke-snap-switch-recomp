@@ -82,13 +82,13 @@ TABS = [
             'Pixels the 3D scene is drawn with. Automatic follows the Look and the Anti-aliasing row.' + R),
         row('Anti-aliasing', 'p', 'opt', 'gfx_aa', 'default', AA_CHOICES,
             'Smooths jagged edges. DLAA, FSR and XeSS need their files installed (the launcher).' + R),
+        # SMAA's own quality presets (nvn_aa.cpp SmaaPreset); the row says "Not used: ..." when SMAA is not the anti-aliasing in use
+        row('SMAA quality', 'p', 'opt', 'gfx_smaa_quality', 'high',
+            (('low', 'Low'), ('medium', 'Medium'), ('high', 'High'), ('ultra', 'Ultra')),
+            'Edge detection and search depth of SMAA. Low is fastest, Ultra catches the most.' + R),
         row('Performance scaling', 'p', 'opt', 'gfx_upscale_quality', 'off',
             (('off', 'Off'), ('quality', 'Quality'), ('balanced', 'Balanced'), ('performance', 'Performance')),
             'Draws fewer pixels, then an upscaler enlarges them. Needs DLSS, FSR or XeSS.' + R),
-        # (a pulldown, not the game's 0..10 slider: its knob is moved by the game's handler, which a PC page bypasses)
-        row('Sharpening', 'p', 'opt', 'gfx_sharpen', '0.00',
-            (('0.00', 'Off'),) + nums('0.10', '0.20', '0.30', '0.40', '0.50', '0.60', '0.70', '0.85', '1.00'),
-            'Contrast-adaptive sharpening after anti-aliasing. An upscaler turns it off unless set.' + R),
         row('Quality preset', 'p', 'opt', 'gfx_preset', 'normal',
             (('verylow', 'Very Low'), ('low', 'Low'), ('normal', 'Default'), ('high', 'High'), ('ultra', 'Ultra'),
              ('maximum', 'Maximum'), ('custom', 'Custom')),
@@ -261,8 +261,12 @@ TABS = [
             (('tl', 'Top left'), ('tr', 'Top right'), ('bl', 'Bottom left'), ('br', 'Bottom right')),
             'Where the performance overlay sits on the screen.'),
     ]),
-    # (the upscaler and its quality are the Anti-aliasing and Performance scaling rows of the Quality tab now)
-    ('Upscaler', 'Frame generation for the upscaler.', [
+    # (the upscaler and its quality are the Anti-aliasing and Performance scaling rows of the Quality tab now; Sharpening moved here to make room for SMAA quality)
+    ('Upscaler', 'Sharpening and frame generation.', [
+        # (a pulldown, not the game's 0..10 slider: its knob is moved by the game's handler, which a PC page bypasses)
+        row('Sharpening', 'p', 'opt', 'gfx_sharpen', '0.00',
+            (('0.00', 'Off'),) + nums('0.10', '0.20', '0.30', '0.40', '0.50', '0.60', '0.70', '0.85', '1.00'),
+            'Contrast-adaptive sharpening after anti-aliasing. An upscaler turns it off unless set.' + R),
         row('Frame generation', 'p', 'opt', 'frame_generation', 'default', (('default', 'Off'), ('1', 'On')),
             'FSR adds computed frames between real ones. Menus stay out. Off under 50 fps.' + R),
     ]),

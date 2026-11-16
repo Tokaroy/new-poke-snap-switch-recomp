@@ -9,7 +9,7 @@ Goal: finer graphics tuning inside the game's own Settings screen (never the F1 
 The native menu has no scrolling and no sub-pages. Every PC tab is a fixed page of 6 row slots, and the only secondary screens are the pulldown popups. So there are two ways to add rows:
 
 1. Widen rows that already exist. A pulldown holds up to 10 items, and several current rows offer only 4 to 6, so most "more granular" wishes are solved by more steps on the same row, with no new tab.
-2. Add new rows for switches that have no row yet. Textures, Effects, Display, Controller and Mouse are full (6 of 6); Quality has 1 free slot (its Upscaler rows moved to the last tab, Upscaler, when the Look row took the first slot). Output and View each have 2 free slots. Anything else needs a new tab.
+2. Add new rows for switches that have no row yet. Textures, Effects, Display, Controller and Mouse are full (6 of 6); Quality is full (6 of 6: Look, Internal resolution, Anti-aliasing, SMAA quality, Performance scaling, Quality preset; Sharpening moved to the Upscaler tab for the SMAA quality row, which has free slots). Output and View each have 2 free slots. Anything else needs a new tab.
 
 Decision:
 
