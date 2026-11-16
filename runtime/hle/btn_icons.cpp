@@ -12,6 +12,9 @@ std::mutex g_mu;
 input::Mapping g_map = input::Mapping::defaults();
 Family g_family = kFamNone;
 bool g_connected = false;
+bool g_kbm_last = false;
+std::string g_labels[256];   // key cap texts, id = index + 1 (packed row 2)
+int g_nlabels = 0;
 Style g_style = kAuto;
 std::atomic<int> g_packed[input::kButtonCount];
 std::atomic<int> g_active{kSwitch};
@@ -19,7 +22,7 @@ bool g_init = false;
 std::atomic<bool> g_ready{false};   // the first read of the snapshot has run ensure_init_locked
 
 void recompute_locked() {
-  const Style act = resolve_style(g_style, g_family, g_connected);
+  const Style act = resolve_style(g_style, g_family, g_connected, g_kbm_last);
   g_active.store(act);
   for (int b = 0; b < input::kButtonCount; b++) {   // only 0..15 (A .. Down) are ever asked for; the stick directions use another numbering in the mapping
     if (b >= 16) { g_packed[b].store(-1); continue; }
@@ -27,6 +30,14 @@ void recompute_locked() {
     if (act == kXbox || act == kPlayStation) {
       const int g = glyph_of_action(g_map, b);
       if (g < kGlyphCount) v = ((act == kPlayStation ? 1 : 0) << 8) | g;
+    } else if (act == kKeyboard) {
+      const std::string l = label_of_action(g_map, b);
+      if (!l.empty()) {
+        int id = 0;
+        for (int i = 0; i < g_nlabels; i++) if (g_labels[i] == l) id = i + 1;
+        if (!id && g_nlabels < 255) { g_labels[g_nlabels] = l; id = ++g_nlabels; }
+        if (id) v = (2 << 8) | id;
+      }
     }
     g_packed[b].store(v);
   }
@@ -51,6 +62,7 @@ Style parse_style(const std::string& s) {
   std::string l;
   for (char c : s) l += (char)std::tolower((unsigned char)c);
   if (l == "switch" || l == "nintendo") return kSwitch;
+  if (l == "keyboard" || l == "kbm" || l == "key") return kKeyboard;
   if (l == "xbox") return kXbox;
   if (l == "playstation" || l == "ps" || l == "ps5" || l == "ps4") return kPlayStation;
   return kAuto;
@@ -61,13 +73,14 @@ const char* style_name(Style s) {
     case kSwitch: return "switch";
     case kXbox: return "xbox";
     case kPlayStation: return "playstation";
+    case kKeyboard: return "keyboard";
     default: return "auto";
   }
 }
 
-Style resolve_style(Style chosen, Family detected, bool pad_connected) {
+Style resolve_style(Style chosen, Family detected, bool pad_connected, bool kbm_last) {
   if (chosen != kAuto) return chosen;
-  if (!pad_connected) return kSwitch;
+  if (!pad_connected || kbm_last) return kKeyboard;
   switch (detected) {
     case kFamXbox: return kXbox;
     case kFamPlayStation: return kPlayStation;
@@ -116,6 +129,59 @@ int glyph_of_action(const input::Mapping& m, int action) {
   return kGlyphCount;
 }
 
+namespace {
+// Key cap text: short names, arrows as arrow characters (UTF-8).
+std::string key_label(int id) {
+  const std::string n = input::key_name(id);
+  if (n == "Up") return "\xE2\x86\x91";
+  if (n == "Down") return "\xE2\x86\x93";
+  if (n == "Left") return "\xE2\x86\x90";
+  if (n == "Right") return "\xE2\x86\x92";
+  if (n == "LShift" || n == "RShift") return "Shift";
+  if (n == "LCtrl" || n == "RCtrl") return "Ctrl";
+  if (n == "LAlt" || n == "RAlt") return "Alt";
+  if (n == "Escape") return "Esc";
+  if (n == "Backspace") return "Bksp";
+  if (n == "PageUp") return "PgUp";
+  if (n == "PageDown") return "PgDn";
+  if (n.rfind("Numpad", 0) == 0) return "Num" + n.substr(6);
+  return n;
+}
+std::string mouse_label(int b) {
+  const std::string n = input::mouse_name(b);
+  if (n == "left") return "LMB";
+  if (n == "right") return "RMB";
+  if (n == "middle") return "MMB";
+  if (n == "x1") return "M4";
+  if (n == "x2") return "M5";
+  if (n == "wheel_up") return "Wheel\xE2\x86\x91";
+  if (n == "wheel_down") return "Wheel\xE2\x86\x93";
+  return n;
+}
+}  // namespace
+
+std::string label_of_action(const input::Mapping& m, int action) {
+  if (action < 0 || action >= input::kActionCount) return "";
+  for (const input::Source& s : input::action_sources(m, action))
+    if (s.kind == input::Source::KeyboardKey) return key_label(s.id);
+  for (const input::Source& s : input::action_sources(m, action))
+    if (s.kind == input::Source::Mouse) return mouse_label(s.id);
+  return "";
+}
+
+std::string label_text(int id) {
+  std::lock_guard<std::mutex> lk(g_mu);
+  return id >= 1 && id <= g_nlabels ? g_labels[id - 1] : std::string();
+}
+
+void set_last_input(bool kbm) {
+  std::lock_guard<std::mutex> lk(g_mu);
+  ensure_init_locked();
+  if (kbm == g_kbm_last) return;
+  g_kbm_last = kbm;
+  recompute_locked();
+}
+
 void set_mapping(const input::Mapping& m) {
   std::lock_guard<std::mutex> lk(g_mu);
   ensure_init_locked();
@@ -146,7 +212,27 @@ int packed_glyph(int button) {
   return g_packed[button].load();
 }
 
+unsigned text_glyph_code(unsigned code) {
+  if (code < 0xE0E0u || code > 0xE0E3u) return code;   // Switch A B X Y
+  std::lock_guard<std::mutex> lk(g_mu);
+  ensure_init_locked();
+  if (resolve_style(g_style, g_family, g_connected, false) != kXbox) return code;   // not the last input: a glyph is rasterized once and then cached by the game
+  static const int kActionOf[4] = {input::kA, input::kB, input::kX, input::kY};
+  switch (glyph_of_action(g_map, kActionOf[code - 0xE0E0u])) {
+    case kFaceBottom: return 0xE0E0u;   // Xbox A
+    case kFaceRight: return 0xE0E1u;    // B
+    case kFaceLeft: return 0xE0E2u;     // X
+    case kFaceTop: return 0xE0E3u;      // Y
+    default: return code;
+  }
+}
+
 }  // namespace hle::icons
 
 extern "C" int snap_btnicon_glyph(int button) { return hle::icons::packed_glyph(button); }
+extern "C" const char* snap_btnicon_label(int id) {
+  static thread_local std::string s;
+  s = hle::icons::label_text(id);
+  return s.c_str();
+}
 extern "C" int snap_btnicon_active() { return hle::icons::active_style() != hle::icons::kSwitch; }

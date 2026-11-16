@@ -139,13 +139,13 @@ sets mode NOW and restarts the game). Test runs (`SNAP_SAVE_DIR`, `SNAP_UI_TEST`
 ## Controls menu (F1)
 
 F1, or holding Back/View + Start on a controller for 0.5 s, opens the in-game controls menu (Dear ImGui overlay, native resolution); the same
-keys close it (Esc closes too). While it is open the game sees no input. Keyboard and mouse drive it, and every controller the game accepts drives
+keys close it (Esc closes too). While it is open the game sees no input. Keyboard and mouse drive it (Q / E, PageUp / PageDown or Ctrl+Tab switch pages, arrows and Tab move through the rows, Enter or Space activates, Esc goes back), and every controller the game accepts drives
 it through ImGui gamepad navigation (D-pad or left stick moves, south button activates).
 
 - **Bindings tab:** every Switch input (A B X Y L R ZL ZR + - D-pad, stick clicks, the four directions of each stick) with two slots each for
   Keyboard, Mouse (buttons, X1/X2, wheel up/down) and Controller (buttons, triggers, stick directions). Click a slot, then press the input; Esc cancels,
   Delete or right-click clears. Conflicts are marked with `!` and allowed; two lines under the table name each shared source and the inputs that use it. Per-device "Reset to defaults" buttons and "Reset all controls to defaults". Details, storage and tests: `docs/controls.md`. The launcher's Controls page ends with a read-only summary of the same `input.json`.
-- **Mouse tab:** mouse look (right stick) with sensitivity, invert X/Y and smoothing (off by default), touch screen on the left button, cursor lock
+- **Mouse tab:** mouse look (right stick, on a ride only; on by default) with sensitivity, invert X/Y and smoothing, touch screen on the left button in menus, cursor lock
   (the cursor is confined to the window while playing; released while the menu is open and when the window loses focus).
 - **Controller tab:** face layout (by position, default, or Nintendo labels), swap sticks, inner and outer dead zone and invert Y per stick, ZL/ZR
   thresholds, live stick plots.
@@ -174,21 +174,21 @@ Switch B is the bottom one (Xbox A); the Controller tab can switch to Nintendo l
 
 | Switch | Gamepad (XInput or SDL3: Xbox, PlayStation, Switch Pro) | Keyboard |
 |---|---|---|
-| A / B / X / Y | east / south / north / west face button | L / K / I / J |
+| A / B / X / Y | east / south / north / west face button | L or Enter / K or 1 / I or 3 / J or 2 |
 | Left stick (move) | left stick | W A S D |
 | Right stick (aim camera) | right stick | arrow keys |
 | L / R | left / right shoulder | Q / E |
-| ZL / ZR | left / right trigger | Left Shift / Space |
-| Plus / Minus | Start / Back | Enter / Backspace |
+| ZL / ZR | left / right trigger | Left Shift or mouse wheel / Space |
+| Plus / Minus | Start / Back | P or Tab / Backspace (Esc is Back in menus, Plus on a ride) |
 | D-pad | D-pad | T / F / H / G (up, left, right, down) |
-| Touch screen | | left mouse button (mouse look off) |
-| A (Take Photo) / ZL (Zoom) during a ride | | left / right mouse button, only while mouse look is on |
+| Touch screen | | left mouse button in every menu and on every non-ride screen (and on a ride with mouse look off) |
+| A (Take Photo) / ZL (Zoom) during a ride | | left / right mouse button (mouse look is on by default; the mouse aims only on a ride) |
 
 Input switches (environment, override the profile): `SNAP_RUMBLE=0..1.5` (strength, 0 = off), `SNAP_RUMBLE_LOG=1` (log each game vibration request and
 host rumble call), `SNAP_GYRO=0|1` (gyro aim on the camera stick; needs a pad with a gyro; untested on real hardware), `SNAP_GYRO_SENS=<n>` (1 = full
 stick at 90 deg/s), `SNAP_GYRO_FAKE=<yaw_dps>,<pitch_dps>` (pretend gyro for tests; yaw positive turns left, pitch positive tips up; implies `SNAP_GYRO=1`).
 Test routes: `host\routes\rumble_probe.txt`, `host\routes\gyro_probe.txt`; input-script tokens `rumble=<lo>,<hi>` and `gyro=<yaw>,<pitch>` (pretend gyro, needs `SNAP_GYRO=1`). The token `src=<key:P|mouse:left|pad:east>` holds a host source through the binding table, so a rebound key can be tested end to end (`host/routes/rebind_shutter.txt`, `docs/controls.md`).
-Mouse aim (Controls, Mouse tab) has mouse-look, sensitivity, invert and smoothing (`mouse.sensitivity`, `mouse.smoothing` in `input.json`). With mouse look on, the left button is A and the right button is ZL (held while held) during a ride only; the host tells a ride from a menu by the camera rail advancing. In menus and other screens with mouse look on, clicks do nothing (the touch screen stays off while mouse look is on, as before). The two click bindings are `mouse.look_click_a` and `mouse.look_click_zl` in `input.json` (arrays of sources such as `mouse:left`, `mouse:middle`, `key:L`; `[]` turns one off). They are not on the Bindings tab. Files saved before this change load as they were and pick up the defaults for these two keys.
+Mouse aim (Controls, Mouse tab) has mouse-look, sensitivity, invert and smoothing (`mouse.sensitivity`, `mouse.smoothing` in `input.json`). Mouse look is on by default (2026-11-16): during a ride the mouse moves the camera, the left button is A and the right button is ZL (held while held); in menus and every other screen the cursor is free and a click is the touch screen. The host tells a ride from a menu by the camera rail advancing. Esc is B in menus and Plus (pause) on a ride; the wheel zooms (ZL). The prompts in the F1 menu and in game screens show key caps when the last input was the keyboard or mouse (Controller tab, Button icons: Auto follows the last input, or force Keyboard and mouse). The two click bindings are `mouse.look_click_a` and `mouse.look_click_zl` in `input.json` (arrays of sources such as `mouse:left`, `mouse:middle`, `key:L`; `[]` turns one off). They are not on the Bindings tab. Files saved with mouse look off keep it off. The token `mouse=<x>,<y>` (0..1 of the window) puts the cursor there for route tests (menu clicks with `src=mouse:left`).
 
 The game polls only the Full-key (Pro controller) npad 0 state, the touch screen and gestures; it never asks for six-axis (motion) data.
 Pads: every gamepad SDL3 reports is opened and merged with every XInput slot into npad 0 (buttons OR-ed, larger stick value wins), the

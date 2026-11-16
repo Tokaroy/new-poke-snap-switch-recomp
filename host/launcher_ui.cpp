@@ -919,8 +919,8 @@ void build_pages() {
   {
     Page p; p.name = "Controls";
     p.items.push_back(choice("Button icons", "button_icons", S_CFG, "auto",
-                             {{"auto", "Automatic"}, {"switch", "Switch"}, {"xbox", "Xbox"}, {"playstation", "PlayStation"}},
-                             "Which controller buttons the game shows. Automatic follows the controller you connect."));
+                             {{"auto", "Automatic"}, {"switch", "Switch"}, {"xbox", "Xbox"}, {"playstation", "PlayStation"}, {"keyboard", "Keyboard and mouse"}},
+                             "Which buttons the game shows. Automatic shows key caps without a controller and follows the controller you connect."));
     p.items.push_back(choice("Swap A and B", "swap_ab", S_CFG, "0", {{"0", "Off"}, {"1", "On"}},
                              "Swaps confirm and back on the controller: the south button confirms and the east button goes back, like an Xbox or PlayStation pad. The game's button pictures follow."));
     p.items.push_back(choice("Rumble", "rumble_on", S_CFG, "1", {{"1", "On"}, {"0", "Off"}}, "Controller vibration."));

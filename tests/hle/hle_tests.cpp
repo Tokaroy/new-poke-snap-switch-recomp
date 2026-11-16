@@ -1061,6 +1061,9 @@ static void test_hid() {
 
   // touch: the left mouse button is one finger on the 1280x720 panel
   raw = RawInput{};
+  std::this_thread::sleep_for(std::chrono::milliseconds(3));
+  { uint8_t idle[16 + 6 * 0x28] = {}; call(kTouch, {P(idle)}); }   // the focus came back above: the focus guard ignores the left button for 300 ms after the first poll
+  std::this_thread::sleep_for(std::chrono::milliseconds(320));
   raw.mouse_in_window = true;
   raw.mouse_x = 0.5f; raw.mouse_y = 0.25f;
   raw.mouse_buttons = 1;
@@ -1253,12 +1256,24 @@ static void test_input_mapping() {
   r = RawInput{}; r.keys.set((size_t)key_from_name("Up"));
   CHECK_EQ(mapped(m, r).ry, 0);
 
-  // --- mouse-look: velocity drives the right stick, invert, off by default, disables mouse touch
+  // --- menus: the aim keys (arrows) also press the D-pad; on a ride only the camera moves
+  { Mapping dm = Mapping::defaults(); RawInput dr; dr.focused = true; dr.keys.set((size_t)key_from_name("Down"));
+    CHECK(mapped(dm, dr).buttons & bit(kDown));
+    dr.keys.reset(); dr.keys.set((size_t)key_from_name("Left")); dr.keys.set((size_t)key_from_name("Up"));
+    CHECK((mapped(dm, dr).buttons & bit(kLeft)) && (mapped(dm, dr).buttons & bit(kUp)) && !(mapped(dm, dr).buttons & bit(kRight)));
+    dr.in_ride = true; CHECK_EQ(mapped(dm, dr).buttons & (bit(kLeft) | bit(kUp) | bit(kDown) | bit(kRight)), 0u);   // a ride: aim only
+    dr.in_ride = false; dr.focused = false; CHECK_EQ(mapped(dm, dr).buttons & bit(kUp), 0u); }
+
+  // --- mouse-look: velocity drives the right stick on a ride, invert; on by default; menus keep the touch screen
   m = Mapping::defaults();
-  CHECK(!m.mouse_look);
+  CHECK(m.mouse_look);
   r = RawInput{}; r.mouse_vx = 3000;
-  CHECK_EQ(mapped(m, r).rx, 0);
-  m.mouse_look = true;
+  CHECK_EQ(mapped(m, r).rx, 0);                      // unfocused / not on a ride: no aim
+  r.focused = true; r.in_ride = true;
+  CHECK(mapped(m, r).rx > 0);
+  r.in_ride = false; CHECK_EQ(mapped(m, r).rx, 0);   // menu: the cursor is free, the mouse does not steer
+  r.in_ride = true;
+  m.mouse_look = false; CHECK_EQ(mapped(m, r).rx, 0); m.mouse_look = true;
   r.mouse_vx = kMouseLookFullPxPerSec / 2; r.mouse_vy = -kMouseLookFullPxPerSec / 4;   // right and up
   p = mapped(m, r);
   CHECK(p.rx > 15000 && p.rx < 17500);
@@ -1270,14 +1285,31 @@ static void test_input_mapping() {
   m.mouse_sensitivity = 2.0f;
   r.mouse_vx = kMouseLookFullPxPerSec; r.mouse_vy = 0;
   CHECK(mapped(m, r).rx > 30000);                    // saturates
-  r = RawInput{}; r.mouse_in_window = true; r.mouse_buttons = 1; r.mouse_x = r.mouse_y = 0.5f;
-  CHECK_EQ(map_touch(m, r).count, 0);                // mouse-look owns the mouse
-  m.mouse_look = false;
+  r = RawInput{}; r.focused = true; r.mouse_in_window = true; r.mouse_buttons = 1; r.mouse_x = r.mouse_y = 0.5f;
+  r.in_ride = true;
+  CHECK_EQ(map_touch(m, r).count, 0);                // mouse-look owns the mouse on a ride
+  r.in_ride = false;
+  CHECK_EQ(map_touch(m, r).count, 1);                // menus: the left button is the touch screen
+  m.mouse_look = false; r.in_ride = true;
   CHECK_EQ(map_touch(m, r).count, 1);
+  // Esc: Back (B) in menus, Plus (pause) on a ride
+  m = Mapping::defaults();
+  r = RawInput{}; r.focused = true; r.keys.set((size_t)key_from_name("Escape"));
+  CHECK(mapped(m, r).buttons & bit(kB)); CHECK(!(mapped(m, r).buttons & bit(kPlus)));
+  r.in_ride = true;
+  CHECK(mapped(m, r).buttons & bit(kPlus)); CHECK(!(mapped(m, r).buttons & bit(kB)));
+  // default keys: Enter confirms (A), 1 fruit (B), 2 orb (Y), 3 scan (X), P and Tab are Plus, the wheel zooms (ZL)
+  for (auto kv : std::vector<std::pair<const char*, int>>{{"Enter", kA}, {"1", kB}, {"2", kY}, {"3", kX}, {"P", kPlus}, {"Tab", kPlus}}) {
+    r = RawInput{}; r.focused = true; r.keys.set((size_t)key_from_name(kv.first));
+    CHECK(mapped(m, r).buttons & bit(kv.second));
+  }
+  r = RawInput{}; r.focused = true; r.mouse_buttons = 1u << kMouseWheelUp;
+  CHECK(mapped(m, r).buttons & bit(kZL));
 
   // --- mouse-look click bindings: left = A, right = ZL, ride only, mouse look on only
   m = Mapping::defaults();
   r = RawInput{}; r.focused = true; r.in_ride = true; r.mouse_buttons = 3;
+  m.mouse_look = false;
   CHECK_EQ(mapped(m, r).buttons & 0x101, 0u);        // mouse look off: nothing
   m.mouse_look = true;
   CHECK_EQ(mapped(m, r).buttons & 0x101, 0x101u);    // ride: A and ZL
@@ -1291,6 +1323,17 @@ static void test_input_mapping() {
     CHECK(m3.from_json(m2.to_json(), &e3)); CHECK(m3.look_a.size() == 1 && m3.look_a[0] == SRC("mouse:middle")); CHECK(m3.look_zl.size() == 1);
     Json old = m2.to_json(); if (auto* mo = const_cast<Json*>(old.get("mouse"))) { std::vector<std::pair<std::string, Json>> keep; for (auto& kv : mo->o) if (kv.first.rfind("look_click", 0) != 0) keep.push_back(kv); mo->o = keep; }
     Mapping m4; CHECK(m4.from_json(old, &e3)); CHECK(m4.look_a.size() == 1 && m4.look_a[0] == SRC("mouse:left")); }   // a file without the keys loads, with the defaults
+
+  // a file saved before the 2026-11-16 defaults (no defaults_rev): untouched actions take the new table, a rebound one stays, mouse look turns on
+  { const std::string old = R"({"version":2,"mouse":{"look":false},"buttons":{"A":["pad:east","key:L"],"B":["pad:south","key:Z"],"Plus":["pad:start","key:Enter"],"ZL":["pad:ltrigger","key:LShift"],"Y":["pad:west","key:J"]}})";
+    Json oj; std::string oe; Mapping om;
+    CHECK(json_parse(old, oj, oe) && om.from_json(oj, &oe));
+    const Mapping nd = Mapping::defaults();
+    CHECK(om.buttons[kA] == nd.buttons[kA] && om.buttons[kPlus] == nd.buttons[kPlus] && om.buttons[kZL] == nd.buttons[kZL] && om.buttons[kY] == nd.buttons[kY]);
+    CHECK(om.buttons[kB].size() == 2 && om.buttons[kB][1] == SRC("key:Z"));
+    CHECK(om.mouse_look);
+    Mapping rt; CHECK(rt.from_json(om.to_json(), &oe));   // saved again: defaults_rev 2, a later choice sticks
+    rt.mouse_look = false; Mapping rt2; CHECK(rt2.from_json(rt.to_json(), &oe) && !rt2.mouse_look); }
 
   // --- slots: two per device, replacement, clear, duplicates, wrong device
   std::vector<Source> v;
@@ -1339,7 +1382,7 @@ static void test_input_mapping() {
   CHECK(slot_get(m.buttons[kA], kDevKeyboard, 0) == SRC("key:L"));
   reset_device(m, kDevMouse);
   CHECK_EQ(slot_count(m.buttons[kB], kDevMouse), 0);
-  CHECK(!m.mouse_look);
+  CHECK(m.mouse_look);                               // the default is on
 }
 
 // Button icon mod (runtime/hle/btn_icons.h): Auto detection, and the glyph for every binding case.
@@ -1356,7 +1399,19 @@ static void test_button_icons() {
   CHECK(ic::resolve_style(ic::kAuto, ic::kFamPlayStation, true) == ic::kPlayStation);
   CHECK(ic::resolve_style(ic::kAuto, ic::kFamSwitch, true) == ic::kSwitch);
   CHECK(ic::resolve_style(ic::kAuto, ic::kFamNone, true) == ic::kSwitch);
-  CHECK(ic::resolve_style(ic::kAuto, ic::kFamPlayStation, false) == ic::kSwitch);   // the pad was unplugged: back to the game's own
+  CHECK(ic::resolve_style(ic::kAuto, ic::kFamNone, false) == ic::kKeyboard);   // no controller: key caps for the keyboard and mouse
+  CHECK(ic::resolve_style(ic::kAuto, ic::kFamPlayStation, false) == ic::kKeyboard);   // the pad was unplugged
+  CHECK(ic::resolve_style(ic::kAuto, ic::kFamXbox, true, true) == ic::kKeyboard);   // a pad is connected but the last input came from the keyboard or mouse
+  CHECK(ic::resolve_style(ic::kAuto, ic::kFamXbox, true, false) == ic::kXbox);
+  CHECK(ic::parse_style("keyboard") == ic::kKeyboard);
+  {   // key cap labels of the default keyboard binds (the diamond L K I J, Enter confirms, Space and the wheel)
+    Mapping dm = Mapping::defaults();
+    CHECK(ic::label_of_action(dm, kA) == "L" && ic::label_of_action(dm, kB) == "K" && ic::label_of_action(dm, kX) == "I" && ic::label_of_action(dm, kY) == "J");
+    CHECK(ic::label_of_action(dm, kZL) == "Shift" && ic::label_of_action(dm, kZR) == "Space" && ic::label_of_action(dm, kPlus) == "P" && ic::label_of_action(dm, kMinus) == "Bksp");
+    CHECK(ic::label_of_action(dm, kUp) == "T" && ic::label_of_action(dm, kRight) == "H" && ic::label_of_action(dm, kStickL) == "");
+    dm.buttons[kZR].clear(); dm.buttons[kZR].push_back(Source{Source::Mouse, kMouseRight});
+    CHECK(ic::label_of_action(dm, kZR) == "RMB");   // no key bound: the first mouse button
+  }
   // a chosen style wins over the pad, connected or not
   CHECK(ic::resolve_style(ic::kXbox, ic::kFamPlayStation, true) == ic::kXbox);
   CHECK(ic::resolve_style(ic::kPlayStation, ic::kFamNone, false) == ic::kPlayStation);
@@ -1405,11 +1460,38 @@ static void test_button_icons() {
   CHECK(ic::glyph_of_pad_button(kPadGuide) == ic::kGlyphCount);
   for (int b = 0; b < kPadCount; b++) if (b != kPadGuide) CHECK(ic::glyph_of_pad_button(b) < ic::kGlyphCount);
 
+  {   // message text: the font's Switch button letters (U+E0E0 A, E1 B, E2 X, E3 Y) read as the Xbox letters of the pad buttons that really do the action
+    ic::set_mapping(Mapping::defaults());
+    ic::set_pad(ic::kFamXbox, true);
+    ic::set_style(ic::kXbox);
+    CHECK(ic::text_glyph_code(0xE0E2) == 0xE0E3 && ic::text_glyph_code(0xE0E3) == 0xE0E2);   // the game's "X" = the north button = Xbox Y (position layout), "Y" reads X
+    CHECK(ic::text_glyph_code(0xE0E0) == 0xE0E1 && ic::text_glyph_code(0xE0E1) == 0xE0E0);   // A <-> B
+    CHECK(ic::text_glyph_code(0xE0E4) == 0xE0E4 && ic::text_glyph_code(0x41) == 0x41 && ic::text_glyph_code(0) == 0);   // L, letters and the rest pass through
+    Mapping tm = Mapping::defaults();
+    set_face_layout(tm, 1);   // Nintendo layout by label: the letters stay
+    ic::set_mapping(tm);
+    CHECK(ic::text_glyph_code(0xE0E0) == 0xE0E0 && ic::text_glyph_code(0xE0E2) == 0xE0E2);
+    tm.buttons[kX].clear();   // keyboard only: the game's own letter
+    ic::set_mapping(tm);
+    CHECK(ic::text_glyph_code(0xE0E2) == 0xE0E2);
+    ic::set_mapping(Mapping::defaults());
+    ic::set_style(ic::kSwitch);   // the Switch style, PlayStation (no letters in the font) and keyboard style keep the game's letters
+    CHECK(ic::text_glyph_code(0xE0E2) == 0xE0E2);
+    ic::set_style(ic::kPlayStation);
+    CHECK(ic::text_glyph_code(0xE0E2) == 0xE0E2);
+    ic::set_style(ic::kAuto);   // Automatic with an Xbox pad: Xbox letters even while the last input was the keyboard (the game caches a rasterized glyph)
+    ic::set_pad(ic::kFamXbox, true);
+    ic::set_last_input(true);
+    CHECK(ic::text_glyph_code(0xE0E2) == 0xE0E3);
+    ic::set_last_input(false);
+  }
   // --- the snapshot the renderer reads
   ic::set_mapping(Mapping::defaults());
   ic::set_pad(ic::kFamNone, false);
   ic::set_style(ic::kAuto);
-  CHECK(ic::active_style() == ic::kSwitch && snap_btnicon_glyph(kA) == -1);   // no pad: the game's own icons
+  CHECK(ic::active_style() == ic::kKeyboard && (snap_btnicon_glyph(kA) >> 8) == 2);   // no pad: key caps (row 2)
+  ic::set_pad(ic::kFamNone, true);   // a Switch-type pad: the game's own icons
+  CHECK(ic::active_style() == ic::kSwitch && snap_btnicon_glyph(kA) == -1);
   ic::set_pad(ic::kFamXbox, true);
   CHECK(ic::active_style() == ic::kXbox);
   CHECK(snap_btnicon_glyph(kA) == ic::kFaceRight);                 // row 0 = Xbox
@@ -1436,7 +1518,7 @@ static void test_button_icons() {
   ic::set_pad(ic::kFamNone, false);
   Hub h;
   h.set_mapping(Mapping::defaults());
-  CHECK(snap_btnicon_glyph(kA) == -1);
+  CHECK((snap_btnicon_glyph(kA) >> 8) == 2);   // no pad: key caps
   ic::set_style(ic::kXbox);
   CHECK(snap_btnicon_glyph(kA) == ic::kFaceRight);
   // leave the globals as a fresh process has them
@@ -1716,7 +1798,7 @@ static void test_input_hub() {
   poll();
   raw.mouse_dx = 0;
   CHECK(h.raw().mouse_vx > 300);
-  CHECK(h.pad().rx > 0);
+  CHECK_EQ(h.pad().rx, 0);                            // no ride (no rail advancing): the cursor stays free, the mouse does not steer
   std::this_thread::sleep_for(std::chrono::milliseconds(60));
   poll();
   CHECK_EQ(h.pad().rx, 0);                            // movement stopped: the stick returns to center

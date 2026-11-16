@@ -131,6 +131,7 @@ constexpr int kMouseLookFullPxPerSec = 1500; // mouse speed that gives full stic
 
 struct Mapping {
   static constexpr int kVersion = 2;
+  static constexpr int kDefaultsRev = 2;   // default table revision stored in the file; from_json upgrades an untouched older table
   std::array<std::vector<Source>, kButtonCount> buttons;
   StickMap left, right;
   // controller
@@ -141,7 +142,7 @@ struct Mapping {
   bool swap_ab = false;                             // confirm and back swapped on the controller only (the A and B bindings trade their pad sources at run time; keyboard and mouse stay); see swap_ab_effective
   // mouse
   bool mouse_touch = true;                          // left mouse button drives the touch screen
-  bool mouse_look = false;                          // mouse movement drives the right stick
+  bool mouse_look = true;                           // mouse movement drives the right stick during a ride (menus get a free cursor and the touch screen)
   float mouse_sensitivity = 1.0f;                   // 1 = full deflection at kMouseLookFullPxPerSec
   bool mouse_invert_x = false, mouse_invert_y = false;
   float mouse_smoothing = 0.0f;                     // 0 off .. 1 (averaging window 40 ms .. 340 ms)
@@ -204,6 +205,10 @@ class Hub {
   uint64_t message_serial() const;                       // increments whenever message() changes
   // Game input is suppressed while the menu is open (the npad reads neutral); the mapped state stays visible as preview().
   void set_menu_open(bool open);
+  // Window focus as the window thread sees it (host/window_opts.cpp: WM_ACTIVATE / WM_SETFOCUS / WM_KILLFOCUS). While it is false, or the backend says the window has
+  // no keyboard focus, no key or mouse button reaches the game; after it comes back, keys and buttons that are already down stay ignored until released, and Esc and
+  // the left button stay ignored for 300 ms (the Esc that closes a snipping tool, the click that brings the window back). SNAP_FOCUS_GUARD=0 turns this off.
+  void set_window_focus(bool focused);
   bool menu_open() const { return menu_open_.load(); }
   bool consume_menu_toggle();                            // true once per Back+Start chord held 0.5 s
   bool cursor_hidden() const { return cursor_hidden_.load(); }
@@ -248,6 +253,11 @@ class Hub {
   Source cap_src_;
   RawInput inject_;                                                     // injected sources (test hook)
   uint64_t wheel_up_until_ns_ = 0, wheel_down_until_ns_ = 0;
+  std::atomic<bool> win_focus_{true};                                   // set_window_focus
+  bool guard_prev_ = true;                                              // the last poll saw the window focused (false after a blur, even one no poll saw)
+  std::bitset<kKeyCount> guard_keys_;                                   // keys that were down when the focus came back: ignored until released
+  uint8_t guard_mouse_ = 0;                                             // the same for the mouse buttons
+  uint64_t guard_until_ns_ = 0;                                         // Esc and the left button are ignored until then
   void set_message_locked(const std::string& m);
 };
 Hub& hub();

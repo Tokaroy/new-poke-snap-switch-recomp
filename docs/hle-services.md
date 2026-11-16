@@ -130,14 +130,14 @@ Pipeline: backend (Win32 XInput + keyboard + mouse, or SDL3) fills `RawInput` ->
 
 | Switch | Gamepad | Keyboard / mouse |
 | --- | --- | --- |
-| A / B / X / Y | east / south / north / west | L / K / I / J |
+| A / B / X / Y | east / south / north / west | L or Enter / K or 1 / I or 3 / J or 2 |
 | L / R | left / right shoulder | Q / E |
-| ZL / ZR | left / right trigger (threshold 0.5) | Left Shift / Space |
-| Plus / Minus | start / back | Enter / Backspace |
+| ZL / ZR | left / right trigger (threshold 0.5) | Left Shift or mouse wheel / Space |
+| Plus / Minus | start / back | P or Tab / Backspace (Esc: Back in menus, Plus on a ride) |
 | D-pad | d-pad | T / F / G / H (up / left / down / right) |
 | Left stick | left stick, radial dead zone 0.15 | W A S D |
 | Right stick | right stick | arrow keys |
-| Touch | | left mouse button |
+| Touch | | left mouse button (menus and every non-ride screen; on a ride with mouse look on, the left button is A and the right is ZL) |
 
 Schema (JSON, `//` comments allowed, every key optional, missing keys keep the default; an invalid file is rejected as
 a whole with a message and the old table stays):

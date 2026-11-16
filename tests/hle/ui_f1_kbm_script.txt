@@ -1,0 +1,23 @@
+# F1 menu with the keyboard and the mouse only (2026-11-16, no pad): open with F1, switch pages with keys (PageDown, E, Q, PageUp), click the Controller tab with the mouse,
+# move the cursor in the page with Down and Return, close with Escape (the first Escape may only cancel a started rebind). Run: tests\hle\run_kbm_ui.ps1 (SNAP_UI_TEST)
+25 key F1 1
+26 expect_open 1
+26 expect_tab Bindings
+27 wkey PageDown
+28 expect_tab Mouse
+29 wkey E
+30 expect_tab Controller
+31 wkey Q
+32 expect_tab Mouse
+33 wkey PageUp
+34 expect_tab Bindings
+35 wclick_tab Graphics
+37 expect_tab Graphics
+38 wclick_tab Controller
+40 expect_tab Controller
+41 wkey Down
+42 wkey Return
+44 wkey Escape
+46 wkey Escape
+48 expect_open 0
+50 quit

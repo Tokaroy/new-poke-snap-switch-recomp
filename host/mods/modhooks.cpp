@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "loader.h"
+#include "../../runtime/hle/btn_icons.h"
 #include "../../runtime/hle/modhooks.h"
 
 namespace mods { std::string default_root(); }   // runtime/mods/mods_core.cpp
@@ -33,12 +34,15 @@ constexpr uint64_t kMainBase = 0x7100000000ull;
 struct PointDef {
   const char* name;
   uint64_t off;
+  bool sdk = false;   // off is an offset in the sdk module (nn::fontll lives there), not in main
 };
 const PointDef kPoints[] = {
     {"Camera.RideBuild", 0x295170},   // x0 = camera object (eye / target / up at +0xd0 / +0xe0 / +0xf0 after it ran); every frame of a ride
     {"Ui.Event", 0x6c1d90},           // x1 = int* event id, x2 = Player**, x3 = std::string* state; the UI scene base's std::function operator()
     {"Ui.OptionEvent", 0x728e10},     // x3 = std::string* tab / element name; the option screen's event handler
     {"Ui.SetState", 0x79a6d0},        // x0 = player, x1 = page descriptor (state name, a libc++ std::string, at +0x18); Player::SetState
+    {"Font.AcquireGlyphmap", 0x160a80, true},   // sdk: nn::fontll::ScalableFontEngine::AcquireGlyphmap(this, code, u16); w1 = the Unicode codepoint (the button-icons text hook may change it)
+    {"Font.CheckGlyphExist", 0x160a90, true},   // sdk: nn::fontll::ScalableFontEngine::CheckGlyphExist(this, code); w1 = the codepoint
 };
 constexpr size_t kPointCount = sizeof kPoints / sizeof kPoints[0];
 static_assert(kPointCount <= mh::kMaxPoints, "more points than trampolines");
@@ -92,6 +96,22 @@ void sample_fault(Cpu*, void*) {
   *p = 1;
 }
 
+// button-icons / Font.AcquireGlyphmap and Font.CheckGlyphExist (on by default): the Switch button letters in message text (U+E0E0 A, U+E0E1 B, U+E0E2 X, U+E0E3 Y)
+// draw the letter of the pad button that really does the action under the Xbox style, so "press X" reads "Y" (btn_icons.h text_glyph_code).
+// SNAP_BTN_TEXT=0 turns the text swap off (the kill switch); SNAP_BTN_TEXT_LOG=1 logs the first 80 private-use codepoints the font is asked for.
+void button_text_glyph(Cpu* c, void*) {
+  static const bool off = [] { const char* e = getenv("SNAP_BTN_TEXT"); return e && atoi(e) == 0; }();
+  static const bool log = [] { const char* e = getenv("SNAP_BTN_TEXT_LOG"); return e && atoi(e) != 0; }();
+  const uint32_t code = (uint32_t)c->x[1];
+  if (log && code >= 0xE000u && code <= 0xF8FFu) {
+    static std::atomic<int> n{0};
+    if (n.fetch_add(1) < 80) fprintf(stderr, "[btntext] font asked for U+%04X\n", code);
+  }
+  if (off) return;
+  const uint32_t to = hle::icons::text_glyph_code(code);
+  if (to != code) c->x[1] = to;
+}
+
 // Direct callers (bl / b) of each wanted address in main's text: the calls a dispatch-table hook does not see.
 std::vector<int> count_direct_callers(const std::vector<uint64_t>& targets) {
   std::vector<int> n(targets.size(), 0);
@@ -137,11 +157,15 @@ extern "C" void snap_modhooks_install() {
   reg("sample-ui-log", "Ui.SetState", mh::When::Before, sample_ui_log);
   reg("sample-ride-camera", "Camera.RideBuild", mh::When::After, sample_ride_camera);
   reg("sample-fault", "Ui.Event", mh::When::Before, sample_fault);
+  for (const char* pt : {"Font.AcquireGlyphmap", "Font.CheckGlyphExist"}) {
+    mh::Hook h;
+    h.mod = "button-icons"; h.point = pt; h.when = mh::When::Before; h.fn = button_text_glyph; h.default_on = true;
+    mh::add(h);
+  }
 
   const std::string manifest_path = mods::default_root() + "\\hooks.json";
   std::string manifest = read_text(manifest_path);
   const char* env = getenv("SNAP_MOD_HOOKS");
-  if (manifest.empty() && !(env && *env)) return;   // nothing enabled: no point is touched
   std::string err;
   if (!mh::configure(manifest, env, &err)) {
     fprintf(stderr, "[modhooks] %s (%s): no hook is on\n", err.c_str(), manifest_path.c_str());
@@ -152,10 +176,10 @@ extern "C" void snap_modhooks_install() {
   for (size_t i = 0; i < kPointCount; i++) {
     if (!mh::point_wanted(i)) continue;
     wanted.push_back(i);
-    addrs.push_back(kMainBase + kPoints[i].off);
+    addrs.push_back((kPoints[i].sdk ? loader::g_sdk.base : kMainBase) + kPoints[i].off);
   }
   if (wanted.empty()) return;
-  std::vector<int> direct = count_direct_callers(addrs);
+  std::vector<int> direct = count_direct_callers(addrs);   // (main's text only: the sdk points have no direct callers from main, which calls them through the PLT)
   int installed = 0;
   for (size_t k = 0; k < wanted.size(); k++) {
     size_t i = wanted[k];

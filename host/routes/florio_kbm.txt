@@ -1,0 +1,71 @@
+# fixture: post_tutorial
+# KEYBOARD-ONLY Florio ride (no mouse token, no pad), title to Score and the save (2026-11-16). Every press is a HOST source (src=key:X or src=mouse:X) that goes through the
+# default binding table (Mapping::defaults): no pad token, no controller. Keys: L=A, K=B, I=X, J=Y, P/Tab=Plus (Enter=A too), T/H/F/G=D-pad up/right/left/down,
+# LShift=ZL, Arrow keys=right stick; Space=ZR.
+# Run: powershell -File tests\hle\run_kbm_ride.ps1 (an empty SNAP_CONFIG_DIR: the default table; needs a build with the src= token)
+# Pass: boot_stderr.log has every "wait ... met" line and "end of route reached" (exit code 0).
+# 1) Title, lab hub "Research", Lental Map, course start: slow key taps.
+repeat @f300 @f30000 120 8 src=key:L
+wait ui=map_select timeout=240
+repeat @f60 @f30000 120 8 src=key:L
+wait ride timeout=240
+wait rail>=6 timeout=150
+# 2) Ride, default settings: L is the shutter (one photo), then the tools in turn: J orb, K fruit,
+#    I scan, LShift zoom held. Camera: arrow keys (right stick). The tools show in the frame dumps (-ShotAt 40 -ShotEvery 2).
+@f30 20 src=key:L
+wait film<=71 timeout=40
+wait !film<=70 for=240 timeout=60
+@f60 8 src=key:J
+@f240 8 src=key:K
+@f420 40 src=key:I
+@f620 120 src=key:LShift
+@f760 40 src=key:Left
+@f820 40 src=key:Right
+wait !film<=69 for=1000 timeout=60
+# shutter taps (keys) with a slow arrow-key camera wobble and zoom now and then until the film is used up
+repeat @f0 @f30000 24 4 src=key:L
+repeat @f0 @f6000 600 200 src=key:LShift
+repeat @f0 @f30000 400 60 src=key:Right
+repeat @f200 @f30000 400 60 src=key:Left
+wait film<=0 timeout=300
+# 3) Rest of the ride and the professor's lines: slow L taps until photo select shows its subject folders.
+repeat @f120 @f60000 90 8 src=key:L
+wait ui=photo_submit:FolderSelect timeout=400
+# 4) Photo select with D-pad keys: H (Right) next folder, L opens it, L picks the shown photo, K (B) goes back.
+@f150 8 src=key:H
+@f230 8 src=key:L
+wait ui=photo_submit:PhotoSubmit timeout=30
+repeat @f60 @f1440 240 8 src=key:L
+repeat @f180 @f1440 240 8 src=key:L
+repeat @f240 @f1440 240 8 src=key:H
+@f1500 8 src=key:K
+wait ui=photo_submit:FolderSelect timeout=90
+@f60 8 src=key:H
+@f140 8 src=key:L
+wait ui=photo_submit:PhotoSubmit timeout=30
+repeat @f60 @f1440 240 8 src=key:L
+repeat @f180 @f1440 240 8 src=key:L
+repeat @f240 @f1440 240 8 src=key:H
+@f1500 8 src=key:K
+wait ui=photo_submit:FolderSelect timeout=90
+# 5) P (Plus, Evaluate Photos), T (Up, Yes), L.
+@f60 8 src=key:P
+@f140 8 src=key:T
+@f220 8 src=key:L
+wait ui=evaluation timeout=60
+# 6) Evaluation: L taps through it to Score and End.
+repeat @f240 @f60000 90 8 src=key:L
+wait ui=evaluation:Score timeout=120
+repeat @f60 @f60000 90 8 src=key:L
+wait ui=evaluation:End timeout=240
+# 7) After End: L taps through the professor's last lines and the retry menu; the game saves (fs::Commit, a new generation) before the album.
+repeat @f60 @f60000 90 8 src=key:L
+wait ui=album_save:PhotoSelect timeout=300
+# 8) Album save by keys: L opens a photo, L taps in the detail, K (B) back to the photo list and once more (the retry menu). The save (fs::Commit, a new CURRENT generation) came right after End.
+repeat @f240 @f60000 150 8 src=key:L
+wait ui=album_save:PhotoDetail timeout=60
+repeat @f150 @f1500 120 8 src=key:L
+@f1700 6 src=key:K
+wait ui=album_save:PhotoSelect timeout=60
+@f200 6 src=key:K
+end @f600

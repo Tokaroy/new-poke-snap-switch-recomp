@@ -10,6 +10,7 @@
 //   <t> expect_preview <A|...> <0|1>                    the mapped state while the menu hides input from the game
 //   <t> ui_lang <tag|auto>, i18n_collect <0|1>, expect_i18n   menu language override and "every text is translated" check (ui_i18n.cpp)
 //   <t> expect_open <0|1> / expect_rebinding <0|1> / expect_tab <Name_with_underscores>
+//   <t> wkey <Tab|Down|Up|Return|Space|Escape|PageUp|PageDown|A..Z> (posted WM_KEYDOWN/UP) / wclick_tab <Name_with_underscores> (posted mouse move + click on a tab)
 //   <t> expect_bind <A|...> <kb|mouse|pad> <slot> <src|none>
 //   <t> shot <file.bmp>             copy the window client area from the screen (needs a visible window)
 //   <t> opt <key> <value>, expect_opt, expect_when, expect_pending <n>, expect_env <NAME> <value>   option pages (ui_options.cpp); "-" = empty value
@@ -35,6 +36,7 @@
 #include "hle/profiles.h"
 #include "ui_i18n.h"
 #include "ui_internal.h"
+#include "ui_skin.h"
 
 namespace snap::ui {
 
@@ -123,6 +125,8 @@ void capture_window(std::string path) {
   }).detach();
 }
 
+double g_hold_until = 0;   // script time before which no further command runs (set by wclick_tab)
+
 void run(const std::string& line, double t) {
   std::istringstream is(line);
   std::string cmd;
@@ -142,6 +146,35 @@ void run(const std::string& line, double t) {
       PostMessageW(h, WM_KEYUP, VK_F3, (LPARAM)0xC03d0001);
       out("t=%.1f posted F3 to the game window", t);
     }
+  } else if (cmd == "wkey") {   // wkey <Tab|Down|Up|Left|Right|Return|Space|Escape|PageUp|PageDown|A..Z>: a real WM_KEYDOWN/UP to the game window (keyboard navigation of the menu)
+    std::string k;
+    is >> k;
+    HWND h = static_cast<HWND>(overlay_hwnd());
+    static const std::map<std::string, int> vks = {{"Tab", VK_TAB}, {"Down", VK_DOWN}, {"Up", VK_UP}, {"Left", VK_LEFT}, {"Right", VK_RIGHT}, {"Return", VK_RETURN}, {"Space", VK_SPACE},
+                                                    {"Escape", VK_ESCAPE}, {"PageUp", VK_PRIOR}, {"PageDown", VK_NEXT}};
+    int vk = k.size() == 1 && k[0] >= 'A' && k[0] <= 'Z' ? (int)k[0] : (vks.count(k) ? vks.at(k) : 0);
+    check(h && vk, "wkey " + k);
+    if (h && vk) {
+      PostMessageW(h, WM_KEYDOWN, (WPARAM)vk, (LPARAM)(1 | (MapVirtualKeyW((UINT)vk, 0) << 16)));
+      PostMessageW(h, WM_KEYUP, (WPARAM)vk, (LPARAM)(1 | (MapVirtualKeyW((UINT)vk, 0) << 16) | (3u << 30)));
+    }
+  } else if (cmd == "wclick_tab") {   // wclick_tab <Name_with_underscores>: a real mouse move, button down and up on that tab of the open menu
+    std::string name;
+    is >> name;
+    for (auto& c : name) if (c == '_') c = ' ';
+    HWND h = static_cast<HWND>(overlay_hwnd());
+    float fx = 0, fy = 0;
+    const bool ok = h && skin_tab_center(name.c_str(), &fx, &fy);
+    check(ok, "wclick_tab " + name + (ok ? "" : " (tab not drawn)"));
+    if (ok) g_hold_until = t + 1.0;   // the click thread takes ~0.4 s: no later command (a check) may run before it is done, however late the frames are
+    if (ok) std::thread([h, fx, fy]() {
+      const LPARAM pos = MAKELPARAM((int)fx, (int)fy);
+      PostMessageW(h, WM_MOUSEMOVE, 0, pos);
+      Sleep(250);
+      PostMessageW(h, WM_LBUTTONDOWN, MK_LBUTTON, pos);
+      Sleep(120);
+      PostMessageW(h, WM_LBUTTONUP, 0, pos);
+    }).detach();
   } else if (cmd == "tab") {
     static std::string name;
     is >> name;

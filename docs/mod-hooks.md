@@ -37,6 +37,8 @@ Names are case sensitive and never change or move once listed here. New points a
 | `Ui.Event` | `0x6c1d90` | x1 = `int*` event id, x2 = `Player**`, x3 = `std::string*` state. The UI scene base's `std::function` call operator; events 18 and 10 are a decide press, 22 is the per-frame event. |
 | `Ui.OptionEvent` | `0x728e10` | x3 = `std::string*` tab or element name. The option screen's event handler. |
 | `Ui.SetState` | `0x79a6d0` | x0 = player, x1 = page descriptor; the state name is a libc++ `std::string` at x1+0x18. `Player::SetState`. |
+| `Font.AcquireGlyphmap` | sdk `0x160a80` | w1 = the Unicode codepoint (x0 = the font engine, w2 = a size). `nn::fontll::ScalableFontEngine::AcquireGlyphmap`; an sdk offset, not a main one. The bundled `button-icons` hook (on by default) changes the Switch button letters U+E0E0 to U+E0E3 in message text to the letters of the pad buttons that do the action (Xbox style: the game's "X" reads Y). `SNAP_BTN_TEXT=0` turns it off. |
+| `Font.CheckGlyphExist` | sdk `0x160a90` | w1 = the codepoint. `ScalableFontEngine::CheckGlyphExist`; the same `button-icons` hook, so the swapped letter is looked up the same way. |
 
 A libc++ `std::string` is short when byte 0 is even (size = byte 0 / 2, text at +1) and long when bit 0 of byte 0 is set (size at +8, data pointer at +0x10). `read_str` in `host/mods/modhooks.cpp` shows it.
 

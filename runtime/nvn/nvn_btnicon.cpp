@@ -23,7 +23,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <map>
 #include <set>
+#include <string>
 #include <thread>
 #include <tuple>
 #include <unordered_map>
@@ -38,6 +40,7 @@
 
 extern "C" int snap_btnicon_glyph(int button);   // runtime/hle/btn_icons.cpp: (row << 8) | glyph, or -1 = keep the game's icon
 extern "C" int snap_btnicon_active();
+extern "C" const char* snap_btnicon_label(int id);   // key cap text of a keyboard glyph (packed row 2)
 
 namespace nvn {
 namespace {
@@ -277,11 +280,76 @@ const std::unordered_map<uint64_t, const BtnSprite*>& Table() {
   return m;
 }
 
+// ---- keyboard style (packed row 2): a key cap drawn at run time with GDI, no art file. The label is the key or mouse button bound to the action
+// ("L", "Enter", "Shift", "LMB"); the cap is a rounded dark square with a light rim, wider for long labels.
+const Glyph* KeycapGlyph(int id) {
+  static std::map<int, Glyph> cache;
+  auto it = cache.find(id);
+  if (it != cache.end()) return it->second.ok() ? &it->second : nullptr;
+  Glyph& gl = cache[id];
+  const char* u8 = snap_btnicon_label(id);
+  if (!u8 || !*u8) return nullptr;
+  wchar_t wt[32] = {};
+  MultiByteToWideChar(CP_UTF8, 0, u8, -1, wt, 31);
+  const int n = (int)wcslen(wt);
+  if (n <= 0) return nullptr;
+  HDC dc = CreateCompatibleDC(nullptr);
+  if (!dc) return nullptr;
+  int fh = n == 1 ? 40 : 30;
+  HFONT font = nullptr;
+  SIZE sz{};
+  for (; fh >= 16; fh -= 2) {   // shrink until the label fits in a cap of at most 88 px
+    font = CreateFontW(-fh, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    HGDIOBJ old = SelectObject(dc, font);
+    GetTextExtentPoint32W(dc, wt, n, &sz);
+    SelectObject(dc, old);
+    if (sz.cx <= 88 - 18) break;
+    DeleteObject(font); font = nullptr;
+  }
+  if (!font) { font = CreateFontW(-16, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI"); }
+  const int capH = 56, capW = std::clamp((int)sz.cx + 20, 56, 88);
+  BITMAPINFO bi{};
+  bi.bmiHeader.biSize = sizeof bi.bmiHeader; bi.bmiHeader.biWidth = capW; bi.bmiHeader.biHeight = -capH; bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32;
+  void* bits = nullptr;
+  HBITMAP bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+  if (!bmp || !bits) { DeleteObject(font); DeleteDC(dc); return nullptr; }
+  HGDIOBJ oldb = SelectObject(dc, bmp), oldf = SelectObject(dc, font);
+  memset(bits, 0, (size_t)capW * capH * 4);
+  SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(255, 255, 255));
+  RECT rc{0, 0, capW, capH - 2};
+  DrawTextW(dc, wt, n, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+  GdiFlush();
+  gl.w = capW + 2; gl.h = capH + 2;
+  gl.pm.assign((size_t)gl.w * gl.h * 4, 0.0f);
+  const uint8_t* mask = (const uint8_t*)bits;
+  const float hw = capW * 0.5f, hh = capH * 0.5f, rad = 12.0f;
+  for (int y = 0; y < capH; y++)
+    for (int x = 0; x < capW; x++) {
+      const float px = x + 0.5f - hw, py = y + 0.5f - hh;
+      const float qx = std::fabs(px) - (hw - rad), qy = std::fabs(py) - (hh - rad);
+      const float d = std::sqrt(std::max(qx, 0.0f) * std::max(qx, 0.0f) + std::max(qy, 0.0f) * std::max(qy, 0.0f)) + std::min(std::max(qx, qy), 0.0f) - rad;   // < 0 inside
+      const float cov = std::clamp(0.5f - d, 0.0f, 1.0f);
+      if (cov <= 0) continue;
+      const float rim = std::clamp(d + 4.0f, 0.0f, 1.0f);   // 1 in the 3 px border, 0 inside
+      float r = 0.17f * (1 - rim) + 0.84f * rim, g = 0.19f * (1 - rim) + 0.86f * rim, b = 0.23f * (1 - rim) + 0.90f * rim;
+      const float tm = std::max({mask[((size_t)y * capW + x) * 4], mask[((size_t)y * capW + x) * 4 + 1], mask[((size_t)y * capW + x) * 4 + 2]}) / 255.0f;
+      r += (1 - r) * tm; g += (1 - g) * tm; b += (1 - b) * tm;
+      float* o = &gl.pm[((size_t)(y + 1) * gl.w + (x + 1)) * 4];
+      o[0] = r * cov; o[1] = g * cov; o[2] = b * cov; o[3] = cov;
+    }
+  SelectObject(dc, oldf); SelectObject(dc, oldb);
+  DeleteObject(bmp); DeleteObject(font); DeleteDC(dc);
+  return &gl;
+}
+
 TextureImpl* BuildTwin(TextureImpl* t, const BtnSprite& sp, int packed) {   // g_mu held
   LoadAtlas();
   const int row = packed >> 8, gi = packed & 255;
-  if (row < 0 || row > 1 || gi < 0 || gi >= kGlyphs || !g_glyph[row][gi].ok()) return nullptr;
-  const Glyph& g = g_glyph[row][gi];
+  const Glyph* gp = nullptr;
+  if (row == 2) gp = KeycapGlyph(gi);
+  else if (row >= 0 && row <= 1 && gi >= 0 && gi < kGlyphs && g_glyph[row][gi].ok()) gp = &g_glyph[row][gi];
+  if (!gp) return nullptr;
+  const Glyph& g = *gp;
   Img img;
   if (sp.mode == 1) {
     if (!DecodeOriginal(t, img)) return nullptr;

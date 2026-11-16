@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <string>
 #include <vector>
 
 #include "hle/access.h"
@@ -235,6 +236,14 @@ void skin_shoulder_tag(ImDrawList* dl, ImVec2 pos, float h, bool right, bool pre
   dl->AddText(ImVec2(cx - ts.x * 0.5f, (a.y + b.y) * 0.5f - ts.y * 0.5f), skin_col(p.tag_text), l);
 }
 
+static std::map<std::string, ImVec2> g_tab_pos;
+bool skin_tab_center(const char* name, float* x, float* y) {
+  auto it = g_tab_pos.find(name);
+  if (it == g_tab_pos.end()) return false;
+  *x = it->second.x; *y = it->second.y;
+  return true;
+}
+
 int skin_tabs(const char* const* names, int n, int cur, float width) {
   const SkinPal& p = skin_pal();
   ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -262,6 +271,7 @@ int skin_tabs(const char* const* names, int n, int cur, float width) {
     ImGui::SetCursorScreenPos(ImVec2(a.x, o.y));
     ImGui::PushID(i);
     const bool hit = ImGui::InvisibleButton("##tab", ImVec2(b.x - a.x, th));
+    g_tab_pos[names[i]] = ImVec2((a.x + b.x) * 0.5f, o.y + th * 0.5f);
     const bool hov = ImGui::IsItemHovered();
     ImGui::PopID();
     if (hit && !sel) clicked = i;

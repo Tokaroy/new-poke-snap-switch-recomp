@@ -583,7 +583,9 @@ void draw_menu(ImVec2 size, bool* want_close) {
 
   // controller: LB/RB switch pages, B closes (the same as Escape)
   if (!S.rb.active && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) && !ImGui::IsAnyItemActive()) {
-    const bool lb = ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false), rb = ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false);
+    const ImGuiIO& kio = ImGui::GetIO();   // keyboard: Q / E (the game's L / R keys), PageUp / PageDown or Ctrl+Shift+Tab / Ctrl+Tab switch pages too (2026-11-16: no controller needed)
+    const bool lb = ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false) || ImGui::IsKeyPressed(ImGuiKey_PageUp, false) || ImGui::IsKeyPressed(ImGuiKey_Q, false) || (kio.KeyCtrl && kio.KeyShift && ImGui::IsKeyPressed(ImGuiKey_Tab, false));
+    const bool rb = ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) || ImGui::IsKeyPressed(ImGuiKey_PageDown, false) || ImGui::IsKeyPressed(ImGuiKey_E, false) || (kio.KeyCtrl && !kio.KeyShift && ImGui::IsKeyPressed(ImGuiKey_Tab, false));
     if (lb) S.want_tab = kTabs[(S.cur_tab + tab_count() - 1) % tab_count()];
     if (rb) S.want_tab = kTabs[(S.cur_tab + 1) % tab_count()];
     if (lb || rb) skin_cursor_first_row();   // the cursor lands on the new page's first row

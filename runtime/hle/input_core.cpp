@@ -203,17 +203,17 @@ Mapping Mapping::defaults() {
   Mapping m;
   auto set = [&](int b, std::initializer_list<const char*> l) { for (auto* t : l) m.buttons[(size_t)b].push_back(S(t)); };
   // Nintendo layout by position: A is the east face button, B south, X north, Y west.
-  set(kA, {"pad:east", "key:L"});
-  set(kB, {"pad:south", "key:K"});
-  set(kX, {"pad:north", "key:I"});
-  set(kY, {"pad:west", "key:J"});
+  set(kA, {"pad:east", "key:L", "key:Enter"});   // Enter confirms in menus; Space (ZR) and the left mouse button are the ride shutter
+  set(kB, {"pad:south", "key:K", "key:1"});   // Fluffruit; back in menus (Esc too, see map_pad)
+  set(kX, {"pad:north", "key:I", "key:3"});   // scan
+  set(kY, {"pad:west", "key:J", "key:2"});   // Illumina Orb
   set(kStickL, {"pad:lstick"});
   set(kStickR, {"pad:rstick"});
   set(kL, {"pad:lshoulder", "key:Q"});
   set(kR, {"pad:rshoulder", "key:E"});
-  set(kZL, {"pad:ltrigger", "key:LShift"});
+  set(kZL, {"pad:ltrigger", "key:LShift", "mouse:wheel_up", "mouse:wheel_down"});   // zoom; a wheel notch holds it for 0.1 s; the right mouse button holds it on a ride (look_zl)
   set(kZR, {"pad:rtrigger", "key:Space"});
-  set(kPlus, {"pad:start", "key:Enter"});
+  set(kPlus, {"pad:start", "key:P", "key:Tab"});
   set(kMinus, {"pad:back", "key:Backspace"});
   set(kLeft, {"pad:dpad_left", "key:F"});
   set(kUp, {"pad:dpad_up", "key:T"});
@@ -249,6 +249,7 @@ static Json stick_json(const StickMap& s) {
 Json Mapping::to_json() const {
   Json j = Json::object();
   j.set("version", Json::number(kVersion));
+  j.set("defaults_rev", Json::number(kDefaultsRev));   // 2: keyboard/mouse defaults of 2026-11-16 (see from_json)
   j.set("_comment", Json::string("Sources: pad:<south|east|west|north|back|guide|start|lstick|rstick|lshoulder|rshoulder|dpad_up|dpad_down|dpad_left|dpad_right|ltrigger|rtrigger|lstick_left..rstick_down>, key:<name>, mouse:<left|right|middle|x1|x2|wheel_up|wheel_down>. Switch button names: A B X Y StickL StickR L R ZL ZR Plus Minus Left Up Right Down. Edited by the in-game controls menu (F1)."));
   Json c = Json::object();
   c.set("face_layout", Json::string(face_layout == 1 ? "nintendo" : "position"));
@@ -340,7 +341,7 @@ bool Mapping::from_json(const Json& j, std::string* err) {
     if (auto* t = v->get("touch")) m.mouse_touch = t->boolean(true);
     if (auto* t = v->get("look_click_a")) if (!read_sources(*t, &m.look_a, err, "mouse.look_click_a")) return false;
     if (auto* t = v->get("look_click_zl")) if (!read_sources(*t, &m.look_zl, err, "mouse.look_click_zl")) return false;
-    if (auto* t = v->get("look")) m.mouse_look = t->boolean(false);
+    if (auto* t = v->get("look")) m.mouse_look = t->boolean(true);
     if (auto* t = v->get("sensitivity")) m.mouse_sensitivity = clampf(t, 1.0, 0.05f, 10.0f);
     if (auto* t = v->get("invert_x")) m.mouse_invert_x = t->boolean(false);
     if (auto* t = v->get("invert_y")) m.mouse_invert_y = t->boolean(false);
@@ -371,6 +372,22 @@ bool Mapping::from_json(const Json& j, std::string* err) {
   }
   if (auto* v = j.get("left_stick")) if (!read_stick(*v, &m.left, &e, "left_stick")) { *err = e; return false; }
   if (auto* v = j.get("right_stick")) if (!read_stick(*v, &m.right, &e, "right_stick")) { *err = e; return false; }
+  // Files saved before the keyboard/mouse defaults of 2026-11-16 (defaults_rev < 2) hold the old table in full: an action still on exactly its old
+  // default takes the new one (A +Enter, B +1, X +3, Y +2, Plus Enter -> P/Tab, ZL +wheel), and mouse look (old default off) turns on.
+  int rev = 1;
+  if (auto* v = j.get("defaults_rev")) rev = (int)v->num(1);
+  if (rev < kDefaultsRev) {
+    const Mapping nd = defaults();
+    struct Old { int b; std::initializer_list<const char*> l; };
+    const Old olds[] = {{kA, {"pad:east", "key:L"}}, {kB, {"pad:south", "key:K"}}, {kX, {"pad:north", "key:I"}}, {kY, {"pad:west", "key:J"}},
+                        {kPlus, {"pad:start", "key:Enter"}}, {kZL, {"pad:ltrigger", "key:LShift"}}};
+    for (const Old& o : olds) {
+      std::vector<Source> ov;
+      for (auto* t : o.l) ov.push_back(S(t));
+      if (m.buttons[(size_t)o.b] == ov) m.buttons[(size_t)o.b] = nd.buttons[(size_t)o.b];
+    }
+    m.mouse_look = true;
+  }
   *this = m;
   return true;
 }
@@ -430,7 +447,7 @@ void reset_device(Mapping& m, Device d) {
     m.swap_sticks = false; m.face_layout = 0; m.swap_ab = false;
     for (StickMap* s : {&m.left, &m.right}) { StickMap* ds = s == &m.left ? &def.left : &def.right; s->analog = ds->analog; s->deadzone = ds->deadzone; s->outer_deadzone = ds->outer_deadzone; s->invert_y = false; }
   } else if (d == kDevMouse) {
-    m.mouse_touch = def.mouse_touch; m.mouse_look = false; m.mouse_sensitivity = def.mouse_sensitivity;
+    m.mouse_touch = def.mouse_touch; m.mouse_look = def.mouse_look; m.mouse_sensitivity = def.mouse_sensitivity;
     m.mouse_invert_x = m.mouse_invert_y = false; m.mouse_smoothing = 0; m.lock_cursor = def.lock_cursor;
     m.look_a = def.look_a; m.look_zl = def.look_zl;
   }
@@ -558,6 +575,16 @@ PadSample map_pad(const Mapping& m, const RawInput& in) {
       }
     }
   }
+  {   // Esc: Back (B) in menus, Plus (pause) on a ride
+    static const int kEsc = key_from_name("Escape");
+    if (eff.focused && kEsc > 0 && eff.keys.test((size_t)kEsc)) out.buttons |= 1ull << (eff.in_ride ? kPlus : kB);
+  }
+  if (eff.focused && !eff.in_ride) {   // menus: the keys that aim the camera (arrows by default) also press the D-pad, so a keyboard user can move through any list
+    const std::vector<Source>* dirs[4] = {&m.right.up, &m.right.down, &m.right.left, &m.right.right};
+    const int pads[4] = {kUp, kDown, kLeft, kRight};
+    for (int d = 0; d < 4; ++d)
+      for (const Source& s : *dirs[d]) if (s.kind == Source::KeyboardKey && source_down(s, eff, 0.5f)) { out.buttons |= 1ull << pads[d]; break; }
+  }
   if (m.mouse_look && eff.focused && eff.in_ride) {   // mouse-look click bindings, ride only: menus keep the touch screen / pad flow
     if (any_down(m.look_a, eff, 0.5f)) out.buttons |= 1ull << kA;
     if (any_down(m.look_zl, eff, 0.5f)) out.buttons |= 1ull << kZL;
@@ -565,7 +592,7 @@ PadSample map_pad(const Mapping& m, const RawInput& in) {
   float lx, ly, rx, ry;
   stick_value(m.left, true, m, eff, 0, 0, &lx, &ly);
   float mlx = 0, mly = 0;
-  if (m.mouse_look && eff.focused) {
+  if (m.mouse_look && eff.focused && eff.in_ride) {   // mouse aim only on a ride: menus keep a free cursor
     mlx = std::clamp(eff.mouse_vx * m.mouse_sensitivity / (float)kMouseLookFullPxPerSec, -1.0f, 1.0f) * (m.mouse_invert_x ? -1.f : 1.f);
     mly = std::clamp(-eff.mouse_vy * m.mouse_sensitivity / (float)kMouseLookFullPxPerSec, -1.0f, 1.0f) * (m.mouse_invert_y ? -1.f : 1.f);
   }
@@ -594,7 +621,7 @@ bool (*g_window_to_guest)(float nx, float ny, float* gx, float* gy) = nullptr;
 
 TouchSample map_touch(const Mapping& m, const RawInput& in) {
   TouchSample t;
-  if (m.mouse_touch && !m.mouse_look && in.focused && in.mouse_in_window && (in.mouse_buttons & 1)) {
+  if (m.mouse_touch && (!m.mouse_look || !in.in_ride) && in.focused && in.mouse_in_window && (in.mouse_buttons & 1)) {
     t.count = 1;
     float gx = in.mouse_x * 1920.0f, gy = in.mouse_y * 1080.0f;   // interface pixels; the panel is 1280x720 (x 2/3)
     if (g_window_to_guest) g_window_to_guest(in.mouse_x, in.mouse_y, &gx, &gy);
@@ -773,10 +800,12 @@ bool Hub::save(std::string* err) {
 // guest presents (nvn present count) since the segment began, so a slow PC does not shift it; end/period/hold may carry an optional @f prefix.
 //   src=<kind:name>        hold a HOST source through the binding table while the entry is active: key:P, mouse:left, pad:east (the other tokens press
 //                          Switch buttons after the mapping). Takes effect one poll later; use it to test a remapped key end to end.
+//   mouse=<x>,<y>         put the cursor at this window position (0..1, y down) while the entry is active; with src=mouse:left it is a touch-screen tap there
+//                          (menus; on a ride with mouse look on the left button is the shutter instead).
 // A token is a Switch button name (A B X Y L R ZL ZR Plus Minus Left Up Right Down StickL StickR ...) or an axis
 // lx=<f> ly=<f> rx=<f> ry=<f> with f in [-1, 1] (y up positive).
 namespace {
-struct ScriptEntry { double start, end, period, hold; uint64_t buttons; int32_t ax[4]; bool has_ax[4]; int seg; bool frames; float rumble_lo, rumble_hi; bool has_rumble; float gyro_yaw, gyro_pitch; bool has_gyro; bool is_end; int shot_n; bool screenshot; std::string cond; std::vector<std::string> fc; int state_op = 0; std::string state_name; mutable bool state_prev = false; std::vector<Source> src; };
+struct ScriptEntry { bool has_mpos = false; float mx = 0, my = 0; double start, end, period, hold; uint64_t buttons; int32_t ax[4]; bool has_ax[4]; int seg; bool frames; float rumble_lo, rumble_hi; bool has_rumble; float gyro_yaw, gyro_pitch; bool has_gyro; bool is_end; int shot_n; bool screenshot; std::string cond; std::vector<std::string> fc; int state_op = 0; std::string state_name; mutable bool state_prev = false; std::vector<Source> src; };
 struct Script {
   bool loaded = false;
   uint64_t t0 = 0;
@@ -795,6 +824,8 @@ Script g_script;
 std::bitset<kKeyCount> g_script_keys;
 std::bitset<32> g_script_pad;
 uint8_t g_script_mouse = 0;
+bool g_script_mpos_on = false; float g_script_mx = 0, g_script_my = 0;   // `mouse=<x>,<y>` token: a pretend cursor position (0..1 over the window) for the touch screen
+
 
 // ---- route signals: game state that inline hooks report (host/mods/routes.cpp, neofilm.cpp, skips.cpp); "wait" lines read it.
 // Off (every report returns at once) unless the script has a "wait" line or SNAP_ROUTE_LOG=1 (which also logs scenes and states).
@@ -878,6 +909,7 @@ void route_dump() {
 }  // namespace
 
 bool route_on() { return g_route_on.load(std::memory_order_relaxed); }
+
 // One-run A/B capture tool (host/mods/abcap.cpp, docs/ab-capture.md): read a route "wait" condition from host code, and hold buttons on top of the script.
 static std::atomic<uint64_t> g_ab_buttons{0};
 extern "C" int snap_route_cond(const char* c, char* why, int n) {
@@ -997,6 +1029,11 @@ bool script_token(const std::string& t, ScriptEntry& en) {
       Source sr;
       if (!parse_source(t.substr(eq + 1), &sr)) return false;
       en.src.push_back(sr);
+      return true;
+    }
+    if (k == "mouse") {   // mouse=<x>,<y>: the cursor sits at this window position (0..1, y down) while the entry is active; with src=mouse:left it is a touch / click there
+      en.has_mpos = true; en.mx = (float)std::atof(t.c_str() + eq + 1);
+      size_t c = t.find(',', eq); en.my = c == std::string::npos ? 0.5f : (float)std::atof(t.c_str() + c + 1);
       return true;
     }
     if (k == "shot") {   // shot=<n>: while the entry is active, ask NVN_FRAME_DUMP for a frame every n presents (needs NVN_FRAME_DUMP; test evidence aid)
@@ -1147,9 +1184,9 @@ void script_apply(uint64_t now_ns_v, PadSample& p) {
   const double now_t = (double)(now_ns_v - g_script.cur_t0.load()) * 1e-9;
   const double now_f = (double)(nvn::g_presentCount - g_script.cur_f0.load());
   double now = now_t;
-  bool shot_on = false;
   freecam::script_begin();
-  g_script_keys.reset(); g_script_pad.reset(); g_script_mouse = 0;
+  g_script_keys.reset(); g_script_pad.reset(); g_script_mouse = 0; g_script_mpos_on = false;
+  bool shot_on = false;
   for (const ScriptEntry& en : g_script.e) {
     if (en.seg != seg) continue;
     now = en.frames ? now_f : now_t;
@@ -1177,6 +1214,7 @@ void script_apply(uint64_t now_ns_v, PadSample& p) {
       else if (sr.kind == Source::Pad) g_script_pad.set((size_t)sr.id);
       else if (sr.kind == Source::Mouse) g_script_mouse |= (uint8_t)(1u << sr.id);
     }
+    if (en.has_mpos) { g_script_mpos_on = true; g_script_mx = en.mx; g_script_my = en.my; }
     if (en.has_gyro) { g_script_gyro_on = true; g_script_gyro_yaw += en.gyro_yaw; g_script_gyro_pitch += en.gyro_pitch; }
     if (en.screenshot) shot_on = true;
     if (en.shot_n > 0 && nvn::g_presentCount % en.shot_n == 0 && nvn::g_fdBurst <= 0) nvn::g_fdBurst = 4;   // `shot=<n>` token
@@ -1216,6 +1254,12 @@ static void each_candidate(const std::function<void(const Source&)>& f) {
   for (int k = 1; k < kKeyCount; ++k)
     if (key_name(k)[0] && k != key_from_name("F1")) f(Source{Source::KeyboardKey, k});
   for (int i = 0; i < kMouseCount; ++i) f(Source{Source::Mouse, i});
+}
+
+void Hub::set_window_focus(bool focused) {
+  std::lock_guard<std::mutex> g(mu_);
+  win_focus_ = focused;
+  if (!focused) guard_prev_ = false;   // the game threads can be frozen while the window is in the background: remember the blur here, not in a poll
 }
 
 void Hub::set_menu_open(bool open) {
@@ -1270,7 +1314,7 @@ void Hub::poll(int min_interval_ms) {
   last_poll_ns_ = t;
   const bool open = menu_open_.load();
   const bool fcm = freecam::wants_mouse() && !open;   // the free camera flies with the mouse: confine and recenter the cursor like mouse-look
-  const bool lock = (map_.lock_cursor && !open) || fcm;
+  const bool lock = (map_.lock_cursor && !open && (!map_.mouse_look || raw_.in_ride)) || fcm;   // mouse look confines the cursor on a ride only (menus: free cursor, touch screen)
   const bool recenter = (lock && map_.mouse_look) || fcm;
   backend_->set_cursor_mode(lock, recenter);
   RawInput r;
@@ -1278,7 +1322,7 @@ void Hub::poll(int min_interval_ms) {
   if (g_script_gyro_on) { r.gyro_present = true; r.gyro_y = g_script_gyro_yaw; r.gyro_x = g_script_gyro_pitch; }   // scripted `gyro=` token (applied one poll late)
   if (env_fx().fake) { r.gyro_present = true; r.gyro_y = env_fx().fake_yaw; r.gyro_x = env_fx().fake_pitch; }   // SNAP_GYRO_FAKE
   cursor_hidden_ = recenter && r.focused;
-  if (map_.mouse_look) {   // ride flag for the mouse-look click bindings (rail reports are off unless asked for)
+  {   // ride flag for the mouse-look click bindings, mouse aim and the Esc key (rail reports are off unless asked for)
     route_enable();
     std::lock_guard<std::mutex> rl(g_rs_mu);
     r.in_ride = g_rail_cur >= 0 && (int)nvn::g_presentCount - g_rail[g_rail_cur].f_adv <= 20;
@@ -1287,13 +1331,50 @@ void Hub::poll(int min_interval_ms) {
   r.keys |= inject_.keys | g_script_keys;
   r.pad |= inject_.pad | g_script_pad;
   r.mouse_buttons |= inject_.mouse_buttons | g_script_mouse;
+  if (g_script_mpos_on) { r.mouse_in_window = true; r.mouse_x = g_script_mx; r.mouse_y = g_script_my; }
   if (inject_.pad.any() || g_script_pad.any()) r.pad_connected = true;
   if (int d = g_wheel_delta.exchange(0)) {
     if (d > 0) wheel_up_until_ns_ = t + 100000000ull; else wheel_down_until_ns_ = t + 100000000ull;
   }
+  {   // focus guard: switching to a snipping tool or another app must not press anything in the game when the window comes back
+    static const bool guard_on = !(std::getenv("SNAP_FOCUS_GUARD") && std::atoi(std::getenv("SNAP_FOCUS_GUARD")) == 0);
+    static const int kEsc = key_from_name("Escape");
+    const bool foc = r.focused && win_focus_.load();
+    if (guard_on) {
+      if (!foc) {   // nothing typed or clicked while the window is in the background reaches the game
+        r.keys.reset();
+        r.mouse_buttons = 0;
+        r.mouse_in_window = false;
+        r.focused = false;
+      } else {
+        if (!guard_prev_) {   // the focus just came back: whatever is down now was pressed for another window
+          guard_keys_ = r.keys;
+          guard_mouse_ = r.mouse_buttons;
+          guard_until_ns_ = t + 300000000ull;
+          log("input: focus is back, ignoring %d key(s) and mouse buttons %#x until released; Esc and the left button for 300 ms", (int)guard_keys_.count(), (unsigned)guard_mouse_);
+        }
+        guard_keys_ &= r.keys;
+        guard_mouse_ &= r.mouse_buttons;
+        r.keys &= ~guard_keys_;
+        r.mouse_buttons &= (uint8_t)~guard_mouse_;
+        if (t < guard_until_ns_) {
+          if (kEsc > 0) r.keys.reset((size_t)kEsc);
+          r.mouse_buttons &= (uint8_t)~1u;
+        }
+      }
+      guard_prev_ = foc;
+    }
+  }
   if (r.focused) {
     if (t < wheel_up_until_ns_) r.mouse_buttons |= 1u << kMouseWheelUp;
     if (t < wheel_down_until_ns_) r.mouse_buttons |= 1u << kMouseWheelDown;
+  }
+  {   // which device was used last (button pictures: key caps for the keyboard and mouse, pad pictures for a pad)
+    static bool kbm_last = false;
+    const bool pad_act = r.pad.any() || std::fabs(r.lx) > 0.5f || std::fabs(r.ly) > 0.5f || std::fabs(r.rx) > 0.5f || std::fabs(r.ry) > 0.5f;
+    const bool kbm_act = r.focused && (r.keys.any() || r.mouse_buttons != 0);
+    if (pad_act) kbm_last = false; else if (kbm_act) kbm_last = true;
+    icons::set_last_input(kbm_last);
   }
   // mouse-look velocity: pixels moved over a window of 40 ms (smoothing off) up to 340 ms (smoothing 1)
   if (r.focused && (r.mouse_dx != 0 || r.mouse_dy != 0)) msamples_.push_back({t, r.mouse_dx, r.mouse_dy});
@@ -1344,6 +1425,13 @@ void Hub::poll(int min_interval_ms) {
     }
   }
   PadSample p = map_pad(map_, r);
+  {   // SNAP_FOCUS_GUARD_LOG=1 (tests): every Plus and B press the game is about to see, with the focus state
+    static const bool plog = std::getenv("SNAP_FOCUS_GUARD_LOG") != nullptr;
+    static uint64_t prev_pb = 0;
+    const uint64_t pb = p.buttons & ((1ull << kPlus) | (1ull << kB));
+    if (plog && (pb & ~prev_pb)) log("input: %s pressed (focused=%d in_ride=%d present=%d)", (pb & (1ull << kPlus)) ? "Plus" : "B", (int)r.focused, (int)r.in_ride, nvn::g_presentCount);
+    prev_pb = pb;
+  }
   // toggle mode: a press of a toggle button (ZL / ZR switches, the accessibility.toggle_buttons list, SNAP_ACCESS_TOGGLE) flips it on or off instead of holding it
   // SNAP_ACCESS_TOGGLE_SCRIPT=1 (test runs): latch what the input script presses instead of the physical pad, so a route can exercise the latch.
   static const bool script_latch = std::getenv("SNAP_ACCESS_TOGGLE_SCRIPT") != nullptr;

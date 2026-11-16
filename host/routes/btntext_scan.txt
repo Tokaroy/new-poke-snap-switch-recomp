@@ -1,0 +1,8 @@
+# fixture: tut_cand_new4
+# Message-text button letters (2026-11-16): the yard scan tutorial, Rita: "Press X to run a scan", then "First, move the reticle over the ...". A taps through the lab dialogue,
+# X taps (scan), a frame shot every 300 presents once the tutorial is up. With SNAP_BUTTON_ICONS=xbox the text must read "Press Y" (the north button); with SNAP_BTN_TEXT=0 it reads X.
+# Run: powershell -File tests\hle\run_btntext.ps1 [-Off]   (frames: analysis\boot\route_btntext_scan_*.png)
+repeat @f300 @f8600 120 8 A
+repeat @f8600 @f60000 90 8 X
+repeat @f8400 @f12000 300 1 shot=1
+end @f12100

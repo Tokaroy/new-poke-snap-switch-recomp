@@ -1,0 +1,12 @@
+# fixture: post_tutorial
+# MOUSE-CLICK-ONLY menu probe (2026-11-16): which menus accept a left click (the host turns a click outside a ride into touch input), no key and no pad press.
+# Run: powershell -File tests\hle\run_kbm_ride.ps1 -Click   (an empty SNAP_CONFIG_DIR: the default table)
+# Pass: "wait 'ui=main_menu' met" (a click on the title passes it), "wait 'ui=map_select' met" (a click on the Research icon opens the map), "end of route reached".
+wait ui=title timeout=150
+@f120 900 mouse=0.5,0.5
+repeat @f200 @f30000 120 8 src=mouse:left
+wait ui=main_menu timeout=150
+@f120 900 mouse=0.075,0.19
+repeat @f200 @f30000 120 8 src=mouse:left
+wait ui=map_select timeout=150
+end @f60

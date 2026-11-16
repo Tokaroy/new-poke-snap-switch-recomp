@@ -611,8 +611,8 @@ std::vector<Opt>& display_opts() {
        {{"default", default_label("SNAP_UI_FONT_SCALE")}, {"auto", "Automatic (2x at 1440p and above)"}, {"1", "Off (as the game ships)"}, {"2", "Sharper (2x)"}, {"3", "Sharper (3x)"}, {"4", "Sharpest (4x)"}}, 0, 0, "", "SNAP_UI_FONT_SCALE", nullptr, nullptr, nullptr, "SNAP_UI_FONT_SCALE"},
       {"", "Controller", kSection, kLive, "", ""},
       {"button_icons", "Button icons", kChoice, kLive,
-       "Which button pictures the game's prompts show. Automatic follows the connected controller (PlayStation, Xbox, Switch Pro; no controller shows the Switch pictures). The picture is the button you press with your current controls, so a remapped button shows its new picture. Menus and hints change at once. Cosmetic only.", "auto",
-       {{"auto", "Automatic (matches the controller)"}, {"switch", "Switch (as the game ships)"}, {"xbox", "Xbox"}, {"playstation", "PlayStation"}}, 0, 0, "", "SNAP_BUTTON_ICONS"},
+       "Which button pictures the game's prompts show. Automatic shows key caps while no controller is connected or the last input came from the keyboard or mouse, and follows the controller otherwise (PlayStation, Xbox, Switch Pro). The picture is the button you press with your current controls, so a remapped button shows its new picture. Menus and hints change at once. Cosmetic only.", "auto",
+       {{"auto", "Automatic (matches the controller)"}, {"switch", "Switch (as the game ships)"}, {"xbox", "Xbox"}, {"playstation", "PlayStation"}, {"keyboard", "Keyboard and mouse"}}, 0, 0, "", "SNAP_BUTTON_ICONS"},
       // docs/player-options.md: controller only (the keyboard keeps its keys); the prompts' pictures follow. input.json "controller.swap_ab" is the base value this row overrides.
       {"swap_ab", "Swap A and B", kToggle, kLive,
        "Swaps confirm and back on the controller: the south button confirms and the east button goes back, like on an Xbox or PlayStation pad. The game's button pictures follow. The keyboard is not changed.", "0", {}, 0, 0, "", "SNAP_SWAP_AB"},

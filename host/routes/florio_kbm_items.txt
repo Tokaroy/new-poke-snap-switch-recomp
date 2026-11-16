@@ -1,0 +1,26 @@
+# fixture: unlock_all
+# Keyboard-and-mouse-only ride tools with MOUSE LOOK ON (2026-11-16): the left button is the shutter (A), the right button is zoom (ZL), J orb (Y), K fruit (B), I scan (X).
+# Every press is a host source (src=...) through the binding table; no pad token. Mouse look is on by default (an empty SNAP_CONFIG_DIR, as tests\hle\run_kbm_ride.ps1 sets).
+# Run: powershell -File tests\hle\run_kbm_ride.ps1 -Items   (frames at 41 s on: -ShotAt 41 -ShotEvery 1 -ShotMax 30)
+# Pass: "wait 'film<=71' met" (left click = photo), "wait 'film<=70' met" (key L = photo), "end of route reached".
+repeat @f60 @f30000 40 4 src=key:L
+wait ui=map_select:StageSelect timeout=300
+@f90 6 src=key:L
+wait ui=map_select:CourseSelect timeout=60
+@f180 6 src=key:L
+wait ride timeout=300
+wait rail>=6 timeout=150
+# left mouse button = shutter (mouse look on)
+@f30 20 src=mouse:left
+wait film<=71 timeout=40
+# right mouse button held = zoom (frames), then the tools one by one, 2 s apart
+@f60 120 src=mouse:right
+@f240 8 src=key:J
+@f420 8 src=key:K
+@f600 40 src=key:I
+@f780 20 src=key:L
+wait film<=70 timeout=40
+# the wheel and X1/X2 are bindable but not used by the game: nothing more to press
+@f240 8 src=key:J
+@f420 8 src=key:K
+end @f600

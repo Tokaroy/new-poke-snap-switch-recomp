@@ -37,6 +37,8 @@ struct SkinScope {
 // Tab strip. Draws at the cursor over `width`; returns the tab index clicked (L / R tags step by one), -1 for none. `focus_pad` highlights the
 // L and R tags as the controller prompts.
 int skin_tabs(const char* const* names, int n, int cur, float width);
+// Where the tab `name` was last drawn (window client pixels, its center); false if not drawn. For the scripted mouse test (ui_test.cpp wclick_tab).
+bool skin_tab_center(const char* name, float* x, float* y);
 
 // One row of a page: a grey bar with pointed ends behind the content, green (eased) while focused. Content is submitted between begin and
 // end exactly like ordinary ImGui widgets; the bar is drawn behind it.
