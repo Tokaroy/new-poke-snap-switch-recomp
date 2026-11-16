@@ -370,6 +370,7 @@ static void snap_core_holders(Thread *t);
 
 static bool wait_woken_raw(Thread *t, Lock &lk, Deadline d) {
     while (!t->woken) {
+        if (__builtin_expect(g_sphase.load(std::memory_order_relaxed) != 0, 0)) state_gate_wait(t, lk);
         if (is_infinite(d)) {
             t->cv.wait(lk);
         } else if (t->cv.wait_until(lk, d) == std::cv_status::timeout) {
@@ -418,7 +419,7 @@ static bool better_ready(const Thread *a, const Thread *b) {
 static Thread *best_waiter_for(int c) {
     Thread *best = nullptr;
     for (Thread *w : g_core_wait)
-        if (can_use(w, c) && (!best || better_ready(w, best))) best = w;
+        if (!w->sgated && can_use(w, c) && (!best || better_ready(w, best))) best = w;
     return best;
 }
 static void note_cores_in_use() {
@@ -462,6 +463,7 @@ static void kick_free_cores() {
         for (Thread *w : g_core_wait)
             if (migration_victim(w)) w->cv.notify_one();
 }
+void state_kick_cores() { kick_free_cores(); }
 static void take_core(Thread *t, int c) {   // t has already left g_core_wait
     t->core = c;
     if (c < ncores()) {
@@ -496,6 +498,7 @@ static void acquire_core_raw(Thread *t, Lock &lk) {
     const uint64_t dumps0 = g_dumps;
     for (;;) {
         if (t->core >= 0) return;   // handed a core directly (yield_any); the giver took t off the wait list
+        if (__builtin_expect(g_sphase.load(std::memory_order_relaxed) != 0, 0) && state_gate_acq(t, lk)) continue;   // a save-state drain grants no core
         int cand[8], nc = 0;
         if (t->ideal >= 0 && t->ideal < ncores()) cand[nc++] = t->ideal;
         cand[nc++] = t->last_core;
@@ -1211,6 +1214,7 @@ extern "C" void os_init(const OsConfig *in) {
     using TB = UINT(WINAPI *)(UINT);
     if (HMODULE m = LoadLibraryW(L"winmm.dll"))
         if (TB tb = (TB)(void *)GetProcAddress(m, "timeBeginPeriod")) tb(1);
+    state_init();
 }
 
 extern "C" void os_adopt_main_thread(Cpu *c, uint64_t tt, int prio) {
@@ -1265,7 +1269,11 @@ extern "C" void os_host_block_end(void) {
     Thread *t = t_self;
     if (!t) return;
     Lock lk(G);
-    if (t->block_depth > 0 && --t->block_depth == 0) acquire_core(t, lk);
+    if (t->block_depth > 0 && --t->block_depth == 0) {
+        t->unclean++;   // the host frames above (NVN, fs, audio code) may own heap objects: a save-state drain must not park or capture here
+        acquire_core(t, lk);
+        t->unclean--;
+    }
 }
 // Blocking host work on a guest thread (file reads, VAMM retry sleeps): release the virtual core like a Horizon IPC
 // wait would (finding 9). SNAP_SCHED_LEGACY=hostblock keeps the core, the old behavior.

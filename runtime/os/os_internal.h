@@ -88,6 +88,9 @@ struct Thread {
     Fiber *own_shadow = nullptr;
     Fiber *cur_fiber = nullptr;              // nullptr = own context
     Fiber *leaving = nullptr;                // context just switched away from, released once the next one runs
+    // save states (os_state.cpp)
+    bool sgated = false;                     // parked at the drain gate in acquire_core_raw: not a candidate for any core (best_waiter_for skips it)
+    int unclean = 0;                       // > 0 while the thread waits for a core inside host code that owns heap objects (os_host_block_end)
 };
 
 struct Fiber {
@@ -148,6 +151,13 @@ uint64_t now_ns();                       // guest TimeSpan of the current tick (
 int64_t tick_to_ns(int64_t tick);        // exact replica of TickManager::ConvertToTimeSpan sdk+0x3451e0
 int64_t ns_to_tick(int64_t ns);          // exact replica of TickManager::ConvertToTick sdk+0x345270
 uint64_t call_guest(Cpu *c, uint64_t fn, uint64_t a0);   // host -> guest call through rt_dispatch
+
+// save states (os_state.cpp): while g_sphase is not 0 the two wait loops call the gates. Both run under G.
+extern std::atomic<int> g_sphase;
+void state_gate_wait(Thread *t, Lock &lk);   // top of the keyed-wait loop (wait_woken_raw): the thread has no core
+bool state_gate_acq(Thread *t, Lock &lk);    // top of the core-wait loop (acquire_core_raw): true = the thread waited, re-check
+void state_kick_cores();                     // under G: re-run the free-core handoff (os_kernel.cpp)
+void state_init();                        // os_init: starts the SNAP_STATE_TEST driver thread when asked
 
 // virtual cores (under G)
 void acquire_core(Thread *t, Lock &lk);
