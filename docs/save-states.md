@@ -271,3 +271,13 @@ One in-RAM slot per process. A save drains every guest thread (about 0.5 to 1 s,
 - A refused load or save shows the reason in the same note (for example a window or queue set changed since the save) and the game goes on unchanged.
 - A load rewinds the game, not your files: the game's save data and album stay as they are on disk, and the physical pad reads idle for 150 ms so a held button does not carry over. Audio fades in over 50 ms; the temporal upscaler and frame generation start a new history, so there is no ghosting from the moment that was left.
 - The note is a host overlay: it is never part of the game's own photos or of F12 screenshots.
+
+## 8. Automatic ring for "retry photo": measured, not built
+
+Measured on Florio with the stage 1 to 3 code (12 saves, runs of 2026-11-16): one save stalls every guest thread for 418 to 1231 ms (median about 700 ms) and holds 2.25 to 2.55 GiB (guest memory plus host stacks). A load takes 265 to 530 ms. Process commit is about 9.3 to 9.7 GiB with one slot.
+
+- Frame time: the stall is one frame of 0.4 to 1.2 s, then normal frames. Every 10 s that is 40 to 120 ms per second, about 0.7 to 2 ms per frame averaged at 60 fps, which passes an average-cost bar but is a visible freeze six times a minute; every 30 s is a freeze every half minute. Neither is acceptable in a ride while the player lines up a photo.
+- Memory: every extra state costs another 2.3 to 2.5 GiB; a ring of 3 adds about 7 GiB to a process that already commits 9.5 GiB.
+- The single-slot code also keeps one set of host-object journals (NVN, audio, files), so a ring needs those multiplied as well: zombies must stay alive while any ring state names them, and a load of state k must free the objects only newer states keep.
+
+So the ring is not built. What would make it viable: copy only guest pages written since the previous state (write watch on the guest ranges, `GetWriteWatch`) so a periodic save copies tens of MiB instead of 2.5 GiB, and keep the full copy only for the oldest state. That is a separate piece of work (about the size of stage 1), after the allocator that backs the guest ranges is checked for `MEM_WRITE_WATCH`.
