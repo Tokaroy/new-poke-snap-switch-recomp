@@ -560,9 +560,9 @@ static void bind_host_layers() {
     snap_bind_nvn();
     bind_codec_stubs();
     bind_window();
-    {   // ultrawide (docs/ultrawide.md): SNAP_ULTRAWIDE=auto (default) widens the 3D view on a window wider than 16:9; off keeps 16:9 with bars
+    {   // ultrawide (docs/ultrawide.md): SNAP_ULTRAWIDE=auto widens the 3D view on a window wider than 16:9 (experimental: photo scores unverified); off (default) keeps 16:9 with bars
         const char *uw = getenv("SNAP_ULTRAWIDE");
-        const bool off = uw && (!_stricmp(uw, "off") || !strcmp(uw, "0"));
+        const bool off = !uw || !(!_stricmp(uw, "auto") || !_stricmp(uw, "on") || !strcmp(uw, "1"));
         RECT cr = {};
         float k = 1.0f;
         if (!off && g_game_hwnd && GetClientRect(g_game_hwnd, &cr) && cr.right > 0 && cr.bottom > 0)

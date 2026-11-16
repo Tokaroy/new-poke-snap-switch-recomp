@@ -705,7 +705,7 @@ void build_pages() {
     for (size_t i = 0; i < mons.size(); ++i)
       mch.push_back({std::to_string(i), std::to_string(i + 1) + ": " + std::to_string(mons[i].r.right - mons[i].r.left) + " x " + std::to_string(mons[i].r.bottom - mons[i].r.top)});
     p.items.push_back(choice("Monitor", "monitor", S_WIN, "-1", mch, "Which screen the borderless window covers. A windowed game stays where you put it.", E_INT));
-    p.items.push_back(choice("Ultrawide", "gfx_ultrawide", S_CFG, "auto", {{"auto", "Auto (wider 3D view)"}, {"off", "Off (16:9 with side bars)"}},
+    p.items.push_back(choice("Ultrawide", "gfx_ultrawide", S_CFG, "off", {{"off", "Off (16:9 with side bars)"}, {"auto", "Auto (experimental: photo scores unverified)"}},
                              "On a screen wider than 16:9, Auto shows more of the world at the sides. Menus, the interface and your photos stay 16:9."));
     p.items.push_back(choice("Pause in background", "pause_on_focus_loss", S_WIN, "1", {{"1", "On"}, {"0", "Off"}},
                              "Pauses the game when you switch to another window.", E_BOOL));

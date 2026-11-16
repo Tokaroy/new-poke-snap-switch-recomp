@@ -107,7 +107,7 @@ const struct { const char* key; const char* env; } kEnvKeys[] = {
     {"gfx_full_rate_anim", "SNAP_FULL_RATE_ANIM"}, {"gfx_ui_font", "SNAP_UI_FONT_SCALE"}, {"fast_boot", "SNAP_FAST_BOOT"},
     {"gfx_ssao_samples", "SNAP_SSAO_SAMPLES"}, {"gfx_ssao_hbao", "SNAP_SSAO_HBAO"},
     {"gfx_shadow_dist", "SNAP_SHADOW_DISTANCE"}, {"gfx_hdr_expand", "SNAP_HDR_EXPAND"},   // 2026-11-14, docs/advanced-graphics-options.md
-    {"gfx_ultrawide", "SNAP_ULTRAWIDE"},   // auto | off (docs/ultrawide.md)
+    {"gfx_ultrawide", "SNAP_ULTRAWIDE"},   // off (default) | auto (docs/ultrawide.md)
     {"vsync", "SNAP_VSYNC"},   // the F1 / native Vsync row (live through snap_vsync_set; this carries it to the next start)
     {"contact_shadows", "SNAP_CONTACT_SHADOWS"},
     {"fps_overlay", "SNAP_FPS_OVERLAY"},                 // performance overlay "fps" / "detailed" or unset (live, runtime/ui/ui_fps.cpp)

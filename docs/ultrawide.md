@@ -6,10 +6,10 @@ On a window wider than 16:9, the 3D view gets wider: the vertical field of view 
 
 | Where | Values | Default |
 |---|---|---|
-| `SNAP_ULTRAWIDE` | `auto`, `off` | `auto` |
-| Launcher and F1 > Graphics: "Ultrawide" (`gfx_ultrawide`) | Auto (wider 3D view), Off (16:9 with side bars) | Auto |
+| `SNAP_ULTRAWIDE` | `off`, `auto` | `off` |
+| Launcher and F1 > Graphics: "Ultrawide" (`gfx_ultrawide`) | Off (16:9 with side bars), Auto (experimental: photo scores unverified) | Off |
 
-The setting needs a restart. The factor is k = window aspect / (16/9), capped at 4. It is read once from the window's client size when the game starts (`host/boot.cpp`, log line `ultrawide: auto, window client WxH, factor k`). A window at 16:9 or narrower gets k = 1, and every path then runs exactly as before. Off keeps the 16:9 picture with black bars.
+Auto is off by default until photo scoring is checked (see Known limits). The setting needs a restart. The factor is k = window aspect / (16/9), capped at 4. It is read once from the window's client size when the game starts (`host/boot.cpp`, log line `ultrawide: auto, window client WxH, factor k`). A window at 16:9 or narrower gets k = 1, and every path then runs exactly as before. Off keeps the 16:9 picture with black bars.
 
 ## How it works
 
@@ -32,7 +32,11 @@ Code: `runtime/nvn/nvn_wide.cpp` (the draw rules), `host/mods/lodanim.cpp` (`wid
 
 ## Known limits
 
-- **Photo scoring on the CPU side.** The projection stored with each photo at the shutter is the widened one (a 3:2 photo camera at aspect 1.5k; seen in the camera heap as `m11 / m00 = 3.0` at k = 2). The GPU Evaluation passes unwiden it exactly. Any score part the game computes on the CPU from that stored projection (possibly Placement or Other Pokémon) would see a frame k times wider. That code was not found, and runs are not repeatable enough to compare totals, so this is unverified. If scores look off, compare with `SNAP_ULTRAWIDE=off`.
+- **Photo scoring on the CPU side (why Auto is off by default).** The projection stored with each photo at the shutter is the widened one. Memory scans at k = 2 find one copy per photo at aspect 16/9 x 2 (records 0x550 bytes apart) and the Evaluation's 3:2 photo camera at aspect 1.5 x 2. The GPU Evaluation passes unwiden it exactly. Hardware read-watch runs (debug registers on every thread, Florio `score_time_a`, 5120x1440) found:
+  - The Evaluation camera's x scale is read during the Evaluation only by its own copy code (`f_710041c330`) and the GPU upload.
+  - The Evaluation also calls `f_71003975d0` on a photo camera that holds the widened 1.5k projection. That function combines the projection with a viewport rect into further camera matrices, so CPU code does work from the widened frame.
+  - Whether those matrices change a score part (Placement and Other Pokémon are the likely ones) was not measured. Runs are not repeatable enough to compare scores between k = 1 and k = 2.
+  - The fix is to store the 16:9 projection at the shutter: an inline hook that divides the stored m00 by k where the photo record is written (that site is not found yet), then the cam-kind-4 unwiden rule goes away. Guest inline hooks need a main regeneration.
 - Post effects that use a horizontal aspect constant (the edge focus blur, vignette and lens-distortion tonemap) keep the 16:9 constant over the wider image, so their shape is stretched by k.
 
 ## Developer switches
