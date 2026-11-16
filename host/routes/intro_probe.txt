@@ -1,0 +1,9 @@
+# fixture: post_tutorial
+# Course intro probe (skip-intro work): Florio to the ride, no inputs during the intro, ends once the rail has moved to progress 3.
+# Run: $env:SNAP_INTRO_TRACE=1; powershell -File host\run_boot.ps1 -Route intro_probe -Timeout 400 -ShotAt 20 -ShotEvery 2 -ShotMax 30
+repeat @f300 @f30000 120 8 A
+wait ui=map_select timeout=240
+repeat @f60 @f30000 120 8 A
+wait ride timeout=240
+wait ride>=3 timeout=120
+end @f30

@@ -181,6 +181,9 @@ uint32_t toggle_mask_effective(const Mapping& m);          // m.toggle_zl / togg
 PadSample map_pad(const Mapping& m, const RawInput& in);   // stateless (no toggle mode): what the Hub computes before suppression
 bool source_down(const Source& s, const RawInput& in, float trigger_threshold = 0.5f);
 TouchSample map_touch(const Mapping& m, const RawInput& in);
+// Window position (0..1 over the client area) -> 1920x1080 interface pixels: the renderer sets this (nvn_hud.cpp) so mouse touch follows the blit
+// rectangle (letterbox, ultrawide) and the HUD scale. Null (tests, no renderer): the window is the whole 16:9 interface.
+extern bool (*g_window_to_guest)(float nx, float ny, float* gx, float* gy);
 
 // ---- the hub the nn::hid shims read
 class Hub {

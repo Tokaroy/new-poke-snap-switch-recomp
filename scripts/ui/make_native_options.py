@@ -278,6 +278,14 @@ TABS = [
         row('Frame generation', 'p', 'opt', 'frame_generation', 'default', (('default', 'Off'), ('1', 'On')),
             'FSR adds computed frames between real ones. Menus stay out. Off under 50 fps.' + R),
     ]),
+    # Tab 14: HUD scale is live (runtime/nvn/nvn_hud.cpp snap_hud_scale_set); Skip course intro is read at start (host/mods/introskip.cpp)
+    ('Interface', 'HUD size and course intro.', [
+        row('HUD scale', 'p', 'opt', 'hud_scale', 'auto',
+            (('auto', 'Auto (by screen height)'),) + nums('100', '125', '150', '175', '200', suffix='%'),
+            'Bigger HUD, menus and dialogue on large screens. The 3D view and photos are not changed.'),
+        row('Skip course intro', 'c', 'opt', 'skip_course_intro', '0', TOGGLE,
+            'Plays the course fly-over about 8x faster. Rides, Pokémon and scores are not changed.' + R),
+    ]),
     # Tab 15 (third set): lens effects (runtime/nvn/nvn_lens_fx.cpp), display only; keys gfx_bokeh_dof / gfx_motion_blur -> SNAP_BOKEH_DOF / SNAP_MOTION_BLUR (settings.cpp)
     ('Lens', 'Camera lens effects. Photos stay sharp.', [
         row('Zoom bokeh', 'p', 'opt', 'gfx_bokeh_dof', 'default',

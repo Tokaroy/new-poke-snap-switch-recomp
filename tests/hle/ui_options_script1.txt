@@ -111,6 +111,11 @@
 31.408 expect_when contact_shadows live
 31.409 opt contact_shadows 1
 31.4095 expect_opt contact_shadows 1
+# HUD scale: live (runtime/nvn/nvn_hud.cpp), stored as the percent; Skip course intro: restart row (host/mods/introskip.cpp)
+31.4096 expect_when hud_scale live
+31.4097 opt hud_scale 150
+31.4098 expect_opt hud_scale 150
+31.4099 expect_when skip_course_intro restart
 # new and widened rows and the Shiny Pokemon row (2026-11-14): four more pending restart rows
 31.41 opt gfx_shadow_dist 2
 31.42 opt gfx_hdr_expand 0.50
@@ -128,6 +133,7 @@
 31.7 opt neo_speed 2.00
 31.75 opt film 100
 31.76 opt skip_cutscenes 1
+31.765 opt skip_course_intro 1
 31.78 opt gfx_pass_grain off
 31.8 opt audio_output speakers
 # Without a mods.json only the native-options pack starts enabled (ui_options.cpp mods list, as mods::load), so alpha and beta
@@ -136,7 +142,7 @@
 32.2 mods move beta -1
 32.4 expect_mods beta:1,alpha:0
 32.5 expect_opt gfx_preset custom
-32.6 expect_pending 28
+32.6 expect_pending 29
 33 expect_opt gfx_render_scale 1.50
 34 tab Graphics
 38 scroll 0.5

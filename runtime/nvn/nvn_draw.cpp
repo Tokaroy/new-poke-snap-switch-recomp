@@ -1284,35 +1284,60 @@ void DoDraw(ReplayCtx& cx, const Cmd& c0) {
     DrawState* d = nullptr; BufBind saved[6]; bool swapped[6] = {};
     ~WideUboRestore() { if (d) for (int s = 0; s < 6; s++) if (swapped[s]) d->ubo[s][0] = saved[s]; }
   } wideUbo;
+  // the box (min/max x, y of attribute 0 over the draw's vertices) of a draw of at most maxN vertices; false when the vertices are not readable
+  auto quadBox = [&](float* box, int maxN) -> bool {
+    if (d.nattr <= 0 || c.i[2] < 3 || c.i[2] > maxN) return false;
+    const int sp = (d.attr[0].v >> 9) & 15; const uint32_t op = d.attr[0].v >> 13;
+    PoolImpl *pp = nullptr, *ip = nullptr; uint64_t po = 0, io = 0;
+    const int n = c.i[2]; static thread_local std::vector<int> vi; vi.assign((size_t)n, 0); bool ok = true;
+    if (indexed) {
+      const int isz = c.i[1] == IDX_U32 ? 4 : c.i[1] == IDX_U16 ? 2 : 1;
+      ok = h->ResolveAddress(c.a[0], &ip, &io) && ip && ip->storage && io + (uint64_t)(c.i[4] + n) * isz <= ip->size;
+      if (ok) {
+        const uint8_t* ib = static_cast<const uint8_t*>(ip->storage) + io + (uint64_t)c.i[4] * isz;
+        for (int k = 0; k < n; k++) { vi[k] = (isz == 4 ? (int)((const uint32_t*)ib)[k] : isz == 2 ? (int)((const uint16_t*)ib)[k] : (int)ib[k]) + c.i[3]; ok = ok && vi[k] >= 0 && vi[k] < 65536; }
+      }
+    } else { for (int k = 0; k < n; k++) vi[k] = c.i[1] + k; ok = c.i[1] >= 0; }
+    int vmax = 0; for (int k = 0; k < n; k++) vmax = std::max(vmax, vi[k]);
+    if (!(ok && d.stream[sp].stride && h->ResolveAddress(d.vbAddr[sp], &pp, &po) && pp && pp->storage && po + (uint64_t)vmax * d.stream[sp].stride + op + 8 <= pp->size)) return false;
+    box[0] = box[1] = 1e30f; box[2] = box[3] = -1e30f;
+    for (int k = 0; k < n && ok; k++) {
+      float P[2]; memcpy(P, static_cast<const uint8_t*>(pp->storage) + po + (uint64_t)vi[k] * d.stream[sp].stride + op, 8);
+      ok = std::isfinite(P[0]) && std::isfinite(P[1]) && std::fabs(P[0]) < 1e5f && std::fabs(P[1]) < 1e5f;
+      box[0] = std::min(box[0], P[0]); box[1] = std::min(box[1], P[1]); box[2] = std::max(box[2], P[0]); box[3] = std::max(box[3], P[1]);
+    }
+    return ok;
+  };
+  {   // [hud] HUD scale (nvn_hud.cpp): an interface draw into the 1920x1080 window texture (no depth) is drawn scaled; every other draw is not
+    HudXf hx;
+    if (HudScaleNow() > 1.001f) {
+      const TextureImpl* t0 = cx.rt[0];
+      if (t0 && (t0->b.flags & TF_DISPLAY) && !cx.rt[8] && t0->b.target == TT_2D && t0->b.width == 1920 && t0->b.height == 1080) {
+        float hb[4];
+        if (quadBox(hb, 3000)) {
+          if (hb[2] <= 256.0f && hb[3] <= 256.0f) {   // glyph quads are in pixels local to the text; the text origin is the NDC position in floats 12-13 (z 0, w 1) of vertex uniform block 1 (the film counter digits)
+            const BufBind& hu = d.ubo[0][1];
+            if (hu.pool && hu.pool->storage && hu.range >= 64 && hu.off + 64 <= hu.pool->size) {
+              const float* f = reinterpret_cast<const float*>(static_cast<const uint8_t*>(hu.pool->storage) + hu.off);
+              if (std::isfinite(f[12]) && std::isfinite(f[13]) && f[12] >= -1.0f && f[12] <= 1.0f && f[13] >= -1.0f && f[13] <= 1.0f && f[14] == 0.0f && f[15] == 1.0f) {
+                const float ox = (f[12] + 1.0f) * 960.0f, oy = (1.0f - f[13]) * 540.0f;
+                hb[0] += ox; hb[2] += ox; hb[1] += oy; hb[3] += oy;
+              }
+            }
+          }
+          HudOnDraw(hb, &hx);
+        }
+      }
+    }
+    cx.hud = hx;
+  }
   if (g_wideK > 1.0f) {   // [wide] ultrawide: choose how this draw maps onto a widened target (nvn_wide.cpp)
     TextureImpl* samp[8]; int ns = 0;
     for (auto& w : texWrites) if (!w.image && w.r.t && ns < 8) samp[ns++] = w.r.t;
     const BufBind& u0 = d.ubo[0][0];
     float box[4]; const float* boxp = nullptr;
     TextureImpl* frt = nullptr; for (int i = 0; i < 9 && !frt; i++) frt = cx.rt[i];
-    if (frt && frt->wide > 1.0f && d.nattr > 0 && c.i[2] >= 3 && c.i[2] <= 64) {   // a few quads (a panel, a 9-slice): the box its positions cover
-      const int sp = (d.attr[0].v >> 9) & 15; const uint32_t op = d.attr[0].v >> 13;
-      PoolImpl *pp = nullptr, *ip = nullptr; uint64_t po = 0, io = 0;
-      const int n = c.i[2]; int vi[64] = {}; bool ok = true;
-      if (indexed) {
-        const int isz = c.i[1] == IDX_U32 ? 4 : c.i[1] == IDX_U16 ? 2 : 1;
-        ok = h->ResolveAddress(c.a[0], &ip, &io) && ip && ip->storage && io + (uint64_t)(c.i[4] + n) * isz <= ip->size;
-        if (ok) {
-          const uint8_t* ib = static_cast<const uint8_t*>(ip->storage) + io + (uint64_t)c.i[4] * isz;
-          for (int k = 0; k < n; k++) { vi[k] = (isz == 4 ? (int)((const uint32_t*)ib)[k] : isz == 2 ? (int)((const uint16_t*)ib)[k] : (int)ib[k]) + c.i[3]; ok = ok && vi[k] >= 0 && vi[k] < 65536; }
-        }
-      } else { for (int k = 0; k < n; k++) vi[k] = c.i[1] + k; ok = c.i[1] >= 0; }
-      int vmax = 0; for (int k = 0; k < n; k++) vmax = std::max(vmax, vi[k]);
-      if (ok && d.stream[sp].stride && h->ResolveAddress(d.vbAddr[sp], &pp, &po) && pp && pp->storage && po + (uint64_t)vmax * d.stream[sp].stride + op + 8 <= pp->size) {
-        box[0] = box[1] = 1e30f; box[2] = box[3] = -1e30f;
-        for (int k = 0; k < n && ok; k++) {
-          float P[2]; memcpy(P, static_cast<const uint8_t*>(pp->storage) + po + (uint64_t)vi[k] * d.stream[sp].stride + op, 8);
-          ok = std::isfinite(P[0]) && std::isfinite(P[1]) && std::fabs(P[0]) < 1e5f && std::fabs(P[1]) < 1e5f;
-          box[0] = std::min(box[0], P[0]); box[1] = std::min(box[1], P[1]); box[2] = std::max(box[2], P[0]); box[3] = std::max(box[3], P[1]);
-        }
-        if (ok) boxp = box;
-      }
-    }
+    if (frt && frt->wide > 1.0f && c.i[2] <= 64 && quadBox(box, 64)) boxp = box;   // a few quads (a panel, a 9-slice): the box its positions cover
     bool c3 = false, c4 = false;   // the camera only from c3 (no per-object matrix in c4): a widened c3 widens the draw
     for (int s = 0; s < 6; s++) if (p->st[s].valid) for (auto& cb : p->st[s].cb) { if (cb.slot == 3) c3 = true; if (cb.slot == 4) c4 = true; }
     const uint8_t* c3p = (u0.pool && u0.pool->storage) ? (const uint8_t*)u0.pool->storage + u0.off : nullptr;
@@ -1328,6 +1353,7 @@ void DoDraw(ReplayCtx& cx, const Cmd& c0) {
     }
   }
   if (!cx.rendering) BeginRendering(cx, rt);
+  if (cx.hud != cx.hudEmitted) FxReemitViewState(cx);   // [hud] this draw's transform differs from the one the viewport and scissor carry
   g_perfDraws++;
 
   ProgramImpl* evalVar = EvalCopyDepthVariant(cx, p, texWrites);

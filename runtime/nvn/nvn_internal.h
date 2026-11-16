@@ -388,6 +388,12 @@ struct Readback {
   std::vector<uint8_t> expect;                            // kind 3: the CPU changed the range since the submit if the guest bytes differ
   std::string dumpPath;   // kind 2: debug dump of a texture to this file (NVN_RT_DUMP)
 };
+// [hud] HUD scale (nvn_hud.cpp, docs/hud-scale.md): guest x' = p x + q, y' = r y + t applied to the viewport and scissor of one interface draw
+struct HudXf {
+  bool on = false; float p = 1.0f, q = 0.0f, r = 1.0f, t = 0.0f;
+  bool operator==(const HudXf& o) const { return on == o.on && (!on || (p == o.p && q == o.q && r == o.r && t == o.t)); }
+  bool operator!=(const HudXf& o) const { return !(*this == o); }
+};
 struct ReplayCtx {
   // Skinning dispatch runs (nvn_draw.cpp DoDispatch): nextIsDispatch = the next work command is another dispatch; csOpen = the last dispatch
   // left its trailing barrier out; csPrev = binding and destination ranges of the dispatches since the last barrier.
@@ -412,6 +418,7 @@ struct ReplayCtx {
   // often sets them before binding targets, so a value scaled for the previous target would land in a corner of a scaled one)
   float vpGuest[4][4] = {}; int scGuest[4][4] = {}; uint8_t vpHave = 0, scHave = 0; float vpScale = 1.0f, scScale = 1.0f;
   float vpSx = 1.0f, vpOx = 0.0f, scSx = 1.0f, scOx = 0.0f;   // [wide] x scale / offset the viewport and scissor were emitted with
+  HudXf hud, hudEmitted;           // [hud] transform the next draw wants / the viewport and scissor were last emitted with
   uint8_t wideMode = 0;            // [wide] 0 full, 1 narrow (middle 16:9), 2 unwiden (nvn_wide.cpp)
   uint64_t wideC3Hash[8] = {}; VkBuffer wideC3Buf[8] = {}; uint8_t wideC3Next = 0;   // [wide] widened c3 copies of this recording
   const char* wideFs = nullptr;   // [wide] fragment program key of the current draw (decision log only)
@@ -551,6 +558,11 @@ VkBuffer WideC3Copy(ReplayCtx& cx, const uint8_t* c3, uint64_t range);   // c3 w
 TextureImpl* WideCropSubstitute(ReplayCtx& cx, TextureImpl* src);   // middle 16:9 of a wide image for a draw into a 16:9-only target
 void WideMarkDrawn(TextureImpl* t);                                  // BeginRendering: a wide target changed
 bool WidePresentCrop(const TextureImpl* src, int* sx, int* sw);      // once per present: middle 16:9 when no widened camera drew
+// [hud] HUD scale (nvn_hud.cpp)
+float HudScaleNow();                                    // scale in effect (1 = off)
+bool HudOnDraw(const float* box, HudXf* out);           // an interface draw covering box (guest px): the transform to draw it with
+void HudOnPresent(int winW, int winH, int dx, int dy, int dw, int dh, int sx, int sy, int sw, int sh, const TextureImpl* src);   // once per present
+bool HudWindowToGuest(float nx, float ny, float* gx, float* gy);   // window position (0..1) -> guest pixels of the interface layout
 extern float g_lodBiasExtra;    // SNAP_LOD_BIAS: added to the game's bias on mipmapped, non-compare samplers
 extern bool g_lodBiasAuto;      // SNAP_LOD_BIAS=auto: -log2(render scale)
 extern void ApplyHostEnvPolicy();   // SNAP_ANISO, SNAP_LOD_BIAS, SNAP_RENDER_SCALE, SNAP_SHADOW_RES (called from DeviceInitialize)

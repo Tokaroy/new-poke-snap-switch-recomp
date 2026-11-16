@@ -198,7 +198,10 @@ void neo_init() {
 
 namespace hle::input { bool route_on(); void route_rail(uint64_t obj, float prog); void route_film(int count); }   // runtime/hle/input_core.cpp (route "wait" signals)
 
+extern "C" void snap_intro_rail(uint64_t R);   // host/mods/introskip.cpp (skip course intro)
+
 static void neo_speed_impl(Cpu *c) {
+    snap_intro_rail(c->x[19]);
     if (hle::input::route_on() && c->x[19] && !IsBadReadPtr((void *)(c->x[19] + 0x70), 4)) hle::input::route_rail(c->x[19], *(float *)(c->x[19] + 0x70));
     if (!g_neo_inited) neo_init();
     if (g_neo == 1.0 && !g_neo_log) return;

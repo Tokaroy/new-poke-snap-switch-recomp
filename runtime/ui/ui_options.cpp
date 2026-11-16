@@ -44,6 +44,8 @@ extern "C" void snap_vsync_set(const char* mode);   // runtime/nvn/nvn_vk.cpp [v
 extern "C" const char* snap_vsync_get();
 extern "C" void snap_contact_shadows_set(int on);   // runtime/nvn/nvn_contact.cpp: live, the next scene frame
 extern "C" int snap_contact_shadows_get();
+extern "C" void snap_hud_scale_set(const char* v);   // runtime/nvn/nvn_hud.cpp: live, the next frame ("auto", "100".."200")
+extern "C" const char* snap_hud_scale_get();
 extern "C" int snap_problem_report(const char* who, char* path_out, int path_cap, char* why_out, int why_cap);   // host/mods/problem_report.cpp
 
 namespace snap::ui {
@@ -112,6 +114,13 @@ void set_contact(const std::string& v) {
   if (v == "1") st::set("contact_shadows", "1");
   else st::erase("contact_shadows");
   snap_contact_shadows_set(v == "1");
+}
+// HUD scale: live, remembered as "hud_scale" (auto = erased; exported as SNAP_HUD_SCALE at the next start)
+std::string get_hud_scale() { return snap_hud_scale_get(); }
+void set_hud_scale(const std::string& v) {
+  if (v.empty() || v == "auto") st::erase("hud_scale");
+  else st::set("hud_scale", v);
+  snap_hud_scale_set(v.c_str());
 }
 // ---- Look: Enhanced / Original (owner 2026-11-15: new installs start Enhanced). One row flips every visual extra of hle/visual_defaults.h together:
 // anti-aliasing, sharpening, anisotropic filtering, menu text sharpness, PNG export and HD photos (the Lighting preset joins when Lighting v2 passes:
@@ -498,6 +507,9 @@ std::vector<Opt>& display_opts() {
       {"gfx_ultrawide", "Ultrawide", kChoice, kRestart,
        "On a screen wider than 16:9, Auto shows more of the world at the sides with the same height of view. Menus, the interface and your photos stay 16:9 in the middle. Off shows the 16:9 picture with side bars.",
        "auto", {{"auto", "Auto (wider 3D view)"}, {"off", "Off (16:9 with side bars)"}}, 0, 0, "", "SNAP_ULTRAWIDE"},
+      {"hud_scale", "HUD scale", kChoice, kLive,
+       "Makes the viewfinder HUD, menus and dialogue bigger on large screens. The 3D view and your photos are not changed. Auto picks 100% at 1080p, 125% at 1440p and 150% at 4K. Crowded screens stay smaller so nothing leaves the picture.",
+       "auto", {{"auto", "Auto (by screen height)"}, {"100", "100%"}, {"125", "125%"}, {"150", "150%"}, {"175", "175%"}, {"200", "200%"}}, 0, 0, "", "SNAP_HUD_SCALE", get_hud_scale, set_hud_scale},
       {"", "Text", kSection, kLive, "", ""},
       {"gfx_ui_font", "Menu text sharpness", kChoice, kRestart,
        "The game's own menus and labels are drawn from a low-resolution letter sheet. Higher draws the letters sharper on large screens, at the same size and position. Automatic uses 2x when the game window is 1440 lines tall or more.", "default",
@@ -563,6 +575,8 @@ std::vector<Opt>& photo_opts() {
       {"", "Skips", kSection, kLive, "", ""},
       {"skip_cutscenes", "Skip dialogue", kToggle, kRestart,
        "Presses A for you whenever a cutscene or professor dialogue box is waiting, so the lines go by without button presses. Choices are not answered for you. Story progress is not changed.", "0", {}, 0, 0, "", "SNAP_SKIP_CUTSCENES"},
+      {"skip_course_intro", "Skip course intro", kToggle, kRestart,
+       "Plays the fixed fly-over at the start of every course about 8 times faster, so the ride starts after a second or two. Rides, Pokemon and photo scores are not changed.", "0", {}, 0, 0, "", "SNAP_SKIP_INTRO"},
       // opt-in, off by default (runtime/nvn/nvn_shiny.cpp reads the switches once at start); settings.cpp turns the key into
       // SNAP_SHINY=1 + SNAP_SHINY_ODDS=<n>. Needs the shiny pack (scripts/hd/make_shiny_pack.py). No forced/test choice here.
       {"shiny", "Shiny Pokemon", kChoice, kRestart,

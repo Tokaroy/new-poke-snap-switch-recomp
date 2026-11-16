@@ -1170,6 +1170,14 @@ extern "C" void os_time_pause(int on) {
     if (on) { if (!g_pause_start) g_pause_start = n.QuadPart; }
     else if (g_pause_start) { g_paused_total += n.QuadPart - g_pause_start; g_pause_start = 0; }
 }
+// Guest time skew (host/mods/introskip.cpp, "Skip course intro"): moves guest time forward by `seconds` at once, so the game's next frame delta
+// is that much longer and its timers, camera and effects run through the span in one step. Never backwards; the caller keeps each step short
+// (the game's clock falls back to 1/60 s for a gap over 0.5 s).
+extern "C" void os_time_skew(double seconds) {
+    if (!(seconds > 0.0) || seconds > 1.0) return;
+    std::lock_guard<std::mutex> lk(g_pause_mu);
+    g_paused_total -= (int64_t)(seconds * (double)qpc_freq());
+}
 extern "C" uint64_t os_ticks(void) {
     LARGE_INTEGER n;
     {

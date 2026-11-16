@@ -1280,8 +1280,12 @@ static float RtScale(const ReplayCtx& cx) {
 }
 // Viewport / scissor in guest pixels -> Vulkan, scaled for the bound render targets (render scale, nvn_host.h)
 static void EmitViewport(ReplayCtx& cx, int i) {
-  const float* v = cx.vpGuest[i];
-  if (v[2] <= 0 || v[3] <= 0) return;
+  const float* v0 = cx.vpGuest[i];
+  if (v0[2] <= 0 || v0[3] <= 0) return;
+  float vh[4] = {v0[0], v0[1], v0[2], v0[3]};   // [hud] the draw's HUD transform, in guest pixels before the render scale and the ultrawide mapping
+  if (cx.hud.on) { vh[0] = cx.hud.p * vh[0] + cx.hud.q; vh[1] = cx.hud.r * vh[1] + cx.hud.t; vh[2] *= cx.hud.p; vh[3] *= cx.hud.r; }
+  cx.hudEmitted = cx.hud;
+  const float* v = vh;
   cx.vpScale = WideXform(cx, v, &cx.vpSx, &cx.vpOx);   // [wide] y scale = the render scale; x may be wider, narrowed or unwidened
   VkViewport vp = MakeNvnViewport(cx.h->originMode, v[0], v[1], v[2], v[3], cx.vpScale);
   if (cx.vpSx != cx.vpScale || cx.vpOx != 0.0f) { vp.x = cx.vpOx + v[0] * cx.vpSx; vp.width = v[2] * cx.vpSx; }
@@ -1290,6 +1294,11 @@ static void EmitViewport(ReplayCtx& cx, int i) {
 }
 static void EmitScissor(ReplayCtx& cx, int i) {
   int x = cx.scGuest[i][0], y = cx.scGuest[i][1], w = cx.scGuest[i][2], ht = cx.scGuest[i][3];
+  cx.hudEmitted = cx.hud;
+  if (cx.hud.on) {   // [hud] same transform as the viewport (the scissor is clamped to the target below)
+    const int x1 = (int)std::ceil(cx.hud.p * (x + w) + cx.hud.q), y1 = (int)std::ceil(cx.hud.r * (y + ht) + cx.hud.t);
+    x = (int)std::floor(cx.hud.p * x + cx.hud.q); y = (int)std::floor(cx.hud.r * y + cx.hud.t); w = x1 - x; ht = y1 - y;
+  }
   if (x < 0) { w += x; x = 0; }
   if (y < 0) { ht += y; y = 0; }
   if (w < 0) w = 0;
@@ -1943,6 +1952,7 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
   int dw = w->scExtent.width, dh = w->scExtent.height;
   if (sa > da) dh = std::max(1, (int)(dw / sa + 0.5)); else dw = std::max(1, (int)(dh * sa + 0.5));
   int dx = ((int)w->scExtent.width - dw) / 2, dy = ((int)w->scExtent.height - dh) / 2;
+  HudOnPresent((int)w->scExtent.width, (int)w->scExtent.height, dx, dy, dw, dh, sx, sy, sw, sh, src);   // [hud] clusters for the next frame, touch mapping
   // [perf pass 20] The black clear is for the letterbox bars. When the blit covers the whole swapchain image (the usual case: the window texture
   // has the window's aspect) it writes every pixel, so the clear and its barrier are skipped. SNAP_PRESENT_CLEAR=1 keeps the clear.
   static const bool kClearAlways = [] { const char* e = getenv("SNAP_PRESENT_CLEAR"); return e && e[0] == '1'; }();

@@ -590,12 +590,16 @@ PadSample map_pad(const Mapping& m, const RawInput& in) {
   return out;
 }
 
+bool (*g_window_to_guest)(float nx, float ny, float* gx, float* gy) = nullptr;
+
 TouchSample map_touch(const Mapping& m, const RawInput& in) {
   TouchSample t;
   if (m.mouse_touch && !m.mouse_look && in.focused && in.mouse_in_window && (in.mouse_buttons & 1)) {
     t.count = 1;
-    t.pt[0].x = (int32_t)std::clamp(in.mouse_x * 1280.0f, 0.0f, 1279.0f);
-    t.pt[0].y = (int32_t)std::clamp(in.mouse_y * 720.0f, 0.0f, 719.0f);
+    float gx = in.mouse_x * 1920.0f, gy = in.mouse_y * 1080.0f;   // interface pixels; the panel is 1280x720 (x 2/3)
+    if (g_window_to_guest) g_window_to_guest(in.mouse_x, in.mouse_y, &gx, &gy);
+    t.pt[0].x = (int32_t)std::clamp(gx * (1280.0f / 1920.0f), 0.0f, 1279.0f);
+    t.pt[0].y = (int32_t)std::clamp(gy * (720.0f / 1080.0f), 0.0f, 719.0f);
   }
   return t;
 }

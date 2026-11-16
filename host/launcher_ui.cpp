@@ -724,6 +724,9 @@ void build_pages() {
     p.items.push_back(choice("Monitor", "monitor", S_WIN, "-1", mch, "Which screen the borderless window covers. A windowed game stays where you put it.", E_INT));
     p.items.push_back(choice("Ultrawide", "gfx_ultrawide", S_CFG, "auto", {{"auto", "Auto (wider 3D view)"}, {"off", "Off (16:9 with side bars)"}},
                              "On a screen wider than 16:9, Auto shows more of the world at the sides. Menus, the interface and your photos stay 16:9."));
+    p.items.push_back(choice("HUD scale", "hud_scale", S_CFG, "auto",
+                             {{"auto", "Auto (by screen height)"}, {"100", "100%"}, {"125", "125%"}, {"150", "150%"}, {"175", "175%"}, {"200", "200%"}},
+                             "Makes the viewfinder HUD, menus and dialogue bigger on large screens. The 3D view and photos stay as they are. Auto: 100% at 1080p, 125% at 1440p, 150% at 4K."));
     p.items.push_back(choice("Pause in background", "pause_on_focus_loss", S_WIN, "1", {{"1", "On"}, {"0", "Off"}},
                              "Pauses the game when you switch to another window.", E_BOOL));
     p.items.push_back(choice("Mute in background", "mute_in_background", S_WIN, "1", {{"1", "On"}, {"0", "Off"}},
@@ -874,6 +877,8 @@ void build_pages() {
       rep.help = "Saves one zip on your Desktop with the logs, your settings and your PC's specs (Windows, graphics card and driver) for a bug report. Your user name and folders are removed; no game files or saves go in. Nothing is uploaded.";
       p.items.push_back(rep);
     }
+    p.items.push_back(choice("Skip course intro", "skip_course_intro", S_CFG, "0", {{"0", "Off"}, {"1", "On"}},
+                             "Plays the fixed fly-over at the start of every course about 8 times faster, so the ride starts after a second or two. Rides, Pokemon and photo scores are not changed."));
     g.pages.push_back(p);
   }
   // Accessibility (docs/accessibility.md): every row starts off; the same rows and keys as the F1 menu's Accessibility tab
