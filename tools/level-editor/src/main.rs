@@ -23,6 +23,7 @@ mod level;
 mod pick;
 mod place;
 mod render;
+mod terrain;
 
 use edit::Sel;
 use glam::{Quat, Vec3};
@@ -44,6 +45,7 @@ struct Args {
     rail_view: Option<f32>,
     layout: bool,
     rail_info: bool,
+    ground_info: bool,
     rail_bends: Vec<(usize, Vec3, usize)>,
     model_adds: Vec<(String, Vec3)>,
     model_moves: Vec<(String, Vec3)>,
@@ -52,6 +54,8 @@ struct Args {
     scatters: Vec<(String, f32, f32)>,
     brush: place::Brush,
     tool: Option<app::Tool>,
+    /// (model name or L:I spawn, copies)
+    fills: Vec<(String, usize)>,
 }
 
 fn parse_vec3(d: &str) -> Result<Vec3, String> {
@@ -235,6 +239,7 @@ fn parse_args() -> Result<Args, String> {
         rail_view: None,
         layout: false,
         rail_info: false,
+        ground_info: false,
         rail_bends: vec![],
         model_adds: vec![],
         spawn_copies: vec![],
@@ -242,6 +247,7 @@ fn parse_args() -> Result<Args, String> {
         scatters: vec![],
         brush: place::Brush::default(),
         tool: None,
+        fills: vec![],
     };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
@@ -272,6 +278,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "--layout" => a.layout = true,
             "--rail-info" => a.rail_info = true,
+            "--ground-info" => a.ground_info = true,
             "--bend-rail" => {
                 // I:dx,dy,dz[:soft]
                 let v = val()?;
@@ -317,6 +324,28 @@ fn parse_args() -> Result<Args, String> {
                 a.brush.seed = f[2].parse().map_err(|_| "--brush: bad seed")?;
             }
             "--align" => a.brush.align = true,
+            "--rules" => {
+                // slope=DEG,height=LO..HI,rail=LO..HI,ground
+                let range = |v: &str| -> Result<(f32, f32), String> {
+                    let (lo, hi) = v.split_once("..").ok_or("--rules: range is LO..HI")?;
+                    Ok((lo.parse().map_err(|_| "--rules: bad number")?, hi.parse().map_err(|_| "--rules: bad number")?))
+                };
+                for kv in val()?.split(',') {
+                    match kv.split_once('=') {
+                        Some(("slope", v)) => a.brush.rules.max_slope = Some(v.parse().map_err(|_| "--rules: bad slope")?),
+                        Some(("height", v)) => a.brush.rules.height = Some(range(v)?),
+                        Some(("rail", v)) => a.brush.rules.rail_dist = Some(range(v)?),
+                        None if kv == "ground" => a.brush.rules.ground_only = true,
+                        _ => return Err(format!("--rules: unknown rule {kv}")),
+                    }
+                }
+            }
+            "--fill" => {
+                // SRC@N
+                let v = val()?;
+                let (src, n) = v.rsplit_once('@').ok_or("--fill SRC@N")?;
+                a.fills.push((src.to_string(), n.parse().map_err(|_| "--fill: bad count")?));
+            }
             "--tool" => {
                 a.tool = Some(match val()?.as_str() {
                     "select" => app::Tool::Select,
@@ -399,6 +428,129 @@ fn print_summary(data: &mut course::DataRoot, name: &str, variant: u32) -> Resul
         }
     }
     println!("spawns by species: {by_species:?}");
+    Ok(())
+}
+
+/// Ground files of the course: collision shapes, navmesh tiles, ground mesh attributes and materials, plus a height
+/// comparison between the rendered ground, the collision and the navmesh at points along the rail.
+fn ground_info(data: &mut course::DataRoot, name: &str, variant: u32) -> Result<(), String> {
+    use ssbh_data::prelude::*;
+    let c = data.courses().into_iter().find(|c| c.name.eq_ignore_ascii_case(name)).ok_or("course not found")?;
+    let lc = data.load(&c, variant)?;
+    let (_, ground) = render::build_geometry(&lc, render::Layers::default());
+    for m in lc.models.iter().filter(|m| m.inst.name.to_lowercase().contains("ground")) {
+        let stem = m.inst.name.clone();
+        println!("== {} at {:?} rot {:?} scale {:?}", stem, m.inst.pos, m.inst.rot, m.inst.scale);
+        if let Some(src) = &m.source {
+            if let Ok(modl) = ModlData::from_file(src) {
+                let dir = src.parent().unwrap();
+                if let Ok(mesh) = MeshData::from_file(dir.join(&modl.mesh_file_name)) {
+                    for o in &mesh.objects {
+                        let n = |a: &[ssbh_data::mesh_data::AttributeData]| a.iter().map(|x| format!("{}({})", x.name, x.data.len())).collect::<Vec<_>>().join(" ");
+                        println!(
+                            "  mesh {}#{}: {} idx | pos {} | nrm {} | uv {} | color {} | tan {}",
+                            o.name, o.subindex, o.vertex_indices.len(), n(&o.positions), n(&o.normals), n(&o.texture_coordinates), n(&o.color_sets), n(&o.tangents)
+                        );
+                        for cs in &o.color_sets {
+                            if let ssbh_data::mesh_data::VectorData::Vector4(v) = &cs.data {
+                                let mut lo = [f32::MAX; 4];
+                                let mut hi = [f32::MIN; 4];
+                                let mut distinct = std::collections::BTreeSet::new();
+                                for c in v {
+                                    for (k, x) in [c.x, c.y, c.z, c.w].iter().enumerate() {
+                                        lo[k] = lo[k].min(*x);
+                                        hi[k] = hi[k].max(*x);
+                                    }
+                                    distinct.insert([(c.x * 255.0) as u8, (c.y * 255.0) as u8, (c.z * 255.0) as u8, (c.w * 255.0) as u8]);
+                                }
+                                println!("    {} rgba min {:.2?} max {:.2?}, {} distinct, e.g. {:?}", cs.name, lo, hi, distinct.len(), distinct.iter().take(6).collect::<Vec<_>>());
+                            }
+                        }
+                    }
+                }
+                for e in &modl.entries {
+                    println!("  entry {}#{} -> {}", e.mesh_object_name, e.mesh_object_subindex, e.material_label);
+                }
+                for mf in &modl.material_file_names {
+                    if let Ok(matl) = MatlData::from_file(dir.join(mf)) {
+                        for e in &matl.entries {
+                            let tex: Vec<String> = e.textures.iter().map(|t| format!("{:?}={}", t.param_id, t.data)).collect();
+                            println!("  material {} [{}]: {}", e.material_label, e.shader_label, tex.join(" "));
+                        }
+                    }
+                }
+            }
+        }
+        let inst = {
+            let q = Quat::from_array(m.inst.rot);
+            let q = if q.length_squared() < 1e-6 { Quat::IDENTITY } else { q.normalize() };
+            glam::Mat4::from_scale_rotation_translation(Vec3::from(m.inst.scale), q, Vec3::from(m.inst.pos))
+        };
+        let col = std::fs::read(c.dir.join(format!("{stem}.DC4A8177"))).ok();
+        let shapes = col.as_deref().map(terrain::parse_collision);
+        if let Some(r) = &shapes {
+            match r {
+                Ok(sh) => {
+                    let ident = sh.iter().filter(|s| s.identity()).count();
+                    let tris: usize = sh.iter().map(|s| s.tris.len()).sum();
+                    let mut fl: std::collections::BTreeMap<u32, usize> = Default::default();
+                    for s in sh {
+                        for f in &s.flags {
+                            *fl.entry(*f).or_default() += 1;
+                        }
+                    }
+                    println!("  collision: {} shapes ({} identity), {} triangles, face flags {:x?}", sh.len(), ident, tris, fl);
+                }
+                Err(e) => println!("  collision: {e}"),
+            }
+        }
+        let nav = std::fs::read(c.dir.join(format!("{stem}.navmshb"))).ok();
+        let tiles = nav.as_deref().map(terrain::find_tiles).unwrap_or_default();
+        for t in &tiles {
+            println!(
+                "  navmesh tile @{:#x}: {} polys, {} verts, {} detail verts, {} bv nodes, {} off-mesh, bounds {:?}..{:?}, quant {}, walkable {:?}, ends {:#x} of {:#x}",
+                t.at, t.poly_count, t.vert_count, t.detail_verts, t.bv_nodes, t.off_mesh, t.bmin, t.bmax, t.quant, t.walkable, t.end, nav.as_ref().unwrap().len()
+            );
+        }
+        // heights along the rail: render ground vs collision vs navmesh
+        let Some(rail) = lc.rail() else { continue };
+        let Ok(sh) = shapes.unwrap_or(Err(String::new())) else { continue };
+        let mut n = 0;
+        let (mut dcol, mut dnav, mut ncol, mut nnav) = (0f32, 0f32, 0, 0);
+        for seg in &rail.segments {
+            for p in seg.iter().step_by(3) {
+                let p = Vec3::from(*p);
+                let Some(h) = ground.raycast_where(p + Vec3::Y * 60.0, -Vec3::Y, 200.0, &|k| k == lc.models.iter().position(|x| std::ptr::eq(x, m)).unwrap_or(usize::MAX)) else { continue };
+                n += 1;
+                let mut best: Option<f32> = None;
+                for s in &sh {
+                    let xf = inst * s.xf();
+                    for t in &s.tris {
+                        let [a, b, d] = t.map(|i| xf.transform_point3(s.verts[i as usize]));
+                        if let Some(y) = terrain::tri_height(a, b, d, h.point.x, h.point.z) {
+                            if best.map_or(true, |bb| (y - h.point.y).abs() < (bb - h.point.y).abs()) {
+                                best = Some(y);
+                            }
+                        }
+                    }
+                }
+                if let Some(y) = best {
+                    dcol = dcol.max((y - h.point.y).abs());
+                    ncol += 1;
+                }
+                if let (Some(nb), Some(t)) = (nav.as_deref(), tiles.first()) {
+                    if let Some(y) = t.height_at(nb, h.point.x, h.point.z, h.point.y) {
+                        if (y - h.point.y).abs() > 0.3 {
+                            println!("    navmesh off by {:.2} at {:.1?}", y - h.point.y, h.point);
+                        }
+                        dnav = dnav.max((y - h.point.y).abs());
+                        nnav += 1;
+                    }
+                }
+            }
+        }
+        println!("  rail samples on this ground: {n}; collision found {ncol} (max |dy| {dcol:.3}); navmesh found {nnav} (max |dy| {dnav:.3})");
+    }
     Ok(())
 }
 
@@ -605,10 +757,11 @@ fn selftest(data: &mut course::DataRoot, name: &str, variant: u32) -> Result<boo
     let mi = lc.models.iter().position(|m| m.inst.pos_off.is_some() && m.inst.rot_off.is_some() && m.inst.scale_off.is_some()).ok_or("no model with a stored rotation and size")?;
     let ml = lc.models[mi].level_idx;
     let orig_models = lc.levels[ml].models.iter().filter(|m| m.alive_off.is_none()).count();
-    let c0 = place::surface_below(&ground, Vec3::from(own_before), 50.0).ok_or("no ground under the test spawn")?.0;
+    let site = place::Site::of(&lc);
+    let c0 = place::surface_below(&ground, &site, Vec3::from(own_before), 50.0, false).ok_or("no ground under the test spawn")?.0;
     let brush = place::Brush { radius: 10.0, count: 8, min_gap: 2.0, scale: (0.5, 2.0), align: true, seed: 7, ..Default::default() };
-    let spots = place::dab(&ground, &brush, &mut place::Rng::new(brush.seed), c0, &mut vec![]);
-    let again = place::dab(&ground, &brush, &mut place::Rng::new(brush.seed), c0, &mut vec![]);
+    let spots = place::dab(&ground, &site, &brush, &mut place::Rng::new(brush.seed), c0, &mut vec![]);
+    let again = place::dab(&ground, &site, &brush, &mut place::Rng::new(brush.seed), c0, &mut vec![]);
     check(
         "scatter repeats from the same seed",
         spots.len() == again.len() && spots.iter().zip(&again).all(|(a, b)| a.pos == b.pos && a.yaw == b.yaw && a.scale_mul == b.scale_mul),
@@ -635,7 +788,7 @@ fn selftest(data: &mut course::DataRoot, name: &str, variant: u32) -> Result<boo
         let inst = &lc.models[*m].inst;
         sat &= Vec3::from(inst.pos).distance(sp.pos) < 1e-4 && (Vec3::from(inst.scale) - src_scale * sp.scale_mul).length() < 1e-3;
         worst = worst.max(1.0 - (Quat::from_array(inst.rot) * Vec3::Y).dot(sp.normal));
-        sat &= ground.below(sp.pos, None).map(|g| (g.y - sp.pos.y).abs() < 0.05).unwrap_or(false);
+        sat &= place::surface_below(&ground, &site, sp.pos, 0.5, false).map(|g| (g.0.y - sp.pos.y).abs() < 0.05).unwrap_or(false);
     }
     check("scattered copies sit on the ground with their size and tilt", sat && worst < 1e-3, format!("worst tilt error {worst:.2e}"));
     check("a scatter stroke is one undo step", h.steps() == steps0 + 1, format!("{} steps", h.steps() - steps0));
@@ -661,6 +814,21 @@ fn selftest(data: &mut course::DataRoot, name: &str, variant: u32) -> Result<boo
         lc.levels.iter().all(|l| l.data == l.orig && !l.dirty && l.adds().is_empty()),
         String::new(),
     );
+    // Rule-based fill on the real course: every spot is on a ground model, no steeper than the limit, inside the
+    // rail-distance band and apart from the others.
+    let rules = place::Rules { max_slope: Some(25.0), rail_dist: Some((5.0, 20.0)), ground_only: true, ..Default::default() };
+    let fb = place::Brush { min_gap: 2.0, seed: 11, rules, ..Default::default() };
+    let (mn, mut mx) = site.rail_bounds(20.0).ok_or("no rail")?;
+    mx.y += 200.0;
+    let spots = place::fill(&ground, &site, &fb, &mut place::Rng::new(fb.seed), mn, mx, 60, &mut vec![]);
+    let ok_rules = spots.iter().all(|s| {
+        let d = site.rail_distance(s.pos);
+        s.normal.y >= 25f32.to_radians().cos() - 1e-4
+            && (5.0..=20.0).contains(&d)
+            && place::surface_below(&ground, &site, s.pos, 0.5, true).map(|g| g.0.distance(s.pos) < 1e-3).unwrap_or(false)
+    });
+    let apart = spots.iter().enumerate().all(|(i, a)| spots[i + 1..].iter().all(|b| flat(a.pos - b.pos).length() >= 2.0));
+    check("rule fill keeps to slope, rail band and ground", spots.len() >= 30 && ok_rules && apart, format!("{} of 60 placed", spots.len()));
     println!("selftest output in {}", out.display());
     Ok(ok)
 }
@@ -675,10 +843,12 @@ fn main() {
     };
     let data = course::DataRoot::locate(args.data.as_deref());
     let course_name = args.course.clone().unwrap_or("LC_001_A".into());
-    if args.summary || args.selftest || args.rail_view.is_some() || args.layout || args.rail_info || !args.model_adds.is_empty() {
+    if args.summary || args.selftest || args.rail_view.is_some() || args.layout || args.rail_info || args.ground_info || !args.model_adds.is_empty() {
         let r = match data {
             Ok(mut d) => {
-                if args.rail_info {
+                if args.ground_info {
+                    ground_info(&mut d, &course_name, args.variant).map(|_| true)
+                } else if args.rail_info {
                     rail_info(&mut d, &course_name, args.variant).map(|_| true)
                 } else if !args.model_adds.is_empty() {
                     let dir = args.export.clone().ok_or("--add-model needs --export DIR".to_string());
@@ -762,22 +932,37 @@ fn main() {
         }
     }
     ed.brush = args.brush;
-    for (src, x, z) in &args.scatters {
-        let sel = match parse_li(src) {
-            Ok((l, i)) => Some(Sel::Spawn(l, i)),
-            Err(_) => ed.loaded.as_ref().and_then(|c| c.models.iter().position(|m| m.inst.name.eq_ignore_ascii_case(src))).map(Sel::Model),
-        };
-        let names = || {
-            let mut n: Vec<String> = ed.loaded.as_ref().map(|c| c.models.iter().map(|m| m.inst.name.clone()).collect()).unwrap_or_default();
+    // a brush source on the command line: a spawn L:I or a scenery model instance name
+    let resolve = |ed: &app::EditorApp, src: &str| -> Result<Sel, String> {
+        if let Ok((l, i)) = parse_li(src) {
+            return Ok(Sel::Spawn(l, i));
+        }
+        let c = ed.loaded.as_ref().ok_or("no course loaded")?;
+        c.models.iter().position(|m| m.inst.name.eq_ignore_ascii_case(src)).map(Sel::Model).ok_or_else(|| {
+            let mut n: Vec<&str> = c.models.iter().map(|m| m.inst.name.as_str()).collect();
             n.sort();
             n.dedup();
-            n.join(", ")
-        };
-        let r = sel.ok_or_else(|| format!("no model instance named {src}; models: {}", names())).and_then(|s| ed.scatter_at(s, *x, *z));
-        match r {
+            format!("no model instance named {src}; models: {}", n.join(", "))
+        })
+    };
+    for (src, x, z) in &args.scatters {
+        match resolve(&ed, src).and_then(|s| ed.scatter_at(s, *x, *z)) {
             Ok(n) => println!("scattered {n} copies of {src} around ({x}, {z})"),
             Err(e) => {
                 eprintln!("scatter {src}: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+    for (src, n) in &args.fills {
+        let r = resolve(&ed, src).and_then(|s| {
+            ed.brush_src = Some(s);
+            ed.fill_course(*n)
+        });
+        match r {
+            Ok(k) => println!("filled {k} of {n} copies of {src} by the rules {:?}", ed.brush.rules),
+            Err(e) => {
+                eprintln!("fill {src}: {e}");
                 std::process::exit(1);
             }
         }

@@ -40,6 +40,8 @@ enum Action {
     Rebuild,
     /// Makes this the object that Place and Scatter put down.
     SetBrush(Sel),
+    /// Rule-based fill around the rail with this many copies.
+    Fill(usize),
 }
 
 struct Drag {
@@ -108,6 +110,9 @@ pub struct EditorApp {
     rng: place::Rng,
     rng_seed: u64,
     stroke: Option<Stroke>,
+    /// Rule values kept while a rule is switched off: slope, height range, rail distance range.
+    rule_vals: (f32, (f32, f32), (f32, f32)),
+    fill_n: usize,
 }
 
 fn col32(c: [f32; 3]) -> egui::Color32 {
@@ -160,6 +165,8 @@ impl EditorApp {
             rng: place::Rng::new(place::Brush::default().seed),
             rng_seed: place::Brush::default().seed,
             stroke: None,
+            rule_vals: (30.0, (-10.0, 30.0), (4.0, 25.0)),
+            fill_n: 40,
         }
     }
 
@@ -454,6 +461,11 @@ impl EditorApp {
                 Some(Err(e)) => self.status = e,
                 None => {}
             },
+            Action::Fill(n) => {
+                if let Err(e) = self.fill_course(n) {
+                    self.status = e;
+                }
+            }
         }
     }
 
@@ -486,6 +498,55 @@ impl EditorApp {
             }
         }
         seen
+    }
+
+    /// What the scatter rules need: the rail and which models are ground, sky or other.
+    fn site(&self) -> place::Site {
+        self.loaded.as_ref().map(place::Site::of).unwrap_or_default()
+    }
+
+    /// Rule-based fill around the rail: as far out as the rail-distance rule allows (40 units without it), following
+    /// the brush's rules. One undo step.
+    pub fn fill_course(&mut self, n: usize) -> Result<usize, String> {
+        self.ensure_ground();
+        let src = self.brush_src.ok_or("Pick what to place first: Brush, at the top of the right panel")?;
+        let site = self.site();
+        let margin = self.brush.rules.rail_dist.map(|r| r.1).unwrap_or(40.0);
+        let (mut mn, mut mx) = site.rail_bounds(margin).ok_or("this course has no rail")?;
+        // search from above the highest surface (sky and backdrops excluded) so cliffs are found from the top
+        let top = self
+            .ground
+            .models
+            .iter()
+            .filter(|m| site.kinds.get(m.model) != Some(&place::SurfaceKind::Skip))
+            .map(|m| m.max.y)
+            .fold(mx.y, f32::max);
+        mx.y = top;
+        mn.y = mn.y.min(mx.y);
+        self.sync_rng();
+        let mut taken = vec![];
+        let spots = place::fill(&self.ground, &site, &self.brush, &mut self.rng, mn, mx, n, &mut taken);
+        let mut placed = 0;
+        for sp in spots {
+            match self.place_spot(sp, "Fill with", Some("fill")) {
+                Ok(_) => placed += 1,
+                Err(e) => {
+                    self.status = e;
+                    break;
+                }
+            }
+        }
+        self.history.end_interaction();
+        if matches!(src, Sel::Model(_)) && placed > 0 {
+            self.geo_dirty = true;
+        }
+        self.ov_dirty = true;
+        self.status = format!(
+            "Filled {placed} of {n} copies of {} (one undo step){}",
+            self.label(src),
+            if placed < n { "; the rules leave room for fewer" } else { "" }
+        );
+        Ok(placed)
     }
 
     /// Builds the picking ground when no frame has drawn yet (command-line runs).
@@ -553,9 +614,10 @@ impl EditorApp {
     /// Scatter tool: drops a dab of copies around `center`. The ground is rebuilt only when the stroke ends, so copies
     /// from this stroke never stack on each other.
     fn stroke_dab(&mut self, center: Vec3) {
+        let site = self.site();
         let Some(st) = self.stroke.as_mut() else { return };
         let mut taken = std::mem::take(&mut st.taken);
-        let spots = place::dab(&self.ground, &self.brush, &mut self.rng, center, &mut taken);
+        let spots = place::dab(&self.ground, &site, &self.brush, &mut self.rng, center, &mut taken);
         let mut placed = vec![];
         for sp in spots {
             match self.place_spot(sp, "Scatter", Some("scatter")) {
@@ -591,7 +653,7 @@ impl EditorApp {
         let c = self.loaded.as_ref().ok_or("no course loaded")?;
         Self::can_copy(c, src)?;
         self.brush_src = Some(src);
-        let (p, _) = place::surface_below(&self.ground, Vec3::new(x, 0.0, z), 1000.0).ok_or("no ground at that spot")?;
+        let (p, _) = place::surface_below(&self.ground, &self.site(), Vec3::new(x, 0.0, z), 1000.0, false).ok_or("no ground at that spot")?;
         self.stroke_begin(p);
         let n = self.stroke.as_ref().map(|s| s.placed.len()).unwrap_or(0);
         self.stroke_end();
@@ -1084,7 +1146,7 @@ impl EditorApp {
         let scatter = self.tool == Tool::Scatter;
         ui.heading(if scatter { "Scatter" } else { "Place" });
         ui.label(if scatter {
-            "Drag over the ground to paint copies of the brush. Each stroke is one undo step. Alt+drag turns the camera."
+            "Drag over the ground to paint copies of the brush, or fill the course by rules below. Each stroke or fill is one undo step. Alt+drag turns the camera."
         } else {
             "Click the ground or any surface to put down a copy of the brush. Drag turns the camera."
         });
@@ -1145,6 +1207,60 @@ impl EditorApp {
         ui.horizontal(|ui| {
             ui.label("Seed");
             ui.add(egui::DragValue::new(&mut b.seed)).on_hover_text("The same seed gives the same random layout. Change it for a different one.");
+        });
+        if !scatter {
+            return;
+        }
+        let (slope, height, rail) = &mut self.rule_vals;
+        let r = &mut b.rules;
+        // rules set elsewhere (command line) show their own values
+        if let Some(v) = r.max_slope {
+            *slope = v;
+        }
+        if let Some(v) = r.height {
+            *height = v;
+        }
+        if let Some(v) = r.rail_dist {
+            *rail = v;
+        }
+        egui::CollapsingHeader::new("Rules: where copies may land").default_open(true).show(ui, |ui| {
+            ui.weak("They apply to brush strokes and to Fill. A single Place click ignores them.");
+            let mut on = r.max_slope.is_some();
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut on, "Slope at most").on_hover_text("Skip ground steeper than this, in degrees from flat (cliffs, rock faces)");
+                ui.add_enabled(on, egui::DragValue::new(slope).range(0.0..=90.0).suffix("°"));
+            });
+            r.max_slope = on.then_some(*slope);
+            let mut on = r.height.is_some();
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut on, "Height from").on_hover_text("Only between these world heights (Y), e.g. keep trees out of a valley or off a peak");
+                ui.add_enabled(on, egui::DragValue::new(&mut height.0).speed(0.1));
+                ui.label("to");
+                ui.add_enabled(on, egui::DragValue::new(&mut height.1).speed(0.1));
+            });
+            r.height = on.then_some((height.0.min(height.1), height.0.max(height.1)));
+            let mut on = r.rail_dist.is_some();
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut on, "Distance from the rail")
+                    .on_hover_text("Only this far from the camera rail, measured flat. A near edge keeps the view clear; a far edge keeps copies where the player can see them.");
+                ui.add_enabled(on, egui::DragValue::new(&mut rail.0).speed(0.1).range(0.0..=500.0));
+                ui.label("to");
+                ui.add_enabled(on, egui::DragValue::new(&mut rail.1).speed(0.1).range(0.0..=500.0));
+            });
+            r.rail_dist = on.then_some((rail.0.min(rail.1), rail.0.max(rail.1)));
+            ui.checkbox(&mut r.ground_only, "Only on the ground").on_hover_text("Land on the course's ground models, not on trees, rocks or water");
+        });
+        ui.horizontal(|ui| {
+            ui.label("Fill the course with");
+            ui.add(egui::DragValue::new(&mut self.fill_n).range(1..=500)).on_hover_text("How many copies Fill tries to place");
+            ui.label("copies");
+            if ui
+                .add_enabled(self.brush_src.is_some(), egui::Button::new("Fill"))
+                .on_hover_text("Spreads copies over the area around the rail (out to the rail-distance rule's far edge, or 40 units), following the rules. One undo step.")
+                .clicked()
+            {
+                acts.push(Action::Fill(self.fill_n));
+            }
         });
     }
 
@@ -1493,9 +1609,11 @@ impl EditorApp {
 
         let gz = self.gizmo_target();
         let painting = self.tool != Tool::Select && self.loaded.is_some() && !ui.input(|i| i.modifiers.alt);
+        // the brush never lands on the sky dome or the backdrop
+        let kinds: Vec<place::SurfaceKind> = if painting { self.site().kinds } else { vec![] };
         let surface_at = |me: &Self, at: egui::Pos2| {
             let (o, d) = pick::screen_ray(&me.cam, rect, at);
-            me.ground.raycast(o, d, 1e5, None)
+            me.ground.raycast_where(o, d, 1e5, &|m| kinds.get(m) != Some(&place::SurfaceKind::Skip))
         };
         if painting && resp.drag_started_by(egui::PointerButton::Primary) {
             // Scatter paints; Place leaves the drag to turn the camera

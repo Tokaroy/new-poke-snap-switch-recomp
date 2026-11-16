@@ -63,10 +63,15 @@ fn ray_tri(o: Vec3, d: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<f32> {
 impl Ground {
     /// Nearest hit along the ray within `tmax`, skipping model `skip` (the one being dragged).
     pub fn raycast(&self, o: Vec3, d: Vec3, tmax: f32, skip: Option<usize>) -> Option<Hit> {
+        self.raycast_where(o, d, tmax, &|m| Some(m) != skip)
+    }
+
+    /// Nearest hit along the ray within `tmax` on the models `keep` accepts.
+    pub fn raycast_where(&self, o: Vec3, d: Vec3, tmax: f32, keep: &dyn Fn(usize) -> bool) -> Option<Hit> {
         let inv_d = Vec3::ONE / d;
         let mut best: Option<Hit> = None;
         for m in &self.models {
-            if Some(m.model) == skip {
+            if !keep(m.model) {
                 continue;
             }
             let lim = best.map(|b| b.t).unwrap_or(tmax);
