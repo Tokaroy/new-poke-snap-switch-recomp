@@ -166,8 +166,29 @@ pub fn build_geometry(c: &LoadedCourse, layers: Layers) -> (CpuScene, Ground) {
             let gbase = g.pos.len() as u32;
             let tri_start = g.idx.len() / 3;
             let (mut mn, mut mx) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+            let terr = c.terrain.as_ref().filter(|t| t.models.contains(&mi));
             for (p, n) in mesh.positions.iter().zip(&mesh.normals) {
-                let w = xf.transform_point3(Vec3::from(*p));
+                let mut w = xf.transform_point3(Vec3::from(*p));
+                let mut col = col;
+                let mut slope = None;
+                if let Some(t) = terr {
+                    let wt = crate::ground::follow_weight(w.y, t.base_at(w.x, w.z));
+                    if wt > 0.0 {
+                        w.y += t.dy(w.x, w.z) * wt;
+                        let (gx, gz) = t.grad(w.x, w.z);
+                        slope = Some((gx * wt, gz * wt));
+                        let l = t.layer_at(w.x, w.z);
+                        if l != 0.0 {
+                            // painted layer: greener up, browner down
+                            let k = l.clamp(-1.0, 1.0) * 0.6;
+                            col = if k > 0.0 {
+                                [col[0] * (1.0 - k) + 0.30 * k, col[1] * (1.0 - k) + 0.62 * k, col[2] * (1.0 - k) + 0.22 * k]
+                            } else {
+                                [col[0] * (1.0 + k) - 0.62 * k, col[1] * (1.0 + k) - 0.48 * k, col[2] * (1.0 + k) - 0.30 * k]
+                            };
+                        }
+                    }
+                }
                 mn = mn.min(w);
                 mx = mx.max(w);
                 g.pos.push(w);
@@ -178,6 +199,9 @@ pub fn build_geometry(c: &LoadedCourse, layers: Layers) -> (CpuScene, Ground) {
                 let mut nn = (nm * Vec3::from(*n)).normalize_or_zero();
                 if nn == Vec3::ZERO {
                     nn = Vec3::Y;
+                }
+                if let Some((gx, gz)) = slope.filter(|_| nn.y > 0.05) {
+                    nn = Vec3::new(nn.x - gx * nn.y, nn.y, nn.z - gz * nn.y).normalize();
                 }
                 s.tris.push(Vertex { pos: w.to_array(), nrm: nn.to_array(), col });
             }

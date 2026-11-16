@@ -1,6 +1,6 @@
 # Level editor plan
 
-Status (2026-11-14): milestones 1 to 3 work (see Milestones; new course IDs are deferred). `tools/level-editor` opens any `LC_*` course pack from the local unpacked data, lists its parts, and draws the course geometry, the camera rail, other paths and the spawn points in a 3D view. It also edits placements and the rail and exports a mod pack. Milestones 4 to 6 are plans, not built.
+Status (2026-11-15): owner list items 1, 3, 6 and 2 are built (see "Owner list status"). Earlier status (2026-11-14): milestones 1 to 3 work (see Milestones; new course IDs are deferred). `tools/level-editor` opens any `LC_*` course pack from the local unpacked data, lists its parts, and draws the course geometry, the camera rail, other paths and the spawn points in a 3D view. It also edits placements and the rail and exports a mod pack. Milestones 4 to 6 are plans, not built.
 
 This tool was an owner to-do that was parked until the core game and graphics work land (AGENTS.md, "New Pokémon and courses"). Rust work on the recompiler itself is paused (owner, 2026-11-12); this editor is a separate tool and does not touch the recompiler, the runtime or `main`.
 
@@ -180,6 +180,31 @@ Order from the coordinator. Effort is working time including the in-game proof. 
 | 6 | Procedural tools: rule-based scatter by slope, height and distance to the rail or a path, with a seed. | 0.5 day | 3 |
 | 7 | Random course from a seed: terrain, rail, scenery and spawn points, playable to the end. | 1 to 2 weeks | 2 and 4. First version replaces an existing course through a mod pack (Florio's slot); its own course ID needs the deferred loader and registry work. |
 
+### Owner list status (2026-11-15)
+
+- **1. Ease of use (done, commit 822e405).** Gizmo arrows and turn ring with grid and angle snapping, a search box over species, scenery and the object list, a tooltip on every control, undo and redo for every edit.
+- **3. Placement (done, commit 679ffd4).** Place tool (click a surface), Scatter brush (radius, count, random heading and size, minimum gap, align to slope). A stroke is one undo step.
+- **6. Rule-based scatter (done, commit 19681b3).** Fill the course by max slope, height band, distance band to the rail and ground-only, with a seed. In game (run `0-20261115_221657`): `lv_env_001_1_a <- fill-test (78532 bytes)`, the ride reached rail progress 30 and exited normally, and a new trunk stands on the path at rail 6.
+- **2. Terrain (done).** Terrain tool (T): raise, lower, smooth, flatten, paint layer and erase layer, with size, strength and "Pokémon and scenery follow the ground". Each stroke is one undo step. Command line: `--terrain raise@x,z[,radius[,strength[,dabs]]]`.
+  - In game, pack `terrain-test` (run `3-20261115_225336`, route `test/ab_florio.txt`): a hill 3 units high left of the path at (21, 12). The log shows `[mods] hit` for both ground meshes, the collision (572,504 bytes), the navmesh (85,496 bytes) and `lv_map_001_1_a` (spawns standing on the hill moved up with it). The ride reaches rail progress 30 and exits normally. At rail 15 the hill rises beside the path, with the path's dirt carried up its side: `tools/level-editor/shots/ingame_terrain_rail15.png` (local; left: the item 6 fill-test run on the original ground).
+  - Layer paint, pack `terrain-rgb` (run `1-20261115_232812`): grass painted over the dirt path at (26, 22) shows at rail 15. The same paint written to the alpha channel instead (run `0-20261115_230308`) shows nothing: `tools/level-editor/shots/ingame_layer_alpha_vs_rgb.png` (local).
+  - Limits: reshaped ground keeps its baked lightmap shading. Ground models outside the course pack (shared between courses) cannot be edited.
+
+### Ground formats (decoded 2026-11-15, within the 1-day timebox)
+
+- **Collision (`<ground>.DC4A8177`).** FlatBuffers root with a vector of shapes. A shape has position, Euler rotation and scale (Vec3 each), a vertex vector (Vec3 structs), a face vector (three u32 indices plus a u32 flags word) and a u32 hash. Florio's ground has 68 shapes and 13,005 triangles; the 45 shapes with no rotation or scale are ground pieces, the rest are rocks. The collision matches the drawn ground within 0.026 units along the rail.
+- **Navmesh (`<ground>.navmshb`).** A FlatBuffers wrapper around one Detour tile (magic `DNAV`, version 7, 64-bit poly refs, 16-byte links), laid out as standard Detour: 100-byte header, vertices, 32-byte polygons (vertex count at +30, area and type at +31), links, detail meshes, detail vertices, detail triangles, BV tree, off-mesh links. Florio: 464 polygons, 889 vertices, quantization 3.33 (cell size 0.3). It sits a steady 0.35 above the drawn ground (Recast's detail offset).
+- **Layer blend.** The ground is several stacked mesh objects, one per material. Each carries its blend in the Color1 RGB: on Florio, 1 shows the grass and 0 lets the dirt path below show through. Painting adds to the RGB. Alpha usually equals the RGB in the original data, but changing it alone shows nothing in game, so the editor leaves it alone.
+
+### How terrain edits are written
+
+The editor keeps a height grid and a layer grid (1 unit cells) over the ground models. On export it patches the files in place, so nothing else in them changes:
+
+- **Mesh:** vertex positions, normals and the tangent frame, Color1 RGB. Bounds only grow. Rocks and props that share the ground model stay put: a vertex follows the ground only if it was within about one unit of it.
+- **Collision:** the plain ground pieces only (no rotation or scale), with the same rule.
+- **Navmesh:** vertices and detail vertices, then the tile's vertical bounds and the BV leaves of the polygons that moved (floor for the low bound, ceil for the high one). Untouched leaves keep their bytes: the game's own leaves come from Recast data that is not in the file, so they cannot be recomputed exactly (a fit explains 389 of 465).
+- `--selftest` checks that an unedited ground writes back byte-identical (mesh, collision, navmesh), that a raise of 1.49 lifts the collision by 1.47 and the navmesh by 1.36, that every raised polygon sits inside its BV leaf, and that undo flattens the ground again.
+
 ## Milestones
 
 1. **Viewer (done).** Open a course pack, list parts, draw geometry, rail, paths and spawns. Proof: `shots/florio_leg1.png` (local).
@@ -202,7 +227,8 @@ Order from the coordinator. Effort is working time including the in-game proof. 
 
 - **New entries need loader work.** The mod hook only replaces entries the game already requests. New archives and new IDs need the DRP index lookup decompiled and `main` regenerated.
 - **Field meanings are inferred.** Most levelb fields are named from data patterns only. A writer must keep unknown fields exactly, and each edit type needs an in-game check.
-- **Collision format unknown.** `DC4A8177` and `navmshb` are not decoded. Moved or new geometry without matching collision will let Pokémon walk through walls or fall.
+- **Collision for new geometry.** `DC4A8177` and `navmshb` are decoded and edited in place (see "Ground formats"). New shapes and new navmesh polygons are not written yet, so imported scenery needs a collision writer before Pokémon walk around it.
+- **Lightmaps on reshaped ground.** Reshaped ground keeps its baked shading; a raised hill is lit as the flat ground was.
 - **Lighting.** Light probes (`lprb`) and lightmap UVs are baked. New geometry may look wrong until there is a probe bake path or a fallback.
 - **Registries.** Course registration, unlock rules, scoring thresholds and research entries span several registries with partial schemas. Where scoring thresholds live is not confirmed.
 - **Save identity.** How saves store course and species IDs, and what an unmodded game does with unknown IDs, is not checked.

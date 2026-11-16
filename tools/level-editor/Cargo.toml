@@ -24,6 +24,9 @@ walkdir = "2"
 crc32fast = "1"
 # SSBH model/mesh/skeleton reader (MIT), the same vendored copy scripts/hd/ssbh_to_gltf uses
 ssbh_data = { path = "../ref/ssbh_lib/ssbh_data" }
+# raw mesh buffers, for patching ground vertices in place (MIT; half: MIT OR Apache-2.0)
+ssbh_lib = { path = "../ref/ssbh_lib/ssbh_lib", default-features = false }
+half = "2.1.0"
 
 [profile.dev]
 opt-level = 1

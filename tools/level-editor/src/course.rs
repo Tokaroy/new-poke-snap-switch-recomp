@@ -59,6 +59,8 @@ pub struct LoadedCourse {
     pub level_errors: Vec<String>,
     pub models: Vec<PlacedModel>,
     pub load_ms: u128,
+    /// Height and layer grids over the ground, made on the first terrain edit.
+    pub terrain: Option<crate::ground::Terrain>,
 }
 
 impl DataRoot {
@@ -221,6 +223,7 @@ impl DataRoot {
             level_errors,
             models,
             load_ms: t0.elapsed().as_millis(),
+            terrain: None,
         })
     }
 }

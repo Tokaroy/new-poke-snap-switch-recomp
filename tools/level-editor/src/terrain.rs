@@ -21,16 +21,16 @@ fn u32_at(b: &[u8], p: usize) -> Option<u32> {
 fn i32_at(b: &[u8], p: usize) -> Option<i32> {
     Some(i32::from_le_bytes(b.get(p..p + 4)?.try_into().ok()?))
 }
-fn f32_at(b: &[u8], p: usize) -> Option<f32> {
+pub fn f32_at(b: &[u8], p: usize) -> Option<f32> {
     Some(f32::from_le_bytes(b.get(p..p + 4)?.try_into().ok()?))
 }
-fn put_f32(b: &mut [u8], p: usize, v: f32) {
+pub fn put_f32(b: &mut [u8], p: usize, v: f32) {
     b[p..p + 4].copy_from_slice(&v.to_le_bytes());
 }
 fn put_u16(b: &mut [u8], p: usize, v: u16) {
     b[p..p + 2].copy_from_slice(&v.to_le_bytes());
 }
-fn vec3_at(b: &[u8], p: usize) -> Option<Vec3> {
+pub fn vec3_at(b: &[u8], p: usize) -> Option<Vec3> {
     Some(Vec3::new(f32_at(b, p)?, f32_at(b, p + 4)?, f32_at(b, p + 8)?))
 }
 
@@ -226,36 +226,60 @@ impl NavTile {
     /// Polygon `p`: (vertex indices, detail vert base, detail vert count).
     pub fn poly(&self, b: &[u8], p: usize) -> (Vec<usize>, usize, usize) {
         let at = self.polys_at + POLY * p;
-        let n = b[at + 28] as usize;
+        // dtPoly: firstLink u32, verts[6] u16, neis[6] u16, flags u16 (+28), vertCount u8 (+30), areaAndType u8 (+31)
+        let n = b[at + 30] as usize;
         let vs = (0..n.min(6)).map(|k| u16_at(b, at + 4 + 2 * k).unwrap_or(0) as usize).collect();
         let d = self.dmesh_at + 12 * p;
         (vs, u32_at(b, d).unwrap_or(0) as usize, b[d + 8] as usize)
     }
     /// Off-mesh polygons (type bit set) have no detail mesh and are left alone.
     fn is_ground_poly(&self, b: &[u8], p: usize) -> bool {
-        b[self.polys_at + POLY * p + 29] >> 6 == 0
+        b[self.polys_at + POLY * p + 31] >> 6 == 0
     }
 
-    /// Adds `dy(x, z)` to every vertex height, then refits the header's vertical bounds and the BV tree.
-    pub fn displace(&self, b: &mut [u8], dy: &dyn Fn(f32, f32) -> f32) {
+    /// Adds `dy(point)` to every vertex height, then refits the vertical bounds of the polygons that moved.
+    pub fn displace(&self, b: &mut [u8], dy: &dyn Fn(Vec3) -> f32) {
+        let mut moved_v = vec![false; self.vert_count];
+        let mut moved_d = vec![false; self.detail_verts];
         for i in 0..self.vert_count {
             let v = self.vert(b, i);
-            put_f32(b, self.verts_at + 12 * i + 4, v.y + dy(v.x, v.z));
+            let d = dy(v);
+            if d != 0.0 {
+                put_f32(b, self.verts_at + 12 * i + 4, v.y + d);
+                moved_v[i] = true;
+            }
         }
         for i in 0..self.detail_verts {
             let v = self.dvert(b, i);
-            put_f32(b, self.dverts_at + 12 * i + 4, v.y + dy(v.x, v.z));
+            let d = dy(v);
+            if d != 0.0 {
+                put_f32(b, self.dverts_at + 12 * i + 4, v.y + d);
+                moved_d[i] = true;
+            }
         }
-        self.refit(b);
+        let moved: Vec<bool> = (0..self.poly_count)
+            .map(|p| {
+                let (vs, db, dn) = self.poly(b, p);
+                vs.iter().any(|&i| moved_v.get(i) == Some(&true)) || (0..dn).any(|k| moved_d.get(db + k) == Some(&true))
+            })
+            .collect();
+        self.refit(b, &moved);
     }
 
-    /// Recomputes the y bounds: header bmin/bmax and every BV node, quantized like Detour's createBVTree.
-    pub fn refit(&self, b: &mut [u8]) {
+    /// Refits the vertical bounds of the moved polygons: their BV leaves, the BV nodes above them and the header.
+    /// Unmoved leaves keep their original bytes: the original heights come from Recast data that is not in the file,
+    /// so they cannot be recomputed exactly. Moved leaves get conservative bounds (floor low, ceil high), which
+    /// Detour's queries accept. When the ground drops below the tile's base, the base moves down by whole
+    /// quantization steps and every untouched node shifts by the same count.
+    pub fn refit(&self, b: &mut [u8], moved: &[bool]) {
+        if !moved.iter().any(|&m| m) {
+            return;
+        }
         let mut lo = f32::MAX;
         let mut hi = f32::MIN;
         let mut poly_y = vec![(f32::MAX, f32::MIN); self.poly_count];
         for p in 0..self.poly_count {
-            if !self.is_ground_poly(b, p) {
+            if !moved.get(p).copied().unwrap_or(false) || !self.is_ground_poly(b, p) {
                 continue;
             }
             let (vs, db, dn) = self.poly(b, p);
@@ -270,27 +294,41 @@ impl NavTile {
         if lo > hi {
             return;
         }
-        // keep the original base unless the ground left it (moving the base would shift every quantized height)
-        let base = self.bmin.y.min(lo);
+        let (mut base, mut shift) = (self.bmin.y, 0u16);
+        if lo < base {
+            let k = ((base - lo) * self.quant).ceil();
+            base -= k / self.quant;
+            shift = k as u16;
+        }
         put_f32(b, self.at + BMIN + 4, base);
         put_f32(b, self.at + BMAX + 4, self.bmax.y.max(hi));
-        let q = |y: f32| ((y - base) * self.quant).clamp(0.0, 65535.0) as u16;
-        // leaves first, then each internal node takes the union of the nodes it spans
+        let q_lo = |y: f32| ((y - base) * self.quant).floor().clamp(0.0, 65535.0) as u16;
+        let q_hi = |y: f32| ((y - base) * self.quant).ceil().clamp(0.0, 65535.0) as u16;
         let node = |k: usize| self.bv_at + 16 * k;
+        let mut touched = vec![false; self.bv_nodes];
         for k in 0..self.bv_nodes {
             let i = i32_at(b, node(k) + 12).unwrap_or(0);
-            if i >= 0 && (i as usize) < self.poly_count {
+            if i >= 0 && (i as usize) < self.poly_count && poly_y[i as usize].0 <= poly_y[i as usize].1 {
                 let (y0, y1) = poly_y[i as usize];
-                if y0 <= y1 {
-                    put_u16(b, node(k) + 2, q(y0));
-                    put_u16(b, node(k) + 8, q(y1));
+                put_u16(b, node(k) + 2, q_lo(y0));
+                put_u16(b, node(k) + 8, q_hi(y1));
+                touched[k] = true;
+            } else if shift > 0 {
+                for off in [2, 8] {
+                    let v = u16_at(b, node(k) + off).unwrap_or(0);
+                    put_u16(b, node(k) + off, v.saturating_add(shift));
                 }
             }
         }
+        // internal nodes over a moved leaf take the union of the nodes they span (children come after the parent)
         for k in (0..self.bv_nodes).rev() {
             let i = i32_at(b, node(k) + 12).unwrap_or(0);
             if i < 0 {
                 let end = (k + (-i) as usize).min(self.bv_nodes);
+                if !(k + 1..end).any(|j| touched[j]) {
+                    continue;
+                }
+                touched[k] = true;
                 let (mut y0, mut y1) = (u16::MAX, 0u16);
                 for j in k + 1..end {
                     y0 = y0.min(u16_at(b, node(j) + 2).unwrap_or(0));
@@ -352,14 +390,15 @@ pub fn tri_height(a: Vec3, b: Vec3, c: Vec3, x: f32, z: f32) -> Option<f32> {
     (u >= -eps && v >= -eps && u + v <= 1.0 + eps).then(|| a.y + u * (c.y - a.y) + v * (b.y - a.y))
 }
 
-/// Moves collision vertices of every shape by `dy` at their world position. `inst` is the model instance transform.
-pub fn displace_collision(b: &mut [u8], shapes: &[Shape], inst: Mat4, dy: &dyn Fn(f32, f32) -> f32) {
+/// Moves collision vertices of every shape by `dy` at their world position, scaled by `weight` of that position.
+/// `inst` is the model instance transform.
+pub fn displace_collision(b: &mut [u8], shapes: &[Shape], inst: Mat4, dy: &dyn Fn(f32, f32) -> f32, weight: &dyn Fn(Vec3) -> f32) {
     for s in shapes {
         let to_world = inst * s.xf();
         let to_local = to_world.inverse();
         for (k, v) in s.verts.iter().enumerate() {
             let w = to_world.transform_point3(*v);
-            let d = dy(w.x, w.z);
+            let d = dy(w.x, w.z) * weight(w);
             if d == 0.0 {
                 continue;
             }

@@ -205,9 +205,8 @@ impl History {
         let edit = self.undo.last_mut().unwrap();
         let mut touched = vec![];
         for (level, off, new) in writes {
-            let Some(l) = c.levels.get_mut(level) else { continue };
-            let old = l.f32_at(off);
-            l.write_f32(off, new);
+            let Some(old) = read_f32(c, level, off) else { continue };
+            write_f32(c, level, off, new);
             match edit.writes.iter_mut().find(|w| w.level == level && w.off == off) {
                 Some(w) => w.new = new,
                 None => edit.writes.push(FloatWrite { level, off, old, new }),
@@ -228,7 +227,7 @@ impl History {
         let e = self.undo.pop()?;
         let mut touched = vec![];
         for w in e.writes.iter().rev() {
-            c.levels[w.level].write_f32(w.off, w.old);
+            write_f32(c, w.level, w.off, w.old);
             touched.push(w.level);
         }
         sync(c, &touched);
@@ -243,7 +242,7 @@ impl History {
         let e = self.redo.pop()?;
         let mut touched = vec![];
         for w in &e.writes {
-            c.levels[w.level].write_f32(w.off, w.new);
+            write_f32(c, w.level, w.off, w.new);
             touched.push(w.level);
         }
         sync(c, &touched);
@@ -265,9 +264,27 @@ impl History {
     }
 }
 
+/// A float of a level, or a terrain grid cell for the pseudo levels in `ground`.
+fn read_f32(c: &LoadedCourse, level: usize, off: usize) -> Option<f32> {
+    match c.levels.get(level) {
+        Some(l) => Some(l.f32_at(off)),
+        None => c.terrain.as_ref()?.get(level, off),
+    }
+}
+fn write_f32(c: &mut LoadedCourse, level: usize, off: usize, v: f32) {
+    match c.levels.get_mut(level) {
+        Some(l) => l.write_f32(off, v),
+        None => {
+            if let Some(t) = c.terrain.as_mut() {
+                t.set(level, off, v);
+            }
+        }
+    }
+}
+
 /// Re-reads edited levels and copies model placements into the placed-model list.
 fn sync(c: &mut LoadedCourse, touched: &[usize]) {
-    let mut t = touched.to_vec();
+    let mut t: Vec<usize> = touched.iter().copied().filter(|&l| l < c.levels.len()).collect();
     t.sort();
     t.dedup();
     for &li in &t {
@@ -579,11 +596,15 @@ pub fn export(c: &LoadedCourse, mods_root: &Path, pack: &str, description: &str,
     let dir = mods_root.join(&pack);
     let arch = dir.join(c.archive.replace('/', std::path::MAIN_SEPARATOR_STR));
     let levels: Vec<_> = c.levels.iter().filter(|l| all || l.dirty).collect();
-    if levels.is_empty() {
+    let ground = c.terrain.as_ref().filter(|t| t.edited());
+    if levels.is_empty() && ground.is_none() {
         return Err("nothing to export: no level has changes".into());
     }
     std::fs::create_dir_all(&arch).map_err(|e| format!("{}: {e}", arch.display()))?;
     let mut written = vec![];
+    if let Some(t) = ground {
+        written.extend(t.export(c, &arch)?);
+    }
     for l in levels {
         let fname = Path::new(&l.file).file_name().ok_or("bad level file name")?;
         let out = arch.join(fname);

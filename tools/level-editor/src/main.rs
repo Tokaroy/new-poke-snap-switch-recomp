@@ -3,7 +3,8 @@
 //! level-editor [--data <extracted/drp-v262144>] [--course LC_001_A] [--variant 1]
 //!              [--select L:I] [--move L:I:dx,dy,dz]... [--export DIR --pack NAME]
 //!              [--shot out.png [--size 1600x900] [--advanced]] [--summary] [--selftest]
-//!              [--brush radius,count,seed [--align]] [--scatter MODEL_NAME@x,z | --scatter L:I@x,z]... [--tool place|scatter]
+//!              [--brush radius,count,seed [--align]] [--scatter MODEL_NAME@x,z | --scatter L:I@x,z]... [--tool place|scatter|terrain]
+//!              [--terrain raise|lower|smooth|flatten|paint|erase@x,z[,radius[,strength[,dabs]]]]...
 //!
 //! Without --shot, --summary or --selftest it opens a window. --shot renders the same UI offscreen and writes a PNG
 //! (no window). --move edits spawn I of level L (indices as in the Pokémon list), --export writes the changed levels
@@ -17,6 +18,7 @@ mod fb;
 mod geom;
 mod gizmo;
 mod headless;
+mod ground;
 mod grow;
 mod layout;
 mod level;
@@ -56,6 +58,8 @@ struct Args {
     tool: Option<app::Tool>,
     /// (model name or L:I spawn, copies)
     fills: Vec<(String, usize)>,
+    /// terrain strokes: (op, x, z, radius, strength, dabs)
+    terrain: Vec<(ground::Op, f32, f32, f32, f32, usize)>,
 }
 
 fn parse_vec3(d: &str) -> Result<Vec3, String> {
@@ -248,6 +252,7 @@ fn parse_args() -> Result<Args, String> {
         brush: place::Brush::default(),
         tool: None,
         fills: vec![],
+        terrain: vec![],
     };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
@@ -279,6 +284,25 @@ fn parse_args() -> Result<Args, String> {
             "--layout" => a.layout = true,
             "--rail-info" => a.rail_info = true,
             "--ground-info" => a.ground_info = true,
+            "--mesh-colors" => {
+                // FILE.numshb@x,z: Color1 of the vertices within two units of (x, z), then exit
+                let v = val()?;
+                let (f, xz) = v.rsplit_once('@').ok_or("--mesh-colors FILE@x,z")?;
+                let (x, z) = xz.split_once(',').ok_or("--mesh-colors FILE@x,z")?;
+                let (x, z): (f32, f32) = (x.parse().map_err(|_| "bad x")?, z.parse().map_err(|_| "bad z")?);
+                let mesh = ssbh_data::prelude::MeshData::from_file(f).map_err(|e| e.to_string())?;
+                for o in &mesh.objects {
+                    let (Some(p), Some(c)) = (o.positions.first(), o.color_sets.first()) else { continue };
+                    if let (ssbh_data::mesh_data::VectorData::Vector3(ps), ssbh_data::mesh_data::VectorData::Vector4(cs)) = (&p.data, &c.data) {
+                        for (q, col) in ps.iter().zip(cs) {
+                            if (q[0] - x).abs() < 2.0 && (q[2] - z).abs() < 2.0 {
+                                println!("{}#{} ({:.1},{:.2},{:.1}) rgba {:.2},{:.2},{:.2},{:.2}", o.name, o.subindex, q[0], q[1], q[2], col.x, col.y, col.z, col.w);
+                            }
+                        }
+                    }
+                }
+                std::process::exit(0);
+            }
             "--bend-rail" => {
                 // I:dx,dy,dz[:soft]
                 let v = val()?;
@@ -346,12 +370,26 @@ fn parse_args() -> Result<Args, String> {
                 let (src, n) = v.rsplit_once('@').ok_or("--fill SRC@N")?;
                 a.fills.push((src.to_string(), n.parse().map_err(|_| "--fill: bad count")?));
             }
+            "--terrain" => {
+                // OP@x,z[,radius[,strength[,dabs]]]
+                let v = val()?;
+                let usage = "--terrain raise|lower|smooth|flatten|paint|erase@x,z[,radius[,strength[,dabs]]]";
+                let (op, rest) = v.split_once('@').ok_or(usage)?;
+                let op = ground::Op::parse(op).ok_or(usage)?;
+                let f: Vec<f32> = rest.split(',').map(|x| x.parse::<f32>()).collect::<Result<_, _>>().map_err(|_| usage)?;
+                if f.len() < 2 {
+                    return Err(usage.into());
+                }
+                let g = |i: usize, d: f32| f.get(i).copied().unwrap_or(d);
+                a.terrain.push((op, f[0], f[1], g(2, 8.0), g(3, 0.5), g(4, 1.0).max(1.0) as usize));
+            }
             "--tool" => {
                 a.tool = Some(match val()?.as_str() {
                     "select" => app::Tool::Select,
                     "place" => app::Tool::Place,
                     "scatter" => app::Tool::Scatter,
-                    _ => return Err("--tool select|place|scatter".into()),
+                    "terrain" => app::Tool::Terrain,
+                    _ => return Err("--tool select|place|scatter|terrain".into()),
                 })
             }
             "--export" => a.export = Some(val()?.into()),
@@ -464,6 +502,30 @@ fn ground_info(data: &mut course::DataRoot, name: &str, variant: u32) -> Result<
                                     distinct.insert([(c.x * 255.0) as u8, (c.y * 255.0) as u8, (c.z * 255.0) as u8, (c.w * 255.0) as u8]);
                                 }
                                 println!("    {} rgba min {:.2?} max {:.2?}, {} distinct, e.g. {:?}", cs.name, lo, hi, distinct.len(), distinct.iter().take(6).collect::<Vec<_>>());
+                                // the color under rail points (the dirt path) and six units to each side (usually grass)
+                                if let (Some(pos), Some(rail)) = (o.positions.first(), lc.rail()) {
+                                    if let ssbh_data::mesh_data::VectorData::Vector3(ps) = &pos.data {
+                                        let xf = ground::inst_xf(&m.inst);
+                                        let near = |x: f32, z: f32| {
+                                            ps.iter().enumerate().map(|(i, p)| (i, xf.transform_point3(Vec3::from(*p)))).min_by(|a, b| {
+                                                let d = |q: Vec3| (q.x - x).powi(2) + (q.z - z).powi(2);
+                                                d(a.1).total_cmp(&d(b.1))
+                                            })
+                                        };
+                                        let mut line = vec![];
+                                        for p in rail.segments.first().into_iter().flatten().step_by(8) {
+                                            for dx in [-6.0f32, 0.0, 6.0] {
+                                                if let Some((i, q)) = near(p[0] + dx, p[2]) {
+                                                    if (q.x - p[0] - dx).abs() < 2.0 && (q.z - p[2]).abs() < 2.0 {
+                                                        let c = v[i];
+                                                        line.push(format!("({:.0},{:.0})={:.2},{:.2},{:.2},{:.2}", p[0] + dx, p[2], c.x, c.y, c.z, c.w));
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        println!("    {} along the rail (x-6, x, x+6): {}", cs.name, line.join(" "));
+                                    }
+                                }
                             }
                         }
                     }
@@ -550,6 +612,10 @@ fn ground_info(data: &mut course::DataRoot, name: &str, variant: u32) -> Result<
             }
         }
         println!("  rail samples on this ground: {n}; collision found {ncol} (max |dy| {dcol:.3}); navmesh found {nnav} (max |dy| {dnav:.3})");
+        if let Some(seg) = rail.segments.first() {
+            let pts: Vec<String> = seg.iter().enumerate().step_by(4).map(|(i, p)| format!("{i}:({:.1},{:.1},{:.1})", p[0], p[1], p[2])).collect();
+            println!("  rail points: {}", pts.join(" "));
+        }
     }
     Ok(())
 }
@@ -829,6 +895,135 @@ fn selftest(data: &mut course::DataRoot, name: &str, variant: u32) -> Result<boo
     });
     let apart = spots.iter().enumerate().all(|(i, a)| spots[i + 1..].iter().all(|b| flat(a.pos - b.pos).length() >= 2.0));
     check("rule fill keeps to slope, rail band and ground", spots.len() >= 30 && ok_rules && apart, format!("{} of 60 placed", spots.len()));
+
+    // Terrain: the unedited ground writes back byte-identical; a raise lifts the mesh, collision and navmesh together;
+    // the navmesh bounds still hold every polygon; undo restores.
+    let t0 = ground::Terrain::build(&lc, &ground).ok_or("no ground model to edit")?;
+    let files_of = |lc: &course::LoadedCourse| -> Result<Vec<(PathBuf, Vec<u8>, glam::Mat4)>, String> {
+        let t = lc.terrain.as_ref().ok_or("no terrain")?;
+        let mut v = vec![];
+        for &mi in &t.models {
+            let m = &lc.models[mi];
+            let Some(src) = &m.source else { continue };
+            let inst = ground::inst_xf(&m.inst);
+            for (p, b) in t.ground_files(src.parent().ok_or("no folder")?, &m.inst.name, src, inst)? {
+                v.push((p, b, inst));
+            }
+        }
+        Ok(v)
+    };
+    lc.terrain = Some(t0);
+    let same = files_of(&lc)?;
+    let ident = same.iter().filter(|(p, b, _)| std::fs::read(p).map(|o| o == *b).unwrap_or(false)).count();
+    let kinds = |v: &[(PathBuf, Vec<u8>, glam::Mat4)]| {
+        let has = |e: &str| v.iter().any(|(p, ..)| p.extension().is_some_and(|x| x.eq_ignore_ascii_case(e)));
+        (has("numshb"), has("DC4A8177"), has("navmshb"))
+    };
+    let differ: Vec<String> = same
+        .iter()
+        .filter_map(|(p, b, _)| {
+            let o = std::fs::read(p).ok()?;
+            let n = o.iter().zip(b).filter(|(x, y)| x != y).count();
+            let first = o.iter().zip(b).position(|(x, y)| x != y);
+            (o != *b).then(|| format!("{} ({} vs {} bytes, {n} differ, first at {first:?})", p.file_name().unwrap_or_default().to_string_lossy(), b.len(), o.len()))
+        })
+        .collect();
+    check(
+        "unedited ground writes back byte-identical",
+        !same.is_empty() && ident == same.len(),
+        format!("{ident} of {} files, kinds {:?} {}", same.len(), kinds(&same), differ.join("; ")),
+    );
+    // a spot on the ground under the rail, a third of the way along, where collision and navmesh both exist
+    let col_h = |v: &[(PathBuf, Vec<u8>, glam::Mat4)], x: f32, z: f32, near: f32| -> Option<f32> {
+        let mut best: Option<f32> = None;
+        for (p, b, inst) in v.iter().filter(|(p, ..)| p.extension().is_some_and(|e| e == "DC4A8177")) {
+            let _ = p;
+            for s in terrain::parse_collision(b).ok()? {
+                let xf = *inst * s.xf();
+                for t in &s.tris {
+                    let [a, bb, d] = t.map(|i| xf.transform_point3(s.verts[i as usize]));
+                    if let Some(y) = terrain::tri_height(a, bb, d, x, z) {
+                        if best.map_or(true, |q| (y - near).abs() < (q - near).abs()) {
+                            best = Some(y);
+                        }
+                    }
+                }
+            }
+        }
+        best
+    };
+    let nav_h = |v: &[(PathBuf, Vec<u8>, glam::Mat4)], x: f32, z: f32, near: f32| -> Option<f32> {
+        v.iter().filter(|(p, ..)| p.extension().is_some_and(|e| e == "navmshb")).find_map(|(_, b, _)| terrain::find_tiles(b).iter().find_map(|t| t.height_at(b, x, z, near)))
+    };
+    let rail_pts: Vec<Vec3> = site.rail.iter().flatten().copied().collect();
+    let spot = rail_pts.iter().skip(rail_pts.len() / 3).find_map(|r| {
+        let t = lc.terrain.as_ref()?;
+        let y = t.height_at(r.x, r.z);
+        (!y.is_nan() && col_h(&same, r.x, r.z, y).is_some() && nav_h(&same, r.x, r.z, y).is_some()).then_some(Vec3::new(r.x, y, r.z))
+    });
+    if let Some(p) = spot {
+        let mut h = edit::History::default();
+        for _ in 0..5 {
+            let w = lc.terrain.as_ref().unwrap().dab(ground::Op::Raise, p, 12.0, 1.0, p.y);
+            h.apply(&mut lc, "raise", Some("ground"), w);
+        }
+        let w = lc.terrain.as_ref().unwrap().dab(ground::Op::Paint, p, 12.0, 1.0, p.y);
+        h.apply(&mut lc, "paint", Some("ground"), w);
+        h.end_interaction();
+        let t = lc.terrain.as_ref().unwrap();
+        let want = t.dy(p.x, p.z);
+        check("raise builds up the height grid", (want - 1.5).abs() < 0.05 && t.layer_at(p.x, p.z) > 0.2, format!("+{want:.3} at the center, layer {:.2}", t.layer_at(p.x, p.z)));
+        let edited = files_of(&lc)?;
+        let (c0, c1) = (col_h(&same, p.x, p.z, p.y), col_h(&edited, p.x, p.z, p.y + want));
+        let (n0, n1) = (nav_h(&same, p.x, p.z, p.y), nav_h(&edited, p.x, p.z, p.y + want));
+        let cd = c1.zip(c0).map(|(a, b)| a - b).unwrap_or(f32::NAN);
+        let nd = n1.zip(n0).map(|(a, b)| a - b).unwrap_or(f32::NAN);
+        check("collision rises with the ground", (cd - want).abs() < 0.25 * want, format!("+{cd:.3} (grid +{want:.3})"));
+        check("navmesh rises with the ground", nd > 0.5 * want && nd < 1.2 * want, format!("+{nd:.3} (grid +{want:.3})"));
+        // every ground polygon's vertices sit inside its BV leaf and the tile bounds
+        let mut bv_ok = true;
+        let mut leaves = 0;
+        for (path, b, _) in edited.iter().filter(|(p, ..)| p.extension().is_some_and(|e| e == "navmshb")) {
+            let orig = same.iter().find(|(p, ..)| p == path).map(|x| x.1.clone()).unwrap_or_default();
+            for tile in terrain::find_tiles(b) {
+                let (lo, hi) = (terrain::f32_at(b, tile.at + 76).unwrap_or(0.0), terrain::f32_at(b, tile.at + 88).unwrap_or(0.0));
+                for k in 0..tile.bv_nodes {
+                    let at = tile.bv_at + 16 * k;
+                    let i = i32::from_le_bytes(b[at + 12..at + 16].try_into().unwrap());
+                    if i < 0 || i as usize >= tile.poly_count {
+                        continue;
+                    }
+                    let (vs, db, dn) = tile.poly(b, i as usize);
+                    if b[tile.polys_at + 32 * i as usize + 31] >> 6 != 0 {
+                        continue;
+                    }
+                    // only raised polygons: the game's own leaves come from Recast data and are left as they were
+                    let raised = vs.iter().any(|&v| tile.vert(b, v).y != tile.vert(&orig, v).y)
+                        || (0..dn).any(|k| tile.dvert(b, db + k).y != tile.dvert(&orig, db + k).y);
+                    if !raised {
+                        continue;
+                    }
+                    leaves += 1;
+                    let (q0, q1) = (u16::from_le_bytes([b[at + 2], b[at + 3]]) as f32, u16::from_le_bytes([b[at + 8], b[at + 9]]) as f32);
+                    for y in vs.iter().map(|&v| tile.vert(b, v).y).chain((0..dn).map(|k| tile.dvert(b, db + k).y)) {
+                        let qy = (y - lo) * tile.quant;
+                        // leaves hold truncated quantized heights, as Detour writes them
+                        bv_ok &= qy >= q0 - 1e-3 && qy < q1 + 1.0 && y >= lo - 1e-3 && y <= hi + 1e-3;
+                    }
+                }
+            }
+        }
+        check("navmesh bounds hold every raised polygon", bv_ok && leaves > 0, format!("{leaves} leaves checked"));
+        let files = edit::export(&lc, &out, "ground", "selftest", false)?;
+        let gfiles = files.iter().filter(|f| !f.extension().is_some_and(|e| e == "levelb" || e == "json")).count();
+        check("export writes the ground files", gfiles == same.len(), format!("{gfiles} ground files of {} written", files.len()));
+        h.undo(&mut lc);
+        let t = lc.terrain.as_ref().unwrap();
+        check("undo flattens the ground again", !t.edited(), format!("edited = {}", t.edited()));
+    } else {
+        check("a ground spot under the rail", false, "none with collision and navmesh".into());
+    }
+    lc.terrain = None;
     println!("selftest output in {}", out.display());
     Ok(ok)
 }
@@ -963,6 +1158,17 @@ fn main() {
             Ok(k) => println!("filled {k} of {n} copies of {src} by the rules {:?}", ed.brush.rules),
             Err(e) => {
                 eprintln!("fill {src}: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+    for &(op, x, z, r, s, n) in &args.terrain {
+        ed.ground_radius = r;
+        ed.ground_strength = s;
+        match ed.ground_at(op, x, z, n) {
+            Ok(()) => println!("{} ground at ({x}, {z}), radius {r}, strength {s}, {n} dab(s)", op.label()),
+            Err(e) => {
+                eprintln!("terrain: {e}");
                 std::process::exit(1);
             }
         }

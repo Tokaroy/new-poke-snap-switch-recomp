@@ -2348,9 +2348,11 @@ dependencies = [
  "egui",
  "egui-wgpu",
  "glam",
+ "half",
  "png",
  "pollster 0.4.0",
  "ssbh_data",
+ "ssbh_lib",
  "walkdir",
 ]
 

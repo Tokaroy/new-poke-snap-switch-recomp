@@ -6,6 +6,7 @@
 use crate::course::{CourseEntry, DataRoot, LoadedCourse, Variant};
 use crate::edit::{self, History, Issue, Sel, Writes};
 use crate::gizmo;
+use crate::ground;
 use crate::place;
 use crate::level::kind_name;
 use crate::pick::{self, Ground};
@@ -55,6 +56,17 @@ pub enum Tool {
     Select,
     Place,
     Scatter,
+    Terrain,
+}
+
+/// A terrain stroke in progress (one undo step).
+struct GroundStroke {
+    /// Flatten target: the ground height where the stroke started.
+    flat_y: f32,
+    /// Height grid before the stroke, so objects standing on the ground can follow it at the end.
+    before: Vec<f32>,
+    last: Vec3,
+    last_rebuild: std::time::Instant,
 }
 
 /// A scatter stroke in progress (one undo step).
@@ -113,6 +125,12 @@ pub struct EditorApp {
     /// Rule values kept while a rule is switched off: slope, height range, rail distance range.
     rule_vals: (f32, (f32, f32), (f32, f32)),
     fill_n: usize,
+    pub ground_op: ground::Op,
+    pub ground_radius: f32,
+    pub ground_strength: f32,
+    /// Spawns and scenery standing on edited ground move with it.
+    pub ground_carry: bool,
+    gstroke: Option<GroundStroke>,
 }
 
 fn col32(c: [f32; 3]) -> egui::Color32 {
@@ -167,6 +185,11 @@ impl EditorApp {
             stroke: None,
             rule_vals: (30.0, (-10.0, 30.0), (4.0, 25.0)),
             fill_n: 40,
+            ground_op: ground::Op::Raise,
+            ground_radius: 8.0,
+            ground_strength: 0.5,
+            ground_carry: true,
+            gstroke: None,
         }
     }
 
@@ -647,6 +670,112 @@ impl EditorApp {
         self.ov_dirty = true;
     }
 
+    /// Makes the terrain grids on first use (from the unedited ground).
+    pub fn ensure_terrain(&mut self) -> Result<(), String> {
+        if self.loaded.as_ref().map(|c| c.terrain.is_some()).unwrap_or(true) {
+            return self.loaded.as_ref().map(|_| ()).ok_or("no course loaded".into());
+        }
+        self.ensure_ground();
+        let c = self.loaded.as_ref().ok_or("no course loaded")?;
+        let t = ground::Terrain::build(c, &self.ground).ok_or("this course has no ground model to edit")?;
+        self.loaded.as_mut().unwrap().terrain = Some(t);
+        Ok(())
+    }
+
+    pub fn ground_stroke_begin(&mut self, at: Vec3) {
+        if let Err(e) = self.ensure_terrain() {
+            self.status = e;
+            return;
+        }
+        let t = self.loaded.as_ref().and_then(|c| c.terrain.as_ref()).unwrap();
+        let flat_y = { let h = t.height_at(at.x, at.z); if h.is_nan() { at.y } else { h } };
+        self.gstroke = Some(GroundStroke { flat_y, before: t.delta.clone(), last: at, last_rebuild: std::time::Instant::now() });
+        self.ground_dab(at);
+    }
+
+    /// One dab of the terrain brush. The 3D view refreshes about ten times a second during a stroke.
+    pub fn ground_dab(&mut self, center: Vec3) {
+        let Some(st) = self.gstroke.as_mut() else { return };
+        st.last = center;
+        let flat_y = st.flat_y;
+        let Some(t) = self.loaded.as_ref().and_then(|c| c.terrain.as_ref()) else { return };
+        let w = t.dab(self.ground_op, center, self.ground_radius, self.ground_strength, flat_y);
+        let label = format!("{} ground", self.ground_op.label());
+        self.apply(label, Some("ground"), Ok(w));
+        if let Some(st) = self.gstroke.as_mut() {
+            if st.last_rebuild.elapsed().as_millis() >= 100 {
+                st.last_rebuild = std::time::Instant::now();
+                self.geo_dirty = true;
+            }
+        }
+    }
+
+    /// Ends the stroke. With "carry", spawns and scenery that stood on the ground before the stroke move up or down
+    /// with it, in the same undo step.
+    pub fn ground_stroke_end(&mut self) {
+        let Some(st) = self.gstroke.take() else { return };
+        self.geo_dirty = true;
+        if self.ground_carry && !self.ground_op.is_layer() {
+            let mut w: edit::Writes = vec![];
+            if let Some(c) = self.loaded.as_ref() {
+                if let Some(t) = c.terrain.as_ref() {
+                    let site = self.site();
+                    let moved = |p: Vec3| -> Option<f32> {
+                        let old = t.sample(&st.before, p.x, p.z);
+                        let d = t.dy(p.x, p.z) - old;
+                        let b = t.base_at(p.x, p.z);
+                        (d.abs() > 1e-3 && !b.is_nan() && (p.y - (b + old)).abs() < 1.5).then_some(d)
+                    };
+                    let mut sels = vec![];
+                    for (li, l) in c.levels.iter().enumerate() {
+                        for (si, s) in l.spawns.iter().enumerate() {
+                            sels.push((Sel::Spawn(li, si), Vec3::from(s.pos)));
+                        }
+                    }
+                    for (mi, m) in c.models.iter().enumerate() {
+                        if m.inst.alive && !t.models.contains(&mi) && site.kinds.get(mi) != Some(&place::SurfaceKind::Skip) {
+                            sels.push((Sel::Model(mi), Vec3::from(m.inst.pos)));
+                        }
+                    }
+                    for (s, p) in sels {
+                        if let Some(d) = moved(p) {
+                            if edit::move_mode(c, s).is_ok() {
+                                if let Ok(mw) = edit::move_by(c, s, Vec3::Y * d) {
+                                    w.extend(mw);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            let n = w.len();
+            if n > 0 {
+                let label = format!("{} ground", self.ground_op.label());
+                self.apply(label, Some("ground"), Ok(w));
+            }
+        }
+        self.history.end_interaction();
+        self.status = format!("{} ground (one undo step)", self.ground_op.label());
+    }
+
+    /// Command-line terrain stroke: `n` dabs of the current terrain brush at (x, z).
+    pub fn ground_at(&mut self, op: ground::Op, x: f32, z: f32, n: usize) -> Result<(), String> {
+        self.ensure_terrain()?;
+        let t = self.loaded.as_ref().and_then(|c| c.terrain.as_ref()).unwrap();
+        let y = t.height_at(x, z);
+        if y.is_nan() {
+            return Err(format!("no ground at {x}, {z}"));
+        }
+        self.ground_op = op;
+        let p = Vec3::new(x, y, z);
+        self.ground_stroke_begin(p);
+        for _ in 1..n.max(1) {
+            self.ground_dab(p);
+        }
+        self.ground_stroke_end();
+        Ok(())
+    }
+
     /// Command-line scatter: one dab of `brush` around (x, z), as a drag in the Scatter tool would make.
     pub fn scatter_at(&mut self, src: Sel, x: f32, z: f32) -> Result<usize, String> {
         self.ensure_ground();
@@ -745,7 +874,10 @@ impl EditorApp {
                 ui.separator();
             }
             egui::ScrollArea::vertical().show(ui, |ui| {
-                if self.tool != Tool::Select && self.loaded.is_some() {
+                if self.tool == Tool::Terrain && self.loaded.is_some() {
+                    self.terrain_ui(ui);
+                    ui.separator();
+                } else if self.tool != Tool::Select && self.loaded.is_some() {
                     self.placing_ui(ui, &mut acts);
                     ui.separator();
                 }
@@ -775,7 +907,16 @@ impl EditorApp {
         let sel = self.sel;
         let pos = sel.and_then(|s| self.loaded.as_ref().and_then(|c| edit::position(c, s)));
         let tool = &mut self.tool;
+        let ground_radius = &mut self.ground_radius;
         ui.input_mut(|i| {
+            if *tool == Tool::Terrain {
+                if i.consume_key(Modifiers::NONE, Key::OpenBracket) {
+                    *ground_radius = (*ground_radius / 1.25).max(1.0);
+                }
+                if i.consume_key(Modifiers::NONE, Key::CloseBracket) {
+                    *ground_radius = (*ground_radius * 1.25).min(60.0);
+                }
+            }
             if i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z) || i.consume_key(Modifiers::COMMAND, Key::Y) {
                 acts.push(Action::Redo);
             } else if i.consume_key(Modifiers::COMMAND, Key::Z) {
@@ -784,7 +925,7 @@ impl EditorApp {
             if i.consume_key(Modifiers::NONE, Key::Escape) {
                 acts.push(Action::Select(None));
             }
-            for (k, t) in [(Key::S, Tool::Select), (Key::P, Tool::Place), (Key::B, Tool::Scatter)] {
+            for (k, t) in [(Key::S, Tool::Select), (Key::P, Tool::Place), (Key::B, Tool::Scatter), (Key::T, Tool::Terrain)] {
                 if i.consume_key(Modifiers::NONE, k) {
                     *tool = t;
                 }
@@ -1138,6 +1279,29 @@ impl EditorApp {
                 }
             });
         }
+    }
+
+    /// Brush settings for the Terrain tool.
+    fn terrain_ui(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Terrain");
+        ui.label("Drag over the ground to shape it or paint its top texture layer (on Florio, grass over dirt). Each stroke is one undo step. Alt+drag turns the camera.");
+        ui.horizontal_wrapped(|ui| {
+            for op in ground::Op::ALL {
+                ui.selectable_value(&mut self.ground_op, op, op.label()).on_hover_text(op.tip());
+            }
+        });
+        ui.add(egui::Slider::new(&mut self.ground_radius, 1.0..=60.0).text("size").logarithmic(true))
+            .on_hover_text("Brush radius in world units. [ and ] change it too.");
+        ui.add(egui::Slider::new(&mut self.ground_strength, 0.05..=1.0).text("strength"))
+            .on_hover_text("How much each dab changes the ground. Low values build up slowly as you drag.");
+        ui.checkbox(&mut self.ground_carry, "Pokémon and scenery follow the ground")
+            .on_hover_text("When a stroke raises or lowers the ground, spawns and scenery standing on it move with it");
+        let info = self.loaded.as_ref().and_then(|c| c.terrain.as_ref()).map(|t| (t.models.len(), t.edited()));
+        match info {
+            Some((n, true)) => ui.weak(format!("{n} ground model(s) edited. Save as a mod pack writes their mesh, collision and navmesh.")),
+            Some((n, false)) => ui.weak(format!("{n} ground model(s) ready to edit.")),
+            None => ui.weak("The height grid is made from the ground on the first stroke."),
+        };
     }
 
     /// Brush settings for the Place and Scatter tools.
@@ -1524,8 +1688,11 @@ impl EditorApp {
             ui.selectable_value(&mut self.tool, Tool::Place, "Place").on_hover_text("Click a surface to put down a copy of the brush (P)");
             ui.selectable_value(&mut self.tool, Tool::Scatter, "Scatter")
                 .on_hover_text("Drag over the ground to paint several copies with random heading and size (B)");
+            ui.selectable_value(&mut self.tool, Tool::Terrain, "Terrain")
+                .on_hover_text("Drag over the ground to raise, lower, smooth or flatten it, or to paint its top texture layer (T)");
             if t0 != self.tool {
                 self.stroke_end();
+                self.ground_stroke_end();
             }
             ui.separator();
             let before = self.layers;
@@ -1622,6 +1789,10 @@ impl EditorApp {
                 if let Some(h) = surface_at(self, origin) {
                     self.stroke_begin(h.point);
                 }
+            } else if self.tool == Tool::Terrain {
+                if let Some(h) = surface_at(self, origin) {
+                    self.ground_stroke_begin(h.point);
+                }
             }
         } else if resp.drag_started_by(egui::PointerButton::Primary) {
             let origin = ui.input(|i| i.pointer.press_origin()).unwrap_or(rect.center());
@@ -1647,6 +1818,10 @@ impl EditorApp {
                 if h.point.distance(last) >= self.brush.spacing {
                     self.stroke_dab(h.point);
                 }
+            }
+        } else if resp.dragged_by(egui::PointerButton::Primary) && self.gstroke.is_some() {
+            if let Some(h) = resp.interact_pointer_pos().and_then(|at| surface_at(self, at)) {
+                self.ground_dab(h.point);
             }
         } else if resp.dragged_by(egui::PointerButton::Primary) {
             if let (Some(g), Some((s, ..)), Some(at)) = (self.gizmo_drag, gz, resp.interact_pointer_pos()) {
@@ -1681,6 +1856,7 @@ impl EditorApp {
             self.drag = None;
             self.gizmo_drag = None;
             self.stroke_end();
+            self.ground_stroke_end();
             self.history.end_interaction();
         }
         if resp.clicked() {
@@ -1691,6 +1867,10 @@ impl EditorApp {
                     (Tool::Scatter, Some(h)) => {
                         self.stroke_begin(h.point);
                         self.stroke_end();
+                    }
+                    (Tool::Terrain, Some(h)) => {
+                        self.ground_stroke_begin(h.point);
+                        self.ground_stroke_end();
                     }
                     _ => self.status = "Nothing to place on there (is the scenery layer on?)".into(),
                 }
@@ -1733,11 +1913,12 @@ impl EditorApp {
             let painter = ui.painter().with_clip_rect(rect);
             let col = egui::Color32::from_rgb(120, 230, 255);
             if let Some(h) = resp.hover_pos().and_then(|at| surface_at(self, at)) {
-                if self.tool == Tool::Scatter {
+                if self.tool == Tool::Scatter || self.tool == Tool::Terrain {
+                    let r = if self.tool == Tool::Terrain { self.ground_radius } else { self.brush.radius };
                     let pts: Vec<egui::Pos2> = (0..=40)
                         .filter_map(|i| {
                             let a = i as f32 / 40.0 * std::f32::consts::TAU;
-                            pick::project(&self.cam, rect, h.point + Vec3::new(a.sin(), 0.0, a.cos()) * self.brush.radius)
+                            pick::project(&self.cam, rect, h.point + Vec3::new(a.sin(), 0.0, a.cos()) * r)
                         })
                         .collect();
                     painter.add(egui::Shape::line(pts, egui::Stroke::new(2.0, col)));
@@ -1755,7 +1936,7 @@ impl EditorApp {
                     }
                 }
             }
-            if self.brush_src.is_none() {
+            if self.brush_src.is_none() && self.tool != Tool::Terrain {
                 painter.text(rect.center_top() + egui::vec2(0.0, 36.0), egui::Align2::CENTER_TOP, "Pick a brush first (right panel)", egui::FontId::proportional(16.0), col);
             }
         }
@@ -1781,6 +1962,7 @@ impl EditorApp {
                     Tool::Select => "left drag: orbit / move selected   arrows: move on one axis   ring: turn   right drag: pan   wheel: zoom   G ground   R face rail   F show",
                     Tool::Place => "click: place a copy   left drag: orbit   right drag: pan   wheel: zoom   S select   B scatter",
                     Tool::Scatter => "left drag: paint copies   Alt+drag: orbit   right drag: pan   wheel: zoom   S select   P place",
+                    Tool::Terrain => "left drag: shape or paint the ground   Alt+drag: orbit   right drag: pan   wheel: zoom   S select   [ ] brush size",
                 });
             });
         });
