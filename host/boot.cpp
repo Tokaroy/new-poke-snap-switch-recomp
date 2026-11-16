@@ -511,9 +511,10 @@ static void snap_capture_window(HWND h) {
 }
 
 extern "C" void snap_fs_drain_for_exit(int ms);   // runtime/hle/fs.cpp
+extern "C" void nvnHostShotDrain(int ms);   // runtime/nvn/nvn_shot.cpp
 static LRESULT CALLBACK game_wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
     { LRESULT wr = 0; if (snap_window_proc(h, m, w, l, &wr)) return wr; }   // host/window_opts.cpp: F11, focus, mute, remembered placement
-    if (m == WM_CLOSE || m == WM_DESTROY) { fflush(stderr); snap_fs_drain_for_exit(5000); ExitProcess(0); }   // waits (5 s) for a save commit in progress
+    if (m == WM_CLOSE || m == WM_DESTROY) { fflush(stderr); nvnHostShotDrain(5000); snap_fs_drain_for_exit(5000); ExitProcess(0); }   // waits (5 s) for a save commit in progress
     if (m == WM_TIMER) { snap_capture_window(h); return 0; }
     return DefWindowProcW(h, m, w, l);
 }

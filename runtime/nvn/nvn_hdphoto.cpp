@@ -79,6 +79,12 @@ struct Hd {
   bool fromDisk = false, busy = false, bad = false, written = false;
   TextureImpl* gpu[2] = {};    // display textures: [0] RGBA8 UNORM, [1] RGBA8 SRGB (matches the replaced texture's encoding)
   uint64_t lastUse = 0;
+  // A box-filtered level (kW >> midLevel wide) for UI draws too small for the full copy, such as photo select's strip of small
+  // photos: the game's 360x240 texture drawn at 4K is a 1.3x upscale, the level is not. Own small LRU (EvictMid).
+  std::vector<uint8_t> midPx;
+  int midW = 0, midH = 0, midLevel = 0, midRetry = 0;
+  bool midBusy = false;
+  TextureImpl* mid[2] = {};
   std::vector<uint8_t> mini;   // kMiniW x kMiniH RGB box average: finds the capture an album JPEG was made from
   bool hiOn = false;               // a full-size PNG was taken of this capture
   std::shared_ptr<HiBuf> hi;       // its GPU copy, until the capture's readback
@@ -88,7 +94,7 @@ struct Hd {
 };
 using HdP = std::shared_ptr<Hd>;
 
-bool g_log = false;
+bool g_log = false, g_noMid = false;
 std::mutex g_mu;
 std::atomic<int> g_active{0};                            // links + decoded buffers: zero keeps HdPhotoSubstitute a load + compare
 std::unordered_map<const TextureImpl*, HdP> g_link;     // guest texture -> HD copy of what it shows
@@ -110,6 +116,8 @@ uint64_t HeadHash(const uint8_t* p) {
   return h;
 }
 std::vector<HdP> g_gpuLive;                             // HDs holding display textures (LRU by lastUse)
+std::vector<HdP> g_midLive;                             // HDs holding level textures (LRU by lastUse)
+constexpr uint64_t kMidBudget = 48ull << 20;            // a 540x360 level is 0.8 MB
 uint64_t g_nextId = 1, g_tick = 0;
 TextureImpl* g_cap[2] = {};                             // the 2160x1440 blit targets (RGBA8, RGBA8_SRGB), reused (copies are ordered on the queue)
 
@@ -354,7 +362,10 @@ void PlaceHires(const HdP& hd) {
     } else {
       const std::string from = hd->hiFile;
       ShotPost([from, dst] {
-        const bool ok = CopyFileA(from.c_str(), dst.c_str(), FALSE) != 0;
+        const std::string tmp = dst + ".tmp";   // copy beside the final name, then rename over it: a crash never leaves a truncated PNG
+        bool ok = CopyFileA(from.c_str(), tmp.c_str(), FALSE) != 0;
+        if (ok) ok = MoveFileExA(tmp.c_str(), dst.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
+        else DeleteFileA(tmp.c_str());
         fprintf(stderr, "[hdphoto] full-size PNG %s %s\n", ok ? "copied to" : "FAILED to copy to", dst.c_str());
       });
     }
@@ -866,6 +877,93 @@ TextureImpl* ThumbSubstitute(TextureImpl* t, float drawnW, float hostPerUnit) {
   return s;
 }
 
+// ---- level textures: photos drawn small (photo select's strip) ----
+// Worker: the photo box-filtered to kW >> level wide, from the held pixels, the in-memory JPEG or the file.
+void PostMid(const HdP& hd, int level) {
+  hd->midBusy = true;
+  Post([hd, level] {
+    std::vector<uint8_t> px, jpg;
+    bool disk = false;
+    {
+      std::lock_guard<std::mutex> g(g_mu);
+      if (!hd->rgba.empty()) px = hd->rgba; else { jpg = hd->jpg; disk = hd->fromDisk; }
+    }
+    if (px.empty()) { if (jpg.empty() && disk) ReadFile(PathOf(hd->crc), jpg); if (!jpg.empty()) DecodeJpeg(jpg, px); }
+    std::vector<uint8_t> out;
+    const int ow = kW >> level, oh = kH >> level, k = 1 << level;
+    if (px.size() == kBytes) {
+      out.resize((size_t)ow * oh * 4);
+      for (int y = 0; y < oh; y++)
+        for (int x = 0; x < ow; x++) {
+          uint32_t acc[3] = {};
+          for (int yy = 0; yy < k; yy++) {
+            const uint8_t* q = px.data() + ((size_t)(y * k + yy) * kW + (size_t)x * k) * 4;
+            for (int xx = 0; xx < k; xx++) for (int c = 0; c < 3; c++) acc[c] += q[xx * 4 + c];
+          }
+          uint8_t* o = out.data() + ((size_t)y * ow + x) * 4;
+          for (int c = 0; c < 3; c++) o[c] = (uint8_t)((acc[c] + (uint32_t)(k * k) / 2) / (uint32_t)(k * k));
+          o[3] = 255;
+        }
+    }
+    std::lock_guard<std::mutex> g(g_mu);
+    hd->midBusy = false;
+    if (out.empty()) { hd->midRetry = g_presentCount + 120; return; }   // the capture may still be encoding
+    hd->midPx = std::move(out); hd->midW = ow; hd->midH = oh; hd->midLevel = level;
+    if (g_log) fprintf(stderr, "[hdphoto] level %d (%dx%d) of capture %llu ready\n", level, ow, oh, (unsigned long long)hd->id);
+  });
+}
+
+void ReleaseMid(const HdP& hd) {   // g_mu held
+  for (auto*& s : hd->mid) if (s) { Retire(GK_TEXTURE, s); s = nullptr; }
+  hd->midPx.clear(); hd->midPx.shrink_to_fit(); hd->midLevel = 0;
+}
+
+void EvictMid(const HdP& keep) {   // g_mu held
+  uint64_t bytes = 0;
+  for (auto& h : g_midLive) for (auto* s : h->mid) if (s) bytes += (uint64_t)s->b.width * s->b.height * 4;
+  while (bytes > kMidBudget && g_midLive.size() > 1) {
+    auto lru = std::min_element(g_midLive.begin(), g_midLive.end(), [&](const HdP& a, const HdP& b) { return (a == keep ? UINT64_MAX : a->lastUse) < (b == keep ? UINT64_MAX : b->lastUse); });
+    if (*lru == keep) break;
+    for (auto* s : (*lru)->mid) if (s) bytes -= (uint64_t)s->b.width * s->b.height * 4;
+    ReleaseMid(*lru);
+    g_midLive.erase(lru);
+  }
+}
+
+// The level texture for a photo texture drawn `want` render-target pixels wide (<= kW / 2), or nullptr (the game's texture stays:
+// the level would be less than 1.2x the game's own width).
+TextureImpl* MidSubstitute(TextureImpl* t, const HdP& hd, int fi, int want) {   // g_mu held
+  const TextureBuilder& b = t->b;
+  int level = 1;
+  while (level < 3 && (kW >> (level + 1)) >= want) level++;
+  if ((kW >> level) * 5 < b.width * 6) return nullptr;
+  hd->lastUse = ++g_tick;
+  if (hd->midLevel != level && (hd->mid[0] || hd->mid[1] || !hd->midPx.empty())) ReleaseMid(hd);   // drawn at another size: rebuild
+  if (TextureImpl* s = hd->mid[fi]) {
+    if (s->uploaded && s->b.packaged) { s->b.packaged = nullptr; if (!hd->mid[fi ^ 1]) { hd->midPx.clear(); hd->midPx.shrink_to_fit(); } }
+    return s;
+  }
+  if (hd->midPx.empty() || hd->midLevel != level) {
+    if (!hd->midBusy && g_presentCount >= hd->midRetry) PostMid(hd, level);
+    return nullptr;
+  }
+  auto* s = new TextureImpl();
+  s->host = t->host;
+  s->b = TextureBuilder{};
+  s->b.device = b.device; s->b.target = TT_2D; s->b.width = hd->midW; s->b.height = hd->midH; s->b.depth = 1; s->b.levels = 1; s->b.samples = 1;
+  s->b.format = fi ? FMT_RGBA8_SRGB : FMT_RGBA8;
+  s->b.flags = TF_LINEAR; s->b.stride = hd->midW * 4; s->b.packaged = hd->midPx.data();
+  s->shTried = true;
+  if (!s->EnsureImage()) { delete s; hd->bad = true; return nullptr; }
+  hd->mid[fi] = s;
+  if (std::find(g_midLive.begin(), g_midLive.end(), hd) == g_midLive.end()) g_midLive.push_back(hd);
+  EvictMid(hd);
+  static int n = 0;
+  if (g_log || n++ < 6) fprintf(stderr, "[hdphoto] showing level %d (%dx%d) of %s %08x for %p %dx%d drawn %d px wide at present %d\n", level, hd->midW, hd->midH, hd->crc ? "photo" : "shot", hd->crc,
+                                (const void*)t, b.width, b.height, want, g_presentCount);
+  return s;
+}
+
 void HostReadBarrier(VkCommandBuffer cb) {
   VkMemoryBarrier2 mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
   mb.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT; mb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
@@ -989,6 +1087,7 @@ bool HdPhotoOn() {
     const char* e = snapdef::get("SNAP_HD_PHOTOS");   // env or the saved choice, else the Enhanced / Original look (hle/visual_defaults.h)
     const bool v = e && (*e == '1' || !_stricmp(e, "on") || !_stricmp(e, "true") || !_stricmp(e, "yes"));
     g_log = getenv("SNAP_HD_PHOTOS_LOG") != nullptr;
+    if (const char* m = getenv("SNAP_HD_PHOTOS_SMALL")) g_noMid = m[0] == '0';   // 0: small photos (the strip in photo select) keep the game's texture
     if (v) fprintf(stderr, "[hdphoto] HD photos on: 2160x1440 copies in %s\n", Dir().c_str());
     return v;
   }();
@@ -1177,10 +1276,13 @@ TextureImpl* HdPhotoSubstitute(TextureImpl* t, float drawnW, float hostPerUnit) 
     }
   }
   if (!hd || hd->bad) return nullptr;
-  if (drawnW < kMinDrawW) return nullptr;
-  hd->lastUse = ++g_tick;
   const int fi = (t->fi && (t->fi->vk == VK_FORMAT_BC1_RGBA_SRGB_BLOCK || t->fi->vk == VK_FORMAT_BC1_RGB_SRGB_BLOCK || t->fi->vk == VK_FORMAT_R8G8B8A8_SRGB ||
                             t->fi->vk == VK_FORMAT_B8G8R8A8_SRGB || t->fi->vk == VK_FORMAT_BC3_SRGB_BLOCK || t->fi->vk == VK_FORMAT_BC7_SRGB_BLOCK)) ? 1 : 0;
+  if (drawnW < kMinDrawW) {   // a small photo (the strip in photo select): a level sized to the draw, when it beats the game's texture
+    const int want = (drawnW > 0.0f && hostPerUnit > 0.0f) ? (int)std::ceil(drawnW * hostPerUnit) : 0;
+    return (want > 0 && want <= kW / 2 && !g_noMid) ? MidSubstitute(t, hd, fi, want) : nullptr;
+  }
+  hd->lastUse = ++g_tick;
   if (TextureImpl* s = hd->gpu[fi]) {
     if (s->uploaded && s->b.packaged) {   // uploaded: the pixels are no longer needed
       s->b.packaged = nullptr;

@@ -29,4 +29,8 @@ void ShotAfterSubmit(Host* h, VkSemaphore timeline, uint64_t value);
 bool ShotWritePng(const std::string& path, const uint8_t* px, uint32_t w, uint32_t h, bool bgra);
 // Runs `job` on the BelowNormal writer thread (one thread, jobs in order).
 void ShotPost(std::function<void()> job);
+// Teardown: ShotDrain waits for every queued job (DestroyQueue, before the queue's timeline semaphore goes); ShotShutdown drains,
+// refuses new jobs and joins the writer thread (Host::Shutdown, before the device goes).
+void ShotDrain();
+void ShotShutdown();
 }  // namespace nvn

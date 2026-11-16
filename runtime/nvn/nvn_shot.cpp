@@ -75,9 +75,10 @@ std::string shot_dir() {
 // The writer thread: BelowNormal, jobs in order.
 struct Writer {
   std::mutex mu;
-  std::condition_variable cv;
+  std::condition_variable cv, idle;
   std::deque<std::function<void()>> q;
-  bool started = false;
+  bool started = false, stopping = false, busy = false;
+  std::thread th;   // joined by ShotShutdown before the device goes
 };
 Writer& writer() { static Writer* w = new Writer; return *w; }   // never destroyed: the thread may outlive static teardown
 
@@ -172,25 +173,60 @@ bool ShotWritePng(const std::string& path, const uint8_t* px, uint32_t w, uint32
 void ShotPost(std::function<void()> job) {
   Writer& W = writer();
   std::lock_guard<std::mutex> lk(W.mu);
+  if (W.stopping) return;   // shutting down: the device is going, a job would touch it
   W.q.push_back(std::move(job));
   if (!W.started) {
     W.started = true;
-    std::thread([&W] {
+    W.th = std::thread([&W] {
       SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
       SetThreadDescription(GetCurrentThread(), L"snap shot writer");
       for (;;) {
         std::function<void()> j;
         {
           std::unique_lock<std::mutex> l(W.mu);
-          W.cv.wait(l, [&W] { return !W.q.empty(); });
+          W.cv.wait(l, [&W] { return !W.q.empty() || W.stopping; });
+          if (W.q.empty()) return;   // stopping, nothing left
           j = std::move(W.q.front());
           W.q.pop_front();
+          W.busy = true;
         }
         j();
+        { std::lock_guard<std::mutex> l(W.mu); W.busy = false; }
+        W.idle.notify_all();
       }
-    }).detach();
+    });
   }
   W.cv.notify_one();
+}
+
+// Waits until every queued and running job is done (PNGs written, buffers freed). The jobs wait on the queue's timeline and free
+// Vulkan buffers, so this runs before a queue's timeline semaphore or the device is destroyed.
+void ShotDrain() {
+  Writer& W = writer();
+  std::unique_lock<std::mutex> l(W.mu);
+  W.idle.wait(l, [&W] { return W.q.empty() && !W.busy; });
+}
+
+// Drains, then stops accepting jobs and joins the writer thread (Host::Shutdown, device still alive).
+void ShotShutdown() {
+  Writer& W = writer();
+  std::thread th;
+  {
+    std::unique_lock<std::mutex> l(W.mu);
+    W.idle.wait(l, [&W] { return W.q.empty() && !W.busy; });
+    W.stopping = true;
+    th = std::move(W.th);
+  }
+  W.cv.notify_all();
+  if (th.joinable()) th.join();
+}
+
+// Window close leaves the process without Host::Shutdown (ExitProcess): wait up to `ms` for the jobs in flight, so a
+// screenshot taken just before closing is written whole instead of left as a .tmp.
+void ShotDrainFor(int ms) {
+  Writer& W = writer();
+  std::unique_lock<std::mutex> l(W.mu);
+  W.idle.wait_for(l, std::chrono::milliseconds(ms), [&W] { return W.q.empty() && !W.busy; });
 }
 
 void ShotOnPresent(Host* h, VkCommandBuffer cb, TextureImpl* src) {
@@ -266,3 +302,5 @@ void ShotAfterSubmit(Host* h, VkSemaphore timeline, uint64_t value) {
   });
 }
 }  // namespace nvn
+
+extern "C" void nvnHostShotDrain(int ms) { nvn::ShotDrainFor(ms); }   // host/boot.cpp, window close

@@ -1380,6 +1380,7 @@ void DoDraw(ReplayCtx& cx, const Cmd& c0) {
   FxAfterDraw(cx, p->st[1].key);   // [fx] post-tonemap slot (nvn_fx.cpp)
   AaAfterDraw(cx, p->st[1].key);   // SNAP_AA=smaa / SNAP_SHARPEN: in-place pass after the game's tonemap draw (nvn_aa.cpp)
   FcShotAfterDraw(cx, p->st[1].key);   // free camera clean shot (nvn_freecam.cpp)
+  ShotAfterDraw(cx, p->st[1].key);   // screenshot key without the HUD (nvn_shot.cpp)
   if (thumbDraw) {
     fprintf(stderr, "[thumb] recorded\n");
     if (g_fdBurst <= 0) g_fdBurst = 60;   // request a burst of NVN_FRAME_DUMP frames
@@ -1430,7 +1431,6 @@ void DoDispatch(ReplayCtx& cx, const Cmd& c) {
   ScratchVec<TexWrite> twS;   // [cpuprof]
   std::vector<TexWrite>& tw = twS.get();
   FgAfterDraw(cx, p->st[1].key);   // [framegen] HUD-less copy of the finished 3D scene (nvn_framegen.cpp)
-  ShotAfterDraw(cx, p->st[1].key);   // screenshot key without the HUD (nvn_shot.cpp)
   if (!PrepareTextures(cx, d, p, tw, false)) return;
   std::string key = "CS" + std::to_string(p->id);
   VkPipeline pipe = VK_NULL_HANDLE;

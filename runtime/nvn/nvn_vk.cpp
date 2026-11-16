@@ -417,6 +417,7 @@ bool Host::Init(bool wantValidation) {
 
 void Host::Shutdown() {
   if (device) vkDeviceWaitIdle(device);
+  if (device) ShotShutdown();   // the screenshot writer (queued PNGs, full-size photo PNGs) finishes and stops before anything it uses is destroyed
   if (device) FgDestroy(this);   // [framegen] (before the upscaler: it shares the FidelityFX device)
   if (device) UpscaleDestroy(this);   // [upscale]
   if (device) snap_rt::DeviceShutdown(this);   // [rt]
@@ -1069,6 +1070,7 @@ void DestroyQueue(QueueImpl* q) {
   Host* h = q->host;
   QueueFinishImpl(q);
   QueueLive(q, false);   // [audit F4] everything it submitted has completed: stamps naming it count as passed
+  ShotDrain();   // screenshot jobs wait on this queue's timeline value: let them finish before it is destroyed
   for (auto cb : q->freeCbs) vkFreeCommandBuffers(h->device, q->pool, 1, &cb);
   for (auto dp : q->freePools) vkDestroyDescriptorPool(h->device, dp, nullptr);
   if (q->pool) vkDestroyCommandPool(h->device, q->pool, nullptr);
