@@ -39,6 +39,8 @@ Known issue: Windows SmartScreen may say "Windows protected your PC" because the
 
 Updates arrive the same way: the launcher offers them, one click installs one. If an update changes the runtime ABI, the new release carries matching prebuilt objects and the updater regenerates and recompiles the game code once (the slow Ghidra step is reused). Your working build stays as "previous" until the new one passes its smoke test.
 
+Before an update or a rollback changes anything, the updater copies your saves and settings to a dated folder (`update-backups`, the newest 3 are kept) and stops if the drive is too full for the copy. The launcher's Updates page has an Update channel row: Stable (the default) offers finished releases, Testing also offers early builds. To keep everything in one folder, put an empty `portable.txt` next to `SnapRecomp.exe`; settings, saves and caches then live in `portable_data` beside it and survive updates. Details: `docs/updater-safety.md`.
+
 ![The version check](screenshots/builder_check.png)
 
 ## Manual route (advanced)

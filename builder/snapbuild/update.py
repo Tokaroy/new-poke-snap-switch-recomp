@@ -6,8 +6,10 @@ game files; the new version is built again on this PC from your own game files. 
 is in builder/update_pubkey.txt. A zip whose signature does not check is deleted and nothing changes.
 
 Safe by construction:
-  * The only things this module writes are <state>/versions, <state>/downloads, <state>/state.json and the work folder's builds/.
-    Saves, settings, input.json, the shader cache, texcache and the mods folder are never touched.
+  * The only things this module writes are <state>/versions, <state>/downloads, <state>/state.json, the work folder's builds/ and
+    <data>/update-backups (a dated copy of your saves and settings, made before the update starts; the newest 3 are kept, see userdata.py).
+    Saves, settings, input.json, the shader cache, texcache and the mods folder are never changed. When the copy fails, the update stops first.
+  * Two channels: Stable (the default, full releases only) and Testing (opt-in: also the newest prerelease). Both need the same signature.
   * The work folder's out/ is replaced by pipeline.promote only after the new build passes its self-test and the smoke run. A failed
     rebuild leaves out/ exactly as it was. The previous build stays in builds/previous; `rollback` swaps the two.
   * Only a newer version is accepted (the version comes from the signed message). Re-sending an old signed zip is a downgrade and is refused.
@@ -32,8 +34,11 @@ from pathlib import Path
 from . import ed25519
 from .util import BELOW_NORMAL, Log, StepError
 from . import safedel
+from . import userdata
 
 RELEASES_URL = 'https://api.github.com/repos/finalpantasy/new-poke-snap-switch-recomp/releases/latest'
+RELEASE_LIST_URL = 'https://api.github.com/repos/finalpantasy/new-poke-snap-switch-recomp/releases?per_page=15'
+CHANNELS = ('stable', 'testing')
 USER_AGENT = 'SnapRecompUpdater'
 SIGN_PREFIX = b'snaprecomp-release-v1\n'
 ZIP_RE = re.compile(r'^SnapRecomp-Builder-v?(\d+(?:\.\d+){1,3})-win-x64\.zip$')
@@ -146,11 +151,18 @@ def clean_text(s, limit=MAX_NOTES):
     return s if len(s) <= limit else s[:limit].rstrip() + ' [...]'
 
 
-def parse_release(doc):
-    """Turn the GitHub release JSON into a Release. Drafts and prereleases are ignored by the "latest" endpoint; refuse them anyway."""
+def check_channel(channel):
+    c = str(channel or 'stable').strip().lower()
+    if c not in CHANNELS:
+        raise UpdateError(f'unknown update channel "{channel}" (use stable or testing)')
+    return c
+
+
+def parse_release(doc, allow_pre=False):
+    """Turn the GitHub release JSON into a Release. Drafts are always refused; a prerelease only on the Testing channel."""
     if not isinstance(doc, dict):
         raise UpdateError('the release list was not what was expected')
-    if doc.get('draft') or doc.get('prerelease'):
+    if doc.get('draft') or (doc.get('prerelease') and not allow_pre):
         raise UpdateError('the newest release is a draft or a prerelease; ignored')
     tag = str(doc.get('tag_name') or '')
     version = norm_version(tag)
@@ -172,21 +184,43 @@ def parse_release(doc):
                    str(sig.get('browser_download_url') or ''), str(doc.get('html_url') or ''))
 
 
-def fetch_release(url=None, local_ok=None):
+def pick_release(docs, allow_pre):
+    """The newest usable release of a list: not a draft, a prerelease only when allowed, with the zip and its signature file."""
+    best, why = None, None
+    for d in docs:
+        try:
+            r = parse_release(d, allow_pre)
+        except UpdateError as e:
+            why = e
+            continue
+        if best is None or newer(r.version, best.version):
+            best = r
+    if best is None:
+        raise UpdateError(str(why) if why else 'the release list is empty')
+    return best
+
+
+def fetch_release(url=None, local_ok=None, channel='stable'):
+    """Stable asks GitHub for the newest full release. Testing reads the release list and also takes a prerelease when it is newer.
+    A --release-url (tests, a release folder on this PC) may hold either one release or a list."""
+    channel = check_channel(channel)
     local_ok = bool(url) if local_ok is None else local_ok
-    with open_url(url or RELEASES_URL, local_ok) as r:
+    with open_url(url or (RELEASE_LIST_URL if channel == 'testing' else RELEASES_URL), local_ok) as r:
         data = r.read(4 << 20)
     try:
-        return parse_release(json.loads(data.decode('utf-8')))
+        doc = json.loads(data.decode('utf-8'))
     except ValueError:
         raise UpdateError('the release list is not valid JSON')
+    if isinstance(doc, list):
+        return pick_release(doc, channel == 'testing')
+    return parse_release(doc, channel == 'testing')
 
 
 # ----------------------------------------------------------------------------------------------------------- state
 
-def default_state_dir():
-    base = os.environ.get('LOCALAPPDATA') or str(Path.home() / 'AppData' / 'Local')
-    return Path(base) / 'SnapRecomp' / 'updates'
+def default_state_dir(work=None):
+    """%LOCALAPPDATA%\\SnapRecomp\\updates, or <work>\\updates for a portable install (userdata.update_state_dir)."""
+    return userdata.update_state_dir(work)
 
 
 def load_state(state_dir):
@@ -284,14 +318,18 @@ def human_size(n):
     return f'{n / 2**20:.0f} MB' if n >= 2**20 else f'{n / 1024:.0f} KB'
 
 
-def check(builder_dir, state_dir, work=None, url=None, min_age_hours=None, now=None):
-    """Ask GitHub for the newest release and say whether it is newer than this builder. Returns a dict:
-    checked, current, latest, update_available, notes, size, size_text, estimate, page. Never raises for a network problem:
+def check(builder_dir, state_dir, work=None, url=None, min_age_hours=None, now=None, channel='stable'):
+    """Ask GitHub for the newest release (of the chosen channel) and say whether it is newer than this builder. Returns a dict:
+    checked, current, latest, update_available, notes, size, size_text, estimate, page, channel. Never raises for a network problem:
     returns {"checked": False, "error": ...} so a start-up check cannot get in the way."""
     now = time.time() if now is None else now
+    channel = check_channel(channel)
     cur = current_version(builder_dir)
     st = load_state(state_dir)
-    out = {'checked': False, 'current': cur, 'update_available': False}
+    out = {'checked': False, 'current': cur, 'update_available': False, 'channel': channel}
+    if st.get('channel', 'stable') != channel:   # the stored answer belongs to the other channel
+        st.pop('last_check', None)
+        st.pop('latest', None)
     if min_age_hours is not None and now - float(st.get('last_check', 0)) < min_age_hours * 3600:
         out['skipped'] = 'checked recently'
         if st.get('latest') and newer(st['latest'].get('version', '0'), cur):   # the last answer still stands
@@ -302,11 +340,12 @@ def check(builder_dir, state_dir, work=None, url=None, min_age_hours=None, now=N
                 out['estimate'] = {'low_min': est[0], 'high_min': est[1]}
         return out
     try:
-        rel = fetch_release(url)
+        rel = fetch_release(url, channel=channel)
     except UpdateError as e:
         out['error'] = str(e)
         return out
     out['checked'] = True
+    st['channel'] = channel
     st['last_check'] = now
     st['latest'] = {'version': rel.version, 'notes': rel.notes, 'size': rel.zip_size}
     try:
@@ -337,13 +376,22 @@ def startup_check_enabled(config_path):
     return d.get('update_check', True) is not False
 
 
-def startup_check(builder_dir, state_dir, config_path, work=None, url=None, now=None):
+def config_channel(config_path):
+    """The channel the launcher's Updates page chose: config.json "update_channel" (Stable unless it says testing)."""
+    try:
+        d = json.loads(Path(config_path).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return 'stable'
+    return 'testing' if str(d.get('update_channel', '')).lower() == 'testing' else 'stable'
+
+
+def startup_check(builder_dir, state_dir, config_path, work=None, url=None, now=None, channel='stable'):
     """What the launcher runs in the background at start: at most one GitHub request per 24 hours, none when switched off,
     silent when offline or rate-limited (a failed try is not counted, so the next start tries again). Only looks and reports;
     installing is a separate click. Returns None when switched off, else the dict from check()."""
     if not startup_check_enabled(config_path):
         return None
-    return check(builder_dir, state_dir, work=work, url=url, min_age_hours=CHECK_INTERVAL_HOURS, now=now)
+    return check(builder_dir, state_dir, work=work, url=url, min_age_hours=CHECK_INTERVAL_HOURS, now=now, channel=channel)
 
 
 # ----------------------------------------------------------------------------------------------------------- download and verify
@@ -568,23 +616,28 @@ def prune(state_dir, keep_dirs):
     safedel.rmtree(sd / 'downloads', ignore_errors=True)
 
 
-def apply(builder_dir, work, state_dir, url=None, log=None, run=None, progress=None, confirm=None, wait_pid=None):
+def apply(builder_dir, work, state_dir, url=None, log=None, run=None, progress=None, confirm=None, wait_pid=None, channel='stable',
+          data_root=None):
     """Download, verify, unpack, rebuild here, and switch only when the new build passes. Returns a result dict.
-    `run(cmd, log)` runs the new builder (tests pass a fake). `confirm(info)` may return False to stop before downloading."""
+    `run(cmd, log)` runs the new builder (tests pass a fake). `confirm(info)` may return False to stop before downloading.
+    Right after the signature is verified and before anything is rebuilt or switched, your saves and settings are copied to
+    <data_root>\\update-backups (newest 3 kept). When that copy cannot be made, the update stops with nothing changed."""
     log = log or Log(Path(work) / 'update.log')
     run = run or run_build
     builder_dir, work, state_dir = Path(builder_dir), Path(work), Path(state_dir)
+    channel = check_channel(channel)
+    data_root = Path(data_root) if data_root else userdata.data_root(work)
     local_ok = bool(url)
     if wait_pid:
         wait_for_pid(wait_pid)
     with Lock(state_dir):
         installed = current_version(builder_dir)
         pub = load_pubkey(builder_dir)
-        rel = fetch_release(url)
+        rel = fetch_release(url, channel=channel)
         if not newer(rel.version, installed):
             log.write(f'already up to date (installed {installed}, newest release {rel.version})')
             return {'updated': False, 'current': installed, 'latest': rel.version}
-        info = {'version': rel.version, 'notes': rel.notes, 'size': rel.zip_size, 'estimate': estimate_minutes(work)}
+        info = {'version': rel.version, 'notes': rel.notes, 'size': rel.zip_size, 'estimate': estimate_minutes(work), 'channel': channel}
         if confirm and not confirm(info):
             return {'updated': False, 'current': installed, 'latest': rel.version, 'declined': True}
         last = read_last_build(work)
@@ -593,6 +646,11 @@ def apply(builder_dir, work, state_dir, url=None, log=None, run=None, progress=N
         zpath, sig_text = download(rel, state_dir / 'downloads', local_ok, progress)
         version = verify_download(zpath, sig_text, rel, pub, installed)
         log.write(f'signature ok for version {version}')
+        try:
+            bk = userdata.backup(data_root, installed, version, log=log)
+        except userdata.BackupError as e:
+            zpath.unlink(missing_ok=True)
+            raise UpdateError(str(e))
         vdir = state_dir / 'versions' / version
         if vdir.exists():
             safedel.rmtree(vdir)
@@ -610,7 +668,8 @@ def apply(builder_dir, work, state_dir, url=None, log=None, run=None, progress=N
         save_state(state_dir, st)
         prune(state_dir, [vdir, builder_dir])
         log.write(f'updated {installed} -> {version}. The earlier build is in {work / "builds" / "previous"} (rollback restores it).')
-        return {'updated': True, 'from': installed, 'to': version, 'builder_dir': str(vdir)}
+        return {'updated': True, 'from': installed, 'to': version, 'builder_dir': str(vdir), 'channel': channel,
+                'backup': (bk or {}).get('name')}
 
 
 def read_build_version(build_dir):
@@ -621,8 +680,10 @@ def read_build_version(build_dir):
         return 'unknown'
 
 
-def rollback(work, state_dir, log=None, wait_pid=None):
-    """Swap out/ and builds/previous. Run twice to go forward again. Needs the game closed (Windows will not rename a folder in use)."""
+def rollback(work, state_dir, log=None, wait_pid=None, data_root=None):
+    """Swap out/ and builds/previous. Run twice to go forward again. Needs the game closed (Windows will not rename a folder in use).
+    Saves and settings are copied first, like before an update (a build that is older than your saves may not read them).
+    A portable install (portable.txt and portable_data next to the exe) keeps its data: both move to the build that becomes active."""
     from .pipeline import _replace_retry
     log = log or Log(Path(work) / 'update.log')
     work, state_dir = Path(work), Path(state_dir)
@@ -633,17 +694,30 @@ def rollback(work, state_dir, log=None, wait_pid=None):
         raise UpdateError('there is no earlier build to go back to')
     if not (out / 'SnapRecomp.exe').exists():
         raise UpdateError(f'{out} has no build to swap with')
+    data_root = Path(data_root) if data_root else userdata.data_root(work)
     with Lock(state_dir):
+        try:
+            userdata.backup(data_root, read_build_version(out), read_build_version(prev), log=log)
+        except userdata.BackupError as e:
+            raise UpdateError(str(e))
         safedel.rmtree(tmp, ignore_errors=True)
+        try:
+            moved = userdata.carry_portable(out, prev)   # portable.txt and portable_data go with the player, not with the build folder
+        except OSError as e:
+            raise UpdateError(f'could not move the portable data ({e}); nothing was changed.')
+        switched = False
         try:
             _replace_retry(out, tmp)
             try:
                 _replace_retry(prev, out)
+                switched = True
             except OSError:
                 _replace_retry(tmp, out)   # put it back
                 raise
             _replace_retry(tmp, prev)
         except OSError as e:
+            if not switched:                          # the old build is active again: its portable data goes back to it
+                userdata.carry_back(out, prev, moved)
             raise UpdateError(f'could not swap the builds ({e}). Close the game and the folders under {work} and try again; nothing was changed.')
         was, now = read_build_version(prev), read_build_version(out)
         st = load_state(state_dir)

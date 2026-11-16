@@ -14,12 +14,13 @@ from . import cache as gcache, ghidra_maps, nso as nsomod, patches as gpatches, 
 from . import versioncheck as vc
 from .util import BELOW_NORMAL, CREATE_NO_WINDOW, Stamps, StepError, files_digest, run, sha256_file, sha256_text
 from . import safedel
+from . import userdata
 
 REPO = Path(__file__).resolve().parents[2]   # builder/snapbuild/pipeline.py -> repo root (same layout in the release zip)
 BUILDER = REPO / 'builder'
 STEPS = ('elf', 'maps', 'gen_main', 'gen_sdk', 'compile_main', 'compile_sdk', 'link')
 KEEP_BUILDS = ('previous',)   # folders under <work>/builds kept after a successful switch
-LAUNCHER_KEYS = ('upscalers_offered', 'update_check')   # config.json keys the launcher sets; a rebuild carries them over
+LAUNCHER_KEYS = ('upscalers_offered', 'update_check', 'update_channel')   # config.json keys the launcher sets; a rebuild carries them over
 # build arguments recorded in <work>/last_build.json so an update can run the same build again (prebuilt, force and compare_generated are left out)
 RECORD_ARGS = ('main', 'sdk', 'romfs', 'work', 'maps', 'llvm', 'python', 'vulkan_lib', 'ghidra', 'jdk', 'harness', 'ghost', 'cache_dir', 'jobs',
                'smoke_timeout', 'cache', 'skip_smoke', 'upscalers', 'accept_license')
@@ -459,14 +460,20 @@ def promote(work, stage, build_id, log):
     work, stage = Path(work), Path(stage)
     out, builds = work / 'out', work / 'builds'
     prev = builds / 'previous'
+    moved = []
     try:
         if out.exists():
+            # portable mode: portable.txt and portable_data go to the new build first (renames), so the player's data is never left in prev,
+            # which the next update deletes
+            moved = userdata.carry_portable(out, stage)
             safedel.rmtree(prev, ignore_errors=True)
             _replace_retry(out, prev)
         _replace_retry(stage, out)
     except OSError as e:
         if not out.exists() and prev.exists():   # put the old build back
             os.replace(prev, out)
+        if moved and out.exists():
+            userdata.carry_back(out, stage, moved)
         raise StepError(f'could not switch to the new build ({e}). Close the game and the folder {out} if they are open and run the builder again; '
                         f'the new build is in {stage}.')
     for d in builds.iterdir():   # nothing but the previous build stays

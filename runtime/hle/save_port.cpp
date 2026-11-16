@@ -529,7 +529,18 @@ std::vector<Candidate> detect_emulator_saves(const std::string& appdata_in) {
   std::vector<Candidate> out;
   std::string ad = appdata_in;
 #ifdef _WIN32
-  if (ad.empty()) ad = appdata_utf8();
+  if (ad.empty()) {
+    // Portable mode redirects %APPDATA% to the game's own folder (host/portable.cpp); the emulators still keep their saves in the real one.
+    if (const wchar_t* real = _wgetenv(L"SNAP_REAL_APPDATA"); real && *real) {
+      int n = WideCharToMultiByte(CP_UTF8, 0, real, -1, nullptr, 0, nullptr, nullptr);
+      if (n > 1) {
+        ad.assign((size_t)n, '\0');
+        WideCharToMultiByte(CP_UTF8, 0, real, -1, ad.data(), n, nullptr, nullptr);
+        ad.resize((size_t)n - 1);
+      }
+    }
+    if (ad.empty()) ad = appdata_utf8();
+  }
 #endif
   if (ad.empty()) return out;
   auto consider = [&](const fs::path& dir, const std::string& label) {

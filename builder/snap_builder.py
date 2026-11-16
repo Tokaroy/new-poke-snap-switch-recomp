@@ -25,22 +25,27 @@ def add_inputs(ap):
 def run_update(a):
     import json
     from snapbuild import update
-    state = Path(a.state_dir) if a.state_dir else update.default_state_dir()
     work = Path(a.work) if a.work else None
+    state = Path(a.state_dir) if a.state_dir else update.default_state_dir(work)
+    cfg_path = a.config or (work / 'out' / 'config.json' if work else '')
+    channel = a.channel or (update.config_channel(cfg_path) if cfg_path else 'stable')   # --channel beats what the launcher saved
+    data_root = Path(a.data_root) if a.data_root else None
     try:
+        if a.action in ('backups', 'restore-backup'):
+            return run_backups(a, work, data_root)
         if a.action == 'check':
             if a.startup:
-                r = update.startup_check(pipeline.BUILDER, state, a.config or (work / 'out' / 'config.json' if work else ''), work=work, url=a.release_url)
+                r = update.startup_check(pipeline.BUILDER, state, cfg_path, work=work, url=a.release_url, channel=channel)
                 r = r if r is not None else {'checked': False, 'disabled': True, 'update_available': False}
             else:
-                r = update.check(pipeline.BUILDER, state, work=work, url=a.release_url)
+                r = update.check(pipeline.BUILDER, state, work=work, url=a.release_url, channel=channel)
             if a.json:
                 print(json.dumps(r))
             elif r.get('error'):
                 print('Could not check: ' + r['error'])
             elif r.get('update_available'):
                 est = r.get('estimate')
-                print(f'Version {r["latest"]} is available (you have {r["current"]}). Download {r["size_text"]}'
+                print(f'Version {r["latest"]} is available (you have {r["current"]}; channel {r["channel"]}). Download {r["size_text"]}'
                       + (f', rebuild about {est["low_min"]} to {est["high_min"]} minutes' if est else '') + '.')
                 print(update.clean_text(r.get('notes', '')))
             else:
@@ -52,7 +57,7 @@ def run_update(a):
         log = Log(work / 'update.log')
         try:
             if a.action == 'rollback':
-                r = update.rollback(work, state, log, wait_pid=a.wait_pid)
+                r = update.rollback(work, state, log, wait_pid=a.wait_pid, data_root=data_root)
                 print(f'Rolled back: the build in {work / "out"} is version {r["now"]} again.')
                 return 0
 
@@ -67,12 +72,15 @@ def run_update(a):
                     return False
                 return fetch.ask_yes('Install it?')
             r = update.apply(pipeline.BUILDER, work, state, url=a.release_url, log=log, confirm=confirm, wait_pid=a.wait_pid,
-                             progress=lambda d, t: print(f'\rdownloading {d * 100 // max(t, 1)}%', end='', flush=True))
+                             progress=lambda d, t: print(f'\rdownloading {d * 100 // max(t, 1)}%', end='', flush=True),
+                             channel=channel, data_root=data_root)
         finally:
             log.close()
         print()
         if r.get('updated'):
             print(f'Updated {r["from"]} -> {r["to"]}. The earlier build is kept for rollback.')
+            if r.get('backup'):
+                print(f'A copy of your saves and settings was made first: update-backups\\{r["backup"]} (the newest 3 are kept).')
         elif r.get('declined'):
             print('Nothing was changed.')
         else:
@@ -81,6 +89,42 @@ def run_update(a):
     except update.UpdateError as e:
         print('Update stopped: ' + str(e))
         return 1
+
+
+def run_backups(a, work, data_root):
+    """update backups: list the copies of your saves and settings made before updates. update restore-backup --name <backup>: put the
+    settings files back (the old ones are kept as <file>.before-restore) and show how to bring the saves back (the game's own import,
+    which writes a new generation and keeps the current one); --import-saves runs those imports now (the game must be closed)."""
+    import subprocess
+    from snapbuild import userdata
+    root = data_root or userdata.data_root(work)
+    items = userdata.list_backups(root)
+    if a.action == 'backups':
+        if not items:
+            print(f'No backups in {root / userdata.BACKUP_DIR}.')
+        for e in items:
+            print(f'{e["name"]}  ({e["made"]}, version {e["from"]} -> {e["to"]}, {e["bytes"] / 2**20:.1f} MB)')
+        return 0
+    name = a.name or (items[0]['name'] if items else '')
+    if not name:
+        print('There is no backup to restore.')
+        return 1
+    try:
+        done = userdata.restore_settings(root, name)
+    except userdata.BackupError as e:
+        print('Restore stopped: ' + str(e))
+        return 1
+    print(f'Restored {len(done)} settings files from {name}. The files they replaced are kept as <name>.before-restore.')
+    exe = (work / 'out' / 'SnapRecomp.exe') if work else Path('SnapRecomp.exe')
+    rc = 0
+    for prof, path in userdata.save_roots_in_backup(root, name):
+        cmd = [str(exe), '--import-save', str(path)] + (['--profile', prof] if prof else [])
+        if a.import_saves:
+            print('Importing saves: ' + ' '.join(cmd))
+            rc = subprocess.run(cmd).returncode or rc
+        else:
+            print('To bring these saves back (game closed): ' + ' '.join(f'"{c}"' if ' ' in c else c for c in cmd))
+    return 1 if rc else 0
 
 
 def main(argv=None):
@@ -138,7 +182,11 @@ def main(argv=None):
     w.add_argument('--offline-dir', action='append', default=[], help='folder with an already downloaded xwin archive (hash checked)')
     w.add_argument('--yes', action='store_true', help='download xwin itself without asking (does NOT accept the Microsoft license)')
     up = sub.add_parser('update', help='check for a newer builder release, install it (rebuilds here, switches only if the new build passes), or roll back')
-    up.add_argument('action', choices=('check', 'apply', 'rollback'))
+    up.add_argument('action', choices=('check', 'apply', 'rollback', 'backups', 'restore-backup'))
+    up.add_argument('--channel', choices=('stable', 'testing'), help='release channel: stable (default; full releases) or testing (also prereleases). Default: what the launcher saved')
+    up.add_argument('--data-root', help='the folder with your saves and settings (default %%APPDATA%%\\SnapRecomp, or the portable_data folder)')
+    up.add_argument('--name', help='restore-backup: which backup (default the newest; see "update backups")')
+    up.add_argument('--import-saves', action='store_true', help='restore-backup: also run the save import now (the game must be closed)')
     up.add_argument('--work', help='the work folder of your build (holds out\\ and the record of the last build)')
     up.add_argument('--state-dir', help='update state folder (default %%LOCALAPPDATA%%\\SnapRecomp\\updates)')
     up.add_argument('--release-url', help='developer use: a release JSON (file:// or https) instead of the GitHub release list')

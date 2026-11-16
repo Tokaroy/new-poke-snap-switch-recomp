@@ -6,6 +6,7 @@
 #include "launcher.h"
 #include "benchmark.h"
 #include "shaderprep.h"
+#include "portable.h"
 #include <filesystem>
 #include <tlhelp32.h>
 #include <shobjidl.h>
@@ -1053,6 +1054,7 @@ static void attach_parent_console() {
 
 int main(int argc, char **argv) {
     attach_parent_console();
+    snap_portable_init();   // portable.txt next to the exe: settings, saves, caches and update state live in <exe dir>\portable_data (host/portable.cpp)
     wait_for_previous_run();
     snapshot_start_env();
     if (!cpu_has_v3()) { fprintf(stderr, "boot: this build needs an x86-64-v3 CPU (AVX2, BMI2, FMA); this CPU lacks it\n"); return 2; }

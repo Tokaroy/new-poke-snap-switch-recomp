@@ -317,9 +317,20 @@ static void export_save_flow(const fs::path& cfg_path) {
   else message("Snap Recomp", "The save was not exported.\n\n" + err, MB_ICONWARNING);
 }
 
+// Portable mode (host/portable.cpp sets SNAP_PORTABLE=1 when portable.txt sits next to the exe).
+static bool portable_mode() {
+  const char* e = std::getenv("SNAP_PORTABLE");
+  return e && e[0] == '1';
+}
+static fs::path g_work_dir;   // config.json "work" (the builder's work folder; the exe lives in <work>/out); set by prepare()
+
 static std::string save_folder(const hle::Json& cfg) {
   if (const char* e = std::getenv("SNAP_SAVE_DIR")) if (*e) return e;
   if (const hle::Json* s = cfg.get("save_root")) if (!s->str().empty()) return s->str();
+  if (portable_mode()) {   // portable.txt: the runtime reads the redirected %APPDATA% (host/portable.cpp), so the saves are under portable_data
+    wchar_t env_ad[MAX_PATH] = {};
+    if (GetEnvironmentVariableW(L"APPDATA", env_ad, MAX_PATH) && env_ad[0]) return U8(env_ad) + "\\SnapRecomp\\save";
+  }
   wchar_t* ad = nullptr;
   std::string out;
   if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &ad))) { out = U8(ad) + "\\SnapRecomp\\save"; CoTaskMemFree(ad); }
@@ -335,6 +346,15 @@ struct UpdateNotice {
 };
 
 static fs::path updates_dir() {
+  if (portable_mode()) {   // same folder as builder/snapbuild/userdata.py update_state_dir: out/ is swapped by an update, so the state sits beside it
+    fs::path base = g_work_dir;
+    if (base.empty()) {
+      wchar_t mp[MAX_PATH * 2] = {};
+      GetModuleFileNameW(nullptr, mp, (DWORD)(sizeof mp / sizeof mp[0]));
+      base = fs::path(mp).parent_path().parent_path();
+    }
+    return base / L"updates";
+  }
   wchar_t env_la[MAX_PATH] = {};
   if (GetEnvironmentVariableW(L"LOCALAPPDATA", env_la, MAX_PATH) && env_la[0]) return fs::path(env_la) / L"SnapRecomp" / L"updates";
   fs::path p;
@@ -342,6 +362,12 @@ static fs::path updates_dir() {
   if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &la))) { p = fs::path(la) / L"SnapRecomp" / L"updates"; CoTaskMemFree(la); }
   return p;
 }
+
+static bool testing_channel(const hle::Json& cfg) {   // "update_channel": "testing" in config.json; anything else is Stable
+  const hle::Json* j = cfg.get("update_channel");
+  return j && j->str() == "testing";
+}
+static std::wstring channel_arg(const hle::Json& cfg) { return testing_channel(cfg) ? L" --channel testing" : L" --channel stable"; }
 
 static bool update_enabled(const hle::Json& cfg) {   // on unless config.json says "update_check": false
   const hle::Json* j = cfg.get("update_check");
@@ -440,7 +466,7 @@ static void start_background_check(const hle::Json& cfg, const fs::path& cfg_pat
   auto s = [&](const char* k) { return cfg.get(k) ? cfg.get(k)->str() : std::string(); };
   std::string work = s("work");
   if (dir.empty() || work.empty()) return;
-  std::wstring cmd = builder_cmd(cfg, L"update check --startup --json --config \"" + cfg_path.wstring() + L"\" --work \"" + W(work) + L"\"");
+  std::wstring cmd = builder_cmd(cfg, L"update check --startup --json" + channel_arg(cfg) + L" --config \"" + cfg_path.wstring() + L"\" --work \"" + W(work) + L"\"");
   HANDLE h = spawn(cmd, false, dir / L"startup_check.new");
   if (h) CloseHandle(h);   // never waited for: the answer is read at the next start
 }
@@ -465,9 +491,12 @@ static bool updates_flow(const fs::path& cfg_path, hle::Json& cfg, UpdateNotice&
     ids.push_back(3);
     links.push_back(on ? L"Turn off the daily check\nIt looks once a day when the launcher starts and only tells you; nothing installs without you"
                        : L"Turn on the daily check\nIt looks once a day when the launcher starts and only tells you; nothing installs without you");
+    ids.push_back(5);
+    links.push_back(testing_channel(cfg) ? L"Update channel: Testing (click for Stable)\nTesting also offers early builds that are still being tried out and may have bugs; Stable only offers finished releases"
+                                         : L"Update channel: Stable (click for Testing)\nStable only offers finished releases; Testing also offers early builds that may have bugs");
     if (can_back) {
       ids.push_back(4);
-      links.push_back(L"Go back to the previous version\nYour saves and settings stay as they are");
+      links.push_back(L"Go back to the previous version\nA copy of your saves and settings is kept first; the game's own saves are not touched");
     }
     int sel = choose(L"Updates", notice.available ? L"Version " + W(notice.latest) + L" is available." : L"Nothing new is waiting.", links);
     if (sel < 0) return false;
@@ -477,11 +506,20 @@ static bool updates_flow(const fs::path& cfg_path, hle::Json& cfg, UpdateNotice&
       save_config(cfg_path, cfg);
       continue;
     }
+    if (what == 5) {
+      cfg.set("update_channel", hle::Json::string(testing_channel(cfg) ? "stable" : "testing"));
+      save_config(cfg_path, cfg);
+      std::error_code rec;
+      fs::remove(updates_dir() / L"startup_check.json", rec);   // the saved answer belongs to the other channel
+      fs::remove(updates_dir() / L"startup_check.new", rec);
+      notice = UpdateNotice{};
+      continue;
+    }
     if (what == 2) {
       fs::path dir = updates_dir();
       fs::path out = dir / L"check_now.json";
       HCURSOR old = SetCursor(LoadCursor(nullptr, IDC_WAIT));
-      HANDLE h = spawn(builder_cmd(cfg, L"update check --json" + (work.empty() ? std::wstring() : L" --work \"" + W(work) + L"\"")), false, out);
+      HANDLE h = spawn(builder_cmd(cfg, L"update check --json" + channel_arg(cfg) + (work.empty() ? std::wstring() : L" --work \"" + W(work) + L"\"")), false, out);
       bool done = h && WaitForSingleObject(h, 40000) == WAIT_OBJECT_0;
       if (h) CloseHandle(h);
       SetCursor(old);
@@ -496,16 +534,16 @@ static bool updates_flow(const fs::path& cfg_path, hle::Json& cfg, UpdateNotice&
     if (what == 1) {
       std::string notes = notice.notes.size() > 900 ? notice.notes.substr(0, 900) + "..." : notice.notes;
       std::wstring q = L"Install version " + W(notice.latest) + L"?\n\n" + describe(notice) +
-                       L". Your saves and settings are not touched, and this version stays here so you can go back.\n\nWhat changed:\n" + W(notes);
+                       L". A dated copy of your saves and settings is made first (the newest 3 are kept), and this version stays here so you can go back.\n\nWhat changed:\n" + W(notes);
       if (MessageBoxW(nullptr, q.c_str(), L"Snap Recomp", MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND) != IDYES) continue;
-      HANDLE h = spawn(builder_cmd(cfg, L"update apply --work \"" + W(work) + L"\" --yes --wait-pid " + wpid), true, fs::path());
+      HANDLE h = spawn(builder_cmd(cfg, L"update apply" + channel_arg(cfg) + L" --work \"" + W(work) + L"\" --yes --wait-pid " + wpid), true, fs::path());
       if (!h) { message("Snap Recomp", "The updater could not be started (the builder folder is missing). Run the builder yourself: snap_builder.py update apply", MB_ICONWARNING); continue; }
       CloseHandle(h);
       message("Snap Recomp", "The update runs in a new window. This launcher closes now; start it again when that window says it is done.");
       return true;
     }
     if (what == 4) {
-      if (MessageBoxW(nullptr, L"Go back to the previous version? Your saves and settings stay as they are.", L"Snap Recomp", MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND) != IDYES) continue;
+      if (MessageBoxW(nullptr, L"Go back to the previous version? A dated copy of your saves and settings is made first; your saves are not touched.", L"Snap Recomp", MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND) != IDYES) continue;
       HANDLE h = spawn(builder_cmd(cfg, L"update rollback --work \"" + W(work) + L"\" --wait-pid " + wpid), true, fs::path());
       if (!h) { message("Snap Recomp", "The updater could not be started (the builder folder is missing).", MB_ICONWARNING); continue; }
       CloseHandle(h);
@@ -1045,6 +1083,7 @@ bool prepare(Result& r) {
     return true;
   }
   read_json(exe_dir / L"launcher_data.json", data);   // optional
+  if (const hle::Json* w = cfg.get("work")) if (!w->str().empty()) g_work_dir = fs::u8path(w->str());
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   const bool autoplay = std::getenv("SNAP_LAUNCHER_AUTOPLAY") != nullptr;
   // First start: offer FSR (pre-selected, never accepted for the user). A test run skips this unless SNAP_UPSCALER_AUTOACCEPT is set.
