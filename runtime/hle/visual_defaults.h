@@ -53,6 +53,19 @@ inline const char* const* look_keys(int* n) {
   *n = (int)(sizeof k / sizeof k[0]);
   return k;
 }
+
+// Enhanced supersampling is relative to the output: render min(2 x window height, budget) lines over 1080,
+// so 1080p renders 2.0, 1440p 2.0 (1.5x of the output), 2160p 2.0 (1.0x of the output), capped at maxScale.
+// budgetH <= 0 means the old rule (2x the window height).
+inline float ssaa_auto_scale(int windowH, float budgetH, float maxScale) {
+  const float H = (float)(windowH > 1 ? windowH : 1);
+  const float b = budgetH > 0.f ? budgetH : 2.0f * H;
+  float r = 2.0f * H; if (b < r) r = b; if (r < H) r = H;
+  float v = r / 1080.0f;
+  if (v < 1.0f) v = 1.0f;
+  if (v > maxScale) v = maxScale;
+  return v;
+}
 inline bool enhanced() {
   const char* p = getenv("SNAP_VISUALS");
   if (p && *p) {

@@ -2048,15 +2048,15 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
   w->acquireValue[ak] = v;
   w->slotSem[slot] = q->timeline;
   w->slotValue[slot] = v;
+  if (FgWanted()) FgNotePresent(!realPass);   // [framegen]
+  if (realPass) break;
+  lk.unlock(); FgSleepHalf(); lk.lock();   // the real frame follows half a base frame after the interpolated one
+  }
   return true;
 }
 
 bool PipelineHoldGame();   // nvn_pipeline.cpp: "compile shaders now" is running
 bool PresentWindow(QueueImpl* q, WindowImpl* w, int slot) {
-  if (FgWanted()) FgNotePresent(!realPass);   // [framegen]
-  if (realPass) break;
-  lk.unlock(); FgSleepHalf(); lk.lock();   // the real frame follows half a base frame after the interpolated one
-  }
   bool r = PresentWindowOnce(q, w, slot);
   // "Compile shaders now": the game thread stays on its present loop (same frame, UI overlay drawn by the present hook, paced by Pace)
   // until the precompile run finishes or is cancelled.
