@@ -49,6 +49,7 @@ bool menu_page_cursor();                  // the pad / keyboard cursor sits on a
 void menu_select_tab(const char* name);   // scripted test: Bindings, Mouse, Controller, Accessibility, Test
 // Rebinding as the UI performs it (a click on a slot); used by the scripted test.
 bool menu_begin_rebind(int action, hle::input::Device dev, int slot);
+bool menu_reset_binds(int dev);   // test hook (reset_binds): 0 keyboard, 1 mouse, 2 controller, 3 all
 bool menu_rebinding();
 
 // ---- saves tab (ui_saves.cpp): save profiles

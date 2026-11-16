@@ -4,6 +4,7 @@
 //   <t> key F1 [0|1]                post a real F1 key press to the game window (goes through the window procedure)
 //   <t> tab <Bindings|Mouse|Controller|Accessibility|Test_input>
 //   <t> rebind <A|B|...|Down> <kb|mouse|pad> <slot>     what a click on that slot does (starts the capture)
+//   <t> reset_binds <all|kb|mouse|pad>                  the reset-to-defaults buttons without the confirmation question
 //   <t> press <key:P|pad:east|mouse:left|...> <seconds> hold a source down through the input hub
 //   <t> expect_button <A|ZL|...> <0|1>                  the bit the game reads from npad 0
 //   <t> expect_preview <A|...> <0|1>                    the mapped state while the menu hides input from the game
@@ -151,6 +152,12 @@ void run(const std::string& line, double t) {
     Device dev;
     int act = button_from_name(a);
     check(act >= 0 && act <= kDown && parse_dev(d, &dev) && menu_begin_rebind(act, dev, slot), "rebind " + a + " " + d + " " + std::to_string(slot) + " started");
+  } else if (cmd == "reset_binds") {   // reset_binds <all|kb|mouse|pad>: what the reset buttons do after their confirmation
+    std::string d;
+    is >> d;
+    Device dev = kDevKeyboard;
+    const bool all = d == "all";
+    check((all || parse_dev(d, &dev)) && menu_reset_binds(all ? (int)kDevCount : (int)dev), "reset_binds " + d);
   } else if (cmd == "press") {
     std::string src;
     double secs = 0.3;

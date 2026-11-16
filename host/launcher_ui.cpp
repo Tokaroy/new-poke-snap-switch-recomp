@@ -27,9 +27,11 @@
 #include "imgui.h"
 #include "imgui_impl_dx11.h"
 #include "imgui_impl_win32.h"
+#include "hle/input_core.h"
 #include "hle/json_lite.h"
 #include "hle/picture_rows.h"
 #include "hle/presets.h"
+#include "hle/discord_app.h"
 #include "hle/visual_defaults.h"
 #include "mods/mods_core.h"
 
@@ -120,7 +122,7 @@ struct JsonFile {
 
 // ---------------------------------------------------------------------------------------------------------------- settings model
 enum Store { S_CFG, S_WIN, S_AUD };
-enum Kind { K_CHOICE, K_PRESET, K_ACTION, K_LOOK, K_PACING, K_AA, K_PERF, K_PROFILE };   // K_PRESET / K_LOOK / K_PACING / K_AA / K_PERF / K_PROFILE are worked out from or write several stored values
+enum Kind { K_CHOICE, K_PRESET, K_ACTION, K_LOOK, K_PACING, K_AA, K_PERF, K_PROFILE, K_INFO };   // K_INFO: a read-only row (label and a line of text in cur), e.g. the key bindings summary   // K_PRESET / K_LOOK / K_PACING / K_AA / K_PERF / K_PROFILE are worked out from or write several stored values
 enum Enc { E_STR, E_INT, E_VOL, E_BOOL };   // how a window.json / audio.json value is stored
 
 struct Ch {
@@ -567,7 +569,7 @@ void refresh_picture_text() {
   }
 }
 void refresh_values() {
-  for (Page& p : g.pages) for (Item& it : p.items) if (it.kind != K_ACTION) it.cur = read_value(it);
+  for (Page& p : g.pages) for (Item& it : p.items) if (it.kind != K_ACTION && it.kind != K_INFO) it.cur = read_value(it);
   refresh_picture_text();
 }
 
@@ -613,6 +615,46 @@ int index_of(const Item& it, const std::string& v) {
   return -1;
 }
 
+// Read-only summary of the key, mouse and controller bindings (input.json in the data folder), on the Controls page. The page that edits them is the game's F1
+// menu, Bindings tab (runtime/ui/ui_controls.cpp); both read the same file, so what shows here is what the game will use.
+void add_binding_summary(Page& p) {
+  hle::input::Mapping m = hle::input::Mapping::defaults();
+  bool custom = false;
+  {
+    std::ifstream f(g.info->data_dir + "\\input.json", std::ios::binary);
+    if (f) {
+      std::stringstream ss; ss << f.rdbuf();
+      hle::Json j; std::string err;
+      hle::JsonParser jp(ss.str());
+      if (jp.parse(j, err) && m.from_json(j, &err)) custom = true;
+      else m = hle::input::Mapping::defaults();
+    }
+  }
+  auto line = [&](const std::vector<hle::input::Source>& v) {
+    std::string out;
+    for (int d = 0; d < hle::input::kDevCount; ++d) {
+      std::string part;
+      for (int sl = 0; sl < hle::input::kMaxSlotsPerDevice; ++sl) {
+        const hle::input::Source s = hle::input::slot_get(v, (hle::input::Device)d, sl);
+        if (s.kind != hle::input::Source::None) part += (part.empty() ? "" : ", ") + hle::input::source_label(s);
+      }
+      out += std::string(out.empty() ? "" : "     ") + hle::input::device_name((hle::input::Device)d) + ": " + (part.empty() ? "-" : part);
+    }
+    return out;
+  };
+  auto info = [&](const std::string& label, const std::string& text) { Item it; it.label = label; it.kind = K_INFO; it.cur = text; p.items.push_back(it); };
+  using namespace hle::input;
+  for (int b : {kA, kB, kX, kY, kL, kR, kZL, kZR, kPlus, kMinus}) info(action_label(b), line(action_sources(m, b)));
+  auto keys4 = [&](int first) {   // the four directions of a stick on the keyboard, in the order up, down, left, right
+    std::string out;
+    for (int a = first; a < first + 4; ++a) { const Source s = slot_get(action_sources(m, a), kDevKeyboard, 0); out += (out.empty() ? "" : " ") + (s.kind == Source::None ? std::string("-") : source_label(s)); }
+    return out;
+  };
+  info("Left stick (up down left right)", "Keyboard: " + keys4(16) + "     Controller: left stick");
+  info("Right stick (up down left right)", "Keyboard: " + keys4(20) + "     Controller: right stick");
+  info(custom ? "Changed in the game" : "Default bindings", "Change them in the game: F1 > Bindings. Two slots per device, conflicts shown, reset to defaults.");
+}
+
 void access_changed();   // below
 
 void choose(Item& it, int idx) {
@@ -653,7 +695,7 @@ void cycle(Item& it, int dir) {
 
 void reset_page(Page& p) {
   for (Item& it : p.items) {
-    if (it.kind == K_ACTION || it.kind == K_PROFILE) continue;   // the Graphics preset is worked out from the rows reset below
+    if (it.kind == K_ACTION || it.kind == K_PROFILE || it.kind == K_INFO) continue;   // the Graphics preset is worked out from the rows reset below
     if (it.kind == K_PRESET) { set_preset("normal"); continue; }
     if (it.kind == K_AA) { g.cfg.erase("gfx_aa"); g.cfg.erase("gfx_upscaler"); g.cfg.erase("gfx_upscale_quality"); continue; }
     if (it.kind == K_PERF) { g.cfg.erase("gfx_upscale_quality"); if (g.cfg.get("gfx_upscaler", "") == "dlss") g.cfg.set("gfx_upscaler", "dlaa"); continue; }
@@ -861,6 +903,7 @@ void build_pages() {
                              "Swaps confirm and back on the controller: the south button confirms and the east button goes back, like an Xbox or PlayStation pad. The game's button pictures follow."));
     p.items.push_back(choice("Rumble", "rumble_on", S_CFG, "1", {{"1", "On"}, {"0", "Off"}}, "Controller vibration."));
     p.items.push_back(choice("Motion aiming (gyro)", "gyro_on", S_CFG, "0", {{"0", "Off"}, {"1", "On"}}, "Aim the camera by moving a controller that has motion sensors."));
+    add_binding_summary(p);
     g.pages.push_back(p);
   }
   // Gameplay
@@ -1536,17 +1579,21 @@ void draw_settings(bool* click_back) {
     const bool sel = (int)i == g.row;
     if (hot(rx, y, rw, rh) && !g.pulldown) {
       if (ImGui::GetIO().MouseDelta.x != 0 || ImGui::GetIO().MouseDelta.y != 0) g.row = (int)i;
-      if (ImGui::IsMouseClicked(0)) { g.row = (int)i; g.confirm_reset = false; if (it.kind == K_ACTION) { g.result = it.act; g.done = true; } else { g.pulldown = true; g.pd_sel = std::max(0, index_of(it, it.cur)); g.pd_top = 0; } }
+      if (ImGui::IsMouseClicked(0)) { g.row = (int)i; g.confirm_reset = false; if (it.kind == K_ACTION) { g.result = it.act; g.done = true; } else if (it.kind != K_INFO) { g.pulldown = true; g.pd_sel = std::max(0, index_of(it, it.cur)); g.pd_top = 0; } }
     }
     pointed(rx, y, rw, rh, 22, C(sel ? kGreen : kRow));
     if (!it.note.empty() && it.kind != K_ACTION) {
       text(rx + 44, y + rh * 0.36f, 21, C(0xf7f7f7), it.label.c_str());
       text_clip(rx + 44, y + rh * 0.76f, 14, C(sel && !g_hc ? 0x4a5a38 : 0xffffff), it.note.c_str(), 590.0f);
     } else {
-      text(rx + 44, y + rh / 2, 21, C(0xf7f7f7), it.label.c_str());
+      text(rx + 44, y + rh / 2, it.kind == K_INFO ? 17.0f : 21.0f, C(0xf7f7f7), it.label.c_str());
     }
     if (it.kind == K_ACTION) {
       prompt(rx + rw - 120, y + rh / 2, 36, "A");
+      continue;
+    }
+    if (it.kind == K_INFO) {   // read-only: the value is a line of text, no pill
+      text_clip(rx + 250, y + rh / 2, 17, C(0xf7f7f7), it.cur.c_str(), rw - 270);
       continue;
     }
     const float vx = rx + rw - 20 - vw, vy = y + 3;
@@ -2188,6 +2235,7 @@ void handle_input() {
     return;
   }
   if (it.kind == K_ACTION) { if (ok) { g.result = it.act; g.done = true; } return; }
+  if (it.kind == K_INFO) return;
   if (lf) { g.confirm_reset = false; cycle(it, -1); }
   if (rt) { g.confirm_reset = false; cycle(it, +1); }
   if (ok) { g.confirm_reset = false; g.pulldown = true; g.pd_sel = std::max(0, index_of(it, it.cur)); g.pd_top = 0; }

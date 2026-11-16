@@ -771,10 +771,12 @@ bool Hub::save(std::string* err) {
 // They run on their own thread and drain the game first, so follow them with `wait state=idle`. The script's own clock and HLE route state keep running forward.
 // Frame timing (load-independent): write the start as @f<frame> (e.g. "@f600 30 A", "repeat @f0 @f3000 90 15 A") and the whole line counts
 // guest presents (nvn present count) since the segment began, so a slow PC does not shift it; end/period/hold may carry an optional @f prefix.
+//   src=<kind:name>        hold a HOST source through the binding table while the entry is active: key:P, mouse:left, pad:east (the other tokens press
+//                          Switch buttons after the mapping). Takes effect one poll later; use it to test a remapped key end to end.
 // A token is a Switch button name (A B X Y L R ZL ZR Plus Minus Left Up Right Down StickL StickR ...) or an axis
 // lx=<f> ly=<f> rx=<f> ry=<f> with f in [-1, 1] (y up positive).
 namespace {
-struct ScriptEntry { double start, end, period, hold; uint64_t buttons; int32_t ax[4]; bool has_ax[4]; int seg; bool frames; float rumble_lo, rumble_hi; bool has_rumble; float gyro_yaw, gyro_pitch; bool has_gyro; bool is_end; int shot_n; bool screenshot; std::string cond; std::vector<std::string> fc; int state_op = 0; std::string state_name; mutable bool state_prev = false; };
+struct ScriptEntry { double start, end, period, hold; uint64_t buttons; int32_t ax[4]; bool has_ax[4]; int seg; bool frames; float rumble_lo, rumble_hi; bool has_rumble; float gyro_yaw, gyro_pitch; bool has_gyro; bool is_end; int shot_n; bool screenshot; std::string cond; std::vector<std::string> fc; int state_op = 0; std::string state_name; mutable bool state_prev = false; std::vector<Source> src; };
 struct Script {
   bool loaded = false;
   uint64_t t0 = 0;
@@ -788,6 +790,11 @@ struct Script {
   std::atomic<int> cur_f0{0};            // present count at the start of the running segment
 };
 Script g_script;
+// `src=<kind:name>` tokens: host sources (key:P, mouse:left, pad:east) held down through the binding table while their entry is active. Filled by script_apply,
+// read by Hub::poll before the mapping, so a route can test a rebound key end to end (the other tokens press Switch buttons after the mapping).
+std::bitset<kKeyCount> g_script_keys;
+std::bitset<32> g_script_pad;
+uint8_t g_script_mouse = 0;
 
 // ---- route signals: game state that inline hooks report (host/mods/routes.cpp, neofilm.cpp, skips.cpp); "wait" lines read it.
 // Off (every report returns at once) unless the script has a "wait" line or SNAP_ROUTE_LOG=1 (which also logs scenes and states).
@@ -986,6 +993,12 @@ bool script_token(const std::string& t, ScriptEntry& en) {
       en.state_op = k == "save" ? 1 : 2; en.state_name = t.substr(eq + 1);
       return true;
     }
+    if (k == "src") {   // src=<key:P|mouse:left|pad:east>: hold that host source while the entry is active (goes through the binding table, host/README.md "Controls menu (F1)")
+      Source sr;
+      if (!parse_source(t.substr(eq + 1), &sr)) return false;
+      en.src.push_back(sr);
+      return true;
+    }
     if (k == "shot") {   // shot=<n>: while the entry is active, ask NVN_FRAME_DUMP for a frame every n presents (needs NVN_FRAME_DUMP; test evidence aid)
       en.shot_n = std::max(1, std::atoi(t.c_str() + eq + 1));
       return true;
@@ -1136,6 +1149,7 @@ void script_apply(uint64_t now_ns_v, PadSample& p) {
   double now = now_t;
   bool shot_on = false;
   freecam::script_begin();
+  g_script_keys.reset(); g_script_pad.reset(); g_script_mouse = 0;
   for (const ScriptEntry& en : g_script.e) {
     if (en.seg != seg) continue;
     now = en.frames ? now_f : now_t;
@@ -1158,6 +1172,11 @@ void script_apply(uint64_t now_ns_v, PadSample& p) {
       snap_audio_log_checks();
     cur |= en.buttons;
     p.buttons |= en.buttons;
+    for (const Source& sr : en.src) {
+      if (sr.kind == Source::KeyboardKey) g_script_keys.set((size_t)sr.id);
+      else if (sr.kind == Source::Pad) g_script_pad.set((size_t)sr.id);
+      else if (sr.kind == Source::Mouse) g_script_mouse |= (uint8_t)(1u << sr.id);
+    }
     if (en.has_gyro) { g_script_gyro_on = true; g_script_gyro_yaw += en.gyro_yaw; g_script_gyro_pitch += en.gyro_pitch; }
     if (en.screenshot) shot_on = true;
     if (en.shot_n > 0 && nvn::g_presentCount % en.shot_n == 0 && nvn::g_fdBurst <= 0) nvn::g_fdBurst = 4;   // `shot=<n>` token
@@ -1265,10 +1284,10 @@ void Hub::poll(int min_interval_ms) {
     r.in_ride = g_rail_cur >= 0 && (int)nvn::g_presentCount - g_rail[g_rail_cur].f_adv <= 20;
   }
   // injected sources (tests) and wheel pulses
-  r.keys |= inject_.keys;
-  r.pad |= inject_.pad;
-  r.mouse_buttons |= inject_.mouse_buttons;
-  if (inject_.pad.any()) r.pad_connected = true;
+  r.keys |= inject_.keys | g_script_keys;
+  r.pad |= inject_.pad | g_script_pad;
+  r.mouse_buttons |= inject_.mouse_buttons | g_script_mouse;
+  if (inject_.pad.any() || g_script_pad.any()) r.pad_connected = true;
   if (int d = g_wheel_delta.exchange(0)) {
     if (d > 0) wheel_up_until_ns_ = t + 100000000ull; else wheel_down_until_ns_ = t + 100000000ull;
   }

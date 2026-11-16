@@ -1,0 +1,18 @@
+# fixture: post_tutorial
+# Remapping proof (host/README.md "Controls menu (F1)"): the Switch input A is rebound to the keyboard key P (and its old key L removed) in input.json; the route rides
+# Florio and presses HOST keys through the binding table with the src= token (every other token presses a Switch button after the mapping).
+# Pass: boot_stderr.log has "wait '!film<=71' met" (L, the old shutter key, did nothing for 200 presents), then "wait 'film<=71' met" (P took a photo) and "end of route reached".
+# Run: tests\hle\run_rebind_proof.ps1 (writes the input.json, runs this route hidden, checks the log).
+repeat @f300 @f30000 120 8 A
+wait ui=map_select timeout=240
+repeat @f60 @f30000 120 8 A
+wait ride timeout=240
+# the A taps above end here (a new segment): nothing but the two keys below presses anything during the ride
+# the film counter shows 72 (it reports only when the HUD changes it), then the old default key (removed from A): no photo
+wait film<=72 timeout=30
+@f30 20 src=key:L
+wait !film<=71 for=200 timeout=60
+# the new key: one photo
+@f10 20 src=key:P
+wait film<=71 timeout=30
+end @f120

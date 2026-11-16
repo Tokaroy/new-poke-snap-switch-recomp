@@ -283,7 +283,8 @@ void tab_bindings(float footer_h) {
   ImGui::Spacing();
   reset_button(kDevKeyboard); ImGui::SameLine();
   reset_button(kDevMouse); ImGui::SameLine();
-  reset_button(kDevController);
+  reset_button(kDevController); ImGui::SameLine();
+  reset_all_button();
   ImGui::Spacing();
   const ImGuiTableFlags tf = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoSavedSettings;
   float h = ImGui::GetContentRegionAvail().y - footer_h;
@@ -549,6 +550,11 @@ static char g_nav_dbg[200];
 bool menu_page_cursor() { return g_page_cursor.load(); }
 const char* menu_nav_debug() { return g_nav_dbg; }
 bool menu_rebinding() { return S.rb.active; }
+bool menu_reset_binds(int dev) {   // test hook: dev 0..2 = one device, 3 = all
+  if (dev < 0 || dev > (int)kDevCount) return false;
+  do_reset(dev);
+  return true;
+}
 bool menu_begin_rebind(int action, Device dev, int slot) {
   if (action < 0 || action >= kActionCount) return false;
   begin_rebind(action, dev, slot);
@@ -648,7 +654,7 @@ void draw_menu(ImVec2 size, bool* want_close) {
   const float bar_h = px(122);   // the description bar at the bottom edge of the panel
   const float footer_h = bar_h - ImGui::GetStyle().WindowPadding.y + px(6);
   const std::string page = kTabs[S.cur_tab];
-  if (page == "Bindings") tab_bindings(footer_h + ImGui::GetTextLineHeightWithSpacing() * 1.4f);
+  if (page == "Bindings") tab_bindings(footer_h + ImGui::GetTextLineHeightWithSpacing() * 2.4f);
   else if (ImGui::BeginChild("p", ImVec2(0, -footer_h), ImGuiChildFlags_NavFlattened)) {   // flattened: the rows are the d-pad's targets, not a scroll box to enter with A
     if (page == "Mouse") tab_mouse();
     else if (page == "Controller") tab_controller();

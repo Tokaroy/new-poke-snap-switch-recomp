@@ -144,7 +144,7 @@ it through ImGui gamepad navigation (D-pad or left stick moves, south button act
 
 - **Bindings tab:** every Switch input (A B X Y L R ZL ZR + - D-pad, stick clicks, the four directions of each stick) with two slots each for
   Keyboard, Mouse (buttons, X1/X2, wheel up/down) and Controller (buttons, triggers, stick directions). Click a slot, then press the input; Esc cancels,
-  Delete or right-click clears. Conflicts are marked with `!` and allowed. Per-device "Reset to defaults" buttons.
+  Delete or right-click clears. Conflicts are marked with `!` and allowed; two lines under the table name each shared source and the inputs that use it. Per-device "Reset to defaults" buttons and "Reset all controls to defaults". Details, storage and tests: `docs/controls.md`. The launcher's Controls page ends with a read-only summary of the same `input.json`.
 - **Mouse tab:** mouse look (right stick) with sensitivity, invert X/Y and smoothing (off by default), touch screen on the left button, cursor lock
   (the cursor is confined to the window while playing; released while the menu is open and when the window loses focus).
 - **Controller tab:** face layout (by position, default, or Nintendo labels), swap sticks, inner and outer dead zone and invert Y per stick, ZL/ZR
@@ -187,7 +187,7 @@ Switch B is the bottom one (Xbox A); the Controller tab can switch to Nintendo l
 Input switches (environment, override the profile): `SNAP_RUMBLE=0..1.5` (strength, 0 = off), `SNAP_RUMBLE_LOG=1` (log each game vibration request and
 host rumble call), `SNAP_GYRO=0|1` (gyro aim on the camera stick; needs a pad with a gyro; untested on real hardware), `SNAP_GYRO_SENS=<n>` (1 = full
 stick at 90 deg/s), `SNAP_GYRO_FAKE=<yaw_dps>,<pitch_dps>` (pretend gyro for tests; yaw positive turns left, pitch positive tips up; implies `SNAP_GYRO=1`).
-Test routes: `host\routes\rumble_probe.txt`, `host\routes\gyro_probe.txt`; input-script tokens `rumble=<lo>,<hi>` and `gyro=<yaw>,<pitch>` (pretend gyro, needs `SNAP_GYRO=1`).
+Test routes: `host\routes\rumble_probe.txt`, `host\routes\gyro_probe.txt`; input-script tokens `rumble=<lo>,<hi>` and `gyro=<yaw>,<pitch>` (pretend gyro, needs `SNAP_GYRO=1`). The token `src=<key:P|mouse:left|pad:east>` holds a host source through the binding table, so a rebound key can be tested end to end (`host/routes/rebind_shutter.txt`, `docs/controls.md`).
 Mouse aim (Controls, Mouse tab) has mouse-look, sensitivity, invert and smoothing (`mouse.sensitivity`, `mouse.smoothing` in `input.json`). With mouse look on, the left button is A and the right button is ZL (held while held) during a ride only; the host tells a ride from a menu by the camera rail advancing. In menus and other screens with mouse look on, clicks do nothing (the touch screen stays off while mouse look is on, as before). The two click bindings are `mouse.look_click_a` and `mouse.look_click_zl` in `input.json` (arrays of sources such as `mouse:left`, `mouse:middle`, `key:L`; `[]` turns one off). They are not on the Bindings tab. Files saved before this change load as they were and pick up the defaults for these two keys.
 
 The game polls only the Full-key (Pro controller) npad 0 state, the touch screen and gestures; it never asks for six-axis (motion) data.

@@ -1,0 +1,21 @@
+# Bindings page (F1 > Bindings, docs/player-options.md "Remapping"): rebind two inputs to the same key to get a conflict, check the saved bindings, reset all.
+# Run: tests\hle\run_binds_ui.ps1 (frames go to analysis\ui\binds_dump).
+24 key F1 1
+24.5 expect_open 1
+25 tab Bindings
+25.2 expect_tab Bindings
+26 rebind A kb 0
+26.2 expect_rebinding 1
+26.5 press key:P 0.3
+27.2 expect_bind A kb 0 key:P
+27.4 expect_rebinding 0
+27.5 rebind B kb 1
+27.7 press key:P 0.3
+28.4 expect_bind B kb 1 key:P
+# a conflict is allowed: both inputs keep the key and the page shows it
+28.5 expect_bind A kb 0 key:P
+31 reset_binds all
+31.3 expect_bind A kb 0 key:L
+31.4 expect_bind B kb 1 none
+32 expect_bind B kb 0 key:K
+33 quit
