@@ -23,6 +23,7 @@
 #include <thread>
 #include <vector>
 
+#include "../../runtime/hle/access.h"
 #include "../../runtime/hle/btn_icons.h"
 #include "../../runtime/hle/freecam.h"
 #include "../../runtime/hle/fs_core.h"
@@ -1112,6 +1113,26 @@ static void test_hid() {
 static input::PadSample mapped(const input::Mapping& m, const input::RawInput& r) { return input::map_pad(m, r); }
 static uint64_t bit(int b) { return 1ull << b; }
 static input::Source SRC(const char* t) { input::Source s; bool ok = input::parse_source(t, &s); (void)ok; return s; }
+
+// ---- accessibility rows (hle/access.h): the parsers and the live set / get round trip
+static void test_access() {
+  g_test = "access.rows";
+  using namespace hle::access;
+  CHECK(parse_cvd("Protanopia") == 1 && parse_cvd("deuteranopia") == 2 && parse_cvd("3") == 3 && parse_cvd("off") == 0 && parse_cvd("") == -1 && parse_cvd("bogus") == -1);
+  CHECK(parse_flash("gentle") == 1 && parse_flash("STRONG") == 3 && parse_flash("0") == 0 && parse_flash("x") == -1);
+  CHECK(parse_size("100") == 100 && parse_size("125") == 125 && parse_size("140") == 150 && parse_size("300") == 200 && parse_size("abc") == 100 && parse_size("") == 100);
+  State& st = state();
+  CHECK(st.cvd == 0 && st.flash == 0 && st.mono == 0 && st.contrast == 0 && st.ui_size == 100 && st.cvd_strength == 100);   // every row starts off
+  CHECK(set("access_cvd", "tritanopia") && st.cvd == 3 && get("access_cvd") == "tritanopia");
+  CHECK(set("access_cvd_strength", "55") && st.cvd_strength == 55 && get("access_cvd_strength") == "55");
+  CHECK(set("access_cvd_strength", "5") && st.cvd_strength == 10);       // clamped to 10..100
+  CHECK(set("access_cvd_strength", "") && st.cvd_strength == 100);       // empty = the row's default
+  CHECK(set("access_ui_size", "150") && st.ui_size == 150 && set("access_contrast", "1") && st.contrast == 1);
+  CHECK(set("access_flash", "standard") && st.flash == 2 && set("access_mono", "1") && st.mono == 1);
+  CHECK(set("access_cvd", "") && st.cvd == 0 && set("access_ui_size", "") && st.ui_size == 100 && set("access_contrast", "0") && st.contrast == 0);
+  CHECK(set("access_flash", "") && st.flash == 0 && set("access_mono", "0") && st.mono == 0);
+  CHECK(!set("access_nope", "1"));
+}
 
 static void test_input_mapping() {
   g_test = "input.mapping";
@@ -2527,6 +2548,7 @@ int main(int argc, char** argv) {
   config().headless = true;
 
   struct T { const char* name; void (*fn)(); } tests[] = {
+      {"access.rows", test_access},
       {"fs.rom", test_fs_rom},
       {"fs.overlay", test_fs_overlay},
       {"save.roundtrip", test_save_roundtrip},

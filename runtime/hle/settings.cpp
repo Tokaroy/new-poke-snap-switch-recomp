@@ -10,6 +10,7 @@
 #include <sstream>
 #include <vector>
 
+#include "access.h"
 #include "btn_icons.h"
 #include "hle.h"
 #include "hle_config.h"
@@ -117,6 +118,8 @@ const struct { const char* key; const char* env; } kEnvKeys[] = {
     {"fps_target", "SNAP_FPS"},   // Frame rate target row (90 / 120 / 144; "default" = 60, the game's own); host/mods/highfps.cpp, uipace.cpp
     {"gfx_bokeh_dof", "SNAP_BOKEH_DOF"}, {"gfx_motion_blur", "SNAP_MOTION_BLUR"},   // lens effect rows (runtime/nvn/nvn_lens_fx.cpp; strength, unset = off; restart)
     {"frame_generation", "SNAP_FRAMEGEN"},   // FSR frame generation row ("1" or unset = off; runtime/nvn/nvn_framegen.cpp; restart)
+    {"access_cvd", "SNAP_ACCESS_CVD"}, {"access_cvd_strength", "SNAP_ACCESS_CVD_STRENGTH"}, {"access_ui_size", "SNAP_ACCESS_UI_SIZE"}, {"access_contrast", "SNAP_ACCESS_CONTRAST"},   // Accessibility rows (hle/access.h, docs/accessibility.md); live through hle::access::set
+    {"access_flash", "SNAP_ACCESS_FLASH"}, {"access_mono", "SNAP_ACCESS_MONO"}, {"access_toggle", "SNAP_ACCESS_TOGGLE"},   // access_toggle: comma list of buttons that toggle (read at start, hle/input_core.cpp)
 };
 
 // F1 post-process rows: key -> render pass names (comma list) the host switches off through SNAP_PASS_OFF.
@@ -204,6 +207,8 @@ void apply(bool env) {
     const char* e = std::getenv("SNAP_BUTTON_ICONS");
     icons::set_style(icons::parse_style(e && *e ? std::string(e) : get("button_icons", "auto")));
   }
+  for (const char* k : {"access_cvd", "access_cvd_strength", "access_ui_size", "access_contrast", "access_flash", "access_mono"})   // Accessibility rows: live; a SNAP_ACCESS_* variable set by hand wins
+    if (!env_wins(k)) hle::access::set(k, get(k, ""));
   if (!env) return;
   {   // Look row (gfx_look "original" / "enhanced"; erased = the build's default): the column of hle/visual_defaults.h every unset visual row follows; SNAP_VISUALS set by hand wins
     const std::string l = get("gfx_look", "");
