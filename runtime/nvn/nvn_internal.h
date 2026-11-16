@@ -315,7 +315,7 @@ struct StageProg {
   int fragOutputMap = 0;
   std::vector<uint32_t> spv;                      // kept for the fragment stage only (alpha-test patching)
   // fragment module variants (alpha test, output rewrite): key = alphaFunc | nColor << 4 | dual << 8 -> {module, has alpha spec constant}
-  std::map<uint32_t, std::pair<VkShaderModule, bool>> fragMods;
+  std::map<uint64_t, std::pair<VkShaderModule, bool>> fragMods;
   uint32_t inputMask = 0xFFFFFFFFu;    // vertex stage: input locations the shader reads
   std::vector<int> outLocs;            // fragment stage: color output locations, ascending
   VkBuffer constBuf = VK_NULL_HANDLE;  // c[1]: the program's constant-data blob (data section tail)
@@ -352,6 +352,7 @@ bool PatchShadowPcf(const std::vector<uint32_t>& in, int taps, float radiusUv, f
 bool ShadowPcss();            // nvn_shadowpcf.cpp: PCSS on (SNAP_SHADOW_PCSS or the Enhanced preset)
 PcssParams ShadowPcssParams();
 bool ShadowFilterApplies(const StageProg& fs);   // nvn_shadowpcf.cpp: the fragment stage has a patchable depth-compare tap (cached per stage key)
+bool PatchShadowRt(const std::vector<uint32_t>& in, int rays, std::vector<uint32_t>& out);   // nvn_shadowrt.cpp (M3, SNAP_RT_SHADOWS): dynamic-map taps -> ray queries against the frame's TLAS (push constants, see the file header)
 float ShadowFilterBias();   // nvn_shadowpcf.cpp: SNAP_SHADOW_BIAS (n * 1e-4 of reference depth)
 int ShadowFilterTaps();      // nvn_shadowpcf.cpp: SNAP_SHADOW_FILTER 0 (off) / 8 / 16
 float ShadowFilterRadius();  // nvn_shadowpcf.cpp: SNAP_SHADOW_SOFTNESS kernel radius in UV units

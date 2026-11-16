@@ -1,6 +1,6 @@
 # Lighting, shadow, AO and ray tracing plan
 
-Status: plan only, nothing built. Based on static reading; no capture was made for this plan. Items marked "unverified" need the cheap probe named next to them.
+Status: plan; the RT prototype M0-M2 is built (status block in section 4), and the shipped PCSS, GTAO and contact shadows are in `docs/lighting-enhanced.md`. The package text below is the original static reading; no capture was made for it. Items marked "unverified" need the cheap probe named next to them.
 
 Ground rules for every package:
 
@@ -149,7 +149,7 @@ Run-slot rule for all packages: one heavy process at a time, BelowNormal, under 
 
 ## 4. Ray tracing prototype plan
 
-Why RT is worth only a staged approach: draw volume is small (98 draws per frame, max 274), and the GPU is a 4090, so GPU time is fine. The limits are (a) most lighting is baked, so there is little for RT to replace, (b) characters are skinned in a GPU compute pass so their final vertices are not in guest memory, (c) the host has no scene registry. The honest value is crisp, resolution-independent Pokemon and prop shadows, plus off-screen-correct AO and water reflections. Do P3, P5 and P7 first; they show how much RT can add.
+Why RT is worth only a staged approach: draw volume is small (98 draws per frame, max 274), and the GPU is a 4090, so GPU time is fine. The limits are (a) most lighting is baked, so there is little for RT to replace, (b) characters are skinned in a GPU compute pass so their final vertices are not in guest memory, (c) the host has no scene registry. The value is crisp, resolution-independent Pokemon and prop shadows, plus off-screen-correct AO and water reflections. Do P3, P5 and P7 first; they show how much RT can add.
 
 Switches: `SNAP_RT=0|1` master (device features), then `SNAP_RT_SHADOWS=0|1|soft`, `SNAP_RT_AO=0|1`. Rows: "Ray tracing" (Off/On), "RT shadows", "RT ambient occlusion". All off by default; if the device lacks the extensions the rows stay off and a log line says why.
 
@@ -174,25 +174,27 @@ Switches: `SNAP_RT=0|1` master (device features), then `SNAP_RT_SHADOWS=0|1|soft
 - M2 done. One BLAS per draw, kept in a persistent cache keyed by draw identity (vertex shader, buffer addresses, draw range, per-object constants), plus one TLAS per frame built at the tonemap draw. Overlay sanity (ray hit vs scene depth, 1/16 of pixels) depends on the scene, not on the resolution: the 1440p and 4K runs of the same route give the same sequence of values (83% title scene, 97-98% course select, 84-86% early ride, up to 99% later in the ride, 0-50% in some transition and menu scenes). A title-screen frame shows the miss pattern: alpha-tested foliage cards (their cut-out texels leave depth behind the card, the ray hits the whole card) and menu or transition scenes whose depth comes from a different camera than the c3 bank the capture maps with. An earlier note that 4K was worse (78-80%) compared different scenes. Measured GPU cost: convert + BLAS + TLAS 1.2-2.0 ms at typical frames and 3.2-3.6 ms at the busiest (110 draws, 316k triangles); this does not depend on resolution. The debug overlay trace (one ray per pixel, never shipped) costs about 10 ms at 1440p and 12 ms at 4K. CPU: capture 0.1-0.5 ms plus build recording 0.5-2.6 ms per frame. Memory: arena and BLAS store peak at about 112 MB and 130 MB.
 - BLAS reuse (added 2026-11-14): a draw whose converted vertices stay within a distance-scaled tolerance of the copy taken at its last BLAS build keeps its BLAS (`SNAP_RT_REUSE`); the test runs in the convert pass and is read back 4 frames later. In the Florio ride 85-100% of draws test static and per frame the builds drop from about 55-95 draws (200k-240k triangles) to 14-29 draws (25k-65k triangles). Measured with the on/off alternating A/B (`SNAP_RT_REUSE=2`, 74 windows each, 1440p, validation clean): total convert+BLAS+TLAS median 1.83 ms off vs 1.55 ms on, 25th percentile 1.14 vs 0.82 ms, 10th percentile 0.96 vs 0.68 ms. The GPU is shared with other test runs, so absolute values carry contention noise (the same scene varies from 0.1 to 2.6 ms for the convert pass alone). The remaining cost is the convert and compare pass (one small dispatch per draw), the shadow copies and the builds of moving or skinned draws, so the median is still above the "under 1 ms" target; the 25th percentile is under it.
 
-**What geometry the capture can and cannot give (honest limits).**
+**What geometry the capture can and cannot give (limits).**
 - It only sees draws the game submitted this frame, that is, after the game's own frustum culling. Off-screen geometry the game culled this frame is not available. Static world geometry accumulates in the cache as the camera moves along the rail and stays until its time-to-live ends (`SNAP_RT_TTL`, 900 frames), so a caster just behind the camera can still shadow the view, but something the player never had in view is absent.
 - Moving objects freeze at their last captured position until that time-to-live ends; skinned characters are captured after the skinning pass (the vertex shader sees the skinned positions), so they are correct while visible.
 - Draws whose buffers are ring-allocated per frame produce a new key every frame and live only a couple of frames (this is intended, they are dynamic).
 - Alpha-tested geometry is treated as opaque. Primitive-restart tails can leave stale triangles.
 - Shadow casters the game draws only in its shadow-cast pass (dynamic casters) are not in the cache yet; static shadows are baked.
 
-**M3 design notes (not started).**
-- The receiver position comes from the Dref tap and lies on a surface already in the TLAS, with no normal. Self-intersection handling is core: use a small tmin, offset along the sun direction, and an instance mask or a per-draw receiver id so the receiver's own BLAS is skipped where possible.
-- The shadow-cast pass must be captured too (cast matrix in slot 9): a second capture mode that maps clip positions with the inverse cast matrix instead of the camera's.
-- Ray queries in the 856+ fragment programs raise compile time and register pressure; prefer patching only the dynamic-map taps (P5's patch point) and measure pipeline compile time before widening.
+**M3 design notes (as built).**
+- Rays are traced in shadow-map space, not world space. A receiver's tap operands (u, v, depthRef) are its position in the same map the cast pass rendered, and the TLAS holds the captured caster triangles (transform-feedback gl_Position mapped by u = 0.5x+0.5, v = 0.5y+0.5, z = z). The ray starts at (u, v, depthRef - bias) and runs along -z toward the light, so no inverse receiver matrix, sun vector or self-intersection offset is needed. The receiver matrix (fragment-stage binding 9, floats 0..15) is not world space (it is a rotated frame), which is why the first world-space attempt shadowed nothing.
+- The cast pass is captured (cast draws are recognized by an orthographic matrix in vertex-stage binding 9), so off-screen casters are in the TLAS. The TLAS is built lazily at the first receiver draw.
+- Only the dynamic-map taps are patched (830 of 856 fragment programs; 26 are left alone, including vertex programs that sample the map). The patch is validated with spirv-val over every cached module (`tests/nvn/shadowrt_test.sh`).
+- A moving sun needs nothing extra: the sun only appears in the game's caster and receiver matrices.
 
 **Revised effort (after M0-M2).** M3 is 8-10 days as written, 4 days of it spent on cast-pass capture and self-intersection; the AS plumbing is done. M4 (RTAO) drops by about 2 days (capture and TLAS exist) but still needs a normal source (depth derivative or the game's normal target) and a denoiser: 7-9 days, 4-10 ms at 4K still to be measured. The decision gate after M1 passes: triangle counts and capture cost are low. The remaining gate is whether the world-space TLAS built from culled geometry covers enough of the shadow-relevant world.
 
-**M3. RT sun shadows (10 days, MVP).**
-- Reuse P5's Dref patch point. A new `SpvPatchShadowDref` turns each dynamic-map Dref tap into a ray query (TerminateOnFirstHit) from the receiver position, rebuilt from the sample's (u, v, depthRef) with the inverse cast matrix and the sun direction from the cast matrix Z axis. Pass the TLAS address and a 3x4 matrix via push constants (not yet used by game pipelines; add a range at `nvn_shader.cpp:490-492`) or a set 4. Out-of-box returns 1 (lit), as now. Keep the shadow-dummy path.
-- Steps: (a) hard shadows for opaque casters; (b) soft shadows with a jittered sun cone and blue noise, `SNAP_RT_SHADOWS=soft`; (c) alpha-tested casters (ShadowAlphaTexture shaders) later via a candidate loop; v1 treats them as opaque.
-- Files: `nvn_shader.cpp`, `nvn_pipeline.cpp`, `nvn_draw.cpp` (push constants and xfb hook lines), `nvn_rt.cpp`, rows in `ui_options.cpp`, `host/mods/nativeopt.cpp` and `make_native_options.py`.
-- Acceptance: std checks; RT off equals original; RT on compared with P5 at 4096 (decision point: stop here if RT adds nothing visible); under 3 ms at 4K worst case; RT disabled on Evaluation and photo frames.
+**M3. RT sun shadows. Built; stopped at the decision gate.**
+- Switches (all off by default, need `SNAP_RT=1`): `SNAP_RT_SHADOWS=off|hard|soft` (also 0, 1, 2), `SNAP_RT_SHADOW_RAYS` (soft ray count, default 4), `SNAP_RT_SHADOW_CONE` (half angle, degrees, default 1.2), `SNAP_RT_SHADOW_BIAS` (depth units, default 0.0015), `SNAP_RT_SHADOW_MARGIN`, `SNAP_RT_SHADOW_DBG` (bring-up bits). RT is off on photo frames and when the light A/B is off.
+- Code: `nvn_shadowrt.cpp` (the SPIR-V patch), `nvn_rt.cpp` (cast capture, BLAS pool, TLAS, push constants), `nvn_draw.cpp` (hooks).
+- Result (Florio Day, ride8, 4K, RTX 4090, A/B against Enhanced PCSS with `host/ab_capture.ps1`): hard and soft RT put shadows where PCSS puts them, with the same shapes, and slightly cleaner edges. They are not visibly better. Build cost 0.6-0.7 ms per frame; frame delta against PCSS about -0.04 ms (hard) and about -2.0 ms (8 rays, scene-dependent), so the cost is far under the 3 ms budget. Captures: `analysis/rt/ab_m3_*.png` (local only).
+- Photo gate: PASS (`ab_capture` photo-frame check: 0 RT draws on 6 photo presents, 292 on ordinary frames). The freeze check reads FAIL because scenes differ with time running, so it does not apply to a jittered effect; the hard mode is deterministic.
+- Alpha-tested casters were not built: the gate below says to stop when the result is not visibly better.
 
 **M4. RTAO in the SSAO slot (9 days).**
 - Needs M1 (scene-opaque capture), M2, and P4 (SSAO force proven). At the SSAOCreate draw, replace the program with a host fullscreen pipeline that reads the bound depth and normal textures, casts 2-4 short cosine rays (0.5-2 m), accumulates temporally with a bilateral denoise into the same 1920x1080 target; keep the game's blur and composite. Add a distance cutoff and strength so baked AO is not doubled on the static world.
@@ -203,7 +205,7 @@ Switches: `SNAP_RT=0|1` master (device features), then `SNAP_RT_SHADOWS=0|1|soft
 
 Decision gates:
 - After M1: if triangle counts or capture cost are too high, stop and fall back to screen-space (P7, P9).
-- After M3: if RT shadows are not visibly better than P5 at 4096, skip M4 and keep P5 as the answer.
+- After M3: if RT shadows are not visibly better than P5 at 4096, skip M4 and keep P5 as the answer. Result: RT shadows match PCSS but are not visibly better, so M3 stopped there (see M3 above).
 - Scoring gate before any RT feature is advertised: two `florio_eval` runs (off, on), distribution compared per the std check 2.
 
 ## Order summary

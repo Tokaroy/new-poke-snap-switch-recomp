@@ -18,6 +18,8 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "hle/lighting_preset.h"   // snaplight::ab_on
+#include "nvn_dev.h"
 #include "nvn_internal.h"
 #include "nvn_fx.h"   // photo-frame guard, scene depth, the post-tonemap slot
 #include "nvn_rt.h"
@@ -179,6 +181,14 @@ struct G {
   uint64_t kDraws = 0, kA = 0, kB = 0, kStA = 0, kStB = 0, kFrames = 0;
 } g;
 
+// Scene geometry capture (M1/M2: the debug overlay and the future AO / reflection passes). With SNAP_RT_SHADOWS set and neither SNAP_RT_DEBUG nor SNAP_RT_SCENE=1 only the
+// shadow casters are captured (small buffers, no scene BLAS work).
+bool ShadowsRequested() { static const bool r = [] { const char* e = getenv("SNAP_RT_SHADOWS"); return e && *e; }(); return r; }
+bool SceneCapture() {
+  static const bool v = [] { const char* e = getenv("SNAP_RT_SHADOWS"); return !(e && *e) || EnvInt("SNAP_RT_DEBUG", 0) != 0 || EnvOn("SNAP_RT_SCENE"); }();
+  return v;
+}
+
 bool IsSceneDepth(const TextureImpl* t) {
   return t && t->b.format == FMT_DEPTH32F && t->b.width == 1920 && t->b.height == 1080 && t->b.target == TT_2D && t->b.samples <= 1;
 }
@@ -200,11 +210,12 @@ bool Setup(Host* h) {
   if (g_failed) return false;
   g.h = h;
   g.debug = EnvInt("SNAP_RT_DEBUG", 0);
-  g.logEvery = EnvInt("SNAP_RT_LOG", g.debug ? 120 : 0);
+  g.logEvery = EnvInt("SNAP_RT_LOG", (g.debug || ShadowsRequested()) ? 120 : 0);
   g.ttl = EnvInt("SNAP_RT_TTL", 900);
   g.keyCb = EnvInt("SNAP_RT_KEYCB", 1);
   g.flipY = EnvInt("SNAP_RT_FLIPY", h->originMode == ORIGIN_UPPER_LEFT ? 1 : 0);
-  const uint64_t arenaB = (uint64_t)EnvInt("SNAP_RT_ARENA_MB", 384) << 20, blasB = (uint64_t)EnvInt("SNAP_RT_BLAS_MB", 512) << 20, scrB = (uint64_t)EnvInt("SNAP_RT_SCRATCH_MB", 256) << 20;
+  const bool scene = SceneCapture();   // shadows only: tiny scene buffers (the scene arena and its shadow copy are the big ones)
+  const uint64_t arenaB = (uint64_t)EnvInt("SNAP_RT_ARENA_MB", scene ? 384 : 4) << 20, blasB = (uint64_t)EnvInt("SNAP_RT_BLAS_MB", scene ? 512 : 4) << 20, scrB = (uint64_t)EnvInt("SNAP_RT_SCRATCH_MB", scene ? 256 : 128) << 20;
   const VkMemoryPropertyFlags dl = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
   const VkBufferUsageFlags asIn = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
   if (!MakeBuf(h, arenaB, VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | asIn | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, dl, &g.arena, true) ||
@@ -323,9 +334,313 @@ namespace {
 std::mutex g_patchedMu; std::set<std::string> g_patched;   // first 12 hex digits of the vertex programs whose module carries the Xfb decorations
 bool IsPatched(const char* k) { if (!k) return false; std::lock_guard<std::mutex> lk(g_patchedMu); return g_patched.count(std::string(k, 12)) != 0; }
 }
-bool Wanted() { static const bool w = EnvOn("SNAP_RT"); return w; }
+bool Wanted() { static const bool w = EnvOn("SNAP_RT") || ShadowsRequested(); return w; }
 bool On() { return g_on; }
 bool Capture() { return g_on && g_capture && !g_failed; }
+
+// ======================================== M3: RT sun shadows ========================================
+// Cast pass capture -> world-space triangles -> pooled BLAS per draw -> one shadow TLAS, built lazily at the first receiver draw of the frame (the cast pass
+// is over by then and nothing of the scene pass has been drawn that needs the result). nvn_shadowrt.cpp patches the receivers.
+namespace {
+struct ShCfg { int mode = 0, softRays = 4, dbg = 0; float cone = 1.2f, bias = 0.0015f, margin = 0.0f; };
+ShCfg& Cfg() {
+  static ShCfg c = [] {
+    ShCfg k;
+    if (const char* e = getenv("SNAP_RT_SHADOWS")) {
+      if (!_stricmp(e, "off") || !strcmp(e, "0")) k.mode = 0; else if (!_stricmp(e, "hard") || !_stricmp(e, "on") || !strcmp(e, "1")) k.mode = 1;
+      else if (!_stricmp(e, "soft") || !strcmp(e, "2")) k.mode = 2; else if (atoi(e) >= 3) k.mode = 3;
+    }
+    k.softRays = std::max(2, std::min(16, EnvInt("SNAP_RT_SHADOW_RAYS", 4)));
+    k.dbg = EnvInt("SNAP_RT_SHADOW_DBG", 0);   // bring-up bits (captured clip -> map coordinates): 1 flip v, 2 depth is NDC (z * 0.5 + 0.5), 4 xy already in 0..1
+    if (const char* e = getenv("SNAP_RT_SHADOW_CONE")) k.cone = std::max(0.0f, std::min(10.0f, (float)atof(e)));
+    if (const char* e = getenv("SNAP_RT_SHADOW_BIAS")) k.bias = std::max(0.0f, std::min(0.05f, (float)atof(e)));
+    if (const char* e = getenv("SNAP_RT_SHADOW_MARGIN")) k.margin = std::max(0.0f, std::min(4.0f, (float)atof(e)));
+    return k;
+  }();
+  static bool reg = false;
+  if (!reg) {
+    reg = true;
+    dev_param_i("SNAP_RT_SHADOWS", &c.mode, 0, 3, 0);
+    dev_param_i("SNAP_RT_SHADOW_DBG", &c.dbg, 0, 15, 0);
+    dev_param_f("SNAP_RT_SHADOW_CONE", &c.cone, 0.0f, 10.0f, 1.2f);
+    dev_param_f("SNAP_RT_SHADOW_BIAS", &c.bias, 0.0f, 0.05f, 0.0015f);
+    dev_param_f("SNAP_RT_SHADOW_MARGIN", &c.margin, 0.0f, 4.0f, 0.0f);
+  }
+  return c;
+}
+
+struct PooledAs { VkAccelerationStructureKHR as = VK_NULL_HANDLE; VkDeviceAddress addr = 0; uint64_t scratch = 0, off = 0, bytes = 0; };
+struct CastDraw { uint32_t vcount; uint64_t arenaOff; float inv[16]; };
+struct Sh {
+  bool ready = false, failed = false;
+  Buf arena, blasStore, inst, tlasStore;
+  VkAccelerationStructureKHR tlas = VK_NULL_HANDLE; VkDeviceAddress tlasAddr = 0; bool tlasBuilt = false;
+  uint64_t arenaTop = 0, blasTop = 0;
+  std::vector<CastDraw> draws;
+  int present = -1;                       // the present the cast draws belong to
+  bool built = false; uint32_t ninst = 0; // the shadow TLAS of that present was built (ninst instances)
+  float m[16] = {}; float sunL[3] = {0, 1, 0}, sunT[3] = {1, 0, 0}, tmax = 100.0f;
+  std::map<uint32_t, std::vector<PooledAs>> pool; std::map<uint32_t, uint32_t> used;
+  float recvKey[16] = {}; float recvInv[16] = {}; bool recvOk = false, recvHave = false; float recvRatio = 1.0f;   // map xy units per depth unit of the receivers' matrix (the cone spread)
+  // stats (log line: SNAP_RT_LOG)
+  uint64_t frames = 0, draws_n = 0, tris = 0, blasBuilt = 0, skipped = 0, noRecvM = 0, receivers = 0;
+  double gpuMs = 0; uint32_t gpuN = 0; bool tsPending[kSlots] = {}; uint32_t tsSlot = 0;
+} S;
+
+uint64_t Align256(uint64_t v) { return (v + 255) & ~255ull; }
+
+bool ShSetup(Host* h) {
+  if (S.ready) return true;
+  if (S.failed) return false;
+  const uint64_t arenaB = (uint64_t)EnvInt("SNAP_RT_CAST_MB", 64) << 20, blasB = (uint64_t)EnvInt("SNAP_RT_CAST_BLAS_MB", 192) << 20;
+  const VkMemoryPropertyFlags dl = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+  const VkBufferUsageFlags asIn = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+  if (!MakeBuf(h, arenaB, VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | asIn, dl, &S.arena, true) ||
+      !MakeBuf(h, blasB, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR, dl, &S.blasStore, true) ||
+      !MakeBuf(h, (uint64_t)kMaxInstances * sizeof(VkAccelerationStructureInstanceKHR), asIn | VK_BUFFER_USAGE_TRANSFER_DST_BIT, dl, &S.inst, true)) { S.failed = true; fprintf(stderr, "[rt] shadows: buffer allocation failed\n"); return false; }
+  VkAccelerationStructureGeometryKHR geo{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
+  geo.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR; geo.geometry.instances.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR; geo.geometry.instances.data.deviceAddress = S.inst.addr;
+  VkAccelerationStructureBuildGeometryInfoKHR bi{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
+  bi.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR; bi.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR; bi.geometryCount = 1; bi.pGeometries = &geo;
+  VkAccelerationStructureBuildSizesInfoKHR sz{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
+  const uint32_t n = std::min(kMaxInstances, g_maxInstances ? g_maxInstances : kMaxInstances);
+  pBuildSizes(h->device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &bi, &n, &sz);
+  if (!MakeBuf(h, sz.accelerationStructureSize + 256, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR, dl, &S.tlasStore, true)) { S.failed = true; return false; }
+  VkAccelerationStructureCreateInfoKHR ci{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR};
+  ci.buffer = S.tlasStore.buf; ci.size = sz.accelerationStructureSize; ci.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+  if (pCreateAs(h->device, &ci, nullptr, &S.tlas) != VK_SUCCESS) { S.failed = true; return false; }
+  VkAccelerationStructureDeviceAddressInfoKHR ai{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR}; ai.accelerationStructure = S.tlas;
+  S.tlasAddr = pAsAddr(h->device, &ai);
+  S.ready = true;
+  fprintf(stderr, "[rt] shadows ready: cast arena %llu MB, cast BLAS store %llu MB, TLAS for %u instances, mode %d\n", (unsigned long long)(arenaB >> 20), (unsigned long long)(blasB >> 20), n, Cfg().mode);
+  return true;
+}
+
+void ShShutdown(Host* h) {
+  if (!S.ready) return;
+  for (auto& kv : S.pool) for (auto& p : kv.second) if (p.as) pDestroyAs(h->device, p.as, nullptr);
+  S.pool.clear();
+  if (S.tlas) pDestroyAs(h->device, S.tlas, nullptr);
+  for (Buf* b : {&S.arena, &S.blasStore, &S.inst, &S.tlasStore}) FreeBuf(h, *b);
+  S.ready = false;
+}
+
+// A pooled BLAS able to hold `prims` triangles: classes are powers of two (at least 128 triangles); an AS built with fewer triangles than it was sized for is valid.
+bool PoolGet(Host* h, uint32_t prims, PooledAs* out) {
+  uint32_t cls = 128; while (cls < prims) cls <<= 1;
+  auto& v = S.pool[cls]; uint32_t& u = S.used[cls];
+  if (u < v.size()) { *out = v[u++]; return true; }
+  VkAccelerationStructureGeometryKHR geo{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
+  geo.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR; geo.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+  geo.geometry.triangles.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+  geo.geometry.triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT; geo.geometry.triangles.vertexStride = 16; geo.geometry.triangles.maxVertex = cls * 3 - 1; geo.geometry.triangles.indexType = VK_INDEX_TYPE_NONE_KHR;
+  VkAccelerationStructureBuildGeometryInfoKHR bi{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
+  bi.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR; bi.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR; bi.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR; bi.geometryCount = 1; bi.pGeometries = &geo;
+  VkAccelerationStructureBuildSizesInfoKHR sz{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
+  pBuildSizes(h->device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &bi, &cls, &sz);
+  const uint64_t bytes = Align256(sz.accelerationStructureSize);
+  if (S.blasTop + bytes > S.blasStore.size) return false;
+  PooledAs p; p.off = S.blasTop; p.bytes = bytes; p.scratch = sz.buildScratchSize;
+  VkAccelerationStructureCreateInfoKHR ci{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR};
+  ci.buffer = S.blasStore.buf; ci.offset = p.off; ci.size = sz.accelerationStructureSize; ci.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+  if (pCreateAs(h->device, &ci, nullptr, &p.as) != VK_SUCCESS) return false;
+  S.blasTop += bytes;
+  VkAccelerationStructureDeviceAddressInfoKHR ai{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR}; ai.accelerationStructure = p.as;
+  p.addr = pAsAddr(h->device, &ai);
+  v.push_back(p); u++;
+  *out = p;
+  return true;
+}
+
+void ShNewFrame() {   // first cast draw of a present
+  S.draws.clear(); S.arenaTop = 0; S.built = false; S.ninst = 0; S.present = g_presentCount;
+  for (auto& kv : S.used) kv.second = 0;
+}
+
+// Toward-the-sun unit vector and a perpendicular, from the caster matrix: its depth row (m[2], m[6], m[10]) is the light's axis (sign: the one pointing up, as nvn_lighting_fx.cpp).
+void ShSun(const float* m) {
+  double a[3] = {m[2], m[6], m[10]};
+  const double len = std::sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
+  if (len < 1e-12) return;
+  for (double& x : a) x /= len;
+  const double sg = a[1] >= 0 ? 1.0 : -1.0;
+  for (int i = 0; i < 3; i++) S.sunL[i] = (float)(a[i] * sg);
+  const double hx = std::fabs(S.sunL[1]) > 0.9 ? 1.0 : 0.0, hy = hx > 0 ? 0.0 : 1.0;   // any vector not parallel to L
+  double t[3] = {S.sunL[1] * 0.0 - S.sunL[2] * hy, S.sunL[2] * hx - S.sunL[0] * 0.0, S.sunL[0] * hy - S.sunL[1] * hx};
+  const double tl = std::sqrt(t[0] * t[0] + t[1] * t[1] + t[2] * t[2]);
+  for (int i = 0; i < 3; i++) S.sunT[i] = (float)(t[i] / std::max(tl, 1e-12));
+  S.tmax = (float)(2.0 / len);   // the light volume's full depth along the axis (z spans 2 clip units at most)
+}
+
+bool CastBegin(ReplayCtx& c, const DrawInfo& di) {
+  if (!g_on || !g_capture || g_failed || ShadowRays() == 0 || di.hasGeomTess || FxIsPhotoFrame()) return false;
+  if (!IsPatched(di.vsKey) || !di.s9 || di.s9Range < 64) return false;
+  float m[16]; memcpy(m, di.s9, 64);
+  if (m[3] != 0 || m[7] != 0 || m[11] != 0 || m[15] != 1) return false;   // an orthographic caster matrix (the dynamic map's); anything else is not it
+  const uint64_t nv64 = (uint64_t)TriVerts(di.topo, di.vertexCount) * std::max(di.instances, 1u);
+  if (nv64 == 0) return false;
+  std::lock_guard<std::mutex> lk(g.mu);
+  if (!Setup(c.h) || !ShSetup(c.h)) return false;
+  if (S.present != g_presentCount) ShNewFrame();
+  if (S.built) return false;   // receivers already traced this frame: a late cast draw cannot join (never seen)
+  const uint64_t bytes = Align256(nv64 * 16);
+  if (nv64 > 0xFFFFFFF0ull || S.arenaTop + bytes > S.arena.size || S.draws.size() >= kMaxInstances) { S.skipped++; return false; }
+  Mat M;
+  for (int r = 0; r < 4; r++) for (int cc = 0; cc < 4; cc++) M.m[r][cc] = m[cc * 4 + r];
+  Mat inv;
+  if (!Invert(M, inv)) return false;
+  if (S.draws.empty()) { memcpy(S.m, m, 64); ShSun(m); }
+  CastDraw d; d.vcount = (uint32_t)nv64; d.arenaOff = S.arenaTop;
+  for (int cc = 0; cc < 4; cc++) for (int r = 0; r < 4; r++) d.inv[cc * 4 + r] = (float)inv.m[r][cc];
+  VkDeviceSize off = S.arenaTop, size = (VkDeviceSize)nv64 * 16;
+  pBindXfb(c.cb, 0, 1, &S.arena.buf, &off, &size);
+  pBeginXfb(c.cb, 0, 0, nullptr, nullptr);
+  S.arenaTop += bytes;
+  S.draws.push_back(d);
+  S.draws_n++; S.tris += nv64 / 3;
+  return true;
+}
+
+// Convert, build and publish the shadow TLAS (g.mu held). Ends the render pass: the caller re-emits the view state.
+bool ShBuild(ReplayCtx& cx) {
+  Host* h = cx.h; VkCommandBuffer cb = cx.cb;
+  S.built = true; S.ninst = 0;
+  if (S.draws.empty() && S.tlasBuilt) return false;
+  EndRendering(cx);
+  const bool timed = g.qp != VK_NULL_HANDLE; uint32_t q = 0;
+  if (timed) { q = (S.tsSlot++ % kSlots) * kQ + 5; vkCmdResetQueryPool(cb, g.qp, q, 2); vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, g.qp, q); }
+  Bar(cb);   // the cast pass' transform feedback writes -> convert; the previous frame's trace reads -> this frame's AS writes
+  std::vector<VkDeviceAddress> addrs;
+  if (!S.draws.empty()) {
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g.convPipe);
+    for (const CastDraw& d : S.draws) {
+      struct { float m[16]; uint64_t addr, shadow, flags; uint32_t count, idx; float eye[4]; } pc;
+      {   // captured clip -> shadow-map coordinates (u, v, depth): the same space the receivers' taps use, so no world space is needed
+        const int dbg = Cfg().dbg; const float xy = (dbg & 4) ? 1.0f : 0.5f, xo = (dbg & 4) ? 0.0f : 0.5f, zs = (dbg & 2) ? 0.5f : 1.0f, zo = (dbg & 2) ? 0.5f : 0.0f;
+        memset(pc.m, 0, 64); pc.m[0] = xy; pc.m[5] = (dbg & 1) ? -xy : xy; pc.m[10] = zs; pc.m[12] = xo; pc.m[13] = xo; pc.m[14] = zo; pc.m[15] = 1.0f;
+        if (dbg & 1) pc.m[13] = (dbg & 4) ? 1.0f : 0.5f; }
+      pc.addr = S.arena.addr + d.arenaOff; pc.shadow = pc.addr;   // shadow == verts: the motion test sees no motion (nothing is flagged)
+      pc.flags = g.flags.addr; pc.count = d.vcount; pc.idx = kMaxDraws - 1; pc.eye[0] = pc.eye[1] = pc.eye[2] = pc.eye[3] = 0;
+      vkCmdPushConstants(cb, g.convPl, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, &pc);
+      vkCmdDispatch(cb, (d.vcount + 63) / 64, 1, 1);
+    }
+    Bar(cb);
+    std::vector<VkAccelerationStructureGeometryKHR> geos(S.draws.size());
+    std::vector<VkAccelerationStructureBuildGeometryInfoKHR> infos; std::vector<VkAccelerationStructureBuildRangeInfoKHR> ranges;
+    uint64_t scratchUsed = 0;
+    auto flush = [&]() {
+      if (infos.empty()) return;
+      std::vector<const VkAccelerationStructureBuildRangeInfoKHR*> rp(infos.size());
+      for (size_t i = 0; i < infos.size(); i++) rp[i] = &ranges[i];
+      pCmdBuild(cb, (uint32_t)infos.size(), infos.data(), rp.data());
+      Bar(cb);
+      infos.clear(); ranges.clear(); scratchUsed = 0;
+    };
+    infos.reserve(S.draws.size()); ranges.reserve(S.draws.size());
+    for (size_t i = 0; i < S.draws.size(); i++) {
+      const CastDraw& d = S.draws[i];
+      PooledAs p;
+      if (!PoolGet(h, d.vcount / 3, &p)) { S.skipped++; continue; }
+      VkAccelerationStructureGeometryKHR& geo = geos[i];
+      geo = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
+      geo.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR; geo.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+      geo.geometry.triangles.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+      geo.geometry.triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT; geo.geometry.triangles.vertexData.deviceAddress = S.arena.addr + d.arenaOff;
+      geo.geometry.triangles.vertexStride = 16; geo.geometry.triangles.maxVertex = d.vcount - 1; geo.geometry.triangles.indexType = VK_INDEX_TYPE_NONE_KHR;
+      VkAccelerationStructureBuildGeometryInfoKHR bi{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
+      bi.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR; bi.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR; bi.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+      bi.geometryCount = 1; bi.pGeometries = &geo; bi.dstAccelerationStructure = p.as;
+      const uint64_t need = (p.scratch + g_scratchAlign - 1) / g_scratchAlign * g_scratchAlign;
+      if (need > g.scratch.size) { S.skipped++; continue; }
+      if (scratchUsed + need > g.scratch.size) flush();
+      bi.scratchData.deviceAddress = g.scratch.addr + scratchUsed; scratchUsed += need;
+      infos.push_back(bi); ranges.push_back({d.vcount / 3, 0, 0, 0});
+      addrs.push_back(p.addr); S.blasBuilt++;
+    }
+    flush();
+  }
+  // TLAS: identity instances of the pooled BLASes (an empty one the first time, so the address is always a built acceleration structure)
+  uint32_t ninst = (uint32_t)std::min<size_t>(addrs.size(), kMaxInstances);
+  if (ninst) {
+    VkBuffer src = VK_NULL_HANDLE;
+    uint8_t* mp = NewScratch(cx, (uint64_t)ninst * sizeof(VkAccelerationStructureInstanceKHR), &src, 0);
+    if (!mp) ninst = 0;
+    else {
+      auto* inst = reinterpret_cast<VkAccelerationStructureInstanceKHR*>(mp);
+      for (uint32_t i = 0; i < ninst; i++) {
+        VkAccelerationStructureInstanceKHR& I = inst[i]; memset(&I, 0, sizeof I);
+        I.transform.matrix[0][0] = I.transform.matrix[1][1] = I.transform.matrix[2][2] = 1.0f;
+        I.instanceCustomIndex = i; I.mask = 0xFF;
+        I.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR | VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR;
+        I.accelerationStructureReference = addrs[i];
+      }
+      VkBufferCopy cp{0, 0, (uint64_t)ninst * sizeof(VkAccelerationStructureInstanceKHR)}; vkCmdCopyBuffer(cb, src, S.inst.buf, 1, &cp);
+      Bar(cb);
+    }
+  }
+  {
+    VkAccelerationStructureGeometryKHR geo{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
+    geo.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR; geo.geometry.instances.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR; geo.geometry.instances.data.deviceAddress = S.inst.addr;
+    VkAccelerationStructureBuildGeometryInfoKHR bi{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
+    bi.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR; bi.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR; bi.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+    bi.geometryCount = 1; bi.pGeometries = &geo; bi.dstAccelerationStructure = S.tlas; bi.scratchData.deviceAddress = g.scratch.addr;
+    VkAccelerationStructureBuildRangeInfoKHR rg{ninst, 0, 0, 0}; const VkAccelerationStructureBuildRangeInfoKHR* rgp = &rg;
+    pCmdBuild(cb, 1, &bi, &rgp);
+    Bar(cb);   // the receivers' ray queries read it
+  }
+  S.tlasBuilt = true; S.ninst = ninst; S.frames++;
+  if (timed) vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, g.qp, q + 1);
+  if (timed) {   // read an older stamp pair (4 builds back; the GPU has long finished it)
+    const uint32_t old = (S.tsSlot + kSlots - 4) % kSlots * kQ + 5;
+    uint64_t r[4] = {};
+    if (S.frames > 4 && vkGetQueryPoolResults(h->device, g.qp, old, 2, sizeof r, r, 16, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) == VK_SUCCESS && r[1] && r[3]) { S.gpuMs += (double)(r[2] - r[0]) * (double)g.tsPeriod * 1e-6; S.gpuN++; }
+  }
+  return true;
+}
+}  // namespace
+
+int ShadowRays() {
+  if (!g_on || !g_capture || g_failed || S.failed) return 0;
+  const ShCfg& c = Cfg();
+  if (c.mode <= 0 || FxIsPhotoFrame() || !snaplight::ab_on((unsigned long long)g_presentCount)) return 0;
+  return c.mode == 1 ? 1 : c.mode == 2 ? c.softRays : std::max(8, c.softRays);
+}
+
+bool ShadowReceiverPrepare(ReplayCtx& cx, const uint8_t* recv, uint64_t recvRange, ShadowPush* out, bool* reemit) {
+  *reemit = false;
+  if (!g_on || !g_capture || g_failed) return false;
+  std::lock_guard<std::mutex> lk(g.mu);
+  if (!g.ready || !S.ready) {
+    if (!Setup(cx.h) || !ShSetup(cx.h)) return false;
+  }
+  const bool cur = S.present == g_presentCount;   // a cast pass was recorded this present
+  if (!S.tlasBuilt || (cur && !S.built)) *reemit = ShBuild(cx);
+  memset(out, 0, sizeof *out);
+  const ShCfg& c = Cfg();
+  const bool live = cur && S.ninst > 0 && S.built;
+  out->tlas = S.tlasAddr;
+  out->L[3] = c.bias;   // depth units
+  out->T[3] = std::tan(c.cone * 3.14159265f / 180.0f) * S.recvRatio * (ShadowRays() > 1 ? 1.0f : 0.0f);
+  out->P[0] = live ? 1.0f : 0.0f; out->P[1] = (float)(g_presentCount & 63); out->P[2] = c.margin; out->P[3] = S.tmax;
+
+  // the receiver matrix (world -> (u, v, depth), column-major): floats 0..15 of the fragment stage's 132-byte binding-9 buffer (the shader's c12; floats 16..31 are a second matrix); its inverse turns a tap's operands back into the world position
+  bool ok = false;
+  if (recv && recvRange >= 128) {
+    float r[16]; memcpy(r, recv, 64);
+    if (S.recvHave && !memcmp(r, S.recvKey, 64)) ok = S.recvOk;
+    else {
+      Mat M; for (int rr = 0; rr < 4; rr++) for (int cc = 0; cc < 4; cc++) M.m[rr][cc] = r[cc * 4 + rr];
+      Mat inv; ok = Invert(M, inv);
+      if (ok) for (int cc = 0; cc < 4; cc++) for (int rr = 0; rr < 4; rr++) S.recvInv[cc * 4 + rr] = (float)inv.m[rr][cc];
+      memcpy(S.recvKey, r, 64); S.recvHave = true; S.recvOk = ok;
+      auto row = [&](int j) { return std::sqrt((double)r[j] * r[j] + (double)r[4 + j] * r[4 + j] + (double)r[8 + j] * r[8 + j]); };   // the (u, v, depth) rows of the world -> map matrix
+      if (row(2) > 1e-12) S.recvRatio = (float)(std::sqrt(row(0) * row(1)) / row(2));
+    }
+  }
+  if (ok) memcpy(out->invR, S.recvInv, 64); else { S.noRecvM++; out->P[0] = 0.0f; for (int i = 0; i < 4; i++) out->invR[i * 5] = 1.0f; }
+  S.receivers++;
+  return true;
+}
 
 void AppendDeviceExt(VkPhysicalDevice phys, std::vector<const char*>& dext, VkPhysicalDeviceVulkan11Features* f11, VkPhysicalDeviceVulkan12Features* f12) {
   if (!Wanted()) return;
@@ -383,6 +698,7 @@ void DeviceShutdown(Host* h) {
   if (!g.ready) return;
   VkDevice d = h->device;
   Flush(h);
+  ShShutdown(h);
   for (auto& x : g.dead) pDestroyAs(d, x.as, nullptr);
   g.dead.clear();
   if (g.tlas) pDestroyAs(d, g.tlas, nullptr);
@@ -433,6 +749,8 @@ bool PatchVertexXfb(std::vector<uint32_t>& spv, const char* key12) {
 void DrawCapture::Begin(ReplayCtx& c, const DrawInfo& di) {
   open = false;
   if (!Capture() || di.hasGeomTess || FxIsPhotoFrame()) return;   // photo / Evaluation frames get no capture work
+  if (di.cast) { if (CastBegin(c, di)) { open = true; cx = &c; } return; }   // M3: the dynamic shadow map's caster draws (nvn_rt.cpp, "M3")
+  if (!SceneCapture()) return;                                    // shadows only: no scene geometry is captured
   TextureImpl* t8 = c.rt[8]; TextureImpl* t0 = c.rt[0];
   if (!IsSceneDepth(t8) || !IsSceneColor(t0) || !di.depthTest || !di.depthWrite || di.blend0) return;   // scene opaque draws only; never the Evaluation (DEPTH32F_STENCIL8) or photo targets
   if (!IsPatched(di.vsKey)) { static int n; if (n++ < 8) fprintf(stderr, "[rt] scene draw with vertex program %.12s that has no gl_Position block member to decorate: not captured\n", di.vsKey ? di.vsKey : "?"); return; }   // a draw whose module lacks the Xfb decorations must not begin transform feedback
@@ -740,6 +1058,12 @@ void OnPresent() {
   if (!g.ready || g.logEvery <= 0 || g_presentCount - g.lastLogPresent < g.logEvery) return;
   g.lastLogPresent = g_presentCount;
   std::lock_guard<std::mutex> lk(g.mu);
+  if (S.frames) {   // M3
+    fprintf(stderr, "[rt] p%d shadows: %llu builds in the window; per build %.1f cast draws, %.0f tris, %u instances; GPU convert+BLAS+TLAS %.3f ms (%u samples); receivers prepared %llu (%llu without a receiver matrix), skipped draws %llu; sun L (%.3f %.3f %.3f) range %.1f, receiver xy/depth %.3f, mode %d dbg %d rays %d\n",
+            g_presentCount, (unsigned long long)S.frames, (double)S.draws_n / (double)S.frames, (double)S.tris / (double)S.frames, S.ninst, S.gpuN ? S.gpuMs / S.gpuN : 0.0, S.gpuN, (unsigned long long)S.receivers,
+            (unsigned long long)S.noRecvM, (unsigned long long)S.skipped, S.sunL[0], S.sunL[1], S.sunL[2], S.tmax, S.recvRatio, Cfg().mode, Cfg().dbg, ShadowRays());
+    S.frames = S.draws_n = S.tris = S.receivers = S.noRecvM = 0; S.gpuMs = 0; S.gpuN = 0;
+  }
   Stats& s = g.st;
   if (!s.frames) return;
   const double f = (double)s.frames;
