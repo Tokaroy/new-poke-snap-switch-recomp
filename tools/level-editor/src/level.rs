@@ -339,10 +339,12 @@ impl Level {
             out.push(crate::grow::Add {
                 entity: m.entity,
                 set: vec![(5, 3, m.pos.to_vec()), (5, 4, m.rot.to_vec()), (5, 5, m.scale.to_vec())],
+                names: vec![],
+                lists: vec![],
             });
         }
         for s in self.spawns.iter().filter(|s| s.alive_off.is_some() && s.alive) {
-            out.push(crate::grow::Add { entity: s.entity_idx, set: vec![(10, 1, s.pos.to_vec()), (10, 2, s.rot.to_vec())] });
+            out.push(crate::grow::Add { entity: s.entity_idx, set: vec![(10, 1, s.pos.to_vec()), (10, 2, s.rot.to_vec())], names: vec![], lists: vec![] });
         }
         out
     }

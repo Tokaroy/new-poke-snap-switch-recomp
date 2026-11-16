@@ -57,6 +57,23 @@ pub struct Add {
     pub entity: usize,
     /// (component kind slot, field slot, values) e.g. (5, 3, pos) for a model instance position.
     pub set: Vec<(usize, usize, Vec<f32>)>,
+    /// (component kind slot, string field slot, text): gives the clone its own string, e.g. (5, 1, mesh name) for a model
+    /// instance that shows an imported model group instead of the source's.
+    pub names: Vec<(usize, usize, String)>,
+    /// (component kind slot, vector-of-tables slot, names): replaces the clone's list with one copy of the source list's
+    /// first element per name, each with its string field 0 set to the name. A model instance keeps one entry per model
+    /// entry in its s17 (lightmap) and s23 lists; a new model needs lists that match its own shapes.
+    pub lists: Vec<(usize, usize, Vec<String>)>,
+}
+
+/// Appends a FlatBuffers string (u32 length, bytes, NUL) and returns its position.
+fn put_string(blk: &mut Block, text: &str) -> usize {
+    blk.align(4);
+    let sp = blk.reserve(4 + text.len() + 1);
+    blk.put_u32(sp, text.len() as u32);
+    let i = sp + 4 - blk.base;
+    blk.bytes[i..i + text.len()].copy_from_slice(text.as_bytes());
+    sp
 }
 
 /// Fresh ids of one added entity, so the caller can find it again after export.
@@ -267,6 +284,39 @@ pub fn grow(bytes: &[u8], adds: &[Add]) -> Result<(Vec<u8>, Vec<Added>), String>
                         blk.put_u32(st + (f - sub.pos) + 4 * i, v.to_bits());
                     }
                 }
+                for (k2, f2, text) in &a.names {
+                    if *k2 != kind {
+                        continue;
+                    }
+                    if !schema.field_type(&sub_ty, *f2).is_some_and(|t| t == "string") {
+                        return Err(format!("component {kind} field {f2} is not a string"));
+                    }
+                    // the string lies after the table, so the offset is forward
+                    let sp = put_string(&mut blk, text);
+                    set_offset(&mut blk, st, &sub, *f2, sp)?;
+                }
+                for (k2, f2, items) in &a.lists {
+                    if *k2 != kind {
+                        continue;
+                    }
+                    let el_ty = schema.field_type(&sub_ty, *f2).ok_or("schema: list")?;
+                    let el_ty = el_ty.strip_prefix('[').and_then(|s| s.strip_suffix(']')).ok_or_else(|| format!("component {kind} field {f2} is not a vector"))?.to_string();
+                    let first = *sub.tables(*f2).first().ok_or_else(|| format!("component {kind} list {f2} is empty"))?;
+                    if schema.field_type(&el_ty, 0) != Some("string") || first.field(0).is_none() {
+                        return Err(format!("component {kind} list {f2}: elements have no name"));
+                    }
+                    blk.align(4);
+                    let vp = blk.reserve(4 + 4 * items.len());
+                    blk.put_u32(vp, items.len() as u32);
+                    set_offset(&mut blk, st, &sub, *f2, vp)?;
+                    for (i, text) in items.iter().enumerate() {
+                        let et = copy_table(&mut blk, &first, &el_ty, &schema, shift)?;
+                        let at = vp + 4 + 4 * i;
+                        blk.put_u32(at, (et - at) as u32);
+                        let sp = put_string(&mut blk, text);
+                        set_offset(&mut blk, et, &first, 0, sp)?;
+                    }
+                }
             }
             out_ids.push(Added { hash, node_id });
         }
@@ -388,6 +438,23 @@ pub fn verify(orig: &[u8], grown: &[u8], adds: &[Add]) -> Result<String, String>
     let ids: HashSet<u32> = gn.iter().filter_map(|n| n.u32(1)).collect();
     if ids.len() != gn.len() {
         return Err("duplicate node id".into());
+    }
+    for (k, a) in adds.iter().enumerate() {
+        for (kind, slot, text) in &a.names {
+            let ok = ge[ne + k].tables(0).iter().filter_map(|c| c.table(*kind)).any(|t| t.str(*slot) == Some(text.as_str()));
+            if !ok {
+                return Err(format!("added entity {k}: component {kind} field {slot} is not {text:?}"));
+            }
+        }
+        for (kind, slot, items) in &a.lists {
+            let ok = ge[ne + k].tables(0).iter().filter_map(|c| c.table(*kind)).any(|t| {
+                let v = t.tables(*slot);
+                v.len() == items.len() && v.iter().zip(items).all(|(e, s)| e.str(0) == Some(s.as_str()))
+            });
+            if !ok {
+                return Err(format!("added entity {k}: component {kind} list {slot} is not {items:?}"));
+            }
+        }
     }
     Ok(format!("{} bytes -> {} bytes; original content identical; entities {} -> {}; nodes {} -> {}", orig.len(), grown.len(), ne, ge.len(), nn, gn.len()))
 }
