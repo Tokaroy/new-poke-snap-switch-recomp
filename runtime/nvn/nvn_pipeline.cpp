@@ -9,6 +9,8 @@
 //  * A pipeline the game needs that is not ready compiles on the pool (hot queue first); the draw is skipped until it is ready
 //    (SNAP_PIPELINE_ASYNC=0 compiles inline on the replay thread instead, the old behaviour).
 //  * Files are versioned by game build, translator version, descriptor layout and (cache blob only) driver identity; a mismatch discards them.
+//    <shadercache>\cache_stamp.txt makes that a wipe: a changed GPU, device ID or driver version deletes the driver blob, a changed build,
+//    translator or key layout deletes the key list as well. <shadercache>\status.json (key and ready counts) is written for the launcher chip.
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -19,6 +21,7 @@
 #include <condition_variable>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <deque>
 #include <filesystem>
 #include <fstream>
@@ -358,6 +361,60 @@ void RecordKey(const PipeDesc& pd) {
   }
 }
 
+// ---- cache stamp and status -------------------------------------------------------------------------------------------------------
+// <dir>\cache_stamp.txt says what the files in this folder were made for (two lines: GPU and driver, then translator / game build / layout).
+// A different GPU, device ID, driver version or pipeline-cache UUID wipes pipeline_cache.bin (the driver blob; it is rebuilt from the key list
+// at the next start, which is the "compile shaders" progress screen); a different translator, game build or PipeDesc layout wipes the key list
+// too, and with it prepare.json (the "shaders prepared" mark of host/shaderprep.cpp). A folder with no stamp (made before this existed) is
+// kept as it is: the file headers still reject whatever does not match. Writes <dir>\status.json for the launcher (key and ready counts).
+std::string HexBytes(const uint8_t* b, size_t n) { static const char* d = "0123456789abcdef"; std::string o; for (size_t i = 0; i < n; i++) { o += d[b[i] >> 4]; o += d[b[i] & 15]; } return o; }
+
+void CheckStamp(Host* h) {
+  char gpu[200], bld[160];
+  snprintf(gpu, sizeof gpu, "vendor=%u device=%u driver=%u uuid=%s", h->props.vendorID, h->props.deviceID, h->props.driverVersion, HexBytes(h->props.pipelineCacheUUID, 16).c_str());
+  snprintf(bld, sizeof bld, "translator=%016llx game=%016llx desc=%u format=%u", (unsigned long long)S->translatorHash, (unsigned long long)S->buildHash, (unsigned)sizeof(PipeDesc), kFormatVersion);
+  const std::string path = S->dir + "\\cache_stamp.txt";
+  std::string oldGpu, oldBld;
+  {
+    std::ifstream f(path);
+    if (f) { std::getline(f, oldGpu); std::getline(f, oldBld); }
+  }
+  while (!oldGpu.empty() && (oldGpu.back() == '\r')) oldGpu.pop_back();
+  while (!oldBld.empty() && (oldBld.back() == '\r')) oldBld.pop_back();
+  auto rm = [&](const char* n) { DeleteFileA((S->dir + "\\" + n).c_str()); };
+  if (!oldGpu.empty() || !oldBld.empty()) {
+    if (oldBld != bld) {
+      Log("pipeline cache: the game build, translator or key layout changed (%s -> %s): key list and driver cache wiped", oldBld.c_str(), bld);
+      rm("pipeline_keys.bin"); rm("pipeline_cache.bin"); rm("prepare.json"); rm("status.json");
+    } else if (oldGpu != gpu) {
+      Log("pipeline cache: the GPU or driver changed (%s -> %s): driver cache wiped, the key list is kept and compiled again", oldGpu.c_str(), gpu);
+      rm("pipeline_cache.bin");
+    }
+  }
+  if (oldGpu != gpu || oldBld != bld) {
+    std::ofstream f(path, std::ios::trunc);
+    f << gpu << "\n" << bld << "\n";
+  }
+}
+
+void WriteStatus() {
+  uint32_t ready = 0, entries = 0;
+  {
+    std::lock_guard<std::mutex> lk(S->pm);
+    for (auto& kv : S->map) for (Ent* e = kv.second; e; e = e->next) { entries++; if (e->state.load() == ES_READY) ready++; }
+  }
+  size_t known;
+  { std::lock_guard<std::mutex> lk(S->km); known = S->known.size(); }
+  std::error_code ec;
+  const uint64_t blob = std::filesystem::file_size(S->dir + "\\pipeline_cache.bin", ec);
+  char b[320];
+  snprintf(b, sizeof b, "{\"format\": 1, \"known\": %zu, \"ready\": %u, \"entries\": %u, \"blob_bytes\": %llu, \"translator\": \"%016llx\", \"game\": \"%016llx\", \"updated\": %lld}\n",
+           known, ready, entries, (unsigned long long)(ec ? 0 : blob), (unsigned long long)S->translatorHash, (unsigned long long)S->buildHash, (long long)time(nullptr));
+  const std::string path = S->dir + "\\status.json", tmp = path + ".tmp";
+  { std::ofstream f(tmp, std::ios::trunc); f << b; if (!f.good()) return; }
+  MoveFileExA(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING);
+}
+
 // ---- pipeline cache persistence ---------------------------------------------------------------------------------------------------
 void LoadCache(Host* h) {
   std::ifstream f(S->dir + "\\pipeline_cache.bin", std::ios::binary);
@@ -398,6 +455,7 @@ void SaveCache(bool force) {
   if (!MoveFileExA(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING)) { DeleteFileA(tmp.c_str()); return; }
   S->lastSaveNs = snap_perf::now_ns();
   Log("pipeline cache saved (%zu bytes)", n);
+  WriteStatus();
 }
 
 // ---- compile jobs -----------------------------------------------------------------------------------------------------------------
@@ -578,6 +636,7 @@ void PipelineServiceInit(Host* h) {
       FindClose(hf);
     }
   }
+  CheckStamp(h);
   LoadCache(h);
   LoadKeys();
   AddSeedKeys();

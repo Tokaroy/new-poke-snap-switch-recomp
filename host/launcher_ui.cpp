@@ -34,6 +34,7 @@
 #include "hle/discord_app.h"
 #include "hle/visual_defaults.h"
 #include "mods/mods_core.h"
+#include "shaderprep.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 #include "hle/discord_app.h"
@@ -220,6 +221,9 @@ struct G {
   int mods_top = 0;
   int cache_state = 0;           // 0 missing, 1 ready, 2 building
   unsigned long long cache_bytes = 0;
+  std::string cache_dir;
+  snap_shaderprep::Progress prep;   // <shadercache>\prepare.json (host/shaderprep.cpp): the first-run "prepare shaders" sweep
+  double prep_at = 0;               // ImGui time of the last refresh_cache()
 
   enum View { HOME, SETTINGS, SAVES, STEAM, MODS } view = HOME;
   int home_sel = 0, tab = 0, row = 0;
@@ -1441,6 +1445,9 @@ void refresh_cache() {
   std::string dir;
   const char* e = std::getenv("SNAP_SHADERCACHE_DIR");
   dir = (e && *e) ? e : g.info->data_dir + "\\shadercache";
+  g.cache_dir = dir;
+  g.prep = snap_shaderprep::Progress();
+  snap_shaderprep::read_progress(dir, g.prep);
   g.cache_state = 0;
   g.cache_bytes = 0;
   std::error_code ec;
@@ -1745,10 +1752,18 @@ void draw_home() {
   // status chips
   std::vector<Chip> chips;
   chips.push_back({in.game_ok ? "Game files ready" : "Game folder needs attention", in.game_ok ? 0x5aa070u : 0xc84a3au, in.game_ok ? 0x5f5f5fu : 0xc84a3au, 0xffffffu});
+  bool prep_chip_click = false;   // the shader chip starts or stops the first-run preparation (host/shaderprep.cpp)
   {
     static const char* const names[3] = {"Shader cache missing", "Shader cache ready", "Shader cache building"};
     static const unsigned dots[3] = {0xe0a03au, 0x5aa070u, 0xe0733au};
-    chips.push_back({std::string(names[g.cache_state]) + (g.cache_state ? " (" + size_text(g.cache_bytes) + ")" : ""), dots[g.cache_state], 0x5f5f5fu, 0xffffffu});
+    const snap_shaderprep::Progress& pp = g.prep;
+    std::string t = std::string(names[g.cache_state]) + (g.cache_state ? " (" + size_text(g.cache_bytes) + ")" : "");
+    unsigned dot = dots[g.cache_state];
+    if (pp.state == 1) { t = "Preparing shaders " + std::to_string(pp.index) + " of " + std::to_string(pp.total) + " - press to stop"; dot = 0xe0733au; prep_chip_click = true; }
+    else if (pp.state == 2) t = "Shaders prepared (" + std::to_string(pp.pipelines) + " pipelines)";
+    else if (pp.state == 3 || pp.state == 4) { t = std::string(pp.state == 3 ? "Shader preparation stopped" : "Shader preparation had problems") + " - press to retry"; dot = 0xe0a03au; prep_chip_click = true; }
+    else { t += " - press to prepare"; prep_chip_click = true; }
+    chips.push_back({t, dot, 0x5f5f5fu, 0xffffffu});
   }
   if (in.update_available) chips.push_back({"Update " + in.update_version, 0xe0733au, 0xb85a28u, 0xfcefe6u});
   if (g.pad_found) chips.push_back({"Controller found", 0x5aa070u, 0x5f5f5fu, 0xffffffu});
@@ -1761,8 +1776,19 @@ void draw_home() {
     if (tw > 330) { t = c.text; while (t.size() > 4 && text_w(15, (t + "..").c_str()) > 330) t.pop_back(); t += ".."; tw = text_w(15, t.c_str()); }
     const float w = tw + 44;
     if (cx + w > 554 && cx > 84) { if (chip_rows >= 2) break; cx = 84; cy += 37; ++chip_rows; }   // two rows at most; the menu below needs the room
+    const bool prep_chip = &c == &chips[1] && prep_chip_click;
+    const bool prep_hot = prep_chip && hot(cx, cy, w, 30);
+    if (prep_hot && ImGui::IsMouseClicked(0)) {
+      std::string perr;
+      if (g.prep.state == 1) { snap_shaderprep::request_stop(g.cache_dir); g.toast = "Stopping after this course"; }
+      else if (snap_shaderprep::start_detached(perr)) g.toast = "Preparing shaders in the background. You can keep using the launcher";
+      else g.toast = perr;
+      g.toast_until = ImGui::GetTime() + 3;
+      g.prep_at = 0;
+    }
     shadow(cx, cy, w, 30, 15);
     rrect(cx, cy, w, 30, 15, C(c.bg));
+    if (prep_hot) dl->AddRect(V(cx, cy), V(cx + w, cy + 30), C(kOrange), 15 * g.s, 0, 2.0f * g.s);
     dl->AddCircleFilled(V(cx + 16, cy + 15), 5 * g.s, C(c.dot), 12);
     text(cx + 30, cy + 15, 15, C(c.fg), t.c_str());
     cx += w + 8;
@@ -2479,6 +2505,7 @@ UiResult show(UiInfo& info) {
     g.oy = (ds.y - 720 * g.s) / 2;
     if (!shot) handle_input();
     if (g.done) { ImGui::EndFrame(); break; }
+    if (g.view == G::HOME && ImGui::GetTime() - g.prep_at > 2.0) { g.prep_at = ImGui::GetTime(); refresh_cache(); }   // the shader chip follows a running preparation
     bool back = false;
     if (g.view == G::SETTINGS) draw_settings(&back);
     else if (g.view == G::SAVES) draw_saves();

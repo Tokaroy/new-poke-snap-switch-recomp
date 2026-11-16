@@ -4,6 +4,7 @@
 // Run from the project root (the default ELF paths are relative to it). Output goes to stderr.
 #include <windows.h>
 #include "launcher.h"
+#include "shaderprep.h"
 #include <filesystem>
 #include <tlhelp32.h>
 #include <shobjidl.h>
@@ -985,6 +986,10 @@ int main(int argc, char **argv) {
             hle::load_config("");
             return hle::saveport::run_cli(cmd, path, profile);
         }
+    }
+    if (snap_shaderprep::wanted(argc, argv)) {   // shader preparation (host/shaderprep.cpp): plays one hidden ride per course to fill this PC's shader cache
+        std::vector<std::string> args(argv + 1, argv + argc);
+        return snap_shaderprep::run_cli(args);
     }
     {   // launcher mode (builder release): no arguments and a config.json next to the exe (host/launcher.cpp)
         snap_launcher::Result lr;

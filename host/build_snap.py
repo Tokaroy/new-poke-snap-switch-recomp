@@ -73,7 +73,7 @@ def main():
         cov.write_bytes(bak)   # the coverage table is the HLE owner's; only the stub file is ours
     shutil.copyfile(ROOT / 'generated' / 'hle_unimplemented.cpp', ROOT / 'generated' / 'unimplemented.cpp')
 
-    srcs = [(ROOT / 'host' / f, 17) for f in ('loader.cpp', 'hooks.cpp', 'boot.cpp', 'abi_audio.cpp', 'window_opts.cpp', 'pgo.cpp', 'launcher.cpp', 'launcher_upscalers.cpp', 'launcher_ui.cpp', 'elf_check.cpp', 'benchmark.cpp', 'album.cpp')]
+    srcs = [(ROOT / 'host' / f, 17) for f in ('loader.cpp', 'hooks.cpp', 'boot.cpp', 'abi_audio.cpp', 'window_opts.cpp', 'pgo.cpp', 'launcher.cpp', 'launcher_upscalers.cpp', 'launcher_ui.cpp', 'elf_check.cpp', 'benchmark.cpp', 'shaderprep.cpp', 'album.cpp')]
     srcs += [(p, 20) for p in sorted((ROOT / 'runtime' / 'os').glob('*.cpp'))]
     srcs += [(p, 20) for p in sorted((ROOT / 'host' / 'mods').glob('*.cpp'))]   # draw-distance mods 26 and 27 (host/mods/lodanim.cpp)
     for d in ('hle', 'audio', 'nvn', 'mods'):
