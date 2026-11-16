@@ -1,6 +1,6 @@
 # Shiny Pokemon mod: plan
 
-Status: plan only. Nothing here has been run in game. Every claim about spawn behavior is a static finding or an inference and is marked as such. Game data stays local: no extracted assets, keys or dumps go into git, and recolored textures are built from the user's own dumps into a git-ignored folder.
+Status: milestones M1 to M3 are built (2026-11-14, off by default; code in `runtime/nvn/nvn_shiny.cpp`, `host/mods/shiny.cpp` and `runtime/ui/ui_shiny.cpp`). The text below is the plan as written, so its claims about spawn behavior were static findings or inferences then and are marked as such; check `AGENTS.md` for what was measured in game. Game data stays local: no extracted assets, keys or dumps go into git, and recolored textures are built from the user's own dumps into a git-ignored folder.
 
 ## 1. Goal and constraints
 

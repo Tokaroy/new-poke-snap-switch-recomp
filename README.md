@@ -77,6 +77,7 @@ Early playable. The game boots to the title screen and the lab hub, all 14 cours
 - Upscalers: NVIDIA DLSS and DLAA, AMD FSR and Intel XeSS, each with quality modes. The vendor SDK files are not in this repo or the release zip. The builder and the launcher download them to your PC from the vendors only after you read and accept each license, and check them against pinned hashes. An upscaler that is not installed is hidden.
 - HD photos (on in the Enhanced look, display only): photos taken under a scaled frame (4K, DLAA, DLSS, FSR or render scale above 1) also get a 2160x1440 copy. It is shown in the photo select preview, the score screen and the album. Turn it off with the "HD photos" row in the Photos settings tab, or choose the Original look. The game's own save, JPEG and score inputs do not change.
 - Enhanced lighting, off by default ("Lighting preset" row on the F1 Graphics page and in the launcher): soft shadows that sharpen where an object touches the ground (PCSS), ambient occlusion (GTAO), contact shadows and a larger shadow map. It costs frame time at 4K. The occlusion and contact passes are skipped on photo frames.
+- Ultrawide, experimental and off by default ("Ultrawide" row on the F1 Graphics page and in the launcher, restart needed): on a window wider than 16:9 the 3D view shows more of the world and the interface, menus, videos and photos stay 16:9. Photo scores have not been checked against a widened view, which is why it is off. See `docs/ultrawide.md`.
 - HDR output (HDR10 and scRGB, with fallback to SDR), peak and paper-white settings.
 - Render scale from 0.5x to 4x, shadow resolution up to 8192, ambient occlusion options.
 - Optional color looks (Neutral, Vivid, Warm, Cool) and per-pass switches for bloom, depth of field, film grain and chromatic aberration.
@@ -189,6 +190,10 @@ Each pair is captured at the same point on the ride, so the camera matches; the 
 
 <img src="docs/screenshots/compare/lighting-florio.webp" alt="Florio at 4K, split screen: lighting preset off on the left, on on the right" width="100%">
 <img src="docs/screenshots/compare/lighting-florio-zoom.webp" alt="Grass at 2x: flat shading with the lighting preset off, shaded depth between the blades with it on" width="100%">
+
+**Ultrawide.** A 3440x1440 window at Florio, with Ultrawide off (top, 16:9 with side bars) and Auto (bottom). The view is wider, and the buttons and the camera frame stay where they were. In the Auto frame the film counter's number sits at the far right edge of the window, away from its icon.
+
+<img src="docs/screenshots/ultrawide.webp" alt="Florio ride in a 3440x1440 window: Ultrawide off with black side bars on top, Auto with a wider 3D view below" width="100%">
 
 **Anti-aliasing at native 4K.** The game's own AA, SSAA + SMAA (the Enhanced default) and DLAA.
 
@@ -356,7 +361,7 @@ Bring a save in, or take yours out, with the launcher buttons "Import save..." a
 - `tests/insn/`: instruction-level differential tests against a Unicorn reference.
 - `tests\hle\run_ui_test.ps1`, `run_options_test.ps1`, `run_profiles_test.ps1`, `run_switch_test.ps1`: tests that boot the game.
 
-Game-level checks use scripted routes: `powershell -File host\run_boot.ps1 -Route <name>` feeds `host\routes\<name>.txt` as input and saves checkpoint screenshots. Scripts can wait on game state with `wait <condition>` and `end` lines (conditions such as `ui=<scene>`, `dialog`, `ride`, `ride_end` and `film<=<n>`), so a route does not depend on fixed timing. A timeout exits with code 3 and logs the UI state. Up to 4 hidden runs at a time. See `host/README.md` for details.
+Game-level checks use scripted routes: `powershell -File host\run_boot.ps1 -Route <name>` feeds `host\routes\<name>.txt` as input and saves checkpoint screenshots. Scripts can wait on game state with `wait <condition>` and `end` lines (conditions such as `ui=<scene>`, `dialog`, `ride`, `ride_end` and `film<=<n>`), so a route does not depend on fixed timing. A timeout exits with code 3 and logs the UI state. Up to 4 hidden runs at a time; `build\slots\max.txt` can lower that cap. See `host/README.md` for details.
 
 </details>
 
