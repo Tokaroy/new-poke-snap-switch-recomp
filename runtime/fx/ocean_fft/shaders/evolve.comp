@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: GPL-3.0-only
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+void main() {
+    uvec3 p = gl_GlobalInvocationID;
+    if (p.x >= pc.grid.x || p.y >= pc.grid.x || p.z >= pc.grid.z) return;
+    vec2 k = waveVector(p.xy, p.z);
+    float magnitude = length(k);
+    float phase = sqrt(pc.frame.w * magnitude) * pc.frame.x;
+    vec2 e = vec2(cos(phase), sin(phase));
+    vec4 h0 = imageLoad(initialSpectrum, ivec3(p));
+    vec2 h = multiplyComplex(h0.xy, e) + multiplyComplex(conjugateComplex(h0.zw), conjugateComplex(e));
+    vec2 fields[8];
+    fields[0] = h;
+    float invK = magnitude > 0.0 ? 1.0 / magnitude : 0.0;
+    fields[1] = timesI(h) * (k.x * invK);
+    fields[2] = timesI(h) * (k.y * invK);
+    fields[3] = timesI(h) * k.x;
+    fields[4] = timesI(h) * k.y;
+    fields[5] = h * (-k.x * k.x * invK);
+    fields[6] = h * (-k.y * k.y * invK);
+    fields[7] = h * (-k.x * k.y * invK);
+    for (int f = 0; f < 8; ++f) imageStore(pingImage, ivec3(p.xy, p.z * 8u + uint(f)), vec4(fields[f], 0, 0));
+}

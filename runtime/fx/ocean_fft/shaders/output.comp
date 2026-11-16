@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: GPL-3.0-only
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+uint reverseIndex(uint x) { return bitfieldReverse(x) >> (32u - pc.grid.y); }
+void main() {
+    uvec3 p = gl_GlobalInvocationID;
+    if (p.x >= pc.grid.x || p.y >= pc.grid.x || p.z >= pc.grid.z) return;
+    float f[8], normalization = 1.0 / float(pc.grid.x * pc.grid.x);
+    for (int i = 0; i < 8; ++i)
+        f[i] = loadField(ivec3(reverseIndex(p.x), reverseIndex(p.y), p.z * 8u + uint(i))).x * normalization;
+    float a = 1.0 + pc.detail.x * f[5], b = pc.detail.x * f[7], d = 1.0 + pc.detail.x * f[6];
+    float jacobian = a * d - b * b;
+    vec3 normal = vec3(b * f[4] - d * f[3], jacobian, b * f[3] - a * f[4]);
+    float lengthSquared = dot(normal, normal);
+    normal = lengthSquared > 1e-24 ? normal * inversesqrt(lengthSquared) : vec3(0, 1, 0);
+    float fresh = clamp((pc.detail.z - jacobian) * pc.frame.z, 0.0, 1.0);
+    float foam = max(fresh, imageLoad(foamImage, ivec3(p)).x * exp(-pc.detail.w * pc.frame.y));
+    imageStore(displacementImage, ivec3(p), vec4(pc.detail.x * f[1], f[0], pc.detail.x * f[2], 0));
+    imageStore(normalImage, ivec3(p), vec4(normal, 0));
+    imageStore(foamImage, ivec3(p), vec4(foam, jacobian, 0, 0));
+}

@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: GPL-3.0-only
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+uint hashValue(uint x) {
+    x ^= x >> 16u; x *= 0x7feb352du; x ^= x >> 15u; x *= 0x846ca68bu; x ^= x >> 16u; return x;
+}
+vec2 gaussian(uint index) {
+    float a = (float(hashValue(index ^ pc.grid.w) >> 9u) + 0.5) / 8388608.0;
+    float b = (float(hashValue(index ^ pc.grid.w ^ 0x9e3779b9u) >> 9u) + 0.5) / 8388608.0;
+    float angle = 2.0 * PI * b;
+    return sqrt(-2.0 * log(a)) * vec2(cos(angle), sin(angle));
+}
+vec2 initialValue(uvec2 p, uint c) {
+    uint n = pc.grid.x;
+    if (all(equal(p, uvec2(0))) || p.x == n / 2u || p.y == n / 2u || pc.wind.x == 0.0) return vec2(0);
+    vec2 kv = waveVector(p, c);
+    float k2 = dot(kv, kv), k = sqrt(k2);
+    float low = c + 1u < pc.grid.z ? 0.5 * PI * float(n) / pc.tiles[c + 1u] : 0.0;
+    float high = c > 0u ? 0.5 * PI * float(n) / pc.tiles[c] : 1e30;
+    if (k < low || k >= high) return vec2(0);
+    float lengthScale = min(pc.wind.x * pc.wind.x / pc.frame.w, 0.2 * pc.wind.w);
+    if (lengthScale == 0.0) return vec2(0); // Tiny positive winds can underflow in binary32.
+    float alignment = dot(kv / k, pc.wind.yz);
+    float power = pc.tiles.w * exp(-1.0 / (k2 * lengthScale * lengthScale)) * alignment * alignment /
+                  (k2 * k2) * exp(-k2 * pc.detail.y * pc.detail.y);
+    float dk = 2.0 * PI / pc.tiles[c];
+    return gaussian((c * n + p.y) * n + p.x) * (float(n * n) * sqrt(power * dk * dk * 0.5));
+}
+void main() {
+    uvec3 p = gl_GlobalInvocationID;
+    if (p.x >= pc.grid.x || p.y >= pc.grid.x || p.z >= pc.grid.z) return;
+    uvec2 mirror = (uvec2(pc.grid.x) - p.xy) % pc.grid.x;
+    imageStore(initialSpectrum, ivec3(p), vec4(initialValue(p.xy, p.z), initialValue(mirror, p.z)));
+}

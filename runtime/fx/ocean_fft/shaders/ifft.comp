@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: GPL-3.0-only
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+// Radix-2 decimation in frequency; the output pass reverses both axes' bits.
+void main() {
+    uvec3 p = gl_GlobalInvocationID;
+    if (p.x >= pc.grid.x || p.y >= pc.grid.x || p.z >= pc.grid.z * 8u) return;
+    uint index = pc.pass.x == 0u ? p.x : p.y;
+    uint halfLength = pc.grid.x >> (pc.pass.y + 1u);
+    uint span = halfLength * 2u, j = index % halfLength;
+    uint first = (index / span) * span + j;
+    ivec3 a = ivec3(p), b = ivec3(p);
+    if (pc.pass.x == 0u) { a.x = int(first); b.x = int(first + halfLength); }
+    else { a.y = int(first); b.y = int(first + halfLength); }
+    vec2 va = loadField(a), vb = loadField(b), value;
+    if (index % span < halfLength) value = va + vb;
+    else {
+        float angle = 2.0 * PI * float(j) / float(span);
+        value = multiplyComplex(va - vb, vec2(cos(angle), sin(angle)));
+    }
+    if (pc.pass.z == 0u) imageStore(pongImage, ivec3(p), vec4(value, 0, 0));
+    else imageStore(pingImage, ivec3(p), vec4(value, 0, 0));
+}
