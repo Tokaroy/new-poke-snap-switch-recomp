@@ -307,6 +307,7 @@ A value set by hand always wins over a menu choice and over `SNAP_VISUALS`.
 | `SNAP_HDR` | `off`, `hdr10`, `scrgb` | HDR output. Peak and paper white (in nits) use `SNAP_HDR_PEAK_NITS` and `SNAP_HDR_PAPER_NITS` |
 | `SNAP_PHOTO_EXPORT` | 0, 1 | PNG copies of photos. The folder is `SNAP_PHOTO_DIR` |
 | `SNAP_UI_FONT_SCALE` | `off`, `auto`, 1 to 4 | Sharper menu text. `auto` gives 2x at 1440p and above |
+| `SNAP_RETURN_TO_LAUNCHER` | `1` | After a game started from the launcher window closes, open the launcher again instead of ending. The Display page of the launcher has the same switch (key `return_to_launcher`) |
 | `SNAP_FAST_BOOT` | 1 | Turns the frame limiter off during loading (about 28% faster to the title logo) |
 | `SNAP_MODS_DIR` | path | Mod pack folder |
 | `SNAP_CONFIG_DIR` | path | Where `input.json` and `window.json` live |

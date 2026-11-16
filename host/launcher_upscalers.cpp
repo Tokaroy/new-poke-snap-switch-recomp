@@ -114,9 +114,10 @@ bool installed(const Up& u, const fs::path& dir) {
   return true;
 }
 
-// HTTPS download to `dest` (hash checked while streaming; deleted when it does not match). progress/cancel are optional.
-bool download(const std::string& url, const fs::path& dest, const std::string& want_sha, long long want_size, std::atomic<long long>* progress,
-              std::atomic<bool>* cancel, std::string& err) {
+// One HTTPS download try. `retry` is set when the file arrived short or the connection broke (worth another try); a wrong hash is not.
+bool download_once(const std::string& url, const fs::path& dest, const std::string& want_sha, long long want_size, std::atomic<long long>* progress,
+                   std::atomic<bool>* cancel, std::string& err, long long base, bool& retry) {
+  retry = false;
   if (url.rfind("https://", 0) != 0) { err = "refusing a download URL that is not https"; return false; }
   std::wstring wurl = W(url);
   URL_COMPONENTS uc{};
@@ -143,21 +144,26 @@ bool download(const std::string& url, const fs::path& dest, const std::string& w
       Sha sha;
       std::vector<char> buf(1 << 18);
       long long total = 0;
+      DWORD clen = 0, clsz = sizeof clen;   // Content-Length, when the server sent one
+      if (!WinHttpQueryHeaders(req, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &clen, &clsz, WINHTTP_NO_HEADER_INDEX)) clen = 0;
       for (;;) {
         if (cancel && cancel->load()) { err = "cancelled"; break; }
         DWORD got = 0;
-        if (!WinHttpReadData(req, buf.data(), (DWORD)buf.size(), &got)) { err = "the connection broke"; break; }
+        if (!WinHttpReadData(req, buf.data(), (DWORD)buf.size(), &got)) { err = "the connection broke"; retry = true; break; }
         if (!got) { ok = true; break; }
         out.write(buf.data(), got);
         sha.add(buf.data(), got);
         total += got;
-        if (progress) progress->store(total);
+        if (progress) progress->store(base + total);   // base: bytes of the files before this one, so the bar runs across all of them
       }
       out.close();
-      if (ok && want_size && total != want_size) { ok = false; err = "the file has the wrong size"; }
+      if (ok && ((clen && total != (long long)clen) || (want_size && total != want_size))) {
+        ok = false; retry = true;
+        err = "the file arrived incomplete (" + std::to_string(total) + " of " + std::to_string(want_size ? want_size : (long long)clen) + " bytes)";
+      }
       if (ok && sha.hex() != want_sha) { ok = false; err = "the file does not match the published SHA-256"; }
     }
-  } else if (err.empty()) err = "could not reach the server";
+  } else if (err.empty()) { err = "could not reach the server"; retry = true; }
   if (req) WinHttpCloseHandle(req);
   if (con) WinHttpCloseHandle(con);
   WinHttpCloseHandle(ses);
@@ -167,6 +173,25 @@ bool download(const std::string& url, const fs::path& dest, const std::string& w
   fs::rename(part, dest, ec);
   if (ec) { err = "could not save the file"; return false; }
   return true;
+}
+
+// HTTPS download to `dest` (hash checked while streaming; deleted when it does not match). progress/cancel are optional. A short file or a broken
+// connection is tried again up to 3 times with a short wait; the final message says in plain words what happened.
+bool download(const std::string& url, const fs::path& dest, const std::string& want_sha, long long want_size, std::atomic<long long>* progress,
+              std::atomic<bool>* cancel, std::string& err, long long base = 0) {
+  const int kTries = 3;
+  const DWORD waits[2] = {2000, 5000};
+  for (int i = 0; i < kTries; ++i) {
+    bool retry = false;
+    err.clear();
+    if (download_once(url, dest, want_sha, want_size, progress, cancel, err, base, retry)) return true;
+    if (!retry || i == kTries - 1) {
+      if (retry) err += ". It failed " + std::to_string(kTries) + " times in a row, so nothing was installed. Check your internet connection and try again";
+      return false;
+    }
+    for (DWORD w = 0; w < waits[i]; w += 100) { if (cancel && cancel->load()) { err = "cancelled"; return false; } Sleep(100); }
+  }
+  return false;
 }
 
 bool place(const fs::path& src, const fs::path& dst, const std::string& sha, long long size, std::string& err) {
@@ -227,10 +252,12 @@ void run_job(Job* j) {
       for (auto& f : u.files) if (good) good = place(x / rel(f.member), j->dir / rel(f.dest), f.sha, f.size, j->err);
     }
   } else {
+    long long base = 0;
     for (auto& f : u.files) {
       if (!good) break;
       fs::path t = j->tmp / (rel(f.dest).filename().wstring() + L".dl");
-      good = download(f.url, t, f.sha, f.size, &j->done, &j->cancel, j->err) && place(t, j->dir / rel(f.dest), f.sha, f.size, j->err);
+      good = download(f.url, t, f.sha, f.size, &j->done, &j->cancel, j->err, base) && place(t, j->dir / rel(f.dest), f.sha, f.size, j->err);
+      base += f.size;
     }
   }
   if (good) {   // the license text travels with the files
@@ -246,9 +273,14 @@ HRESULT CALLBACK progress_cb(HWND hwnd, UINT msg, WPARAM, LPARAM, LONG_PTR ref) 
   Job* j = (Job*)ref;
   if (msg == TDN_CREATED) { SendMessageW(hwnd, TDM_SET_PROGRESS_BAR_RANGE, 0, MAKELPARAM(0, 1000)); }
   if (msg == TDN_TIMER) {
-    long long tot = j->total ? j->total : 1;
+    long long tot = j->total ? j->total : 1;   // the bar counts bytes across every file of the upscaler (the archive, or the files one by one)
     SendMessageW(hwnd, TDM_SET_PROGRESS_BAR_POS, (WPARAM)(std::min<long long>(1000, j->done.load() * 1000 / tot)), 0);
-    if (j->finished) SendMessageW(hwnd, TDM_CLICK_BUTTON, IDOK, 0);
+    if (j->total > 0) {   // "12 of 85 MB" under the bar
+      wchar_t t[160];
+      swprintf_s(t, L"%lld of %lld MB. The file is checked against its published SHA-256 before it is installed.", j->done.load() >> 20, j->total >> 20);
+      SendMessageW(hwnd, TDM_SET_ELEMENT_TEXT, TDE_CONTENT, (LPARAM)t);
+    }
+    if (j->finished) SendMessageW(hwnd, TDM_CLICK_BUTTON, IDCANCEL, 0);   // the only button is Cancel; j->finished makes the click harmless
   }
   if (msg == TDN_BUTTON_CLICKED) { if (!j->finished) { j->cancel = true; } }
   return S_OK;
@@ -308,7 +340,7 @@ int offer_upscalers(const fs::path& exe_dir, const hle::Json& data, bool first_s
     job->u = u; job->dir = exe_dir; job->tmp = tmp;
     job->total = u.arch.url.empty() ? 0 : u.arch.size;
     if (!u.arch.url.empty()) job->total = u.arch.size;
-    else { for (auto& f : u.files) job->total += f.size; }   // the progress counter restarts per file; the bar is approximate
+    else { for (auto& f : u.files) job->total += f.size; }   // the bar counts the bytes of all the files together (download() adds the earlier files as its base)
     std::thread th(run_job, job.get());
     std::wstring ti = W("Downloading " + u.title);
     std::wstring ct = L"From " + W(u.vendor) + L"'s official source. The file is checked against its published SHA-256 before it is installed.";
