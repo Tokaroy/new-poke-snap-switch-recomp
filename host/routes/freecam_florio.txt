@@ -1,0 +1,34 @@
+# fixture: post_tutorial
+# Free camera on Florio (docs/freecam.md): ride, switch the free camera on at the rail pose, fly to off-rail poses with fcpose (offsets from the rail
+# camera when the camera went on: right, up, forward, yaw, pitch), save clean PNGs (fcshot) and frame dumps (shot=1), then switch it off and ride on.
+# Run: powershell -File host\run_boot.ps1 -BuildDir build\w\freecam -Route freecam_florio -Timeout 420 -ShotAt 9999 -ShotMax 40
+# Pass: boot_stderr.log shows "[freecam] on", clean shots saved, "[freecam] off", the rail progress after "off" larger than at "on", "end of route reached".
+repeat @f300 @f30000 120 8 A
+wait ui=map_select timeout=240
+repeat @f60 @f30000 120 8 A
+wait ride timeout=240
+# the rail camera before the switch (reference frame)
+@f240 2 shot=1
+# on at the rail pose, pose held, then off-rail poses
+@f300 1150 fc=on
+@f340 2 shot=1
+@f400 200 fcpose=0,6,-8,0,-15
+@f470 2 fcshot
+@f480 2 shot=1
+@f620 200 fcpose=-12,2,6,-50,0
+@f690 2 fcshot
+@f700 2 shot=1
+@f840 200 fcpose=0,60,-40,0,-45
+@f910 2 fcshot
+@f920 2 shot=1
+@f1060 200 fcpose=0,-40,0,0,10
+@f1130 2 fcshot
+@f1140 2 shot=1
+@f1280 120 fcpose=0,0,400,0,0
+@f1340 2 fcshot
+@f1350 2 shot=1
+@f1470 30 fc=off
+# back on the rail: the ride goes on
+@f1600 2 shot=1
+@f1900 2 shot=1
+end @f2000

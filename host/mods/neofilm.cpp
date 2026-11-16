@@ -198,7 +198,7 @@ void neo_init() {
 
 namespace hle::input { bool route_on(); void route_rail(uint64_t obj, float prog); void route_film(int count); }   // runtime/hle/input_core.cpp (route "wait" signals)
 
-extern "C" void rt_gm_neo_speed(Cpu *c) {
+static void neo_speed_impl(Cpu *c) {
     if (hle::input::route_on() && c->x[19] && !IsBadReadPtr((void *)(c->x[19] + 0x70), 4)) hle::input::route_rail(c->x[19], *(float *)(c->x[19] + 0x70));
     if (!g_neo_inited) neo_init();
     if (g_neo == 1.0 && !g_neo_log) return;
@@ -225,6 +225,14 @@ extern "C" void rt_gm_neo_speed(Cpu *c) {
     }
     rs->last = cur;
     rs->have = true;
+}
+
+extern "C" void snap_freecam_rail(uint64_t R);   // host/mods/freecam.cpp: holds the rail still while the free camera is on
+
+extern "C" void rt_gm_neo_speed(Cpu *c) {
+    const uint64_t R = c->x[19];
+    neo_speed_impl(c);
+    snap_freecam_rail(R);
 }
 
 namespace {

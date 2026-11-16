@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "../../runtime/hle/btn_icons.h"
+#include "../../runtime/hle/freecam.h"
 #include "../../runtime/hle/fs_core.h"
 #include "../../runtime/hle/hle.h"
 #include "../../runtime/hle/hle_config.h"
@@ -1988,6 +1989,64 @@ static void test_profiles() {
   CHECK(!pr::active().on);
 }
 
+// ---- free camera input (runtime/hle/freecam.cpp): hotkeys, an idle pad while on, accumulated movement, route tokens
+static void test_freecam() {
+  g_test = "freecam";
+  using namespace input;
+  static RawInput raw;
+  raw = RawInput{};
+  Hub h;
+  h.set_backend(std::make_unique<FakeBackend>(&raw));
+  h.set_mapping(Mapping::defaults());
+  auto poll = [&]() { std::this_thread::sleep_for(std::chrono::milliseconds(3)); h.poll(1); };
+  const int kF6 = key_from_name("F6"), kW = key_from_name("W"), kF9 = key_from_name("F9");
+  raw.pad_connected = true;
+  raw.pad.set(kPadEast);   // A: the photo shutter
+  nvn::g_presentCount = 5000;
+  hle::freecam::note_rail(1000);   // no ride is running
+  raw.keys.set(kF6); poll(); raw.keys.reset(kF6); poll();
+  CHECK(!hle::freecam::active());
+  CHECK(h.pad().buttons & (1ull << kA));
+  hle::freecam::note_rail(5000);   // a ride: F6 switches the camera on
+  raw.keys.set(kF6); poll(); raw.keys.reset(kF6); poll();
+  CHECK(hle::freecam::active());
+  CHECK(hle::freecam::ride_active());
+  CHECK(h.pad().connected);
+  CHECK_EQ(h.pad().buttons, 0u);   // the shutter and every other button are dead
+  CHECK_EQ(h.touch().count, 0);
+  // movement and look accumulate until the camera hook consumes them
+  hle::freecam::Input in;
+  hle::freecam::consume(&in);
+  raw.keys.set(kW); raw.mouse_dx = 4; raw.mouse_dy = -2; poll(); poll();
+  raw.mouse_dx = raw.mouse_dy = 0;
+  hle::freecam::consume(&in);
+  CHECK(in.move[2] == 1.0f && in.move[0] == 0.0f);
+  CHECK(in.look_px[0] == 8.0f && in.look_px[1] == -4.0f);
+  raw.keys.reset(kW); raw.keys.set(kF9); poll(); raw.keys.reset(kF9); poll();
+  hle::freecam::consume(&in);
+  CHECK_EQ(in.shots, 1);
+  CHECK(in.move[2] == 0.0f);
+  CHECK(h.pad().buttons == 0);
+  raw.pad.reset(kPadEast);
+  raw.pad.set(kPadLStick); raw.pad.set(kPadRStick); poll(); raw.pad.reset(kPadLStick); raw.pad.reset(kPadRStick); poll();   // the controller chord
+  CHECK(!hle::freecam::active());
+  raw.pad.set(kPadEast); poll();
+  CHECK(h.pad().buttons & (1ull << kA));   // the game has the pad again
+  raw.pad.reset(kPadEast);
+  // route tokens
+  CHECK(hle::freecam::script_valid_token("fc=on") && hle::freecam::script_valid_token("fcshot") && hle::freecam::script_valid_token("fcpose=1,2,3,4,5"));
+  CHECK(!hle::freecam::script_valid_token("A") && !hle::freecam::script_valid_token("lx=1"));
+  hle::freecam::script_begin(); hle::freecam::script_token("fc=on"); hle::freecam::script_token("fcmove=0,0,1");
+  hle::freecam::script_token("fcpose=1,2,3,4,5"); hle::freecam::script_token("fcfov=40");
+  poll();
+  CHECK(hle::freecam::active());
+  hle::freecam::consume(&in);
+  CHECK(in.move[2] == 1.0f && in.pose_set && in.pose[0] == 1.0f && in.pose[4] == 5.0f && in.fov_set && in.fov_deg == 40.0f);
+  hle::freecam::script_begin(); hle::freecam::script_token("fc=off"); poll();
+  CHECK(!hle::freecam::active());
+  hle::freecam::script_begin();   // clear the script state for the tests after this one
+}
+
 // ---- gyro aim, rumble and per-profile settings (fake sensor feed: the owner has no gyro controller)
 static void test_padfx() {
   g_test = "padfx";
@@ -2521,6 +2580,7 @@ int main(int argc, char** argv) {
       {"saveport.real_table", sp_test::test_real_table},
 #endif
       {"padfx", test_padfx},
+      {"freecam", test_freecam},
       {"services", test_services},
   };
   int before_failed;

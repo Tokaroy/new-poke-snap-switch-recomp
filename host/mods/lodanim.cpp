@@ -24,6 +24,8 @@ using namespace loader;
 
 extern "C" volatile int g_fnprof;
 extern "C" float nvnHostGetUltrawide(void);   // runtime/nvn/nvn_wide.cpp
+extern "C" bool snap_freecam_camera(Cpu *c, float *half, float *far_);   // host/mods/freecam.cpp: free camera at the ride camera's tanf call
+namespace hle::freecam { bool enabled(); }   // runtime/hle/freecam.cpp
 
 namespace {
 
@@ -277,6 +279,10 @@ void h_tanf(Cpu *c) {
         }
     }
     if (wide_k() > 1.0f) wide_camera(c, lr - kMainBase);
+    if (hle::freecam::enabled()) {   // free camera (docs/freecam.md): replaces the ride camera's pose, field of view and far plane
+        float far_ = 0;
+        if (snap_freecam_camera(c, &xr, &far_)) { uint32_t fb; memcpy(&fb, &far_, 4); c->v[8] = (__uint128_t)fb; }
+    }
     float r = tanf(xr);
     uint32_t rb;
     memcpy(&rb, &r, 4);
@@ -451,6 +457,6 @@ void snap_lodanim_install() {
         }
         trace("ultrawide: %d camera sites", g_wide_nsites);
     }
-    if (g_fov_trace || g_fov_scale != 1.0 || g_fov_target_deg > 0 || wide) add_override("tanf", h_tanf);
+    if (g_fov_trace || g_fov_scale != 1.0 || g_fov_target_deg > 0 || wide || hle::freecam::enabled()) add_override("tanf", h_tanf);
 }
 }  // namespace loader

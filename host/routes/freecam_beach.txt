@@ -1,0 +1,27 @@
+# fixture: unlock_all
+# Free camera on Blushing Beach (second course): select the course like core_beach_0, ride, free camera on and off, shots, then a short ride on.
+# Run: $env:SNAP_NEO_SPEED=3; powershell -File host/run_boot.ps1 -BuildDir build/w/freecam -Route freecam_beach -Timeout 420 -ShotAt 9999 -ShotMax 20
+un_boot.ps1 -BuildDir build\wreecam -Route freecam_beach -Timeout 420 -ShotAt 9999 -ShotMax 20
+# Pass: "[freecam] on", clean shots saved, "[freecam] off", "end of route reached".
+repeat @f3100 @f7250 40 4 A
+@f7700 6 Right
+@f7880 6 Right
+@f8120 6 A
+@f8450 6 A
+repeat @f8660 @f9260 90 6 A
+wait ride timeout=400
+@f200 2 shot=1
+@f300 900 fc=on
+@f360 2 shot=1
+@f400 300 fcpose=0,6,-8,0,-15
+@f470 2 fcshot
+@f480 2 shot=1
+@f720 300 fcpose=-12,2,6,-50,0
+@f790 2 fcshot
+@f800 2 shot=1
+@f1000 200 fcpose=0,40,-30,0,-40
+@f1070 2 fcshot
+@f1080 2 shot=1
+@f1250 30 fc=off
+@f1400 2 shot=1
+end @f1700

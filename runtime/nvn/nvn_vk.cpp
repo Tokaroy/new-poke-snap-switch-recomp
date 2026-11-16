@@ -16,6 +16,7 @@
 #include "nvn_dev.h"   // dev loop (SNAP_DEV=1)
 #include "nvn_btnicon.h"   // BtnIconForget
 #include "nvn_fx.h"   // [fx]
+#include "nvn_freecam.h"           // free camera clean shot
 #include "nvn_hdr.h"   // HDR10 output (SNAP_HDR=1)
 #include "nvn_downsample.h"   // [area] present downscale
 #include "nvn_rt.h"   // [rt] SNAP_RT=1 ray tracing track
@@ -2031,6 +2032,7 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
     vkDestroyBuffer(h->device, fdBuf, nullptr); vkFreeMemory(h->device, fdMem, nullptr);
   }
 
+  FcShotAfterSubmit(h, q->timeline, v);   // free camera clean shot (nvn_freecam.cpp): writes the PNG once the frame's copy is done
   VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
   pi.waitSemaphoreCount = 1; pi.pWaitSemaphores = &w->renderDone[idx];
   pi.swapchainCount = 1; pi.pSwapchains = &w->swapchain; pi.pImageIndices = &idx;

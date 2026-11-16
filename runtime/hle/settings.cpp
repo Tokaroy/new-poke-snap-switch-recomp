@@ -112,6 +112,7 @@ const struct { const char* key; const char* env; } kEnvKeys[] = {
     {"fps_overlay", "SNAP_FPS_OVERLAY"},                 // performance overlay "fps" / "detailed" or unset (live, runtime/ui/ui_fps.cpp)
     {"fps_overlay_corner", "SNAP_FPS_OVERLAY_CORNER"},   // tl / tr / bl / br, unset = tr   // Contact shadows row: "1" or unset (live through snap_contact_shadows_set)
     {"photo_export", "SNAP_PHOTO_EXPORT"},    {"photo_dir", "SNAP_PHOTO_DIR"}, {"hd_photos", "SNAP_HD_PHOTOS"},    {"neo_speed", "SNAP_NEO_SPEED"}, {"film", "SNAP_FILM"},
+    {"freecam", "SNAP_FREECAM"}, {"freecam_freeze", "SNAP_FREECAM_FREEZE"},   // free camera rows (host/mods/freecam.cpp, docs/freecam.md)
     {"skip_cutscenes", "SNAP_SKIP_CUTSCENES"},
     {"fps_target", "SNAP_FPS"},   // Frame rate target row (90 / 120 / 144; "default" = 60, the game's own); host/mods/highfps.cpp, uipace.cpp
 };

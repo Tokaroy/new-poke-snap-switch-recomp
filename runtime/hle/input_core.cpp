@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "btn_icons.h"
+#include "freecam.h"
 #include "hle.h"
 
 namespace nvn { extern int g_presentCount; extern int g_fdBurst; }   // runtime/nvn/nvn_tex_vk.cpp: frame clock for '@f' script times; nvn_vk.cpp: NVN_FRAME_DUMP burst (script token shot=<n>)
@@ -704,7 +705,7 @@ bool Hub::save(std::string* err) {
 // A token is a Switch button name (A B X Y L R ZL ZR Plus Minus Left Up Right Down StickL StickR ...) or an axis
 // lx=<f> ly=<f> rx=<f> ry=<f> with f in [-1, 1] (y up positive).
 namespace {
-struct ScriptEntry { double start, end, period, hold; uint64_t buttons; int32_t ax[4]; bool has_ax[4]; int seg; bool frames; float rumble_lo, rumble_hi; bool has_rumble; float gyro_yaw, gyro_pitch; bool has_gyro; bool is_end; int shot_n; std::string cond; };
+struct ScriptEntry { double start, end, period, hold; uint64_t buttons; int32_t ax[4]; bool has_ax[4]; int seg; bool frames; float rumble_lo, rumble_hi; bool has_rumble; float gyro_yaw, gyro_pitch; bool has_gyro; bool is_end; int shot_n; std::string cond; std::vector<std::string> fc; };
 struct Script {
   bool loaded = false;
   uint64_t t0 = 0;
@@ -885,6 +886,7 @@ double script_num(const std::string& w, bool* fr = nullptr) {
 }
 
 bool script_token(const std::string& t, ScriptEntry& en) {
+  if (freecam::script_valid_token(t)) { en.fc.push_back(t); return true; }   // fc=on|off|toggle, fcmove=, fclook=, fcpose=, fcfov=, fcshot, fcfreeze=, fcspeed= (runtime/hle/freecam.h)
   size_t eq = t.find('=');
   if (eq != std::string::npos) {
     std::string k = t.substr(0, eq);
@@ -1041,6 +1043,7 @@ void script_apply(uint64_t now_ns_v, PadSample& p) {
   const double now_t = (double)(now_ns_v - g_script.cur_t0.load()) * 1e-9;
   const double now_f = (double)(nvn::g_presentCount - g_script.cur_f0.load());
   double now = now_t;
+  freecam::script_begin();
   for (const ScriptEntry& en : g_script.e) {
     if (en.seg != seg) continue;
     now = en.frames ? now_f : now_t;
@@ -1058,6 +1061,7 @@ void script_apply(uint64_t now_ns_v, PadSample& p) {
       std::fflush(stderr);
       std::_Exit(0);
     }
+    for (const std::string& ft : en.fc) freecam::script_token(ft);
     cur |= en.buttons;
     p.buttons |= en.buttons;
     if (en.has_gyro) { g_script_gyro_on = true; g_script_gyro_yaw += en.gyro_yaw; g_script_gyro_pitch += en.gyro_pitch; }
@@ -1067,6 +1071,7 @@ void script_apply(uint64_t now_ns_v, PadSample& p) {
     p.connected = true;
   }
   if (const uint64_t ab = g_ab_buttons.load()) { cur |= ab; p.buttons |= ab; p.connected = true; }   // snap_input_force_buttons (A/B capture tool)
+  freecam::script_end();
   if (cur != last) { last = cur; log("input script: seg %d t=%.2f buttons=%#llx", seg, now, (unsigned long long)cur); }
 }
 }  // namespace
@@ -1147,8 +1152,9 @@ void Hub::poll(int min_interval_ms) {
   if (last_poll_ns_ && t - last_poll_ns_ < (uint64_t)min_interval_ms * 1000000ull) return;
   last_poll_ns_ = t;
   const bool open = menu_open_.load();
-  const bool lock = map_.lock_cursor && !open;
-  const bool recenter = lock && map_.mouse_look;
+  const bool fcm = freecam::wants_mouse() && !open;   // the free camera flies with the mouse: confine and recenter the cursor like mouse-look
+  const bool lock = (map_.lock_cursor && !open) || fcm;
+  const bool recenter = (lock && map_.mouse_look) || fcm;
   backend_->set_cursor_mode(lock, recenter);
   RawInput r;
   backend_->poll(r);
@@ -1237,6 +1243,7 @@ void Hub::poll(int min_interval_ms) {
     const uint64_t inj = g_inject_buttons.load(std::memory_order_relaxed);
     if (inj && std::chrono::steady_clock::now().time_since_epoch().count() < g_inject_until_ns.load(std::memory_order_relaxed)) { pad_.buttons |= inj; pad_.connected = true; }
   }
+  freecam::poll(r, pad_, touch_, open, t);   // free camera on: hotkeys, accumulated movement, and an idle pad for the game
   ++seq_;
 }
 PadSample Hub::pad() const { std::lock_guard<std::mutex> g(mu_); return pad_; }

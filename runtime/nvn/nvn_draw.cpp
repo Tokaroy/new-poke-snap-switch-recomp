@@ -30,6 +30,7 @@
 
 #include "nvn_aa.h"
 #include "nvn_fx.h"   // [fx]
+#include "nvn_freecam.h"           // free camera clean shot
 #include "hle/lighting_preset.h"   // SNAP_LIGHTING parser (shared with host/mods/gamemods.cpp, nvn_entry.cpp)
 #include "nvn_internal.h"
 #include "nvn_pipeline.h"
@@ -1377,6 +1378,7 @@ void DoDraw(ReplayCtx& cx, const Cmd& c0) {
   rtCap.End();   // [rt] (a no-op unless this draw was captured; the build runs from the Fx post-tonemap slot, nvn_rt.cpp)
   FxAfterDraw(cx, p->st[1].key);   // [fx] post-tonemap slot (nvn_fx.cpp)
   AaAfterDraw(cx, p->st[1].key);   // SNAP_AA=smaa / SNAP_SHARPEN: in-place pass after the game's tonemap draw (nvn_aa.cpp)
+  FcShotAfterDraw(cx, p->st[1].key);   // free camera clean shot (nvn_freecam.cpp)
   if (thumbDraw) {
     fprintf(stderr, "[thumb] recorded\n");
     if (g_fdBurst <= 0) g_fdBurst = 60;   // request a burst of NVN_FRAME_DUMP frames

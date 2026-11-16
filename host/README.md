@@ -503,6 +503,11 @@ Build the pack once from your own extracted textures: `python -E -P scripts\hd\m
 - Display: the album's photo texture is recognized when the game decodes that JPEG (CRC) and uploads the pixels; the HD file is read and decoded on the worker when the photo is first drawn large, LRU GPU budget 256 MB (about 20 photos). Missing or corrupt files fall back silently to the game's image. Photo Editing screens keep the game's image (their effect passes feed the edited photo the game saves). Profile duplicate and folder import copy `photos_hd` along (`runtime/hle/profiles.cpp`). Nothing the game reads (save, JPEG, score inputs) changes.
 - `SNAP_HD_PHOTOS_LOG=1`: `[hdphoto]` log lines (captures, matches, files, swaps).
 
+## Free camera (2026-11-15, `runtime/hle/freecam.cpp`, `host/mods/freecam.cpp`, `runtime/nvn/nvn_freecam.cpp`; `docs/freecam.md`)
+
+- F6, or L3 + R3, during a ride: the NEO-ONE waits on its rail and the camera flies (WASD and mouse, or both sticks; speed steps, roll lock, FOV on Z/X or ZL/ZR). Same key again: the rail camera comes back exactly and the ride goes on. F7 / X freezes the world, F9 / Y saves a HUD-free PNG at render size to `<screenshots>\freecam\`. While it is on the game sees an idle pad (no scored photo off the rail). Options: `SNAP_FREECAM=0` (hotkeys off), `SNAP_FREECAM_FREEZE=1`, `SNAP_FREECAM_LOG=1`.
+- Route tokens: `fc=on|off|toggle`, `fcmove=`, `fclook=`, `fcpose=`, `fcfov=`, `fcshot`, `fcfreeze=on|off`, `fcspeed=`. Their state stays after the line ends: say `fc=off` and `fcfreeze=off` yourself. Routes `freecam_florio`, `freecam_score` (free camera and a frozen world mid-ride, then Score), `freecam_beach`; `SNAP_ROUTE_LOG=1` logs the film counter.
+
 ## Ultrawide (2026-11-15, `runtime/nvn/nvn_wide.cpp`, on by default for windows wider than 16:9; `docs/ultrawide.md`)
 
 - `SNAP_ULTRAWIDE=auto|off` (settings key `gfx_ultrawide`; F1 > Graphics and the launcher, restart). Auto widens the 3D view by k = window aspect / (16/9), capped at 4, with the same vertical field of view; the HUD, menus, videos and photos stay 16:9 in the middle. Off, or a window at 16:9 or narrower, leaves every path as before. Log line: `ultrawide: auto, window client WxH, factor k`.
