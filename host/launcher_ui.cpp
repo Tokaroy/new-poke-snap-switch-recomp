@@ -1470,10 +1470,10 @@ void refresh_cache() {
   g.prep = snap_shaderprep::Progress();
   snap_shaderprep::read_progress(dir, g.prep);
   g.prep_stale = g.prep.state == 2 && !g.prep.settings.empty() && g.prep.settings != snap_shaderprep::settings_hash(g.info->data_dir);   // the picture settings changed since the sweep
-  g.cache_state = 0;
-  g.cache_bytes = 0;
   g.prep_driver = g.prep.state == 2 && !g.prep.driver.empty() && !snap_shaderprep::driver_stamp().empty() && g.prep.driver != snap_shaderprep::driver_stamp();   // the graphics driver changed since the sweep
   if (g.prep_driver) g.prep_stale = true;
+  g.cache_state = 0;
+  g.cache_bytes = 0;
   std::error_code ec;
   bool have_blob = false, fresh = false;
   const auto now = fs::file_time_type::clock::now();
@@ -1526,8 +1526,6 @@ int verify_state() {
   }
   return g.info->verify ? g.info->verify->state.load() : (g.info->game_ok ? 1 : 2);
 }
-// Play waits for the check; when it failed the same button takes you to the folder picker instead.
-void go_play(bool safe = false) {
 // Words for the verify state: why a full look was needed, how long ago the folder last passed, how far along the look is.
 const char* verify_why_text(int why) {
   switch (why) {
@@ -1553,6 +1551,8 @@ float verify_fraction() {
   const int t = g.info->verify->total.load(), n = g.info->verify->files.load();
   return t > 0 ? std::min(1.f, (float)n / (float)t) : -1.f;
 }
+// Play waits for the check; when it failed the same button takes you to the folder picker instead.
+void go_play(bool safe = false) {
   const int vs = verify_state();
   if (vs == 0) { g.toast = "Still checking your game files"; g.toast_until = ImGui::GetTime() + 2.5; return; }
   g.result = vs == 2 ? UiResult::GameFolder : safe ? UiResult::SafeMode : UiResult::Play;   // safe mode: docs/safe-mode.md
@@ -1952,14 +1952,14 @@ void draw_home() {
     if (chip_hot || prep_hot) dl->AddRect(V(cx, cy), V(cx + w, cy + 30), C(kOrange), 15 * g.s, 0, 2.0f * g.s);
     dl->AddCircleFilled(V(cx + 16, cy + 15), 5 * g.s, C(c.dot), 12);
     text(cx + 30, cy + 15, 15, C(c.fg), t.c_str());
-    cx += w + 8;
-  }
     if (c.bar > -2.f) {   // a thin bar along the bottom of the chip: the real amount, or a steady moving one when it is not known
       const float bx = cx + 20, bw = w - 40, by = cy + 25;
       rrect(bx, by, bw, 3, 1.5f, C(0xe9c96a));
       if (c.bar >= 0.f) rrect(bx, by, std::max(3.f, bw * c.bar), 3, 1.5f, C(kOrange));
       else { const float seg = bw * 0.3f, pos = (float)std::fmod(ImGui::GetTime() * 0.8, 1.0) * (bw + seg) - seg; rrect(bx + std::max(0.f, pos), by, std::min(bw, pos + seg) - std::max(0.f, pos), 3, 1.5f, C(kOrange)); }
     }
+    cx += w + 8;
+  }
 
   // the menu rows
   float y = cy + 30 + 12;
