@@ -1,0 +1,55 @@
+# fixture: post_tutorial
+# Same-photo score proof for the water effects (2026-11-16): the ride runs with the water effects ON, a checkpoint is saved when the Evaluation starts, the photos are scored with them on,
+# then the effects are switched OFF through the dev control channel, the checkpoint is loaded and the same photos are scored again. Run: host/water_score_ck.ps1
+# Compare the 'shows photo' hashes and the Score screenshots of the two passes. Florio route as in florio_eval.txt.
+# 1) Slow A taps: title, lab hub "Research", Lental Map (Florio is the only open course), course start.
+repeat @f300 @f30000 120 8 A
+wait ui=map_select timeout=240
+repeat @f60 @f30000 120 8 A
+wait ride timeout=240
+# 2) Riding: fast shutter taps with a slow right-stick yaw wobble and a ZL zoom now and then, until the 72 shots are used up.
+repeat 0 600 0.4 0.067 A
+repeat 0 100 10 3.333 ZL
+repeat 0 600 6.667 1 rx=0.25
+repeat 3.333 600 6.667 1 rx=-0.25
+wait film<=0 timeout=300
+# 3) Rest of the ride, course end and the professor's lines: slow A taps until photo select shows its subject folders.
+repeat @f120 @f60000 90 8 A
+wait ui=photo_submit:FolderSelect timeout=400
+# 4) Photo select, two folders, as in florio_eval.txt.
+@f150 8 Right
+@f230 8 A
+wait ui=photo_submit:PhotoSubmit timeout=30
+repeat @f60 @f1440 240 8 A
+repeat @f180 @f1440 240 8 A
+repeat @f240 @f1440 240 8 Right
+@f1500 8 B
+wait ui=photo_submit:FolderSelect timeout=90
+@f60 8 Right
+@f140 8 A
+wait ui=photo_submit:PhotoSubmit timeout=30
+repeat @f60 @f1440 240 8 A
+repeat @f180 @f1440 240 8 A
+repeat @f240 @f1440 240 8 Right
+@f1500 8 B
+wait ui=photo_submit:FolderSelect timeout=90
+# 5) Plus (Evaluate Photos), Up (Yes), A.
+@f60 8 Plus
+@f140 8 Up
+@f220 8 A
+wait ui=evaluation timeout=60
+@f10 8 save=ck
+wait state=saves>=1 timeout=60
+repeat @f240 @f60000 90 8 A
+wait ui=evaluation:Score timeout=120
+repeat @f60 @f60000 90 8 A
+repeat @f10 @f1500 50 4 screenshot
+wait ui=evaluation:End timeout=240
+# pass 1 is over; the driver switches the effects off within a few seconds of this line; the load comes 10 s later
+@f600 8 load=ck
+repeat @f240 @f60000 90 8 A
+wait ui=evaluation:Score timeout=120
+repeat @f60 @f60000 90 8 A
+repeat @f10 @f1500 50 4 screenshot
+wait ui=evaluation:End timeout=240
+end @f300

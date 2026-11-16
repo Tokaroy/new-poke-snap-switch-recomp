@@ -31,6 +31,7 @@
 #include "nvn_aa.h"
 #include "nvn_fx.h"   // [fx]
 #include "nvn_freecam.h"           // free camera clean shot
+#include "nvn_ssr.h"  // [water]
 #include "hle/lighting_preset.h"   // SNAP_LIGHTING parser (shared with host/mods/gamemods.cpp, nvn_entry.cpp)
 #include "nvn_internal.h"
 #include "nvn_foliage.h"
@@ -1113,6 +1114,13 @@ void DoDraw(ReplayCtx& cx, const Cmd& c0) {
   {   // debug (SNAP_DRAW_SKIP_FS=<fragment shader key[,key...]>): skip every draw whose fragment shader key is listed (A/B of which draws make a pixel)
     static const char* const kSkipFs = getenv("SNAP_DRAW_SKIP_FS");
     if (kSkipFs && p->st[1].key && strstr(kSkipFs, p->st[1].key)) return;
+    // [water] same-moment A/B: SNAP_DRAW_SKIP_GROUPS=<keys of group 1>;<keys of group 2>;... skips group k on the presents with (p % (4*(n+1))) / 4 == k; block 0 stays normal
+    static const char* const kGroups = getenv("SNAP_DRAW_SKIP_GROUPS");
+    if (kGroups && p->st[1].key) {
+      int n = 1; for (const char* c = kGroups; *c; c++) if (*c == ';') n++;
+      const int ph = (g_presentCount % (4 * (n + 1))) / 4;
+      if (ph >= 1) { const char* g = kGroups; for (int k = 1; k < ph && g; k++) { g = strchr(g, ';'); if (g) g++; } const char* e = g ? strchr(g, ';') : nullptr; const std::string grp = g ? (e ? std::string(g, e) : std::string(g)) : std::string(); if (grp.find(p->st[1].key) != std::string::npos) return; }
+    }
   }
   if (const char* sigPath = kDrawSig) {   // debug: one line per distinct (render targets, program, sampled textures) combination, the first time it is drawn
     static FILE* sf = fopen(sigPath, "w");
@@ -1233,6 +1241,7 @@ void DoDraw(ReplayCtx& cx, const Cmd& c0) {
     UpscaleOnDraw(cx, vu, vr, 2);
     { const BufBind& u9 = d.ubo[0][9]; FxOnDraw(cx, vu, vr, (u9.pool && u9.pool->storage) ? (const uint8_t*)u9.pool->storage + u9.off : nullptr, u9.range); } }   // [fx] camera and shadow caster capture (nvn_fx.cpp)
   if (FxMidPass(cx, (d.color.blendEn & 1) != 0, DsGet(d.ds, DS_DW, 1) != 0)) FxReemitViewState(cx);   // [fx] opaque-only effects at the first blended scene draw
+  if (WaterBeforeDraw(cx, p->st[1].valid ? p->st[1].key : nullptr, (d.color.blendEn & 1) != 0, DsGet(d.ds, DS_DW, 1) != 0)) FxReemitViewState(cx);   // [water] SNAP_WATER_*: copy before the sea, effect pass after it (nvn_ssr.cpp)
   if (ShinyActive() && cx.rt[0] && !cx.bcDst[0] && texWrites.size() == 1 && !texWrites[0].image && texWrites[0].r.t && texWrites[0].r.t->b.width >= 1280) ShinyCaptureDraw(cx.rt[0]);   // shiny mod: capture pass into a photo target
   if (HdPhotoOn() && cx.rt[0] && !cx.bcDst[0] && texWrites.size() == 1 && !texWrites[0].image && texWrites[0].r.t) {   // HD photos: a 2160x1440 copy of each capture (nvn_hdphoto.cpp)
     const BufBind& u4 = d.ubo[1][1];   // c4 = guest uniform buffer 1 (cbuf slot - 3)
@@ -1370,7 +1379,10 @@ void DoDraw(ReplayCtx& cx, const Cmd& c0) {
   if (!evalVar && cx.rt[0] && !texWrites.empty() && !texWrites[0].image)   // photo capture Lanczos on a scaled source (nvn_capture.cpp)
     evalVar = CaptureLanczosVariant(cx.h, p, texWrites[0].r.t, cx.rt[0], texWrites.size());
   if (evalVar) d.prog = evalVar;   // pipeline only; descriptors below still use p (same layout)
+  const auto savedDsWater = d.ds;   // [water] the sea writes depth while the water effects run (the pass restores the pre-water depth, nvn_ssr.cpp)
+  if (WaterForceDepthWrite()) DsSet(d.ds, DS_DW, 1, 1);
   VkPipeline pipe = GetPipeline(cx, d, topo, rt);
+  d.ds = savedDsWater;
   if (evalVar) d.prog = p;
   if (!pipe) { if (thumbDraw) fprintf(stderr, "[thumb] NO PIPELINE\n"); return; }
   vkCmdBindPipeline(cx.cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);

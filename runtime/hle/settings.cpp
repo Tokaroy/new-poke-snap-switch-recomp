@@ -111,6 +111,7 @@ const struct { const char* key; const char* env; } kEnvKeys[] = {
     {"gfx_ultrawide", "SNAP_ULTRAWIDE"},   // auto (default) | off (docs/ultrawide.md)
     {"vsync", "SNAP_VSYNC"},   // the F1 / native Vsync row (live through snap_vsync_set; this carries it to the next start)
     {"contact_shadows", "SNAP_CONTACT_SHADOWS"},
+    {"water_ssr", "SNAP_WATER_SSR"}, {"water_caustics", "SNAP_WATER_CAUSTICS"}, {"water_foam", "SNAP_WATER_FOAM"},   // water rows ("1" or unset; live through snap_water_fx_set, runtime/nvn/nvn_ssr.cpp)
     {"fps_overlay", "SNAP_FPS_OVERLAY"},                 // performance overlay "fps" / "detailed" or unset (live, runtime/ui/ui_fps.cpp)
     {"fps_overlay_corner", "SNAP_FPS_OVERLAY_CORNER"},   // tl / tr / bl / br, unset = tr   // Contact shadows row: "1" or unset (live through snap_contact_shadows_set)
     {"photo_export", "SNAP_PHOTO_EXPORT"},    {"photo_dir", "SNAP_PHOTO_DIR"}, {"hd_photos", "SNAP_HD_PHOTOS"},    {"neo_speed", "SNAP_NEO_SPEED"}, {"film", "SNAP_FILM"},
