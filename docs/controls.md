@@ -25,15 +25,7 @@ The launcher's Controls page ends with a read-only summary: one row for each of 
 
 WASD move, arrows aim, L or Enter A (shutter), Space ZR (shutter), K or 1 B (fruit), J or 2 Y (orb), I or 3 X (scan), Q / E L / R, Left Shift or the mouse wheel ZL (zoom), P or Tab Plus, Backspace Minus, T F H G the D-pad. Esc is B in menus and Plus (pause) on a ride. Mouse look is on by default: on a ride the mouse aims, the left button is the shutter and the right button zooms; in every menu and screen the cursor is free and a click is the touch screen. Each action keeps two keyboard slots; the extra keys are in the Bindings tab and can be cleared.
 
-## Switching to another app
-
-Alt+Tab, Win+Shift+S and a third-party snipping tool take the keyboard focus, and the keys you press for them (Tab, Shift, and the Esc that closes a snipping tool) can still be down when the game window comes back. Esc is Plus on a ride and Tab is Plus everywhere, so the pause menu used to open. The input hub (`runtime/hle/input_core.cpp`, `Hub::poll`, fed by `Hub::set_window_focus` from `host/window_opts.cpp`) now:
-
-- ignores every key and mouse button while the window is in the background;
-- after the focus is back, ignores each key and button that is already down until it is released (a key you pressed again counts as new);
-- ignores Esc and the left mouse button for 300 ms after the focus is back, so the Esc that closes a snipping tool and the click that brings the window back do not reach the game.
-
-Gamepads are not affected. `SNAP_FOCUS_GUARD=0` turns the guard off (for tests); `SNAP_FOCUS_GUARD_LOG=1` logs every Plus and B press the game is about to see.
+Menus with the mouse (2026-11-16): the game's touch screen ignores the title and the lab hub (the touch log, `SNAP_TOUCH_LOG=1`, shows the tap reaching the game and nothing happening), so outside a ride the mouse also drives the menus like a pad: left click A (confirm the focused item), right click B (back), wheel D-pad up / down. The arrows move the D-pad too. Pointing at an item to focus it is not possible; the keys and the wheel move the focus and a click confirms. On a ride the clicks are the shutter and zoom as before. The "mouse as touch screen" setting turns all of this off. `tests/hle/run_kbm_ride.ps1 -Click` proves it with clicks alone (title, lab hub, research map).
 
 ## Switching to another app
 
@@ -53,7 +45,6 @@ Message text ("Press X to run a scan") is drawn from the font, not from a pictur
 
 ## Tests
 
-- `tests\hle\run_focus_test.ps1` (hidden runs, 4 of them): the menu and a Florio ride, each with the guard off (the "before": the held Esc and Tab press B and Plus when the window comes back, and on a ride open the pause menu) and on (nothing presses, then a real Tab press still works). `SNAP_WINDOW_TEST` replays the leaving: `wait:ride>=25,blur@3,keydown:escape@4,keydown:tab@5,focus@6,keyup:escape@7,keyup:tab@8` (host/README.md, "Window options"). The unit test is `focus_guard` in `tests\hle\hle_tests.cpp`.
 - `tests\hle\run_focus_test.ps1` (hidden runs, 4 of them): the menu and a Florio ride, each with the guard off (the "before": the held Esc and Tab press B and Plus when the window comes back, and on a ride open the pause menu) and on (nothing presses, then a real Tab press still works). `SNAP_WINDOW_TEST` replays the leaving: `wait:ride>=25,blur@3,keydown:escape@4,keydown:tab@5,focus@6,keyup:escape@7,keyup:tab@8` (host/README.md, "Window options"). The unit test is `focus_guard` in `tests\hle\hle_tests.cpp`.
 - `tests\hle\run_binds_ui.ps1` (hidden run, 15 checks): F1 > Bindings, rebind A to P, rebind B slot 2 to P (a conflict), check both binds are kept, "reset all", check the defaults. It dumps frames to `analysis\ui\binds_dump`.
 - `tests\hle\run_rebind_proof.ps1`: a hidden run of `host/routes/rebind_shutter.txt` with an `input.json` that binds A to `pad:east` and `key:P` only. The route rides Florio, holds the old shutter key L (the film counter must stay at 72 for 200 presents), then P (the counter drops: a photo was taken).

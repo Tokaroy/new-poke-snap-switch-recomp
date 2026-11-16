@@ -19,7 +19,7 @@ wait film<=71 timeout=40
 @f420 8 src=key:K
 @f600 40 src=key:I
 @f780 20 src=key:L
-wait film<=70 timeout=40
+wait film<=70 timeout=300
 # the wheel and X1/X2 are bindable but not used by the game: nothing more to press
 @f240 8 src=key:J
 @f420 8 src=key:K

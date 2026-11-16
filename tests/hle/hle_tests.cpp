@@ -1263,6 +1263,17 @@ static void test_input_mapping() {
     CHECK((mapped(dm, dr).buttons & bit(kLeft)) && (mapped(dm, dr).buttons & bit(kUp)) && !(mapped(dm, dr).buttons & bit(kRight)));
     dr.in_ride = true; CHECK_EQ(mapped(dm, dr).buttons & (bit(kLeft) | bit(kUp) | bit(kDown) | bit(kRight)), 0u);   // a ride: aim only
     dr.in_ride = false; dr.focused = false; CHECK_EQ(mapped(dm, dr).buttons & bit(kUp), 0u); }
+  // --- menus: the touch screen is ignored by the title and the lab hub, so the mouse also drives them: left click A, right click B, wheel D-pad up / down (never on a ride, never unfocused)
+  { Mapping dm = Mapping::defaults(); RawInput dr; dr.focused = true; dr.mouse_buttons = 1;
+    CHECK(mapped(dm, dr).buttons & bit(kA));
+    dr.mouse_buttons = 2; CHECK((mapped(dm, dr).buttons & bit(kB)) && !(mapped(dm, dr).buttons & bit(kA)));
+    dr.mouse_buttons = (uint8_t)(1u << kMouseWheelUp); CHECK(mapped(dm, dr).buttons & bit(kUp));
+    dr.mouse_buttons = (uint8_t)(1u << kMouseWheelDown); CHECK(mapped(dm, dr).buttons & bit(kDown));
+    dr.mouse_buttons = 4; CHECK_EQ(mapped(dm, dr).buttons & (bit(kA) | bit(kB) | bit(kUp) | bit(kDown)), 0u);   // the middle button does nothing
+    dr.mouse_buttons = 2; dr.in_ride = true; CHECK_EQ(mapped(dm, dr).buttons & bit(kB), 0u);   // a ride: the right button is zoom, not B
+    dr.mouse_buttons = (uint8_t)(1u << kMouseWheelUp); CHECK_EQ(mapped(dm, dr).buttons & bit(kUp), 0u);   // and the wheel is not the D-pad
+    dr.in_ride = false; dr.mouse_buttons = 1; dr.focused = false; CHECK_EQ(mapped(dm, dr).buttons & bit(kA), 0u);
+    dr.focused = true; dm.mouse_touch = false; CHECK_EQ(mapped(dm, dr).buttons & bit(kA), 0u); }   // the mouse-as-touch setting off: the mouse stays out of the menus
 
   // --- mouse-look: velocity drives the right stick on a ride, invert; on by default; menus keep the touch screen
   m = Mapping::defaults();
@@ -1316,7 +1327,7 @@ static void test_input_mapping() {
   r.mouse_buttons = 1; CHECK_EQ(mapped(m, r).buttons & 0x101, 0x1u);
   r.mouse_buttons = 2; CHECK_EQ(mapped(m, r).buttons & 0x101, 0x100u);
   r.mouse_buttons = 3; r.in_ride = false;
-  CHECK_EQ(mapped(m, r).buttons & 0x101, 0u);        // menu: nothing
+  CHECK_EQ(mapped(m, r).buttons & 0x101, 0x1u);      // menu: the clicks press A and B (the pad-like menu mouse), never ZL
   r.in_ride = true; m.look_a.clear();
   CHECK_EQ(mapped(m, r).buttons & 0x101, 0x100u);    // overridable
   { Mapping m2 = Mapping::defaults(); m2.look_a = {SRC("mouse:middle")}; Mapping m3; std::string e3;

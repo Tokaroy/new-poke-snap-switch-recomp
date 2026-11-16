@@ -585,6 +585,12 @@ PadSample map_pad(const Mapping& m, const RawInput& in) {
     for (int d = 0; d < 4; ++d)
       for (const Source& s : *dirs[d]) if (s.kind == Source::KeyboardKey && source_down(s, eff, 0.5f)) { out.buttons |= 1ull << pads[d]; break; }
   }
+  if (eff.focused && !eff.in_ride && m.mouse_touch) {   // menus: the touch screen only works where the game takes it (the title and the lab hub ignore it), so the mouse also drives them like a pad:
+    if (eff.mouse_buttons & (1u << kMouseLeft)) out.buttons |= 1ull << kA;    //   left click = A (confirm the focused item)
+    if (eff.mouse_buttons & (1u << kMouseRight)) out.buttons |= 1ull << kB;   //   right click = B (back)
+    if (eff.mouse_buttons & (1u << kMouseWheelUp)) out.buttons |= 1ull << kUp;       //   wheel = move the focus up / down
+    if (eff.mouse_buttons & (1u << kMouseWheelDown)) out.buttons |= 1ull << kDown;
+  }
   if (m.mouse_look && eff.focused && eff.in_ride) {   // mouse-look click bindings, ride only: menus keep the touch screen / pad flow
     if (any_down(m.look_a, eff, 0.5f)) out.buttons |= 1ull << kA;
     if (any_down(m.look_zl, eff, 0.5f)) out.buttons |= 1ull << kZL;
@@ -1262,12 +1268,6 @@ void Hub::set_window_focus(bool focused) {
   if (!focused) guard_prev_ = false;   // the game threads can be frozen while the window is in the background: remember the blur here, not in a poll
 }
 
-void Hub::set_window_focus(bool focused) {
-  std::lock_guard<std::mutex> g(mu_);
-  win_focus_ = focused;
-  if (!focused) guard_prev_ = false;   // the game threads can be frozen while the window is in the background: remember the blur here, not in a poll
-}
-
 void Hub::set_menu_open(bool open) {
   std::lock_guard<std::mutex> g(mu_);
   if (open == menu_open_.load()) return;
@@ -1371,35 +1371,6 @@ void Hub::poll(int min_interval_ms) {
       guard_prev_ = foc;
     }
   }
-  {   // focus guard: switching to a snipping tool or another app must not press anything in the game when the window comes back
-    static const bool guard_on = !(std::getenv("SNAP_FOCUS_GUARD") && std::atoi(std::getenv("SNAP_FOCUS_GUARD")) == 0);
-    static const int kEsc = key_from_name("Escape");
-    const bool foc = r.focused && win_focus_.load();
-    if (guard_on) {
-      if (!foc) {   // nothing typed or clicked while the window is in the background reaches the game
-        r.keys.reset();
-        r.mouse_buttons = 0;
-        r.mouse_in_window = false;
-        r.focused = false;
-      } else {
-        if (!guard_prev_) {   // the focus just came back: whatever is down now was pressed for another window
-          guard_keys_ = r.keys;
-          guard_mouse_ = r.mouse_buttons;
-          guard_until_ns_ = t + 300000000ull;
-          log("input: focus is back, ignoring %d key(s) and mouse buttons %#x until released; Esc and the left button for 300 ms", (int)guard_keys_.count(), (unsigned)guard_mouse_);
-        }
-        guard_keys_ &= r.keys;
-        guard_mouse_ &= r.mouse_buttons;
-        r.keys &= ~guard_keys_;
-        r.mouse_buttons &= (uint8_t)~guard_mouse_;
-        if (t < guard_until_ns_) {
-          if (kEsc > 0) r.keys.reset((size_t)kEsc);
-          r.mouse_buttons &= (uint8_t)~1u;
-        }
-      }
-      guard_prev_ = foc;
-    }
-  }
   if (r.focused) {
     if (t < wheel_up_until_ns_) r.mouse_buttons |= 1u << kMouseWheelUp;
     if (t < wheel_down_until_ns_) r.mouse_buttons |= 1u << kMouseWheelDown;
@@ -1460,13 +1431,6 @@ void Hub::poll(int min_interval_ms) {
     }
   }
   PadSample p = map_pad(map_, r);
-  {   // SNAP_FOCUS_GUARD_LOG=1 (tests): every Plus and B press the game is about to see, with the focus state
-    static const bool plog = std::getenv("SNAP_FOCUS_GUARD_LOG") != nullptr;
-    static uint64_t prev_pb = 0;
-    const uint64_t pb = p.buttons & ((1ull << kPlus) | (1ull << kB));
-    if (plog && (pb & ~prev_pb)) log("input: %s pressed (focused=%d in_ride=%d present=%d)", (pb & (1ull << kPlus)) ? "Plus" : "B", (int)r.focused, (int)r.in_ride, nvn::g_presentCount);
-    prev_pb = pb;
-  }
   {   // SNAP_FOCUS_GUARD_LOG=1 (tests): every Plus and B press the game is about to see, with the focus state
     static const bool plog = std::getenv("SNAP_FOCUS_GUARD_LOG") != nullptr;
     static uint64_t prev_pb = 0;

@@ -126,6 +126,7 @@ void capture_window(std::string path) {
 }
 
 double g_hold_until = 0;   // script time before which no further command runs (set by wclick_tab)
+int g_hold_frames = 0;     // and the number of frames that must pass too (ImGui takes the move, the press and the release one frame each)
 
 void run(const std::string& line, double t) {
   std::istringstream is(line);
@@ -166,9 +167,10 @@ void run(const std::string& line, double t) {
     float fx = 0, fy = 0;
     const bool ok = h && skin_tab_center(name.c_str(), &fx, &fy);
     check(ok, "wclick_tab " + name + (ok ? "" : " (tab not drawn)"));
-    if (ok) g_hold_until = t + 1.0;   // the click thread takes ~0.4 s: no later command (a check) may run before it is done, however late the frames are
+    if (ok) { g_hold_until = t + 1.0; g_hold_frames = 8; out("t=%.1f wclick_tab %s at window pixel %.0f,%.0f", t, name.c_str(), fx, fy); }   // the click thread takes ~0.4 s: no later command (a check) may run before it is done, however late the frames are
     if (ok) std::thread([h, fx, fy]() {
       const LPARAM pos = MAKELPARAM((int)fx, (int)fy);
+      // the real cursor is elsewhere, so Windows sends WM_MOUSELEAVE soon after a posted move and Dear ImGui then forgets the position: every button message gets its own move first
       PostMessageW(h, WM_MOUSEMOVE, 0, pos);
       Sleep(250);
       PostMessageW(h, WM_LBUTTONDOWN, MK_LBUTTON, pos);
@@ -365,6 +367,16 @@ void load() {
   std::fprintf(stderr, "ui-test: %zu commands from %s\n", g_cmds.size(), path);
 }
 
+// true unless `line` is an expect_tab / expect_open command whose condition does not hold yet
+bool expectation_holds(const std::string& line) {
+  std::istringstream is(line);
+  std::string cmd;
+  is >> cmd;
+  if (cmd == "expect_open") { int want = 1; is >> want; return overlay_open() == (want != 0); }
+  if (cmd == "expect_tab") { std::string want; is >> want; for (char& ch : want) if (ch == '_') ch = ' '; return want == menu_current_tab(); }
+  return true;
+}
+
 }  // namespace
 
 bool test_active() { return g_active; }
@@ -378,6 +390,11 @@ void test_tick(double now) {
   }
   for (auto& c : g_cmds) {
     if (c.done || t < c.at) continue;
+    if (t < g_hold_until || g_hold_frames > 0) {
+      if (g_hold_frames > 0 && --g_hold_frames == 0) { const ImGuiIO& io = ImGui::GetIO(); out("t=%.1f after the click: imgui mouse %.0f,%.0f down=%d display %.0fx%.0f", t, io.MousePos.x, io.MousePos.y, (int)io.MouseDown[0], io.DisplaySize.x, io.DisplaySize.y); }
+      break;
+    }
+    if (t < c.at + 6.0 && !expectation_holds(c.line)) break;   // expect_tab / expect_open: the menu reacts to a posted key or click a frame or two later (a slow frame rate more): wait up to 6 s, then run it as the failing check
     c.done = true;
     run(c.line, t);
     break;   // one command per frame: the menu and the input hub get a frame to react

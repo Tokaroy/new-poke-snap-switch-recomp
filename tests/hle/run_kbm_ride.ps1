@@ -12,7 +12,8 @@ $root = Resolve-Path (Join-Path $PSScriptRoot '..\..')
 Set-Location $root
 $route = 'florio_kbm'; $shots = @('-ShotAt', '40', '-ShotEvery', '2', '-ShotMax', '45')
 if ($Mouse) { $route = 'florio_kbm_mouse'; $shots = @('-ShotAt', '8', '-ShotEvery', '6', '-ShotMax', '90') }
-if ($Click) { $route = 'florio_kbm_click'; $shots = @('-ShotAt', '10', '-ShotEvery', '4', '-ShotMax', '20') }
+
+if ($Click) { $route = 'florio_kbm_click'; $shots = @('-ShotAt', '95', '-ShotEvery', '5', '-ShotMax', '32') }
 if ($Items) { $route = 'florio_kbm_items'; $shots = @('-ShotAt', '41', '-ShotEvery', '1', '-ShotMax', '30') }
 $cfg = Join-Path $root 'build\testconfig_kbm'
 Remove-Item -Recurse -Force $cfg -ErrorAction SilentlyContinue
