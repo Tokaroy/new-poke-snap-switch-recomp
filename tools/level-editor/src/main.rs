@@ -210,6 +210,39 @@ fn import_scenery(data: &mut course::DataRoot, name: &str, variant: u32, spec: &
     l.dirty = true;
     let files = edit::export(&lc, dir, pack, &format!("Imported scenery: {}", spec.name), false)?;
     let pack_dir = dir.join(edit::sanitize_pack(pack));
+    // collision: the model's triangles as one more shape in the collision file of the ground under it (the course's
+    // rocks and props live there too); served as a loose file next to the level
+    let center = (built.bounds.0 + built.bounds.1) * 0.5;
+    let mut collided = false;
+    for m in lc.models.iter().filter(|m| ground::is_terrain_name(&m.inst.name)) {
+        let Some(src) = &m.source else { continue };
+        let path = src.parent().ok_or("model without folder")?.join(format!("{}.DC4A8177", m.inst.name));
+        let Ok(b) = std::fs::read(&path) else { continue };
+        let xf = ground::inst_xf(&m.inst);
+        let shapes = terrain::parse_collision(&b).map_err(|e| format!("{}: {e}", path.display()))?;
+        let covers = shapes.iter().filter(|s| s.identity() && !s.verts.is_empty()).any(|s| {
+            let w: Vec<Vec3> = s.verts.iter().map(|v| xf.transform_point3(*v)).collect();
+            let lo = w.iter().fold(Vec3::splat(f32::MAX), |a, v| a.min(*v));
+            let hi = w.iter().fold(Vec3::splat(f32::MIN), |a, v| a.max(*v));
+            (lo.x..=hi.x).contains(&center.x) && (lo.z..=hi.z).contains(&center.z)
+        });
+        if !covers {
+            continue;
+        }
+        let inv = xf.inverse();
+        let verts: Vec<Vec3> = built.collision.0.iter().map(|v| inv.transform_point3(*v)).collect();
+        let flags = terrain::prop_face_flags(&b).ok_or("the ground collision has no faces")?;
+        let nb = terrain::append_shape(&b, &verts, &built.collision.1, flags, crc32fast::hash(spec.name.as_bytes()))?;
+        let out = pack_dir.join(lc.archive.replace('/', std::path::MAIN_SEPARATOR_STR)).join(path.file_name().ok_or("bad file name")?);
+        std::fs::create_dir_all(out.parent().ok_or("bad path")?).map_err(|e| e.to_string())?;
+        std::fs::write(&out, &nb).map_err(|e| format!("{}: {e}", out.display()))?;
+        println!("  collision: {} triangles added to {} (shapes {} -> {}, surface flags {:x?})", built.collision.1.len(), m.inst.name, shapes.len(), shapes.len() + 1, flags);
+        collided = true;
+        break;
+    }
+    if !collided {
+        println!("  collision: no ground collision under the model; it has none");
+    }
     let out = pack_dir.join("romfs").join(lc.archive.replace('/', std::path::MAIN_SEPARATOR_STR));
     a.write(&built.chunks, &built.groups, &out)?;
     // read the written archive back

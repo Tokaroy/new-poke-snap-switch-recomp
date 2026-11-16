@@ -52,6 +52,8 @@ pub struct Built {
     pub shapes: Vec<String>,
     pub parts: Vec<(String, String, usize, usize)>, // (source material, game material, vertices, triangles)
     pub bounds: (Vec3, Vec3),
+    /// world-space triangles of all parts (placement baked), for the course's collision
+    pub collision: (Vec<Vec3>, Vec<[u32; 3]>),
 }
 
 /// Game materials of a course archive: labels of the `MI_*.drl` material groups that have a numatb chunk.
@@ -546,7 +548,13 @@ pub fn build(spec: &Spec, a: &Archive, unpacked: &Path) -> Result<Built, String>
         hi = hi.max(h);
     }
     let parts_info = parts.iter().enumerate().map(|(i, p)| (p.material.clone(), mat_of(i), p.positions.len(), p.indices.len() / 3)).collect();
-    Ok(Built { chunks, groups, shapes, parts: parts_info, bounds: (lo, hi) })
+    let mut collision = (vec![], vec![]);
+    for p in &parts {
+        let base = collision.0.len() as u32;
+        collision.0.extend(p.positions.iter().map(|v| Vec3::from(*v)));
+        collision.1.extend(p.indices.chunks_exact(3).map(|t| [t[0] + base, t[1] + base, t[2] + base]));
+    }
+    Ok(Built { chunks, groups, shapes, parts: parts_info, bounds: (lo, hi), collision })
 }
 
 /// The template's model instance to clone for the new model: the first instance whose mesh is the template group.

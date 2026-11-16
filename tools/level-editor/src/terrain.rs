@@ -123,6 +123,113 @@ pub fn parse_collision(b: &[u8]) -> Result<Vec<Shape>, String> {
     Ok(out)
 }
 
+/// Surface flags (a face's s1, two words) of the first prop shape (one with a transform), else of the first face.
+pub fn prop_face_flags(b: &[u8]) -> Option<[u32; 2]> {
+    let root = u32_at(b, 0)? as usize;
+    let v = indirect(b, field(b, root, 0)?)?;
+    let mut first = None;
+    for i in 0..u32_at(b, v)? as usize {
+        let t = indirect(b, v + 4 + 4 * i)?;
+        let Some(faces) = field(b, t, 4).and_then(|p| indirect(b, p)) else { continue };
+        if u32_at(b, faces)? == 0 {
+            continue;
+        }
+        let ft = indirect(b, faces + 4)?;
+        let Some(p) = field(b, ft, 1) else { continue };
+        let fl = [u32_at(b, p)?, u32_at(b, p + 4)?];
+        let is = |s: usize, d: f32| field(b, t, s).and_then(|p| vec3_at(b, p)).is_none_or(|x| (x - Vec3::splat(d)).length() < 1e-4);
+        if !(is(0, 0.0) && is(1, 0.0) && is(2, 1.0)) {
+            return Some(fl);
+        }
+        first.get_or_insert(fl);
+    }
+    first
+}
+
+/// Appends one collision shape (identity transform, vertices in the ground model's space) to a DC4A8177 file. The new
+/// shape list, the shape table, its vertices and faces go in a block right after the root table; everything after it
+/// shifts by the block size, so only the root's list field crosses the insertion point and is re-pointed. The old list
+/// stays behind as unused bytes. The result is checked by parsing it back.
+pub fn append_shape(b: &[u8], verts: &[Vec3], tris: &[[u32; 3]], flags: [u32; 2], hash: u32) -> Result<Vec<u8>, String> {
+    let root = u32_at(b, 0).ok_or("short file")? as usize;
+    let vt = (root as i64 - i32_at(b, root).ok_or("bad root")? as i64) as usize;
+    let tsize = u16_at(b, vt + 2).ok_or("bad vtable")? as usize;
+    let fld = field(b, root, 0).ok_or("no shape list")?;
+    let old = indirect(b, fld).ok_or("bad shape list")?;
+    let p_ins = root + tsize;
+    if vt >= root || p_ins % 4 != 0 || old < p_ins {
+        return Err("unexpected collision file layout".into());
+    }
+    if verts.is_empty() || tris.iter().flatten().any(|&i| i as usize >= verts.len()) {
+        return Err("collision shape: no vertices or an index out of range".into());
+    }
+    let before = parse_collision(b)?;
+    let n = before.len();
+    // block bytes; positions are absolute (block starts at p_ins)
+    let mut k: Vec<u8> = vec![];
+    let pad = |k: &mut Vec<u8>, a: usize| {
+        while (p_ins + k.len()) % a != 0 {
+            k.push(0);
+        }
+    };
+    let put = |k: &mut Vec<u8>, at: usize, v: u32| k[at - p_ins..at - p_ins + 4].copy_from_slice(&v.to_le_bytes());
+    let u32s = |k: &mut Vec<u8>, vs: &[u32]| vs.iter().for_each(|v| k.extend_from_slice(&v.to_le_bytes()));
+    // shape list
+    let vp = p_ins;
+    u32s(&mut k, &[(n + 1) as u32]);
+    k.resize(k.len() + 4 * (n + 1), 0);
+    // vtables: shape {pos, rot, scale, verts, faces, hash} in a 52-byte table; face {indices, flags} in 16 bytes
+    let svt = p_ins + k.len();
+    [16u16, 52, 4, 16, 28, 40, 44, 48].iter().for_each(|v| k.extend_from_slice(&v.to_le_bytes()));
+    let fvt = p_ins + k.len();
+    [8u16, 16, 4, 8].iter().for_each(|v| k.extend_from_slice(&v.to_le_bytes()));
+    pad(&mut k, 4);
+    let tp = p_ins + k.len();
+    u32s(&mut k, &[(tp - svt) as u32]);
+    [0f32, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0].iter().for_each(|v| k.extend_from_slice(&v.to_le_bytes()));
+    u32s(&mut k, &[0, 0, hash]);
+    // vertices
+    let vvp = p_ins + k.len();
+    u32s(&mut k, &[verts.len() as u32]);
+    verts.iter().for_each(|v| v.to_array().iter().for_each(|x| k.extend_from_slice(&x.to_le_bytes())));
+    put(&mut k, tp + 40, (vvp - (tp + 40)) as u32);
+    // faces
+    let fvp = p_ins + k.len();
+    u32s(&mut k, &[tris.len() as u32]);
+    k.resize(k.len() + 4 * tris.len(), 0);
+    put(&mut k, tp + 44, (fvp - (tp + 44)) as u32);
+    for (i, t) in tris.iter().enumerate() {
+        let ft = p_ins + k.len();
+        u32s(&mut k, &[(ft - fvt) as u32, 0, flags[0], flags[1]]);
+        let ip = p_ins + k.len();
+        u32s(&mut k, &[3, t[0], t[1], t[2]]);
+        put(&mut k, ft + 4, (ip - (ft + 4)) as u32);
+        let at = fvp + 4 + 4 * i;
+        put(&mut k, at, (ft - at) as u32);
+    }
+    pad(&mut k, 16);
+    let size = k.len();
+    for i in 0..n {
+        let at = vp + 4 + 4 * i;
+        let target = indirect(b, old + 4 + 4 * i).ok_or("bad shape offset")? + size;
+        put(&mut k, at, (target - at) as u32);
+    }
+    put(&mut k, vp + 4 + 4 * n, (tp - (vp + 4 + 4 * n)) as u32);
+    let mut out = Vec::with_capacity(b.len() + size);
+    out.extend_from_slice(&b[..p_ins]);
+    out.extend_from_slice(&k);
+    out.extend_from_slice(&b[p_ins..]);
+    out[fld..fld + 4].copy_from_slice(&((vp - fld) as u32).to_le_bytes());
+    // check: the old shapes unchanged, the new one as given
+    let after = parse_collision(&out)?;
+    let same = |a: &Shape, c: &Shape| a.pos == c.pos && a.rot == c.rot && a.scale == c.scale && a.verts == c.verts && a.tris == c.tris && a.flags == c.flags && a.hash == c.hash;
+    let new = after.last().ok_or("no shapes after append")?;
+    if after.len() != n + 1 || !before.iter().zip(&after).all(|(a, c)| same(a, c)) || new.verts != verts || new.tris != tris || new.hash != hash || new.flags.iter().any(|&f| f != flags[0]) {
+        return Err("collision append: read-back differs".into());
+    }
+    Ok(out)
+}
+
 pub const DNAV: u32 = u32::from_le_bytes(*b"VAND");
 
 /// One Detour tile inside a navmshb file. Offsets are absolute file positions.
@@ -408,5 +515,35 @@ pub fn displace_collision(b: &mut [u8], shapes: &[Shape], inst: Mat4, dy: &dyn F
             put_f32(b, at + 4, l.y);
             put_f32(b, at + 8, l.z);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Smallest collision file: root at 12 (vtable at 4) whose list field points at an empty vector at 20.
+    fn empty_file() -> Vec<u8> {
+        let mut b = vec![];
+        b.extend_from_slice(&12u32.to_le_bytes());
+        [6u16, 8, 4, 0].iter().for_each(|v| b.extend_from_slice(&v.to_le_bytes()));
+        b.extend_from_slice(&8i32.to_le_bytes());
+        b.extend_from_slice(&4u32.to_le_bytes());
+        b.extend_from_slice(&0u32.to_le_bytes());
+        b
+    }
+
+    #[test]
+    fn append_shape_twice_reads_back() {
+        let tri = [Vec3::ZERO, Vec3::X, Vec3::Z];
+        let one = append_shape(&empty_file(), &tri, &[[0, 1, 2]], [5, 7], 0xabc).unwrap();
+        let quad = [Vec3::ZERO, Vec3::X, Vec3::new(1.0, 0.0, 1.0), Vec3::Z];
+        let two = append_shape(&one, &quad, &[[0, 1, 2], [0, 2, 3]], [5, 7], 0xdef).unwrap();
+        let s = parse_collision(&two).unwrap();
+        assert_eq!(s.len(), 2);
+        assert_eq!((s[0].verts.as_slice(), s[0].hash), (&tri[..], 0xabc));
+        assert_eq!((s[1].tris.as_slice(), s[1].flags.as_slice(), s[1].hash), (&[[0, 1, 2], [0, 2, 3]][..], &[5u32, 5][..], 0xdef));
+        assert_eq!(prop_face_flags(&two), Some([5, 7]));
+        assert!(append_shape(&empty_file(), &tri, &[[0, 1, 3]], [0, 0], 1).is_err(), "index out of range");
     }
 }
