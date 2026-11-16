@@ -30,6 +30,9 @@
 #include <atomic>
 namespace hle::input { extern std::atomic<bool> g_shot_req; void route_state_loaded(); }   // runtime/hle/input_core.cpp: the screenshot request flag
 
+extern "C" void snap_fs_state_save();                          // runtime/hle/fs.cpp: which files and directories are open
+extern "C" void snap_fs_state_load(int* closed, int* reopened);
+
 extern "C" {
 struct SnapStateHooks {
   void (*pre_save)();                          // the world is parked: GPU idle, readbacks landed, take the NVN snapshot
@@ -117,6 +120,7 @@ void DropOldState() {   // the GPU is idle
 }
 
 void PreSave() {
+  snap_fs_state_save();
   StateIdleAll();
   std::lock_guard<std::mutex> lk(g_mu);
   DropOldState();
@@ -230,6 +234,9 @@ void PostLoad() {   // guest memory is restored; the GPU is idle; every guest th
   for (int k = 0; k < SK_COUNT; k++) if (k != SK_QUEUE && k != SK_WINDOW) g_live[k] = g_saved[k];
   fprintf(stderr, "[nvn] state load: %zu objects made since the save freed, %zu zombies revived (made %llu, finalized %llu since the save)\n", dead.size(), revived,
           (unsigned long long)g_madeSince, (unsigned long long)g_goneSince);
+  int fsClosed = 0, fsReopened = 0;
+  snap_fs_state_load(&fsClosed, &fsReopened);   // files and directories: opened since the save are closed, closed since the save are open again
+  fprintf(stderr, "[fs] state load: %d handles opened since the save closed, %d closed since the save reopened\n", fsClosed, fsReopened);
   fflush(stderr);
 }
 }  // namespace

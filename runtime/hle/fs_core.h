@@ -92,6 +92,10 @@ class Fs {
   // Makes generation `gen` the current one by committing a copy of it as a new generation.
   uint32_t restore_generation(const std::string& mount, uint64_t gen);
 
+  // Save states (runtime/hle/fs.cpp hooks): which handles are open at the save, and the matching fix-up at a load. Disk contents are not rolled back.
+  void state_save();
+  void state_load(int* closed, int* reopened);
+
   // Test hook: called at named stages of commit; may throw SimulatedCrash.
   void set_fault_hook(std::function<void(const char* stage)> hook);
 

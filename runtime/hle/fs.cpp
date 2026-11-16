@@ -236,3 +236,6 @@ extern "C" void snap_photoexport_drain_for_exit(int ms);   // host/mods/photoexp
 extern "C" void snap_photoexport_drain_none(int) {}
 #pragma comment(linker, "/alternatename:snap_photoexport_drain_for_exit=snap_photoexport_drain_none")
 extern "C" void snap_fs_drain_for_exit(int ms) { snap_screenshot_drain_for_exit(ms < 2000 ? ms : 2000); snap_photoexport_drain_for_exit(ms < 2000 ? ms : 2000); hle::fs::instance().drain_for_exit(ms); }
+// Save states (runtime/nvn/nvn_state.cpp calls these from its hooks): open handles at the save, and the fix-up at a load.
+extern "C" void snap_fs_state_save() { hle::fs::instance().state_save(); }
+extern "C" void snap_fs_state_load(int* closed, int* reopened) { hle::fs::instance().state_load(closed, reopened); }

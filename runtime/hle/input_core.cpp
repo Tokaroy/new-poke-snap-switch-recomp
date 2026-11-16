@@ -790,6 +790,7 @@ int g_nrail, g_rail_cur = -1;
 std::atomic<bool> g_route_on{false};
 bool g_route_log;
 std::atomic<int> g_dialog_f{-1000000}, g_film{-1}, g_film_f{-1000000};
+std::atomic<int64_t> g_load_release_until_ns{0};   // physical pad reads as idle until then (set by route_state_loaded)
 void route_enable() { g_route_on = true; }
 struct RouteInit { RouteInit() { const char* e = std::getenv("SNAP_ROUTE_LOG"); g_route_log = e && *e && *e != '0'; if (g_route_log) g_route_on = true; } } g_route_init;
 
@@ -938,7 +939,11 @@ void route_dialog() {
 
 // A save-state load rewound the game: what the hooks reported since the save is stale. The film counter is only reported when the HUD changes it,
 // so forget it until the next report (runtime/nvn/nvn_state.cpp PostLoad).
-void route_state_loaded() { g_film = -1; }
+// It also releases the physical pad for a moment: a button held across the load was pressed (or not) in a different game moment.
+void route_state_loaded() {
+  g_film = -1;
+  g_load_release_until_ns = std::chrono::steady_clock::now().time_since_epoch().count() + 150000000;
+}
 
 void route_film(int count) {
   if (!route_on()) return;
@@ -1315,6 +1320,7 @@ void Hub::poll(int min_interval_ms) {
     if (tog_state_ != before) log("access: toggle latch %#llx -> %#llx present=%d", (unsigned long long)before, (unsigned long long)tog_state_, nvn::g_presentCount);
   };
   if (!script_latch) latch(p.buttons);
+  if (std::chrono::steady_clock::now().time_since_epoch().count() < g_load_release_until_ns.load(std::memory_order_relaxed)) { p = PadSample{}; p.connected = true; }   // just after a save-state load
   preview_ = p;
   pad_ = p;
   touch_ = map_touch(map_, r);

@@ -30,6 +30,11 @@ class SpscRing {
   size_t size() const { return head_.load(std::memory_order_acquire) - tail_.load(std::memory_order_acquire); }
   // Only safe while neither side is running.
   void reset() { head_.store(0); tail_.store(0); }
+  // Save states, with both sides stopped: the queued elements, oldest first / put exactly these back.
+  template <class V> void copy_to(V& out) const {
+    for (size_t i = tail_.load(); i != head_.load(); ++i) out.push_back(buf_[i & (N - 1)]);
+  }
+  void assign(const T* v, size_t n) { reset(); for (size_t i = 0; i < n; ++i) push(v[i]); }
  private:
   alignas(64) std::atomic<size_t> head_{0};
   alignas(64) std::atomic<size_t> tail_{0};

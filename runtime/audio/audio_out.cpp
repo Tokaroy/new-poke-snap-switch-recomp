@@ -19,6 +19,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <chrono>
 #include <thread>
 #include <vector>
 
@@ -53,6 +54,7 @@ const char* const kDeviceNames[4] = {"AudioStereoJackOutput", "AudioBuiltInSpeak
 enum Chk { kBadOpen, kNoSlot, kBadHandle, kBadBuffer, kQueueFull, kBadVolume, kBadPull, kChkCount };
 const char* const kChkName[kChkCount] = {"bad open parameters", "no free AudioOut", "AudioOut not open", "bad buffer", "submit queue full", "bad volume", "bad device pull"};
 constexpr uint64_t kMaxBufferBytes = 16ull << 20;   // Wwise submits ~4 KiB; anything past 16 MiB is not a sound buffer
+constexpr int kLoadFadeFrames = 2400;                // 50 ms at 48 kHz
 constexpr uint32_t kMaxPullFrames = 1u << 16;       // device periods are a few thousand frames
 
 struct Globals {
@@ -82,6 +84,9 @@ struct Globals {
   std::atomic<float> deviceVol[4];
   int activeDevice = 2;  // AudioTvOutput
   float curGain = 1.0f;  // device-thread private (smoothed)
+  // save states (os_state.cpp hooks at the end of this file): the state code sets stateHold, waits for inMix to drop, then reads or rewrites the slot rings
+  std::atomic<int> stateHold{0}, inMix{0};
+  std::atomic<int> fadeLeft{0};   // frames of fade-in still owed after a load (set while held)
   snap_audio::mix::Upmixer upmix;   // device-thread private
   bool upmixOn = true;               // env SNAP_AUDIO_UPMIX=0 turns it off, audio.json "upmix"
 
@@ -408,8 +413,11 @@ uint32_t mix_slot(OutSlot& s, float* dst, uint32_t dc, uint32_t frames) {
     done += take;
     if (s.curFrame >= total) {
       SnapAudioOutBuffer* b = s.cur;
+      while (!s.released.push(b)) {   // 64-deep, guest drains in GetReleased
+        if (G().stateHold.load(std::memory_order_seq_cst)) return done;   // a save state wants the rings: s.cur stays b (finished), the next call retries
+        std::this_thread::yield();
+      }
       s.cur = nullptr;
-      while (!s.released.push(b)) std::this_thread::yield();  // 64-deep, guest drains in GetReleased
       G().releasedCount.fetch_add(1, std::memory_order_relaxed);
     }
   }
@@ -503,6 +511,9 @@ void core_mix(float* dst, uint32_t frames) {
   }
   if (frames == 0) return;
   std::memset(dst, 0, sizeof(float) * (size_t)frames * dc);
+  struct MixScope { std::atomic<int>& f; ~MixScope() { f.store(0, std::memory_order_seq_cst); } } mixScope{g.inMix};
+  g.inMix.store(1, std::memory_order_seq_cst);
+  if (g.stateHold.load(std::memory_order_seq_cst)) return;   // a save state is reading or rewriting the rings: a few ms of silence
   uint32_t shortest = 0;
   bool anyStarted = false, short_ = false;
   uint64_t fromGuest = 0;
@@ -539,13 +550,17 @@ void core_mix(float* dst, uint32_t frames) {
   g.curGain = target;
   const float step = frames ? (target - start) / (float)frames : 0.0f;
   float gain = start;
+  int fade = g.fadeLeft.load(std::memory_order_relaxed);
   for (uint32_t f = 0; f < frames; ++f) {
+    float gg = gain;
+    if (fade > 0) { gg *= 1.0f - (float)fade / (float)kLoadFadeFrames; --fade; }   // after a load: ramp up from silence so the cut does not click
     for (uint32_t c = 0; c < dc; ++c) {
-      float v = dst[f * dc + c] * gain;
+      float v = dst[f * dc + c] * gg;
       dst[f * dc + c] = v > 1.0f ? 1.0f : (v < -1.0f ? -1.0f : v);
     }
     gain += step;
   }
+  if (fade != g.fadeLeft.load(std::memory_order_relaxed)) g.fadeLeft.store(fade, std::memory_order_relaxed);
   g.framesMixed.fetch_add(frames, std::memory_order_relaxed);
   g.framesFromGuest.fetch_add(fromGuest, std::memory_order_relaxed);
   if (anyStarted && short_) {
@@ -603,14 +618,14 @@ SNAP_AUDIO_API void snap_nn_audio_InitializeAudioOutParameter(SnapAudioOutParame
 }
 
 SNAP_AUDIO_API uint32_t snap_nn_audio_OpenDefaultAudioOut(void* audioOut, const SnapAudioOutParameter* p) {
-  ensure_init();
-  Globals& g = G();
-  uint32_t rate = p->sampleRate ? p->sampleRate : g.devFmt.rate;
-  uint32_t ch = p->channelCount ? p->channelCount : (uint32_t)g.reportedChannels.load();
   if (!audioOut || !p || ((uintptr_t)audioOut & 3)) {
     check_fail(kBadOpen, "OpenDefaultAudioOut with %s", !audioOut ? "a null AudioOut" : !p ? "null parameters" : "a misaligned AudioOut");
     return 0x1;
   }
+  ensure_init();
+  Globals& g = G();
+  uint32_t rate = p->sampleRate ? p->sampleRate : g.devFmt.rate;
+  uint32_t ch = p->channelCount ? p->channelCount : (uint32_t)g.reportedChannels.load();
   if (std::getenv("SNAP_AUDIO_TRACE")) std::fprintf(stderr, "[audio-trace] OpenDefaultAudioOut rate=%u requested channels=%u -> %u (sink cfg dword 0x%08x, +0x24 %u)\n", rate, (unsigned)p->channelCount, ch, *(const uint32_t*)((const char*)audioOut - 0x40 + 0xc), *(const uint32_t*)((const char*)audioOut - 0x40 + 0x24));
   if (rate != g.devFmt.rate || (ch != 1 && ch != 2 && ch != 6)) {
     check_fail(kBadOpen, "OpenDefaultAudioOut: unsupported rate %u / channels %u", rate, ch);
@@ -627,11 +642,11 @@ SNAP_AUDIO_API uint32_t snap_nn_audio_OpenDefaultAudioOut(void* audioOut, const 
     s.alive.store(1, std::memory_order_seq_cst);
     return 0;
   }
+  check_fail(kNoSlot, "OpenDefaultAudioOut with all %d AudioOuts already open", kMaxOuts);
   return 0x2;
 }
 
 SNAP_AUDIO_API void snap_nn_audio_CloseAudioOut(void* audioOut) {
-  check_fail(kNoSlot, "OpenDefaultAudioOut with all %d AudioOuts already open", kMaxOuts);
   const uint32_t i = open_slot(audioOut, "CloseAudioOut");
   if (i == ~0u) return;
   OutSlot& s = G().slots[i];
@@ -642,85 +657,85 @@ SNAP_AUDIO_API void snap_nn_audio_CloseAudioOut(void* audioOut) {
 }
 
 SNAP_AUDIO_API uint32_t snap_nn_audio_StartAudioOut(void* audioOut) {
-  const uint32_t i = open_slot(audioOut, "GetReleasedAudioOutBuffer");
+  const uint32_t i = open_slot(audioOut, "StartAudioOut");
   if (i == ~0u) return 0x3;
   G().slots[i].started.store(1, std::memory_order_release);
   return 0;
 }
 
 SNAP_AUDIO_API void snap_nn_audio_StopAudioOut(void* audioOut) {
-  const uint32_t i = open_slot(audioOut, "StartAudioOut");
+  const uint32_t i = open_slot(audioOut, "StopAudioOut");
   if (i != ~0u) G().slots[i].started.store(0, std::memory_order_release);
 }
 
 SNAP_AUDIO_API int snap_nn_audio_GetAudioOutState(const void* audioOut) {
-  const uint32_t i = open_slot(audioOut, "StopAudioOut");
+  const uint32_t i = slot_of(audioOut);   // a state query on a closed AudioOut is how the sink asks "is it open", not a bad call
   if (i == ~0u) return SNAP_AUDIO_STATE_STOPPED;
   return G().slots[i].started.load(std::memory_order_acquire) ? SNAP_AUDIO_STATE_STARTED : SNAP_AUDIO_STATE_STOPPED;
 }
 
 SNAP_AUDIO_API uint32_t snap_nn_audio_GetAudioOutChannelCount(const void* audioOut) {
-  const uint32_t i = slot_of(audioOut);   // a state query on a closed AudioOut is how the sink asks "is it open", not a bad call
+  const uint32_t i = open_slot(audioOut, "GetAudioOutChannelCount");
   return i == ~0u ? 0 : G().slots[i].channels;
 }
 
 SNAP_AUDIO_API void snap_nn_audio_SetAudioOutBufferInfo(SnapAudioOutBuffer* b, void* data, uint64_t bufferSize, uint64_t dataSize) {
+  if (!b) { check_fail(kBadBuffer, "SetAudioOutBufferInfo on a null buffer"); return; }
   b->next = nullptr;
   b->buffer = data;
   b->bufferSize = bufferSize;
   b->dataSize = dataSize;
-  if (!b) { check_fail(kBadBuffer, "SetAudioOutBufferInfo on a null buffer"); return; }
   b->dataOffset = 0;
 }
 
 SNAP_AUDIO_API void* snap_nn_audio_GetAudioOutBufferDataPointer(const SnapAudioOutBuffer* b) { return b ? b->buffer : nullptr; }
 
 SNAP_AUDIO_API void snap_nn_audio_AppendAudioOutBuffer(void* audioOut, SnapAudioOutBuffer* b) {
-  const uint32_t i = open_slot(audioOut, "GetAudioOutChannelCount");
+  const uint32_t i = open_slot(audioOut, "AppendAudioOutBuffer");
   if (i == ~0u) return;
+  if (!b) { check_fail(kBadBuffer, "AppendAudioOutBuffer with a null buffer"); return; }
   OutSlot& s = G().slots[i];
+  sanitize_buffer(b, s.channels);
   if (!s.submit.push(b)) {
     check_fail(kQueueFull, "AppendAudioOutBuffer with 64 buffers already queued, this one is dropped");
     return;
-  if (!b) { check_fail(kBadBuffer, "AppendAudioOutBuffer with a null buffer"); return; }
   }
-  sanitize_buffer(b, s.channels);
   G().appended.fetch_add(1, std::memory_order_relaxed);
 }
 
 SNAP_AUDIO_API SnapAudioOutBuffer* snap_nn_audio_GetReleasedAudioOutBuffer(void* audioOut) {
-  const uint32_t i = open_slot(audioOut, "AppendAudioOutBuffer");
+  const uint32_t i = open_slot(audioOut, "GetReleasedAudioOutBuffer");
   if (i == ~0u) return nullptr;
   SnapAudioOutBuffer* b = nullptr;
   return G().slots[i].released.pop(b) ? b : nullptr;
 }
 
 SNAP_AUDIO_API int snap_nn_audio_ListAudioDeviceName(SnapAudioDeviceName* names, int count) {
+  if (!names || count <= 0) return 0;
   int n = std::min(count, 4);
   for (int i = 0; i < n; ++i) {
     std::memset(names[i].name, 0, sizeof(names[i].name));
     std::strncpy(names[i].name, kDeviceNames[i], sizeof(names[i].name) - 1);
-  if (!names || count <= 0) return 0;
   }
   return n;
 }
 
 SNAP_AUDIO_API void snap_nn_audio_SetAudioDeviceOutputVolume(const SnapAudioDeviceName* name, float volume) {
+  if (!name || !std::isfinite(volume)) { check_fail(kBadVolume, "SetAudioDeviceOutputVolume with %s", !name ? "a null name" : "a non-finite volume"); return; }
   for (int i = 0; i < 4; ++i)
     if (!std::strncmp(name->name, kDeviceNames[i], sizeof(name->name))) {
       G().deviceVol[i].store(std::clamp(volume, 0.0f, 1.0f));
       return;
-  if (!name || !std::isfinite(volume)) { check_fail(kBadVolume, "SetAudioDeviceOutputVolume with %s", !name ? "a null name" : "a non-finite volume"); return; }
     }
+  check_fail(kBadVolume, "SetAudioDeviceOutputVolume for an unknown device name");
 }
 
 SNAP_AUDIO_API void snap_nn_audio_GetActiveAudioDeviceName(SnapAudioDeviceName* name) {
+  if (!name) return;
   std::memset(name->name, 0, sizeof(name->name));
-  check_fail(kBadVolume, "SetAudioDeviceOutputVolume for an unknown device name");
   std::strncpy(name->name, kDeviceNames[G().activeDevice], sizeof(name->name) - 1);
 }
 
-  if (!name) return;
 SNAP_AUDIO_API int snap_nn_audio_GetActiveAudioDeviceChannelCountForOutput(void) {
   ensure_init();
   Globals& g = G();
@@ -829,9 +844,6 @@ SNAP_AUDIO_API void snap_audio_get_stats(SnapAudioStats* s) {
 SNAP_AUDIO_API void snap_audio_reset_stats(void) {
   Globals& g = G();
   g.framesMixed = 0; g.framesFromGuest = 0; g.underruns = 0; g.underrunFrames = 0; g.appended = 0; g.releasedCount = 0;
-}
-SNAP_AUDIO_API uint64_t snap_audio_tap_read(float* dst, uint64_t n) { return G().tap.read(dst, (size_t)n); }
-SNAP_AUDIO_API uint32_t snap_audio_tap_channels(void) { return G().devChannels; }
   for (auto& c : g.chk) c = 0;
   g.chkLogged = 0;
 }
@@ -849,3 +861,87 @@ SNAP_AUDIO_API void snap_audio_log_checks(void) {
                (unsigned long long)c.queueFull, (unsigned long long)c.badVolume, (unsigned long long)c.badPull, (unsigned long long)c.underruns,
                (unsigned long long)g.underrunFrames.load(), (unsigned long long)g.framesMixed.load(), (unsigned long long)g.appended.load(),
                (unsigned long long)g.releasedCount.load());
+}
+SNAP_AUDIO_API uint64_t snap_audio_tap_read(float* dst, uint64_t n) { return G().tap.read(dst, (size_t)n); }
+SNAP_AUDIO_API uint32_t snap_audio_tap_channels(void) { return G().devChannels; }
+
+// ---- save states (runtime/os/os_state.cpp calls these through SnapStateHooks while every guest thread is parked) -----------------------
+// The guest's Wwise sink owns the AudioOut objects and the buffers it submitted; the device thread owns where playback is. A load puts the
+// queues back as they were at the save, so the guest's bookkeeping and the host rings agree, and fades in over 50 ms.
+extern "C" {
+struct SnapStateHooks { void (*pre_save)(); int (*pre_load)(char* why, int cap); void (*post_load)(); void (*shot)(); };
+void snap_state_set_hooks(const SnapStateHooks* h);
+void snap_state_set_hooks_none(const SnapStateHooks*) {}   // an audio-only build (tests) has no save-state code
+}
+#pragma comment(linker, "/alternatename:snap_state_set_hooks=snap_state_set_hooks_none")
+
+namespace {
+struct AudioSlotSnap {
+  int alive = 0, started = 0;
+  uint32_t rate = 0, channels = 0;
+  std::vector<SnapAudioOutBuffer*> submit, released;
+  SnapAudioOutBuffer* cur = nullptr;
+  uint64_t curFrame = 0;
+};
+AudioSlotSnap g_asnap[kMaxOuts];
+bool g_asnap_valid = false;
+
+// stops the device thread's mix (it writes silence) and waits until it is out of the rings
+struct AudioHold {
+  AudioHold() {
+    G().stateHold.store(1, std::memory_order_seq_cst);
+    for (int i = 0; i < 5000 && G().inMix.load(std::memory_order_seq_cst); ++i) std::this_thread::sleep_for(std::chrono::microseconds(100));   // up to 0.5 s
+    if (G().inMix.load()) std::fprintf(stderr, "[audio] save state: the device thread did not leave the mix in 0.5 s\n");
+  }
+  ~AudioHold() { G().stateHold.store(0, std::memory_order_seq_cst); }
+};
+
+void audio_pre_save() {
+  AudioHold hold;
+  for (int i = 0; i < kMaxOuts; ++i) {
+    OutSlot& s = G().slots[i];
+    AudioSlotSnap& a = g_asnap[i];
+    a.alive = s.alive.load(); a.started = s.started.load(); a.rate = s.rate; a.channels = s.channels;
+    a.submit.clear(); a.released.clear();
+    s.submit.copy_to(a.submit);
+    s.released.copy_to(a.released);
+    a.cur = s.cur; a.curFrame = s.curFrame;
+  }
+  g_asnap_valid = true;
+}
+
+int audio_pre_load(char* why, int cap) {
+  if (!g_asnap_valid) return 1;
+  for (int i = 0; i < kMaxOuts; ++i) {
+    const OutSlot& s = G().slots[i];
+    const AudioSlotSnap& a = g_asnap[i];
+    if (a.alive != s.alive.load() || (a.alive && (a.rate != s.rate || a.channels != s.channels))) {
+      std::snprintf(why, (size_t)cap, "the audio outputs changed since the save (output %d)", i);
+      return 0;
+    }
+  }
+  return 1;
+}
+
+void audio_post_load() {
+  if (!g_asnap_valid) return;
+  AudioHold hold;
+  for (int i = 0; i < kMaxOuts; ++i) {
+    OutSlot& s = G().slots[i];
+    const AudioSlotSnap& a = g_asnap[i];
+    if (!a.alive) continue;
+    s.started.store(a.started);
+    s.submit.assign(a.submit.data(), a.submit.size());
+    s.released.assign(a.released.data(), a.released.size());
+    s.cur = a.cur; s.curFrame = a.curFrame;
+  }
+  G().fadeLeft.store(kLoadFadeFrames, std::memory_order_relaxed);
+}
+
+struct AudioStateRegister {
+  AudioStateRegister() {
+    static const SnapStateHooks h = {audio_pre_save, audio_pre_load, audio_post_load, nullptr};
+    snap_state_set_hooks(&h);
+  }
+} g_audio_state_register;
+}  // namespace

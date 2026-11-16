@@ -26,8 +26,9 @@ struct SnapStateHooks {
     void (*shot)();   // test aid: request a screenshot
 };
 }
-static const SnapStateHooks *g_xh = nullptr;
-extern "C" void snap_state_set_hooks(const SnapStateHooks *h) { g_xh = h; }
+static const SnapStateHooks *g_xhs[4];   // one set per layer that owns host state (NVN, audio); registered from static initializers, so zero-initialized here
+static int g_nxh = 0;
+extern "C" void snap_state_set_hooks(const SnapStateHooks *h) { if (g_nxh < 4) g_xhs[g_nxh++] = h; }
 
 // Requests from the HLE layer (route tokens), SNAP_CHECKPOINT and the player's buttons. op 1 = save, 2 = load. They only queue; one worker thread does the drain.
 extern "C" {
@@ -550,7 +551,7 @@ bool do_save(std::string &why) {
         s.side = (uint8_t *)big_alloc(64 << 10);
         g_slot.by_thread[t] = &s;
     }
-    if (g_xh && g_xh->pre_save) g_xh->pre_save();   // GPU idle, readbacks landed in guest memory, NVN snapshot (before any memory is copied)
+    for (int i = 0; i < g_nxh; i++) if (g_xhs[i]->pre_save) g_xhs[i]->pre_save();   // GPU idle, readbacks landed in guest memory, NVN snapshot (before any memory is copied)
     g_cap_gen++;
     g_sphase.store(PH_CAPTURE);
     for (Thread *t : every_thread()) t->cv.notify_all();
@@ -647,9 +648,9 @@ bool do_load(std::string &why) {
     double dms = 0;
     std::string last;
     if (!drain(2000, rows, dms, last)) { why = "drain timed out waiting for " + last; release_all(); return false; }
-    if (g_xh && g_xh->pre_load) {   // GPU idle and readbacks landed BEFORE guest memory goes back, then the NVN object sets must still match
+    for (int i = 0; i < g_nxh; i++) {   // GPU idle and readbacks landed BEFORE guest memory goes back, then the NVN object sets and the audio outputs must still match
         char buf[160] = {};
-        if (!g_xh->pre_load(buf, sizeof buf)) { why = buf; release_all(); return false; }
+        if (g_xhs[i]->pre_load && !g_xhs[i]->pre_load(buf, sizeof buf)) { why = buf; release_all(); return false; }
     }
     g_tts = all_thread_types();
     {
@@ -702,7 +703,7 @@ bool do_load(std::string &why) {
             if (r.bytes) memcpy(r.host->sp, r.bytes, r.n);
         }
         state_time_set(g_slot.time);
-        if (g_xh && g_xh->post_load) g_xh->post_load();   // host objects made since the save go, zombies come back, guest-API fields are restored
+        for (int i = 0; i < g_nxh; i++) if (g_xhs[i]->post_load) g_xhs[i]->post_load();   // host objects made since the save go, zombies come back, guest-API fields are restored
         g_go1 = 1;
     }
     while (!all_flag(&TState::copied)) Sleep(1);
@@ -727,7 +728,7 @@ size_t private_mib() {
 // ",shots": a screenshot 1.5 s after the save and after every load, so the frames at the same guest moment can be compared (SNAP_SHOT_DIR)
 struct TestPlan { int save_s = -1, load_s = -1, loops = 1, lgap = 3; bool shots = false; };
 void take_shot() {
-    if (g_xh && g_xh->shot) g_xh->shot();
+    for (int i = 0; i < g_nxh; i++) if (g_xhs[i]->shot) { g_xhs[i]->shot(); break; }
     Sleep(500);
 }
 

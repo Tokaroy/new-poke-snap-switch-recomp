@@ -577,6 +577,13 @@ struct Fs::Impl {
   std::unordered_map<uint64_t, std::shared_ptr<OpenFile>> files;
   std::unordered_map<uint64_t, std::shared_ptr<OpenDir>> dirs;
   std::atomic<uint64_t> next{0x1000};
+  // Save states (state_save / state_load): the guest keeps the ids of the files and directories it had open at the save. While a state exists,
+  // a close of one of those ids parks the handle here instead of dropping it, so a load can open it again; handles opened since are closed.
+  bool st_valid = false;
+  std::set<uint64_t> st_files, st_dirs;
+  std::unordered_map<uint64_t, size_t> st_cursors;
+  std::unordered_map<uint64_t, std::shared_ptr<OpenFile>> st_zfiles;
+  std::unordered_map<uint64_t, std::shared_ptr<OpenDir>> st_zdirs;
   std::vector<std::string> rom_layers;
   std::string save_root;
   int save_backups = 5;
@@ -802,9 +809,40 @@ uint32_t Fs::close_file(FileId f) {
   std::lock_guard<std::mutex> g(p_->mu);
   auto it = p_->files.find(f);
   if (it == p_->files.end()) return kResultInvalidArgument;
+  if (p_->st_valid && p_->st_files.count(f)) p_->st_zfiles[f] = it->second;   // open at the save: a load brings it back
   p_->files.erase(it);
   if (trace_flags & kTraceFs) log("fs: close file %llu", (unsigned long long)f);
   return kSuccess;
+}
+
+// A save state is being taken (every guest thread is parked): remember which ids are open and where the directory cursors are.
+void Fs::state_save() {
+  std::lock_guard<std::mutex> g(p_->mu);
+  p_->st_files.clear(); p_->st_dirs.clear(); p_->st_cursors.clear(); p_->st_zfiles.clear(); p_->st_zdirs.clear();
+  for (auto& kv : p_->files) p_->st_files.insert(kv.first);
+  for (auto& kv : p_->dirs) { p_->st_dirs.insert(kv.first); p_->st_cursors[kv.first] = kv.second->cursor; }
+  p_->st_valid = true;
+}
+
+// The guest memory of the save is back: close what was opened since, reopen what was closed since, rewind the directory cursors.
+// Returns how many handles were closed / reopened (for the log).
+void Fs::state_load(int* closed, int* reopened) {
+  std::lock_guard<std::mutex> g(p_->mu);
+  int c = 0, r = 0;
+  if (!p_->st_valid) { if (closed) *closed = 0; if (reopened) *reopened = 0; return; }
+  for (auto it = p_->files.begin(); it != p_->files.end();) {
+    if (!p_->st_files.count(it->first)) { it = p_->files.erase(it); ++c; } else ++it;
+  }
+  for (auto& kv : p_->st_zfiles) if (!p_->files.count(kv.first)) { p_->files[kv.first] = kv.second; ++r; }
+  p_->st_zfiles.clear();
+  for (auto it = p_->dirs.begin(); it != p_->dirs.end();) {
+    if (!p_->st_dirs.count(it->first)) { it = p_->dirs.erase(it); ++c; } else ++it;
+  }
+  for (auto& kv : p_->st_zdirs) if (!p_->dirs.count(kv.first)) { p_->dirs[kv.first] = kv.second; ++r; }
+  p_->st_zdirs.clear();
+  for (auto& kv : p_->dirs) { auto cu = p_->st_cursors.find(kv.first); if (cu != p_->st_cursors.end()) kv.second->cursor = cu->second; }
+  if (closed) *closed = c;
+  if (reopened) *reopened = r;
 }
 
 static std::shared_ptr<OpenFile> get_file(Fs::Impl* p, FileId f) {
@@ -1104,7 +1142,11 @@ uint32_t Fs::get_directory_entry_count(DirId d, int64_t* out) {
 
 uint32_t Fs::close_directory(DirId d) {
   std::lock_guard<std::mutex> g(p_->mu);
-  return p_->dirs.erase(d) ? kSuccess : kResultInvalidArgument;
+  auto it = p_->dirs.find(d);
+  if (it == p_->dirs.end()) return kResultInvalidArgument;
+  if (p_->st_valid && p_->st_dirs.count(d)) p_->st_zdirs[d] = it->second;   // open at the save: a load brings it back
+  p_->dirs.erase(it);
+  return kSuccess;
 }
 
 uint32_t Fs::commit(const std::string& mount) {
