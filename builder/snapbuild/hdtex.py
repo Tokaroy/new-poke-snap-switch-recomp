@@ -24,6 +24,7 @@ import numpy as np
 from . import hdtex_classify as hc
 from . import hdtex_image as im
 from . import hdtex_nutexb as nb
+from . import safedel
 
 CODE_VERSION = 1
 PACK_ID = 'hd-ai-textures'
@@ -814,7 +815,7 @@ def run(items, o, say=print):
         paused += wait_for_locks(o.lock_dir, say)
         if o.pause_game:
             paused += wait_for_game(say)
-        shutil.rmtree(tmp, ignore_errors=True)
+        safedel.rmtree(tmp, ignore_errors=True)
         (tmp / 'src').mkdir(parents=True)
         # 1. decode level 0 of every source (one texconv run per decode format)
         tex = {}
@@ -910,7 +911,7 @@ def run(items, o, say=print):
         left = len(todo) - b0 - len(batch)
         rate = el / max(b0 + len(batch), 1)
         say(f'  {b0 + len(batch)}/{len(todo)} done ({failed} failed), {el / 60:.1f} min so far, about {left * rate / 60:.0f} min left')
-    shutil.rmtree(tmp, ignore_errors=True)
+    safedel.rmtree(tmp, ignore_errors=True)
     total = time.perf_counter() - t_start
     return {'built': done, 'failed': failed, 'up_to_date': len(items) - len(todo), 'seconds': total - paused, 'paused_seconds': paused,
             'ai_seconds': up.ai_seconds, 'engines': {k: getattr(e, 'providers', []) for k, e in up.engines.items()}}

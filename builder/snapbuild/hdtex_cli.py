@@ -25,6 +25,7 @@ import time
 from pathlib import Path
 
 from . import fetch, hdtex as H, hdtex_romfs as R, hdtex_setup as S, hdtex_classify as hc
+from . import safedel
 
 ROUTES = H.BUILDER / 'hdtex_routes'
 PACK_META = {'hd-shadows': {'name': 'HD shadows (made on this PC)', 'version': '1', 'author': 'Snap Recomp Builder',
@@ -169,7 +170,7 @@ def collect(exe, cache, save_dir, routes, timeout, say, launcher=None, args=()):
             out[r.stem] = (code, got)
             say(f'  {r.stem}: {got} new textures ({code})')
         finally:
-            shutil.rmtree(tmp, ignore_errors=True)
+            safedel.rmtree(tmp, ignore_errors=True)
     return out
 
 

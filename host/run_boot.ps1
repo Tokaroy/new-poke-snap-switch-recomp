@@ -64,7 +64,7 @@ try {
     elseif ($dumpOn) {
         # NVN_FRAME_DUMP works on the hidden desktop (the desktop capture SNAP_SHOT only sees black there); half-size BMPs
         $rawDir = "${shotBase}_raw"
-        if (Test-Path $rawDir) { Remove-Item -Recurse -Force $rawDir }
+        if (Test-Path $rawDir) { Remove-TreeSafe $rawDir }
         New-Item -ItemType Directory -Force $rawDir | Out-Null
         $env:NVN_FRAME_DUMP = $rawDir; $env:NVN_FRAME_DUMP_FROM = [string]$ShotAt; $env:NVN_FRAME_DUMP_EVERY = [string]$ShotEvery; $env:NVN_FRAME_DUMP_MAX = [string]$ShotMax
     }
@@ -83,7 +83,7 @@ try {
     if (-not $ok) { Write-Host 'could not copy a stable build\snap exe'; exit 7 }
     # upscalers\ (the FSR DLL the builder fetches; runtime/nvn/upscale/upscale_fsr.cpp loads it next to the exe): mirrored when the build has it
     if (Test-Path "$src\upscalers") { robocopy "$src\upscalers" "$runDir\upscalers" /MIR /NFL /NDL /NJH /NJS /NP | Out-Null }
-    elseif (Test-Path "$runDir\upscalers") { Remove-Item -Recurse -Force "$runDir\upscalers" -ErrorAction SilentlyContinue }
+    elseif (Test-Path "$runDir\upscalers") { Remove-TreeSafe "$runDir\upscalers" }
     $warm = Join-Path $root 'build\snap\nvn_cache'   # own build dir without a warm translated-shader cache: use the main one
     if (-not (Test-Path "$src\nvn_cache") -and (Test-Path $warm)) { robocopy $warm "$runDir\nvn_cache" /MIR /MT:16 /NFL /NDL /NJH /NJS /NP | Out-Null }
     if (Test-Path "$src\nvn_cache") { robocopy "$src\nvn_cache" "$runDir\nvn_cache" /MIR /MT:16 /NFL /NDL /NJH /NJS /NP | Out-Null }
@@ -103,7 +103,7 @@ try {
     $env:SNAP_SHADERCACHE_DIR = $scd
     # Test runs never touch the player's save (%APPDATA%\SnapRecomp\save): per-slot build\runs\slot<N>\save, wiped per run unless -KeepSave.
     $testSave = Join-Path $runDir 'save'
-    if (-not $KeepSave -and (Test-Path $testSave)) { Remove-Item -Recurse -Force $testSave -ErrorAction SilentlyContinue }
+    if (-not $KeepSave -and (Test-Path $testSave)) { Remove-TreeSafe $testSave }
     New-Item -ItemType Directory -Force $testSave | Out-Null
     if ($SaveFixture) {
         $fx = Join-Path $root "build\fixtures\saves\$SaveFixture"
@@ -154,11 +154,11 @@ try {
             $gen = if ($lines.Count -ge 2 -and $lines[0] -eq 'SNAPSAVE1') { $lines[1].Trim() } else { '' }
             $gens = Join-Path $_.DirectoryName 'gens'
             if ($gen -and (Test-Path (Join-Path $gens $gen))) {
-                Get-ChildItem $gens -Directory | Where-Object { $_.Name -ne $gen } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+                Get-ChildItem $gens -Directory | Where-Object { $_.Name -ne $gen } | Remove-TreeSafe
             }
         }
         Get-ChildItem (Join-Path $root 'build\runs\saves') -Directory | Sort-Object LastWriteTime -Descending | Select-Object -Skip $(if ($env:SNAP_KEEP_SAVES -match '^\d+$') { [int]$env:SNAP_KEEP_SAVES } else { 5 }) |
-            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-TreeSafe
     }
     # owner 2026-11-12 "keep my drive a little clean": route screenshots in analysis\boot older than 24 h are deleted unless a doc names them
     # (AGENTS.md, host\README.md, docs\*.md, analysis\**\*.md); *_raw dump folders older than 24 h go too. Copy a shot you want to keep
@@ -171,7 +171,7 @@ try {
             $refs = @{}; Select-String -Path $docs -Pattern '[A-Za-z0-9_.-]+\.(png|bmp|jpg)' -AllMatches -ErrorAction SilentlyContinue | ForEach-Object { $_.Matches | ForEach-Object { $refs[$_.Value] = 1 } }
             $old | Where-Object { -not $refs.ContainsKey($_.Name) } | Remove-Item -Force -ErrorAction SilentlyContinue
         }
-        Get-ChildItem $bootDir -Directory -Filter '*_raw' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt $cut } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+        Get-ChildItem $bootDir -Directory -Filter '*_raw' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt $cut } | Remove-TreeSafe
     } catch { Write-Host "screenshot cleanup skipped: $_" }
 } finally {
     if ($p -and -not $p.HasExited) { taskkill /PID $p.Id /T /F | Out-Null }
@@ -182,7 +182,7 @@ if (-not $logGiven -and $err -and (Test-Path $Log)) {   # legacy names = latest 
     Copy-Item $err (Join-Path $bootDir 'boot_stderr.log') -Force -ErrorAction SilentlyContinue
     Copy-Item $so (Join-Path $bootDir 'boot_stdout.log') -Force -ErrorAction SilentlyContinue
 }
-if ($NoLock) { Remove-Item -Recurse -Force $runDir -ErrorAction SilentlyContinue }
+if ($NoLock) { Remove-TreeSafe $runDir }
 if ($Bench) {
     $cacheState = if ($cacheBefore) { $cacheBefore } else { 'unknown' }
     $dirty = [bool](git status --porcelain 2>$null)

@@ -82,7 +82,7 @@ try {
     foreach ($k in $old.Keys) { [Environment]::SetEnvironmentVariable($k, $old[$k]) }
     Remove-Item (Join-Path $root "host\routes\$tmpRoute.txt") -Force -ErrorAction SilentlyContinue
 }
-if ($nlName) { Remove-Item -Recurse -Force (Join-Path $root "build\runs\$nlName") -ErrorAction SilentlyContinue }   # the private scratch copy of the exe
+if ($nlName) { Remove-TreeSafe (Join-Path $root "build\runs\$nlName") }   # the private scratch copy of the exe
 if (-not $runId -or -not (Test-Path $result)) {
     Write-Host "ab_capture: the run produced no result file (run $runId, exit $bootExit); see $log and analysis\boot\runs\$runId\boot_stderr.log"
     exit 20

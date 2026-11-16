@@ -13,6 +13,7 @@ from pathlib import Path
 from . import cache as gcache, ghidra_maps, nso as nsomod, patches as gpatches, toolchain
 from . import versioncheck as vc
 from .util import BELOW_NORMAL, CREATE_NO_WINDOW, Stamps, StepError, files_digest, run, sha256_file, sha256_text
+from . import safedel
 
 REPO = Path(__file__).resolve().parents[2]   # builder/snapbuild/pipeline.py -> repo root (same layout in the release zip)
 BUILDER = REPO / 'builder'
@@ -322,7 +323,7 @@ def build(opt, log):
     build_id = time.strftime('%Y%m%d-%H%M%S') + '-' + link_key[:8]
     stage = builds / build_id
     builds.mkdir(exist_ok=True)
-    shutil.rmtree(stage, ignore_errors=True)
+    safedel.rmtree(stage, ignore_errors=True)
     stage.mkdir()
     exe = stage / 'SnapRecomp.exe'
     shutil.copyfile(exe_link, exe)
@@ -460,7 +461,7 @@ def promote(work, stage, build_id, log):
     prev = builds / 'previous'
     try:
         if out.exists():
-            shutil.rmtree(prev, ignore_errors=True)
+            safedel.rmtree(prev, ignore_errors=True)
             _replace_retry(out, prev)
         _replace_retry(stage, out)
     except OSError as e:
@@ -470,7 +471,7 @@ def promote(work, stage, build_id, log):
                         f'the new build is in {stage}.')
     for d in builds.iterdir():   # nothing but the previous build stays
         if d.name not in KEEP_BUILDS and d.is_dir():
-            shutil.rmtree(d, ignore_errors=True)
+            safedel.rmtree(d, ignore_errors=True)
     (work / 'current.json').write_text(json.dumps({'build': build_id, 'out': str(out), 'previous': str(prev) if prev.exists() else None,
                                                    'switched': time.strftime('%Y-%m-%d %H:%M:%S')}, indent=1), encoding='utf-8')
     log.write(f'switched {out} to build {build_id}' + (f' (the earlier build is in {prev})' if prev.exists() else ''))
@@ -505,7 +506,7 @@ def start_prepare_shaders(exe, log):
 def smoke(opt, exe, cfg, work, table, log):
     """Start the exe on a scratch profile, wait for the title screen marker, stop it. Returns (reached, message)."""
     sm = work / 'smoke'
-    shutil.rmtree(sm / 'localappdata', ignore_errors=True)   # a fresh %LOCALAPPDATA%: the first launch must translate shaders itself
+    safedel.rmtree(sm / 'localappdata', ignore_errors=True)   # a fresh %LOCALAPPDATA%: the first launch must translate shaders itself
     for sub in ('save', 'mods', 'shadercache', 'localappdata', 'appdata'):
         (sm / sub).mkdir(parents=True, exist_ok=True)
     trace = sm / 'trace.log'

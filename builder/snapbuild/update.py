@@ -31,6 +31,7 @@ from pathlib import Path
 
 from . import ed25519
 from .util import BELOW_NORMAL, Log, StepError
+from . import safedel
 
 RELEASES_URL = 'https://api.github.com/repos/finalpantasy/new-poke-snap-switch-recomp/releases/latest'
 USER_AGENT = 'SnapRecompUpdater'
@@ -466,7 +467,7 @@ def unpack(zpath, dest, version):
     if dest.exists():
         raise UpdateError(f'{dest} already exists')
     part = dest.with_name(dest.name + '.part')
-    shutil.rmtree(part, ignore_errors=True)
+    safedel.rmtree(part, ignore_errors=True)
     try:
         with zipfile.ZipFile(zpath) as z:
             infos = z.infolist()
@@ -503,7 +504,7 @@ def unpack(zpath, dest, version):
             raise UpdateError(f'builder/VERSION in the zip does not say {version}')
         os.replace(part, dest)
     except BaseException:
-        shutil.rmtree(part, ignore_errors=True)
+        safedel.rmtree(part, ignore_errors=True)
         raise
     return dest
 
@@ -563,8 +564,8 @@ def prune(state_dir, keep_dirs):
     if vd.exists():
         for d in vd.iterdir():
             if d.is_dir() and str(d.resolve()).lower() not in keep:
-                shutil.rmtree(d, ignore_errors=True)
-    shutil.rmtree(sd / 'downloads', ignore_errors=True)
+                safedel.rmtree(d, ignore_errors=True)
+    safedel.rmtree(sd / 'downloads', ignore_errors=True)
 
 
 def apply(builder_dir, work, state_dir, url=None, log=None, run=None, progress=None, confirm=None, wait_pid=None):
@@ -594,13 +595,13 @@ def apply(builder_dir, work, state_dir, url=None, log=None, run=None, progress=N
         log.write(f'signature ok for version {version}')
         vdir = state_dir / 'versions' / version
         if vdir.exists():
-            shutil.rmtree(vdir)
+            safedel.rmtree(vdir)
         unpack(zpath, vdir, version)
         zpath.unlink(missing_ok=True)
         cmd, _ = build_command(vdir / 'builder', last)
         code = run(cmd, log)
         if code != 0:
-            shutil.rmtree(vdir, ignore_errors=True)
+            safedel.rmtree(vdir, ignore_errors=True)
             prune(state_dir, [builder_dir])
             raise UpdateError(f'the rebuild with version {version} failed (exit code {code}). Your current game build was left exactly as it was. '
                               f'Details: {work / "builder.log"}')
@@ -633,7 +634,7 @@ def rollback(work, state_dir, log=None, wait_pid=None):
     if not (out / 'SnapRecomp.exe').exists():
         raise UpdateError(f'{out} has no build to swap with')
     with Lock(state_dir):
-        shutil.rmtree(tmp, ignore_errors=True)
+        safedel.rmtree(tmp, ignore_errors=True)
         try:
             _replace_retry(out, tmp)
             try:

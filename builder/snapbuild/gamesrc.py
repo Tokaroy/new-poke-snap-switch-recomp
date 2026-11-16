@@ -23,6 +23,7 @@ from pathlib import Path
 
 from . import containers
 from .util import StepError
+from . import safedel
 
 BASE_TITLE = '0100f4300bf2c000'
 PATCH_TITLE = '0100f4300bf2c800'
@@ -311,7 +312,7 @@ def identify(dump, nstool, scratch, say=print):
             nca = containers.copy_member(dump.path, off, size, work / name, check_free=False)
             part0 = work / (name + '.d')
             if part0.exists():
-                shutil.rmtree(part0, ignore_errors=True)
+                safedel.rmtree(part0, ignore_errors=True)
             args = (['--tik', tik_path] if tik_path else []) + ['--part0', part0, nca]
             rc, out = nstool.run(args)
             cn = next(part0.glob('*.cnmt'), None) if part0.exists() else None
@@ -326,7 +327,7 @@ def identify(dump, nstool, scratch, say=print):
                 info['tik'] = tik
                 dump.titles.append(info)
     finally:
-        shutil.rmtree(work, ignore_errors=True)
+        safedel.rmtree(work, ignore_errors=True)
     if dump.titles:
         dump.error = None
     return dump
@@ -452,7 +453,7 @@ def extract(plan, nstool, game_dir, say=print, progress=None, keep_scratch=False
 
     game_dir.mkdir(parents=True, exist_ok=True)
     if scratch.exists():
-        shutil.rmtree(scratch, ignore_errors=True)
+        safedel.rmtree(scratch, ignore_errors=True)
     scratch.mkdir()
     try:
         # 1. the update's program NCA (1.5 GB) and its ticket
@@ -467,7 +468,7 @@ def extract(plan, nstool, game_dir, say=print, progress=None, keep_scratch=False
         # 2. main and sdk
         say('Reading main and sdk ...')
         if exefs.exists():
-            shutil.rmtree(exefs, ignore_errors=True)
+            safedel.rmtree(exefs, ignore_errors=True)
         rc, out = nstool.run(targs + ['--part0', exefs, pnca])
         if not ((exefs / 'main').exists() and (exefs / 'sdk').exists()):
             raise StepError(KEY_ERROR if key_problem(out) else 'main and sdk could not be read from the update file (' + scrub(out, 160) + ').')
@@ -479,17 +480,17 @@ def extract(plan, nstool, game_dir, say=print, progress=None, keep_scratch=False
         # 4. the patched RomFS (6.8 GB)
         say('Extracting the game data (romfs) ...')
         if romfs_tmp.exists():
-            shutil.rmtree(romfs_tmp, ignore_errors=True)
+            safedel.rmtree(romfs_tmp, ignore_errors=True)
         rc, out = nstool.run(targs + ['--basenca', bnca, '--part1', romfs_tmp, pnca], timeout=7200)
         if not romfs_tmp.is_dir() or not any(romfs_tmp.iterdir()):
             raise StepError(KEY_ERROR if key_problem(out) else 'the game data (romfs) could not be extracted (' + scrub(out, 160) + ').')
         if romfs.exists():
-            shutil.rmtree(romfs, ignore_errors=True)
+            safedel.rmtree(romfs, ignore_errors=True)
         os.replace(romfs_tmp, romfs)
         prog('romfs', 1)
     finally:
         if not keep_scratch:
-            shutil.rmtree(scratch, ignore_errors=True)
+            safedel.rmtree(scratch, ignore_errors=True)
     info = {'main': str(exefs / 'main'), 'sdk': str(exefs / 'sdk'), 'romfs': str(romfs), 'hashes': hashes,
             'update_version': patch_t['version'], 'base_version': base_t['version']}
     done_marker.write_text(json.dumps(info, indent=1), encoding='utf-8')

@@ -14,6 +14,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'builder'))
+from snapbuild import safedel  # noqa: E402
 
 
 def main():
@@ -24,7 +26,7 @@ def main():
     a = ap.parse_args()
     src = ROOT / 'scripts' / 'shader_harness'
     if a.work.exists():
-        shutil.rmtree(a.work)
+        safedel.rmtree(a.work)
     a.work.mkdir(parents=True)
     for f in ('Program.cs', 'Directory.Packages.props'):
         shutil.copyfile(src / f, a.work / f)
@@ -34,7 +36,7 @@ def main():
     (a.work / 'ShaderHarness.csproj').write_text('\n'.join(keep), encoding='utf-8')
     dest = a.out / 'shader_harness'
     if dest.exists():
-        shutil.rmtree(dest)
+        safedel.rmtree(dest)
     cmd = ['dotnet', 'publish', str(a.work / 'ShaderHarness.csproj'), '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true',
            '-p:PublishSingleFile=false', '-p:DebugType=none', '-p:DebugSymbols=false', '-p:RyujinxDir=' + str(a.ryujinx),
            '-o', str(dest), '--nologo', '-v', 'q']

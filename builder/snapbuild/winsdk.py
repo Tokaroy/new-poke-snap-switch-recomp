@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 from .util import StepError
+from . import safedel
 
 LICENSE_URL = 'https://go.microsoft.com/fwlink/?LinkId=2086102'   # the license xwin asks about (Visual Studio / Windows SDK terms)
 RECEIPT = 'winsdk.json'
@@ -95,7 +96,7 @@ def install(xwin_exe, tools_dir, accepted, say=print, cache_dir=None, timeout=36
 
 def _rmtree(p):
     import shutil
-    shutil.rmtree(p, ignore_errors=True)
+    safedel.rmtree(p, ignore_errors=True)
 
 
 def vs_available():

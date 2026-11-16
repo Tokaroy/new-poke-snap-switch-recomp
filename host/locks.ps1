@@ -1,6 +1,7 @@
 # Dot-source: . host\locks.ps1 (caller may set $script:LockRoot for isolated tests).
 # Format: "<owner> pid=<pid> <MM/dd/yyyy HH:mm:ss> <what>"; CreateNew is atomic.
 # Stale = dead PID or older than 20 minutes; unfinished files get 12 seconds.
+. (Join-Path $PSScriptRoot 'safe_rm.ps1')   # Remove-TreeSafe: the delete that never follows a junction
 if (-not $script:LockRoot) { $script:LockRoot = if ($root) { "$root" } else { (Resolve-Path (Join-Path $PSScriptRoot '..')).Path } }
 $script:LockMax = 4
 $script:LockPhys = 8   # physical run slots run0..run7; build\slots\max.txt caps how many are open (default 4)

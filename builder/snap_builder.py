@@ -13,6 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from snapbuild import fetch, pipeline, pyenv, versioncheck  # noqa: E402
 from snapbuild.util import Log, StepError  # noqa: E402
+from snapbuild import safedel  # noqa: E402
 
 
 def add_inputs(ap):
@@ -218,7 +219,7 @@ def main(argv=None):
             if a.yes:
                 ask = lambda q: (print(q + ' (answer needed: pass --accept-license <name> to accept)'), False)[1]
             res = up.run(table, names, inst, inst / 'downloads', set(a.accept_license), ask, show_license=show)
-            shutil.rmtree(inst / 'downloads', ignore_errors=True)
+            safedel.rmtree(inst / 'downloads', ignore_errors=True)
         except fetch.FetchError as e:
             print('Stopped: ' + str(e))
             return 1

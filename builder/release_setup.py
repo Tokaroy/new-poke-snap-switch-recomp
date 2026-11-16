@@ -28,6 +28,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'builder'))
 import release_package  # noqa: E402
 from snapbuild import fetch, winsdk  # noqa: E402
+from snapbuild import safedel  # noqa: E402
 
 MAGIC = b'SNPSET01'
 
@@ -121,7 +122,7 @@ def main():
             f.write(struct.pack('<Q', len(payload)) + MAGIC)
         tmp.replace(final)
     finally:
-        shutil.rmtree(work, ignore_errors=True)
+        safedel.rmtree(work, ignore_errors=True)
     h = hashlib.sha256(final.read_bytes()).hexdigest()
     print(f'{final} {final.stat().st_size / 1e6:.1f} MB sha256 {h}')
     cmd = [sys.executable, '-I', str(ROOT / 'builder' / 'leak_scan.py'), str(scanned), '--strip-prefix', 'prebuilt/',

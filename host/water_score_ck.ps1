@@ -5,6 +5,7 @@
 param([string]$BuildDir = '')
 $root = Resolve-Path (Join-Path $PSScriptRoot '..')
 Set-Location $root
+. (Join-Path $PSScriptRoot 'safe_rm.ps1')
 $ctl = Join-Path $root ('build\w\ctl_ck_' + $PID)
 New-Item -ItemType Directory -Force $ctl | Out-Null
 $env:SNAP_DEV = '1'; $env:SNAP_DEV_CTL = $ctl; $env:SNAP_NEO_SPEED = '3'
@@ -34,4 +35,4 @@ while (-not $p.HasExited) {
     }
 }
 "exit code $($p.ExitCode)"
-Remove-Item $ctl -Recurse -Force -ErrorAction SilentlyContinue
+Remove-TreeSafe $ctl

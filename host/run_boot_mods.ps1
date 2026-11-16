@@ -64,7 +64,7 @@ try {
     elseif ($dumpOn) {
         # NVN_FRAME_DUMP works on the hidden desktop (the desktop capture SNAP_SHOT only sees black there); half-size BMPs
         $rawDir = "${shotBase}_raw"
-        if (Test-Path $rawDir) { Remove-Item -Recurse -Force $rawDir }
+        if (Test-Path $rawDir) { Remove-TreeSafe $rawDir }
         New-Item -ItemType Directory -Force $rawDir | Out-Null
         $env:NVN_FRAME_DUMP = $rawDir; $env:NVN_FRAME_DUMP_FROM = [string]$ShotAt; $env:NVN_FRAME_DUMP_EVERY = [string]$ShotEvery; $env:NVN_FRAME_DUMP_MAX = [string]$ShotMax
     }
@@ -91,7 +91,7 @@ try {
     $env:SNAP_SHADERCACHE_DIR = $scd
     # Test runs never touch the player's save (%APPDATA%\SnapRecomp\save): per-slot build\runs\slot<N>\save, wiped per run unless -KeepSave.
     $testSave = Join-Path $runDir 'save'
-    if (-not $KeepSave -and (Test-Path $testSave)) { Remove-Item -Recurse -Force $testSave -ErrorAction SilentlyContinue }
+    if (-not $KeepSave -and (Test-Path $testSave)) { Remove-TreeSafe $testSave }
     New-Item -ItemType Directory -Force $testSave | Out-Null
     if ($SaveFixture) {
         $fx = Join-Path $root "build\fixtures\saves\$SaveFixture"
@@ -134,7 +134,7 @@ if (-not $logGiven -and $err -and (Test-Path $Log)) {   # legacy names = latest 
     Copy-Item $err (Join-Path $bootDir 'boot_stderr.log') -Force -ErrorAction SilentlyContinue
     Copy-Item $so (Join-Path $bootDir 'boot_stdout.log') -Force -ErrorAction SilentlyContinue
 }
-if ($NoLock) { Remove-Item -Recurse -Force $runDir -ErrorAction SilentlyContinue }
+if ($NoLock) { Remove-TreeSafe $runDir }
 if ($Bench) {
     $cacheState = if ($cacheBefore) { $cacheBefore } else { 'unknown' }
     $dirty = [bool](git status --porcelain 2>$null)

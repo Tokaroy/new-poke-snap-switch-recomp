@@ -21,6 +21,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'recomp'))
+sys.path.insert(0, str(ROOT / 'builder'))
+from snapbuild import safedel  # noqa: E402
 LLVM = ROOT / 'tools' / 'llvm' / 'bin'
 SDL = ROOT / 'tools' / 'dl_sdl3' / 'x' / 'SDL3-3.4.20'
 HEADERS = ('cpu.h', 'simd.h', 'simd_fp.h')
@@ -68,7 +70,7 @@ def main():
 
     out = a.out
     if out.exists():
-        shutil.rmtree(out)
+        safedel.rmtree(out)
     for d in ('obj', 'include', 'lib', 'bin', 'res', 'licenses'):
         (out / d).mkdir(parents=True)
     shutil.copyfile(ROOT / 'LICENSE', out / 'licenses' / 'SnapRecomp-LICENSE.txt')

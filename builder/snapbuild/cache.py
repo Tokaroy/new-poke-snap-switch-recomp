@@ -9,6 +9,7 @@ import shutil
 import stat
 import time
 from pathlib import Path
+from . import safedel
 
 MARKER = 'SNAPRECOMP_CACHE_ROOT'
 KEEP = 2
@@ -93,7 +94,7 @@ def restore(root, kind, key, dst):
         return False
     dst = Path(dst)
     if dst.exists():
-        shutil.rmtree(dst)
+        safedel.rmtree(dst)
     shutil.copytree(e, dst)
     (dst / '.complete').unlink(missing_ok=True)
     os.utime(e / '.complete', None)  # most recently used
@@ -107,7 +108,7 @@ def _rmtree(root, folder):
         raise CacheError('refusing to delete outside a marked cache root')
     if _is_reparse(folder) or root not in folder.resolve().parents:
         raise CacheError(f'refusing to delete {folder}')
-    shutil.rmtree(folder)
+    safedel.rmtree(folder)
 
 
 def evict(root, kind, keep_key=None, keep=KEEP, cap=CAP_BYTES):

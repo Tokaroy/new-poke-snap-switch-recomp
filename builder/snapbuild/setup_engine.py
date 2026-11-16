@@ -27,6 +27,7 @@ from pathlib import Path
 
 from . import fetch, gamesrc, pipeline, pyenv, toolchain, versioncheck as vc, winsdk
 from .util import Log, StepError
+from . import safedel
 
 GB = 1 << 30
 MB = 1 << 20
@@ -313,7 +314,7 @@ def _scan_folder(folder, keys=None, nstool_exe=None, table=None, cfg=None):
         try:
             gamesrc.identify_all(sc, ns, scratch, say=lambda m: None)
         finally:
-            shutil.rmtree(scratch, ignore_errors=True)
+            safedel.rmtree(scratch, ignore_errors=True)
         out['dumps'] = [{'name': d.path.name, 'size': d.size, 'titles': [{'title': t['title_id'], 'version': t['version'],
                                                                          'version_name': gamesrc.version_name(t['version'])} for t in d.titles],
                          'error': d.error} for d in sc.dumps]
@@ -396,7 +397,7 @@ def ensure_python(cfg, table, say):
     if py.exists() and pyenv.import_ok(py):
         return py
     dl = tools_dir / 'downloads'
-    shutil.rmtree(tools_dir / 'python', ignore_errors=True)
+    safedel.rmtree(tools_dir / 'python', ignore_errors=True)
     return pyenv.build_embedded(table, tools_dir / 'python', dl, dl, lambda q: bool(cfg.get('downloads_ok')) or _all_local(cfg, table),
                                 cfg.get('offline_dirs') or [], say=say)
 
@@ -511,7 +512,7 @@ def uninstall(remove_tools=False, remove_saves=False, ev=None):
         p = Path(p)
         if not p.exists():
             return
-        shutil.rmtree(p, ignore_errors=True)
+        safedel.rmtree(p, ignore_errors=True)
         if p.exists():
             left.append(str(p))
         else:
@@ -660,7 +661,7 @@ def run(cfg, ev, opener=None):
             try:
                 gamesrc.identify_all(sc, ns, scratch, say=say)
             finally:
-                shutil.rmtree(scratch, ignore_errors=True)
+                safedel.rmtree(scratch, ignore_errors=True)
             plan = gamesrc.pick(sc)
             say(f'Using {plan.patch[0].path.name} (version {gamesrc.version_name(plan.patch[1]["version"])}) with {plan.base[0].path.name}.')
             if already:
