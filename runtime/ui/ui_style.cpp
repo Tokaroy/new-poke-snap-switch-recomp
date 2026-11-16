@@ -4,6 +4,7 @@
 #include <cstring>
 
 #include "hle/btn_icons.h"
+#include "ui_i18n.h"
 #include "ui_internal.h"
 
 namespace snap::ui {
@@ -131,7 +132,7 @@ float style_prompt(const char* glyph, const char* label) {
   ImGui::Dummy(ImVec2(w, ImGui::GetTextLineHeight()));
   ImGui::SameLine(0, fs * 0.35f);
   ImGui::AlignTextToFramePadding();
-  ImGui::TextColored(t.text_dim, "%s", label);
+  ImGui::TextColored(t.text_dim, "%s", (label && *label) ? tr(label) : label);
   ImGui::SameLine(0, fs * 1.2f);
   return w;
 }

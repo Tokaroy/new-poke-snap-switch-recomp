@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "imgui.h"
+#include "ui_i18n.h"
 #include "ui_internal.h"
 #include "ui_theme.h"
 
@@ -79,7 +80,7 @@ void draw_shiny_fx(ImVec2 size) {
   const float fade = (float)std::clamp(std::min(t / 0.25, (kLen - t) / 0.6), 0.0, 1.0);
   const float slide = (1.0f - std::min(1.0f, (float)t / 0.3f)) * -24.0f * scale;
   ImDrawList* dl = ImGui::GetForegroundDrawList();
-  char text[96]; snprintf(text, sizeof text, "Shiny %s!", sp.empty() ? "Pokemon" : sp.c_str());
+  char text[96]; snprintf(text, sizeof text, tr("Shiny %s!"), sp.empty() ? tr("Pokemon") : sp.c_str());
   const ImVec2 ts = ImGui::CalcTextSize(text);
   const float padx = 26.0f * scale, h = ts.y + 18.0f * scale, w = ts.x + padx * 2 + 34.0f * scale;
   const ImVec2 p0(size.x * 0.5f - w * 0.5f, size.y * 0.13f + slide), p1(p0.x + w, p0.y + h);

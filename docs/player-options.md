@@ -19,6 +19,8 @@ These are the languages the game ships text for (ten `TextResource_*` packs unde
 
 The game's own voice language is a separate row in the game's Options screen (English or Japanese). This row changes text only.
 
+The F1 menu itself follows this row and switches at once when you pick a language (the game's own text still needs the restart). Its text is `runtime/ui/ui_i18n_table.cpp`: one row per English text with French, German, Spanish, Italian, Japanese, Korean and both Chinese scripts; a text with no row shows in English. The game's UI font has Hangul and most kana but only part of the accented Latin letters and the kanji, so the menu merges Windows system fonts for the rest (Segoe UI, Yu Gothic, Malgun Gothic, Microsoft YaHei, Microsoft JhengHei); nothing is shipped, and a missing system font shows boxes for the characters it would have drawn. `python -I tests/hle/ui_i18n_check.py` checks the table; `tests/hle/ui_f1_lang_script.txt` shows every page in Japanese and German and ends with `expect_i18n`.
+
 ## Problem report
 
 One zip, made on the player's PC, saved to the Desktop as `SnapRecomp-problem-report-<date>-<time>.zip` (or into `SNAP_REPORT_DIR`). It is never uploaded. The player attaches it to a bug report.

@@ -7,6 +7,7 @@
 //   <t> press <key:P|pad:east|mouse:left|...> <seconds> hold a source down through the input hub
 //   <t> expect_button <A|ZL|...> <0|1>                  the bit the game reads from npad 0
 //   <t> expect_preview <A|...> <0|1>                    the mapped state while the menu hides input from the game
+//   <t> ui_lang <tag|auto>, i18n_collect <0|1>, expect_i18n   menu language override and "every text is translated" check (ui_i18n.cpp)
 //   <t> expect_open <0|1> / expect_rebinding <0|1> / expect_tab <Name_with_underscores>
 //   <t> expect_bind <A|...> <kb|mouse|pad> <slot> <src|none>
 //   <t> shot <file.bmp>             copy the window client area from the screen (needs a visible window)
@@ -30,6 +31,7 @@
 #include "hle/hle.h"
 #include "hle/input_core.h"
 #include "hle/profiles.h"
+#include "ui_i18n.h"
 #include "ui_internal.h"
 
 namespace snap::ui {
@@ -231,6 +233,24 @@ void run(const std::string& line, double t) {
     int want = 1;
     is >> want;
     check(menu_page_cursor() == (want != 0), "page cursor == " + std::to_string(want) + " (" + menu_nav_debug() + ")");
+  } else if (cmd == "ui_lang") {   // ui_lang <ja|de|...|auto>: draw the menu in that language until changed (the setting itself is not touched)
+    std::string tag;
+    is >> tag;
+    check(i18n_force(tag == "auto" ? std::string() : tag), "menu language " + tag);
+  } else if (cmd == "i18n_collect") {   // i18n_collect <0|1>: remember every text the menu asks tr() for (use before visiting the pages)
+    int on = 1;
+    is >> on;
+    i18n_collect(on != 0);
+    if (on) i18n_collect_reset();
+  } else if (cmd == "expect_i18n") {   // every text asked for since i18n_collect 1 has a line in every language
+    std::string rep;
+    const size_t bad = i18n_check(&rep);
+    for (size_t p = 0; p < rep.size();) {   // one log line per problem (out() has a small buffer)
+      const size_t q = rep.find('\n', p);
+      out("i18n: %s", rep.substr(p, q == std::string::npos ? std::string::npos : q - p).c_str());
+      p = q == std::string::npos ? rep.size() : q + 1;
+    }
+    check(bad == 0, "menu texts translated (" + std::to_string(bad) + " problems)");
   } else if (cmd == "expect_rebinding") {
     int want = 1;
     is >> want;

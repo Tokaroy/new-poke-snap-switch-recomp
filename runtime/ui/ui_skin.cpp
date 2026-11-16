@@ -13,6 +13,7 @@
 #include "hle/input_core.h"
 #include "imgui_internal.h"   // ImGuiItemFlags_NoNav on the tab strip and tags (L / R switch pages; the d-pad belongs to the rows)
 #include "ui_internal.h"
+#include "ui_i18n.h"
 #include "ui_theme.h"
 
 namespace snap::ui {
@@ -480,7 +481,7 @@ bool skin_bar_prompts(ImVec2 r_min, ImVec2 r_max, bool back, const char* status,
     dl->AddLine(ImVec2(a.x - h * 0.16f, a.y), ImVec2(a.x + h * 0.14f, a.y), skin_col(p.tag_inner), std::max(1.5f, h * 0.09f));
     dl->AddTriangleFilled(ImVec2(a.x - h * 0.28f, a.y), ImVec2(a.x - h * 0.10f, a.y - h * 0.13f), ImVec2(a.x - h * 0.10f, a.y + h * 0.13f), skin_col(p.tag_inner));
   }
-  const char* label = "Back";
+  const char* label = tr("Back");
   const ImVec2 ts = ImGui::CalcTextSize(label);
   dl->AddText(ImVec2(o.x - ts.x - px(10), o.y + (h - ts.y) * 0.5f), skin_col(p.bar_text), label);
   if (status && *status) {

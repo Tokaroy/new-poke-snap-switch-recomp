@@ -27,6 +27,7 @@
 #include "imgui_impl_vulkan.h"
 #include "imgui_impl_win32.h"
 #include "ui_font.h"
+#include "ui_i18n.h"
 #include "ui_internal.h"
 #include "ui_present.h"
 #include "ui_theme.h"
@@ -240,6 +241,44 @@ void apply_style(float scale) {
   g.applied_scale = scale;
 }
 
+// Fallback fonts for the glyphs the base font lacks. The game's own UI font has full Hangul and most kana, but only part of the accented Latin letters
+// and of the kanji / hanzi, so the menu in French, German, Spanish, Italian, Japanese, Korean or Chinese needs a second source. System files from the
+// Windows fonts folder, never shipped or copied. Added when the menu language first needs them (ImGui merges fonts at run time and bakes glyphs on demand).
+bool g_font_explicit = true;   // the base font was added with an explicit size (a merged font then needs one too)
+unsigned g_font_done = 0;      // bit 0: Latin letters (Segoe UI), bit 1 + language: the file that covers that language's script
+
+void merge_system_font(const char* file, int face, float em_scale) {   // em_scale: the game font draws a bigger letter for the same size than these
+  const char* root = std::getenv("SystemRoot");
+  if (!root) return;
+  const std::string path = std::string(root) + "\\Fonts\\" + file;
+  if (GetFileAttributesA(path.c_str()) == INVALID_FILE_ATTRIBUTES) { hle::log("ui: fallback font %s not found (some characters will show as boxes)", file); return; }
+  ImFontConfig fc;
+  fc.MergeMode = true;
+  fc.FontNo = face;
+  fc.ExtraSizeScale = em_scale;
+  ImGui::GetIO().Fonts->AddFontFromFileTTF(path.c_str(), g_font_explicit ? theme().font_px : 0.0f, &fc);
+  hle::log("ui: merged fallback font %s", file);
+}
+
+// Called with the ImGui lock held before every frame: cheap once everything the language needs is in.
+void ensure_fallback_fonts(bool base_is_game_font) {
+  if (!(g_font_done & 1u)) {
+    g_font_done |= 1u;
+    if (base_is_game_font) merge_system_font("segoeui.ttf", 0, 1.33f);   // accented Latin letters the game font does not have
+  }
+  const int lang = i18n_lang();
+  if (!i18n_is_cjk(lang) || (g_font_done & (2u << lang))) return;
+  g_font_done |= 2u << lang;
+  switch (lang) {
+    case kLangJa: merge_system_font("YuGothM.ttc", 0, 1.10f); break;
+    case kLangKo: merge_system_font("malgun.ttf", 0, 1.33f); break;
+    case kLangZhHans: merge_system_font("msyh.ttc", 0, 1.32f); break;
+    case kLangZhHant: merge_system_font("msjh.ttc", 0, 1.33f); break;
+    default: break;
+  }
+}
+bool g_base_game_font = false;
+
 bool init_imgui(const SnapUiFrame* f) {
   if (g.failed) return false;
   if (g.imgui_ready.load()) return g.format == f->format;   // a format change after init is not supported: no overlay then
@@ -282,8 +321,10 @@ bool init_imgui(const SnapUiFrame* f) {
     if (game_font_ttf(game_font)) {
       ImFontConfig fc;
       fc.FontDataOwnedByAtlas = false;
+      static const ImWchar g_font_blank_ranges[] = {0xA0, 0xFF, 0x30FC, 0x30FC, 0};   // the accented Latin letters are tiny here and the long-vowel mark is empty: the merged system fonts draw them
+      fc.GlyphExcludeRanges = g_font_blank_ranges;
       font_ok = io.Fonts->AddFontFromMemoryTTF(game_font.data(), (int)game_font.size(), theme().font_px, &fc) != nullptr;
-      if (font_ok) hle::log("ui: using the game's UI font (%s) decoded from the extracted files", game_font_family());
+      if (font_ok) { g_base_game_font = true; hle::log("ui: using the game's UI font (%s) decoded from the extracted files", game_font_family()); }
     }
   }
   if (!font_ok)
@@ -291,7 +332,8 @@ bool init_imgui(const SnapUiFrame* f) {
     std::string path = std::string(root) + "\\Fonts\\" + theme().font_file;
     if (GetFileAttributesA(path.c_str()) != INVALID_FILE_ATTRIBUTES) font_ok = io.Fonts->AddFontFromFileTTF(path.c_str(), theme().font_px) != nullptr;
   }
-  if (!font_ok) io.Fonts->AddFontDefaultVector();
+  if (!font_ok) { io.Fonts->AddFontDefaultVector(); g_font_explicit = false; }
+  ensure_fallback_fonts(g_base_game_font);
   apply_style(1.0f);
   g.imgui_ready = true;
   hle::log("ui: ImGui %s ready, swapchain format %d%s", IMGUI_VERSION, (int)f->format, g.srgb ? " (sRGB, colors pre-converted)" : "");
@@ -460,6 +502,7 @@ static void ui_present_impl(const SnapUiFrame* f) {
     set_high_contrast(acc.contrast != 0);
     const float scale = std::clamp(hubr.mapping().ui_scale, 0.5f, 3.0f) * std::clamp(acc.ui_size, 100, 200) / 100.0f * std::max(0.75f, size.y / 1080.0f);
     if (std::fabs(scale - g.applied_scale) > 0.001f) apply_style(scale);
+    ensure_fallback_fonts(g_base_game_font);   // the menu language can change while the game runs (Game language row)
     ImGui_ImplVulkan_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGuiIO& io = ImGui::GetIO();

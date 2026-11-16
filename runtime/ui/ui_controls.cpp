@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdarg>
 #include <string>
 
 #include "hle/hle.h"
@@ -15,6 +16,7 @@
 #include "imgui_internal.h"   // GImGui: is the pad / keyboard cursor showing
 #include "nvn/nvn_dev.h"
 #include "ui_internal.h"
+#include "ui_i18n.h"
 #include "ui_skin.h"
 #include "ui_theme.h"
 
@@ -54,6 +56,15 @@ struct MenuState {
 // scale a design size (pixels at font 18) with the current font size
 float px(float v) { return v * ImGui::GetFontSize() / theme().font_px; }
 
+std::string sf(const char* f, ...) {   // printf into a std::string (the format is a tr() key)
+  char buf[512];
+  va_list ap;
+  va_start(ap, f);
+  std::vsnprintf(buf, sizeof buf, f, ap);
+  va_end(ap);
+  return buf;
+}
+
 void say(const std::string& s, double secs = 4.0) {
   S.note = s;
   S.note_until = now_s() + secs;
@@ -90,7 +101,7 @@ void resolve_rebind(bool* esc_used) {
     else if (s.kind == Source::KeyboardKey && s.id == key_from_name("Delete")) { clear = true; got = false; }
   } else if (hub().capture_timed_out()) {
     finish_rebind();
-    say("Rebinding timed out. Nothing changed.");
+    say(tr("Rebinding timed out. Nothing changed."));
     return;
   }
   if (!cancel && !clear && !got) return;
@@ -99,13 +110,13 @@ void resolve_rebind(bool* esc_used) {
   if (got) {
     slot_set(v, S.rb.dev, S.rb.slot, s);
     apply();
-    say(std::string(action_label(S.rb.action)) + " (" + device_name(S.rb.dev) + ") = " + source_label(s));
+    say(sf(tr("%s (%s) = %s"), tr(action_label(S.rb.action)), tr(device_name(S.rb.dev)), tr(source_label(s))));
   } else if (clear) {
     slot_clear(v, S.rb.dev, S.rb.slot);
     apply();
-    say(std::string(action_label(S.rb.action)) + " (" + device_name(S.rb.dev) + ") cleared");
+    say(sf(tr("%s (%s) cleared"), tr(action_label(S.rb.action)), tr(device_name(S.rb.dev))));
   } else {
-    say("Rebinding cancelled.");
+    say(tr("Rebinding cancelled."));
   }
   finish_rebind();
 }
@@ -118,9 +129,9 @@ void slot_button(int action, Device dev, int slot) {
   std::vector<int> users;
   if (s.kind != Source::None) users = actions_using(S.edit, s);
   const bool conflict = users.size() > 1;
-  std::string label = listening ? "Press a key..." : s.kind == Source::None ? "-" : source_label(s);
-  if (dev == kDevMouse && listening) label = "Press a button...";
-  if (dev == kDevController && listening) label = "Press a button...";
+  std::string label = listening ? std::string(tr("Press a key...")) : s.kind == Source::None ? std::string("-") : std::string(tr(source_label(s)));
+  if (dev == kDevMouse && listening) label = tr("Press a button...");
+  if (dev == kDevController && listening) label = tr("Press a button...");
   if (conflict && !listening) label = "! " + label;   // a cue besides the color
   int pushed = 0;
   if (listening) { ImGui::PushStyleColor(ImGuiCol_Button, t.slot_listening); ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0, 0, 0, 1)); pushed = 2; }
@@ -131,7 +142,7 @@ void slot_button(int action, Device dev, int slot) {
   const bool glyphed = !listening && s.kind == Source::Pad && style_pad_glyph_width(s.id, gh) > 0.0f;
   ImGui::PushID(action * 16 + (int)dev * 4 + slot);
   if (ImGui::Button(glyphed ? "##pad" : label.c_str(), ImVec2(px(t.slot_w), 0))) {
-    if (listening) { finish_rebind(); say("Rebinding cancelled."); }
+    if (listening) { finish_rebind(); say(tr("Rebinding cancelled.")); }
     else begin_rebind(action, dev, slot);
   }
   if (glyphed) {
@@ -148,16 +159,16 @@ void slot_button(int action, Device dev, int slot) {
       ((hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) || (ImGui::IsItemFocused() && (ImGui::IsKeyPressed(ImGuiKey_Delete, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp, false))))) {
     slot_clear(v, dev, slot);
     apply();
-    say(std::string(action_label(action)) + " (" + device_name(dev) + ") cleared");
+    say(sf(tr("%s (%s) cleared"), tr(action_label(action)), tr(device_name(dev))));
   }
   if (hovered && ImGui::BeginTooltip()) {
     if (conflict) {
       std::string others;
-      for (int a : users) if (a != action) others += std::string(others.empty() ? "" : ", ") + action_label(a);
-      ImGui::TextColored(t.conflict, "Also bound to: %s", others.c_str());
-      ImGui::TextDisabled("Allowed: both actions fire together.");
+      for (int a : users) if (a != action) others += std::string(others.empty() ? "" : ", ") + tr(action_label(a));
+      ImGui::TextColored(t.conflict, tr("Also bound to: %s"), others.c_str());
+      ImGui::TextDisabled("%s", tr("Allowed: both actions fire together."));
     }
-    ImGui::TextDisabled("Click, then press the key, button or axis.\nEsc cancels. Delete or right-click clears.");
+    ImGui::TextDisabled("%s", tr("Click, then press the key, button or axis.\nEsc cancels. Delete or right-click clears."));
     ImGui::EndTooltip();
   }
   ImGui::PopID();
@@ -168,13 +179,13 @@ void slot_button(int action, Device dev, int slot) {
 void desc(const char* text) {
   ImGui::PushStyleColor(ImGuiCol_Text, theme().text_dim);
   ImGui::PushTextWrapPos(0.0f);
-  ImGui::TextUnformatted(text);
+  ImGui::TextUnformatted(tr(text));
   ImGui::PopTextWrapPos();
   ImGui::PopStyleColor();
 }
 
 bool checkbox(const char* label, bool* v, const char* d) {
-  bool ch = ImGui::Checkbox(label, v);
+  bool ch = ImGui::Checkbox((std::string(tr(label)) + "###" + label).c_str(), v);
   if (d) { ImGui::Indent(px(30)); desc(d); ImGui::Unindent(px(30)); }
   ImGui::Spacing();
   return ch;
@@ -182,7 +193,7 @@ bool checkbox(const char* label, bool* v, const char* d) {
 
 bool slider(const char* label, const char* id, float* v, float lo, float hi, const char* fmt, const char* d) {
   ImGui::AlignTextToFramePadding();
-  ImGui::TextUnformatted(label);
+  ImGui::TextUnformatted(tr(label));
   ImGui::SameLine(px(250));
   ImGui::SetNextItemWidth(px(340));
   bool ch = ImGui::SliderFloat(id, v, lo, hi, fmt, ImGuiSliderFlags_AlwaysClamp);
@@ -210,34 +221,54 @@ void stick_plot(const char* id, float x, float y, float dz, float outer) {
   (void)id;
 }
 
+// device 0..2 resets that device's bindings and options, kDevCount resets all three (the buttons ask first; the test script command reset_binds calls it directly)
+void do_reset(int dev) {
+  if (dev == (int)kDevCount) {
+    for (int dv = 0; dv < kDevCount; ++dv) reset_device(S.edit, (Device)dv);
+    apply();
+    say(tr("All controls reset to defaults"));
+  } else {
+    const Device d = (Device)std::clamp(dev, 0, (int)kDevCount - 1);
+    reset_device(S.edit, d);
+    apply();
+    say(sf(tr("%s reset to defaults"), tr(device_name(d))));
+  }
+}
+
 void confirm_reset() {
-  if (S.reset_dev >= 0) ImGui::OpenPopup("Reset to defaults?");
+  if (S.reset_dev >= 0) ImGui::OpenPopup("###resetpop");
   ImVec2 c = ImGui::GetMainViewport()->GetCenter();
   ImGui::SetNextWindowPos(c, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-  if (ImGui::BeginPopupModal("Reset to defaults?", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+  if (ImGui::BeginPopupModal((std::string(tr("Reset to defaults?")) + "###resetpop").c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+    const bool all = S.reset_dev == (int)kDevCount;   // "Reset all controls": keyboard, mouse and controller together
     Device d = (Device)std::clamp(S.reset_dev, 0, (int)kDevCount - 1);
-    ImGui::Text("Reset all %s bindings and options to the defaults?", device_name(d));
-    ImGui::TextDisabled("Other devices keep their settings.");
+    if (all) {
+      ImGui::TextUnformatted(tr("Reset the bindings and options of the keyboard, the mouse and the controller to the defaults?"));
+    } else {
+      ImGui::Text(tr("Reset all %s bindings and options to the defaults?"), tr(device_name(d)));
+      ImGui::TextDisabled("%s", tr("Other devices keep their settings."));
+    }
     ImGui::Spacing();
-    if (ImGui::Button("Reset", ImVec2(px(140), 0))) {
-      reset_device(S.edit, d);
-      apply();
-      say(std::string(device_name(d)) + " reset to defaults");
+    if (ImGui::Button(tr("Reset"), ImVec2(px(140), 0))) {
+      do_reset(S.reset_dev);
       S.reset_dev = -1;
       ImGui::CloseCurrentPopup();
     }
     ImGui::SameLine();
-    if (ImGui::Button("Cancel", ImVec2(px(140), 0))) { S.reset_dev = -1; ImGui::CloseCurrentPopup(); }
+    if (ImGui::Button(tr("Cancel"), ImVec2(px(140), 0))) { S.reset_dev = -1; ImGui::CloseCurrentPopup(); }
     ImGui::SetItemDefaultFocus();
     ImGui::EndPopup();
-  } else if (!ImGui::IsPopupOpen("Reset to defaults?")) {
+  } else if (!ImGui::IsPopupOpen("###resetpop")) {
     S.reset_dev = -1;
   }
 }
 
 void reset_button(Device d) {
-  std::string l = std::string("Reset ") + device_name(d) + " to defaults";
+  std::string l = sf(tr("Reset %s to defaults"), tr(device_name(d)));
   if (ImGui::Button(l.c_str())) S.reset_dev = (int)d;
+}
+void reset_all_button() {
+  if (ImGui::Button(tr("Reset all controls to defaults"))) S.reset_dev = (int)kDevCount;
 }
 
 // ---- tabs ------------------------------------------------------------------------------------------------------------
@@ -258,9 +289,9 @@ void tab_bindings(float footer_h) {
   float h = ImGui::GetContentRegionAvail().y - footer_h;
   if (ImGui::BeginTable("bindings", 7, tf, ImVec2(0, std::max(h, px(120))))) {
     ImGui::TableSetupScrollFreeze(1, 1);
-    ImGui::TableSetupColumn("Switch input", ImGuiTableColumnFlags_WidthFixed, px(t.label_w));
+    ImGui::TableSetupColumn(tr("Switch input"), ImGuiTableColumnFlags_WidthFixed, px(t.label_w));
     const char* heads[6] = {"Keyboard 1", "Keyboard 2", "Mouse 1", "Mouse 2", "Controller 1", "Controller 2"};
-    for (const char* hname : heads) ImGui::TableSetupColumn(hname, ImGuiTableColumnFlags_WidthFixed, px(t.slot_w) + px(8));
+    for (const char* hname : heads) ImGui::TableSetupColumn(tr(hname), ImGuiTableColumnFlags_WidthFixed, px(t.slot_w) + px(8));
     ImGui::TableHeadersRow();
     struct Group { const char* title; int first, count; };
     static const int buttons[] = {kA, kB, kX, kY, kL, kR, kZL, kZR, kPlus, kMinus, kUp, kDown, kLeft, kRight, kStickL, kStickR};
@@ -274,13 +305,13 @@ void tab_bindings(float footer_h) {
     auto section = [&](const char* title) {
       ImGui::TableNextRow();
       ImGui::TableSetColumnIndex(0);
-      ImGui::TextColored(t.title, "%s", title);
+      ImGui::TextColored(t.title, "%s", tr(title));
     };
     auto row = [&](int action) {
       ImGui::TableNextRow();
       ImGui::TableSetColumnIndex(0);
       ImGui::AlignTextToFramePadding();
-      ImGui::TextUnformatted(action_label(action));
+      ImGui::TextUnformatted(tr(action_label(action)));
       int ci = 1;
       for (int d = 0; d < kDevCount; ++d)
         for (int sl = 0; sl < kMaxSlotsPerDevice; ++sl) {
@@ -295,8 +326,27 @@ void tab_bindings(float footer_h) {
     section("Right stick (camera aim)");
     for (int a = 20; a < 24; ++a) row(a);
     ImGui::EndTable();
-    if (conflicts) ImGui::TextColored(t.conflict, "! %d slot%s share a source with another input.", conflicts, conflicts == 1 ? "" : "s");
-    else ImGui::TextDisabled("No conflicts.");
+    if (conflicts) {
+      ImGui::TextColored(t.conflict, conflicts == 1 ? tr("! %d slot shares a source with another input.") : tr("! %d slots share a source with another input."), conflicts);
+      // which sources, and which inputs they drive (first three; hover a marked slot for the rest)
+      std::vector<Source> seen;
+      std::string shared;
+      int listed = 0;
+      for (int a = 0; a < kActionCount && listed < 3; ++a)
+        for (int d = 0; d < kDevCount && listed < 3; ++d)
+          for (int sl = 0; sl < kMaxSlotsPerDevice && listed < 3; ++sl) {
+            const Source s = slot_get(action_sources(S.edit, a), (Device)d, sl);
+            if (s.kind == Source::None || std::find(seen.begin(), seen.end(), s) != seen.end()) continue;
+            const std::vector<int> users = actions_using(S.edit, s);
+            if (users.size() < 2) continue;
+            seen.push_back(s);
+            std::string who;
+            for (int u : users) who += std::string(who.empty() ? "" : ", ") + tr(action_label(u));
+            shared += std::string(shared.empty() ? "" : "   |   ") + tr(source_label(s)) + ": " + who;
+            ++listed;
+          }
+      ImGui::TextColored(t.conflict, "%s", shared.c_str());
+    } else ImGui::TextDisabled("%s", tr("No conflicts."));
   }
 }
 
@@ -316,7 +366,7 @@ void tab_mouse() {
                "How far the stick moves for a given mouse speed. 1.00 reaches full deflection at about 1500 pixels per second.");
   ch |= checkbox("Invert horizontal", &m.mouse_invert_x, "Moving the mouse right turns the camera left.");
   ch |= checkbox("Invert vertical", &m.mouse_invert_y, "Moving the mouse up aims down, like a flight stick.");
-  ch |= slider("Smoothing", "##smooth", &m.mouse_smoothing, 0.0f, 1.0f, m.mouse_smoothing <= 0.001f ? "Off" : "%.2f",
+  ch |= slider("Smoothing", "##smooth", &m.mouse_smoothing, 0.0f, 1.0f, m.mouse_smoothing <= 0.001f ? tr("Off") : "%.2f",
                "Averages the movement over a longer window. Off is the most direct; higher values trade a little lag for steadier aim.");
   ImGui::EndDisabled();
   ImGui::Separator();
@@ -338,12 +388,12 @@ void tab_controller() {
   ImGui::Spacing();
   bool ch = false;
   ImGui::AlignTextToFramePadding();
-  ImGui::TextUnformatted("Face button layout");
+  ImGui::TextUnformatted(tr("Face button layout"));
   int layout = m.face_layout;
   ImGui::SameLine(px(250));
-  if (ImGui::RadioButton("By position (Xbox B = Switch A)", layout == 0)) layout = 0;
+  if (ImGui::RadioButton(tr("By position (Xbox B = Switch A)"), layout == 0)) layout = 0;
   ImGui::SameLine();
-  if (ImGui::RadioButton("Nintendo labels (Xbox A = Switch A)", layout == 1)) layout = 1;
+  if (ImGui::RadioButton(tr("Nintendo labels (Xbox A = Switch A)"), layout == 1)) layout = 1;
   if (layout != m.face_layout) { set_face_layout(m, layout); ch = true; }
   ImGui::Indent(px(30));
   desc("By position puts Switch A on the right-hand face button like a Switch. Nintendo labels match letters instead. Switching swaps the south/east and west/north bindings in place.");
@@ -358,7 +408,7 @@ void tab_controller() {
   for (int i = 0; i < 2; ++i) {
     StickMap& sm = *sticks[i].sm;
     ImGui::PushID(sticks[i].id);
-    ImGui::TextColored(theme().title, "%s", sticks[i].name);
+    ImGui::TextColored(theme().title, "%s", tr(sticks[i].name));
     ImGui::BeginGroup();
     ch |= slider("Dead zone (inner)", "##dz", &sm.deadzone, 0.0f, 0.6f, "%.2f", "Ignores small movements near the center, which stops drift.");
     ch |= slider("Outer dead zone", "##oz", &sm.outer_deadzone, 0.5f, 1.0f, "%.2f", "Reaches full deflection before the stick hits its edge. Lower it if your stick cannot reach 100%.");
@@ -371,7 +421,7 @@ void tab_controller() {
     if (sm.analog == "none") rx = ry = 0;
     ImGui::BeginGroup();
     stick_plot("plot", rx, ry, sm.deadzone, sm.outer_deadzone);
-    ImGui::TextDisabled("live input");
+    ImGui::TextDisabled("%s", tr("live input"));
     ImGui::EndGroup();
     ImGui::Spacing();
     ImGui::PopID();
@@ -380,7 +430,7 @@ void tab_controller() {
   }
   ch |= slider("ZL trigger threshold", "##zl", &m.zl_threshold, 0.05f, 1.0f, "%.2f", "How far the left analog trigger must be pulled to count as pressed.");
   ch |= slider("ZR trigger threshold", "##zr", &m.zr_threshold, 0.05f, 1.0f, "%.2f", "The same for the right trigger.");
-  ImGui::TextDisabled("Live triggers: ZL %.2f   ZR %.2f   (%s)", raw.lt, raw.rt, raw.pad_connected ? "controller connected" : "no controller detected");
+  ImGui::TextDisabled(tr("Live triggers: ZL %.2f   ZR %.2f   (%s)"), raw.lt, raw.rt, raw.pad_connected ? tr("controller connected") : tr("no controller detected"));
   if (ch) apply();
   extras_controller();
 }
@@ -389,14 +439,14 @@ void tab_access() {
   Mapping& m = S.edit;
   desc("Options that make the game and these menus easier to see and use. Every option starts off and applies at once.");
   ImGui::Spacing();
-  ImGui::TextColored(theme().title, "Controls");
+  ImGui::TextColored(theme().title, "%s", tr("Controls"));
   ImGui::Separator();
   ImGui::Spacing();
   bool ch = false;
   ch |= checkbox("ZL: toggle instead of hold", &m.toggle_zl, "One press holds ZL down until the next press, for players who cannot keep a trigger held. Applies to every ZL binding.");
   ch |= checkbox("ZR: toggle instead of hold", &m.toggle_zr, "The same for ZR, the camera shutter in the game.");
   ImGui::AlignTextToFramePadding();
-  ImGui::TextUnformatted("Other buttons that toggle");
+  ImGui::TextUnformatted(tr("Other buttons that toggle"));
   ImGui::SameLine(px(250));
   for (int b : {kA, kB, kX, kY, kL, kR}) {
     bool on = (m.toggle_buttons >> b) & 1u;
@@ -410,7 +460,7 @@ void tab_access() {
   desc("A press holds the button down until the next press, for any button the game wants held (zoom, scan, and so on). SNAP_ACCESS_TOGGLE=ZL,Y does the same from a script.");
   ImGui::Unindent(px(30));
   ImGui::AlignTextToFramePadding();
-  ImGui::TextUnformatted("Menu size (UI scale)");
+  ImGui::TextUnformatted(tr("Menu size (UI scale)"));
   ImGui::SameLine(px(250));
   ImGui::SetNextItemWidth(px(340));
   ImGui::SliderFloat("##uiscale", &S.ui_scale_edit, 0.75f, 2.5f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
@@ -428,9 +478,9 @@ void tab_test() {
   ImGui::Spacing();
   PadSample p = hub().preview();
   RawInput raw = hub().raw();
-  ImGui::Text("Controller: %s    Keyboard focus: %s", raw.pad_connected ? "connected" : "none detected", raw.focused ? "yes" : "no");
+  ImGui::Text(tr("Controller: %s    Keyboard focus: %s"), raw.pad_connected ? tr("connected") : tr("none detected"), raw.focused ? tr("yes") : tr("no"));
   ImGui::Spacing();
-  ImGui::TextColored(t.title, "Buttons");
+  ImGui::TextColored(t.title, "%s", tr("Buttons"));
   static const int order[] = {kA, kB, kX, kY, kL, kR, kZL, kZR, kPlus, kMinus, kUp, kDown, kLeft, kRight, kStickL, kStickR};
   int n = 0;
   for (int b : order) {
@@ -447,7 +497,7 @@ void tab_test() {
     if (++n % 8) ImGui::SameLine();
   }
   ImGui::Spacing();
-  ImGui::TextColored(t.title, "Sticks");
+  ImGui::TextColored(t.title, "%s", tr("Sticks"));
   ImGui::BeginGroup();
   stick_plot("l", p.lx / 32767.0f, p.ly / 32767.0f, 0, 1);
   ImGui::Text("L  %6d %6d", p.lx, p.ly);
@@ -459,12 +509,12 @@ void tab_test() {
   ImGui::EndGroup();
   ImGui::SameLine(0, px(40));
   ImGui::BeginGroup();
-  ImGui::Text("Raw triggers");
+  ImGui::TextUnformatted(tr("Raw triggers"));
   ImGui::ProgressBar(raw.lt, ImVec2(px(180), 0), "LT");
   ImGui::ProgressBar(raw.rt, ImVec2(px(180), 0), "RT");
-  ImGui::Text("Raw mouse speed: %.0f, %.0f px/s", raw.mouse_vx, raw.mouse_vy);
+  ImGui::Text(tr("Raw mouse speed: %.0f, %.0f px/s"), raw.mouse_vx, raw.mouse_vy);
   ImGui::EndGroup();
-  ImGui::TextDisabled("Raw buttons held: %d    keys held: %d    mouse buttons: %d", (int)raw.pad.count(), (int)raw.keys.count(), (int)__builtin_popcount(raw.mouse_buttons));
+  ImGui::TextDisabled(tr("Raw buttons held: %d    keys held: %d    mouse buttons: %d"), (int)raw.pad.count(), (int)raw.keys.count(), (int)__builtin_popcount(raw.mouse_buttons));
 }
 
 }  // namespace
@@ -565,7 +615,7 @@ void draw_menu(ImVec2 size, bool* want_close) {
   {
     const char* names[kTabCount];
     const int n = tab_count();
-    for (int i = 0; i < n; ++i) names[i] = kTabs[i];
+    for (int i = 0; i < n; ++i) names[i] = tr(kTabs[i]);   // drawn text only; kTabs stay the English identities
     const int clicked = skin_tabs(names, n, S.cur_tab, ImGui::GetContentRegionAvail().x);
     if (clicked >= 0) S.cur_tab = clicked;
     ImGui::Dummy(ImVec2(0, px(10)));
@@ -584,10 +634,10 @@ void draw_menu(ImVec2 size, bool* want_close) {
     float mh = ImGui::GetTextLineHeightWithSpacing() * 2.6f;
     if (ImGui::BeginChild("notice", ImVec2(0, mh), ImGuiChildFlags_Borders)) {
       ImGui::PushTextWrapPos(ImGui::GetContentRegionAvail().x - px(110));
-      ImGui::TextColored(msg.find("invalid") != std::string::npos || msg.find("Could not") != std::string::npos ? t.error : t.good, "%s", msg.c_str());
+      ImGui::TextColored(msg.find("invalid") != std::string::npos || msg.find("Could not") != std::string::npos ? t.error : t.good, "%s", tr(msg));
       ImGui::PopTextWrapPos();
       ImGui::SameLine(ImGui::GetWindowWidth() - px(110));
-      if (ImGui::Button("Dismiss")) S.dismissed_serial = serial;
+      if (ImGui::Button(tr("Dismiss"))) S.dismissed_serial = serial;
     }
     ImGui::EndChild();
     ImGui::PopStyleColor();
@@ -632,11 +682,11 @@ void draw_menu(ImVec2 size, bool* want_close) {
     std::string status;
     bool status_good = false;
     if (now < S.note_until) { status = S.note; status_good = true; }
-    else if (S.dirty) status = "Saving...";
-    else if (now < S.saved_flash_until) { status = "Saved"; status_good = true; }
-    else status = "Saved automatically";
+    else if (S.dirty) status = tr("Saving...");
+    else if (now < S.saved_flash_until) { status = tr("Saved"); status_good = true; }
+    else status = tr("Saved automatically");
     ImGui::PushClipRect(wp, ImVec2(wp.x + ws.x, wp.y + ws.y), false);
-    if (!skin_help_pending()) skin_help_set("Game input is paused while this menu is open. F1 or hold Back+Start closes it.", hub().config_path(), false);
+    if (!skin_help_pending()) skin_help_set(tr("Game input is paused while this menu is open. F1 or hold Back+Start closes it."), hub().config_path(), false);
     const ImVec2 bmin(wp.x, wp.y + ws.y - bar_h), bmax(wp.x + ws.x, wp.y + ws.y);
     skin_help_draw(bmin, ws.x, bar_h);
     if (skin_bar_prompts(bmin, bmax, true, status.c_str(), status_good)) *want_close = true;
@@ -661,8 +711,8 @@ bool draw_toast(ImVec2 size, double now) {
   if (ImGui::Begin("##snaptoast", nullptr, wf)) {
     bool bad = msg.find("invalid") != std::string::npos || msg.find("Could not") != std::string::npos;
     ImGui::PushTextWrapPos(0.0f);
-    ImGui::TextColored(bad ? t.error : t.good, "Controls: %s", msg.c_str());
-    ImGui::TextDisabled("Press F1 to open the controls menu.");
+    ImGui::TextColored(bad ? t.error : t.good, tr("Controls: %s"), tr(msg));
+    ImGui::TextDisabled("%s", tr("Press F1 to open the controls menu."));
     ImGui::PopTextWrapPos();
   }
   ImGui::End();

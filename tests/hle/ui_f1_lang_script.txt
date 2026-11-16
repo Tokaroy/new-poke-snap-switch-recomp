@@ -1,0 +1,47 @@
+# F1 menu in other languages (docs/player-options.md, analysis/i18n): every page in Japanese, then German, then the Graphics page in French, Korean,
+# Simplified and Traditional Chinese. Dump frames with NVN_FRAME_DUMP_FROM=27 EVERY=2 MAX=32 (frame k = line k of the walk). The run ends with
+# expect_i18n: every text the menu asked tr() for has a line in every language. Keep the page list in step with kTabs in runtime/ui/ui_controls.cpp.
+24 i18n_collect 1
+25 key F1 1
+25.5 ui_lang ja
+26 expect_open 1
+26 tab Bindings
+28 tab Mouse
+30 tab Controller
+32 tab Accessibility
+34 tab Audio
+36 tab Graphics
+38 tab Display
+40 tab Photos
+42 tab Mods
+44 tab Saves
+46 tab Save_state
+48 tab Cheats
+50 tab Benchmark
+52 tab Test_input
+53.5 ui_lang de
+54 tab Bindings
+56 tab Mouse
+58 tab Controller
+60 tab Accessibility
+62 tab Audio
+64 tab Graphics
+66 tab Display
+68 tab Photos
+70 tab Mods
+72 tab Saves
+74 tab Save_state
+76 tab Cheats
+78 tab Benchmark
+80 tab Test_input
+81.5 ui_lang fr
+82 tab Graphics
+83.5 ui_lang ko
+84 tab Graphics
+85.5 ui_lang zh-hans
+86 tab Graphics
+87.5 ui_lang zh-hant
+88 tab Graphics
+91 expect_i18n
+91 ui_lang auto
+93 quit

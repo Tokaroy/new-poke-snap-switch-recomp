@@ -25,6 +25,7 @@
 #include "hle/profiles.h"
 #include "hle/save_backup.h"
 #include "hle/settings.h"
+#include "ui_i18n.h"
 #include "ui_internal.h"
 
 namespace snap::ui {
@@ -64,6 +65,8 @@ SavesState Z;
 double now_secs() { return ImGui::GetTime(); }
 
 void say(const std::string& m, bool err) { Z.msg = m; Z.msg_err = err; Z.msg_until = now_secs() + 8; }
+// A translated one-placeholder message: key is the whole sentence with one %s.
+void sayf(const char* key, const std::string& a, bool err) { char b[512]; std::snprintf(b, sizeof b, tr(key), a.c_str()); say(b, err); }
 
 std::string find_root() {
   if (pr::active().on) return pr::active().root;
@@ -125,7 +128,11 @@ void pick_folder_async() {
         DWORD fl = 0;
         dlg->GetOptions(&fl);
         dlg->SetOptions(fl | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
-        dlg->SetTitle(L"Choose a save folder to import");
+        const char* ttl = tr("Choose a save folder to import");
+        const int tn = MultiByteToWideChar(CP_UTF8, 0, ttl, -1, nullptr, 0);
+        std::wstring wt((size_t)(tn > 0 ? tn : 1), L'\0');
+        if (tn > 0) MultiByteToWideChar(CP_UTF8, 0, ttl, -1, &wt[0], tn);
+        dlg->SetTitle(wt.c_str());
         if (SUCCEEDED(dlg->Show(nullptr))) {
           IShellItem* it = nullptr;
           if (SUCCEEDED(dlg->GetResult(&it))) {
@@ -157,7 +164,7 @@ const std::wstring g_start_cwd = [] { wchar_t b[MAX_PATH * 2]; DWORD n = GetCurr
 // its play.lock and follows the new process. The new process waits for this one to exit.
 void restart_now(const std::string& profile_name) {
   wchar_t exe[MAX_PATH * 2];
-  if (!GetModuleFileNameW(nullptr, exe, MAX_PATH * 2)) { say("Cannot find the game executable.", true); return; }
+  if (!GetModuleFileNameW(nullptr, exe, MAX_PATH * 2)) { say(tr("Cannot find the game executable."), true); return; }
   std::wstring cmd = GetCommandLineW();
   int n = MultiByteToWideChar(CP_UTF8, 0, profile_name.c_str(), -1, nullptr, 0);
   std::wstring wn((size_t)std::max(n, 1), L'\0');
@@ -188,7 +195,7 @@ void restart_now(const std::string& profile_name) {
   BOOL started = CreateProcessW(exe, &cmd[0], nullptr, nullptr, inherit, CREATE_BREAKAWAY_FROM_JOB, nullptr, cwd, &si, &pi);
   if (!started) started = CreateProcessW(exe, &cmd[0], nullptr, nullptr, inherit, 0, nullptr, cwd, &si, &pi);
   if (!started) {
-    say("Could not start the game again (error " + std::to_string(GetLastError()) + ").", true);
+    { char b[160]; std::snprintf(b, sizeof b, tr("Could not start the game again (error %lu)."), (unsigned long)GetLastError()); say(b, true); }
     return;
   }
   hle::log("ui: restart: relaunched as pid %lu with profile \"%s\"", (unsigned long)pi.dwProcessId, profile_name.c_str());
@@ -211,7 +218,7 @@ bool hold_button(const char* label, float secs, const ImVec4& color) {
   const auto lum = [](const ImVec4& c) { return 0.3f * c.x + 0.59f * c.y + 0.11f * c.z; };
   if (lum(tx) > 0.6f && lum(face) > 0.45f) { face.x *= 0.5f; face.y *= 0.5f; face.z *= 0.5f; }
   ImGui::PushStyleColor(ImGuiCol_Button, face);
-  ImGui::Button(label);
+  ImGui::Button(tr(label));
   ImGui::PopStyleColor();
   ImGuiID id = ImGui::GetItemID();
   if (ImGui::IsItemActive()) {
@@ -266,7 +273,7 @@ void tab_saves() {
   const float lh = ImGui::GetTextLineHeightWithSpacing();
   Z.root = find_root();
   if (Z.root.empty()) {
-    ImGui::TextWrapped("Save profiles are off in this run (the save folder is set by SNAP_SAVE_DIR or hle.json). Start the game without that setting to use profiles.");
+    ImGui::TextWrapped("%s", tr("Save profiles are off in this run (the save folder is set by SNAP_SAVE_DIR or hle.json). Start the game without that setting to use profiles."));
     return;
   }
   if (now_secs() - Z.loaded_at > 3.0 || !Z.store) reload();
@@ -279,14 +286,14 @@ void tab_saves() {
   pr::Store& st = *Z.store;
   const pr::Active& act = pr::active();
 
-  ImGui::TextWrapped("A profile is a separate save. The game is running profile \"%s\". Switching profile, and clearing or deleting the running one, take effect after a restart.",
+  ImGui::TextWrapped(tr("A profile is a separate save. The game is running profile \"%s\". Switching profile, and clearing or deleting the running one, take effect after a restart."),
                      act.on ? act.name.c_str() : "?");
   if (Z.restart_needed) {
-    ImGui::TextColored(t.conflict, "A change is waiting for a restart.");
+    ImGui::TextColored(t.conflict, "%s", tr("A change is waiting for a restart."));
     ImGui::SameLine();
-    if (ImGui::Button("Restart now")) restart_now(act.on ? act.name : "");
+    if (ImGui::Button(tr("Restart now"))) restart_now(act.on ? act.name : "");
     ImGui::SameLine();
-    ImGui::TextDisabled("(unsaved progress in the running game is lost)");
+    ImGui::TextDisabled("%s", tr("(unsaved progress in the running game is lost)"));
   }
   if (!act.note.empty()) ImGui::TextColored(t.text_dim, "%s", act.note.c_str());
   if (ImGui::GetTime() < Z.msg_until) ImGui::TextColored(Z.msg_err ? t.error : t.good, "%s", Z.msg.c_str());
@@ -295,10 +302,10 @@ void tab_saves() {
   // ---- list
   const auto& list = st.list();
   if (ImGui::BeginTable("profiles", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY, ImVec2(0, lh * 6.4f))) {
-    ImGui::TableSetupColumn("Profile", ImGuiTableColumnFlags_WidthStretch, 2.0f);
-    ImGui::TableSetupColumn("Last played", ImGuiTableColumnFlags_WidthStretch, 1.4f);
-    ImGui::TableSetupColumn("Save size", ImGuiTableColumnFlags_WidthStretch, 1.0f);
-    ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthStretch, 1.6f);
+    ImGui::TableSetupColumn(tr("Profile"), ImGuiTableColumnFlags_WidthStretch, 2.0f);
+    ImGui::TableSetupColumn(tr("Last played"), ImGuiTableColumnFlags_WidthStretch, 1.4f);
+    ImGui::TableSetupColumn(tr("Save size"), ImGuiTableColumnFlags_WidthStretch, 1.0f);
+    ImGui::TableSetupColumn(tr("Status"), ImGuiTableColumnFlags_WidthStretch, 1.6f);
     ImGui::TableSetupScrollFreeze(0, 1);
     ImGui::TableHeadersRow();
     for (int i = 0; i < (int)list.size(); ++i) {
@@ -314,16 +321,16 @@ void tab_saves() {
       ImGui::TextUnformatted(pr::format_size(i < (int)Z.sizes.size() ? Z.sizes[(size_t)i] : 0).c_str());
       ImGui::TableNextColumn();
       if (act.on && p.id == act.id) {
-        if (st.is_pending(p.id, "delete")) ImGui::TextColored(t.error, "Running - delete on restart");
-        else if (st.is_pending(p.id, "clear")) ImGui::TextColored(t.conflict, "Running - clear on restart");
-        else ImGui::TextColored(t.good, "Running now");
+        if (st.is_pending(p.id, "delete")) ImGui::TextColored(t.error, "%s", tr("Running - delete on restart"));
+        else if (st.is_pending(p.id, "clear")) ImGui::TextColored(t.conflict, "%s", tr("Running - clear on restart"));
+        else ImGui::TextColored(t.good, "%s", tr("Running now"));
       } else {
         ImGui::TextDisabled("-");
       }
     }
     ImGui::EndTable();
   }
-  if (Z.sel < 0 || Z.sel >= (int)list.size()) { ImGui::TextDisabled("No profiles yet."); }
+  if (Z.sel < 0 || Z.sel >= (int)list.size()) { ImGui::TextDisabled("%s", tr("No profiles yet.")); }
   else {
     const pr::Profile p = list[(size_t)Z.sel];   // a copy: reload() replaces the list
     const bool is_active = act.on && p.id == act.id;
@@ -333,106 +340,110 @@ void tab_saves() {
       copy_name(Z.dup_buf, sizeof Z.dup_buf, p.name + " copy");
     }
     ImGui::Spacing();
-    ImGui::TextColored(t.title, "Selected: %s", p.name.c_str());
+    ImGui::TextColored(t.title, tr("Selected: %s"), p.name.c_str());
     if (!is_active) {
-      if (ImGui::Button("Switch to this profile (restarts the game)")) restart_now(p.name);
+      if (ImGui::Button(tr("Switch to this profile (restarts the game)"))) restart_now(p.name);
       ImGui::SameLine();
     }
-    if (ImGui::Button("Open folder")) open_folder(st.save_dir(p.id));
+    if (ImGui::Button(tr("Open folder"))) open_folder(st.save_dir(p.id));
     // rename and duplicate
     ImGui::SetNextItemWidth(lh * 11);
     ImGui::InputText("##rename", Z.rename_buf, sizeof Z.rename_buf);
     ImGui::SameLine();
-    if (ImGui::Button("Rename")) {
+    if (ImGui::Button(tr("Rename"))) {
       std::string e;
-      if (st.rename(p.id, Z.rename_buf, &e)) { say("Renamed.", false); reload(); } else say(e, true);
+      if (st.rename(p.id, Z.rename_buf, &e)) { say(tr("Renamed."), false); reload(); } else say(e, true);
     }
     ImGui::SameLine(0, lh * 1.5f);
     ImGui::SetNextItemWidth(lh * 11);
     ImGui::InputText("##dup", Z.dup_buf, sizeof Z.dup_buf);
     ImGui::SameLine();
-    if (ImGui::Button("Duplicate")) {
+    if (ImGui::Button(tr("Duplicate"))) {
       std::string e;
       std::string id = st.duplicate(p.id, Z.dup_buf, &e);
-      if (!id.empty()) { say("Copied the latest saved state into a new profile.", false); reload(); } else say(e, true);
+      if (!id.empty()) { say(tr("Copied the latest saved state into a new profile."), false); reload(); } else say(e, true);
     }
     // clear and delete, two steps: arm, then hold
     if (Z.confirm == SavesState::None) {
-      if (ImGui::Button("Clear save...")) Z.confirm = SavesState::Clear;
+      if (ImGui::Button(tr("Clear save..."))) Z.confirm = SavesState::Clear;
       ImGui::SameLine();
-      if (ImGui::Button("Delete profile...")) Z.confirm = SavesState::Delete;
+      if (ImGui::Button(tr("Delete profile..."))) Z.confirm = SavesState::Delete;
     } else {
       const bool clr = Z.confirm == SavesState::Clear;
-      ImGui::TextColored(t.conflict, "%s \"%s\"? The data is moved to the trash (newest 10 kept) and can be restored below.%s",
-                         clr ? "Clear the save of" : "Delete the profile", p.name.c_str(),
-                         is_active ? " It is running now, so this happens at the next start." : "");
+      const char* conf_key = clr ? (is_active ? "Clear the save of \"%s\"? The data is moved to the trash (newest 10 kept) and can be restored below. It is running now, so this happens at the next start."
+                                              : "Clear the save of \"%s\"? The data is moved to the trash (newest 10 kept) and can be restored below.")
+                                 : (is_active ? "Delete the profile \"%s\"? The data is moved to the trash (newest 10 kept) and can be restored below. It is running now, so this happens at the next start."
+                                              : "Delete the profile \"%s\"? The data is moved to the trash (newest 10 kept) and can be restored below.");
+      ImGui::TextColored(t.conflict, tr(conf_key), p.name.c_str());
       if (hold_button(clr ? "Hold to clear the save" : "Hold to delete the profile", 1.5f, t.error)) {
         std::string e;
         bool ok = true;
-        if (is_active) { st.queue(clr ? "clear" : "delete", p.id); Z.restart_needed = true; say("Queued: it happens at the next start. Use Restart now to start fresh.", false); }
-        else if (clr) { ok = st.clear(p.id, &e); if (ok) say("Save cleared; the old data is in the trash.", false); }
-        else { ok = st.remove(p.id, &e); if (ok) say("Profile deleted; its data is in the trash.", false); }
+        if (is_active) { st.queue(clr ? "clear" : "delete", p.id); Z.restart_needed = true; say(tr("Queued: it happens at the next start. Use Restart now to start fresh."), false); }
+        else if (clr) { ok = st.clear(p.id, &e); if (ok) say(tr("Save cleared; the old data is in the trash."), false); }
+        else { ok = st.remove(p.id, &e); if (ok) say(tr("Profile deleted; its data is in the trash."), false); }
         if (!ok) say(e, true);
         Z.confirm = SavesState::None;
         reload();
       }
       ImGui::SameLine();
-      if (ImGui::Button("Cancel")) Z.confirm = SavesState::None;
+      if (ImGui::Button(tr("Cancel"))) Z.confirm = SavesState::None;
     }
   }
 
   // ---- create and import
   ImGui::Separator();
   ImGui::SetNextItemWidth(lh * 11);
-  ImGui::InputTextWithHint("##new", "New profile name", Z.new_name, sizeof Z.new_name);
+  ImGui::InputTextWithHint("##new", tr("New profile name"), Z.new_name, sizeof Z.new_name);
   ImGui::SameLine();
-  if (ImGui::Button("Create profile")) {
+  if (ImGui::Button(tr("Create profile"))) {
     std::string e;
     std::string name = Z.new_name[0] ? Z.new_name : st.next_free_name();
-    if (!st.create(name, &e).empty()) { say("Created \"" + name + "\".", false); Z.new_name[0] = 0; reload(); } else say(e, true);
+    if (!st.create(name, &e).empty()) { sayf("Created \"%s\".", name, false); Z.new_name[0] = 0; reload(); } else say(e, true);
   }
   ImGui::SameLine(0, lh * 1.5f);
-  if (ImGui::Button(Z.picking ? "Choosing a folder..." : "Import save from folder...")) pick_folder_async();
+  if (ImGui::Button(tr(Z.picking ? "Choosing a folder..." : "Import save from folder..."))) pick_folder_async();
   if (!Z.import_src.empty()) {
-    ImGui::TextWrapped("Import %s as", Z.import_src.c_str());
+    ImGui::TextWrapped(tr("Import %s as"), Z.import_src.c_str());
     ImGui::SetNextItemWidth(lh * 11);
     ImGui::InputText("##impname", Z.import_name, sizeof Z.import_name);
     ImGui::SameLine();
-    if (ImGui::Button("Import")) {
+    if (ImGui::Button(tr("Import"))) {
       std::string e;
-      if (!st.import_folder(Z.import_src, Z.import_name, &e).empty()) { say("Imported into a new profile.", false); Z.import_src.clear(); reload(); } else say(e, true);
+      if (!st.import_folder(Z.import_src, Z.import_name, &e).empty()) { say(tr("Imported into a new profile."), false); Z.import_src.clear(); reload(); } else say(e, true);
     }
     ImGui::SameLine();
-    if (ImGui::Button("Cancel import")) Z.import_src.clear();
+    if (ImGui::Button(tr("Cancel import"))) Z.import_src.clear();
   }
-  if (!Z.fixtures.empty() && ImGui::TreeNode("Import test save")) {
-    ImGui::TextDisabled("Test saves found next to the build. Each one becomes a new profile.");
+  if (!Z.fixtures.empty() && ImGui::TreeNode((std::string(tr("Import test save")) + "###impfix").c_str())) {
+    ImGui::TextDisabled("%s", tr("Test saves found next to the build. Each one becomes a new profile."));
     for (auto& f : Z.fixtures) {
       std::string base = std::filesystem::u8path(f).filename().string();
-      std::string label = "Import \"" + base + "\"";
+      char label_buf[512];
+      std::snprintf(label_buf, sizeof label_buf, tr("Import \"%s\""), base.c_str());
+      const std::string label = label_buf;
       if (ImGui::Button(label.c_str())) {
         std::string e, name = import_fixture(st, f, &e);
-        if (!name.empty()) { say("Imported \"" + name + "\" into a new profile.", false); reload(); } else say(e, true);
+        if (!name.empty()) { sayf("Imported \"%s\" into a new profile.", name, false); reload(); } else say(e, true);
       }
     }
     ImGui::TreePop();
   }
 
   // ---- backups of the running save (runtime/hle/save_backup.h, docs/save-backups.md): the same list as the launcher's "Restore a backup..."
-  if (ImGui::TreeNode("Restore a backup")) {
+  if (ImGui::TreeNode((std::string(tr("Restore a backup")) + "###restbak").c_str())) {
     const std::string sroot = hle::config().save_root;
     const std::string waiting = hle::savebackup::queued_restore(sroot);
-    ImGui::TextWrapped("The game copies your save at every start and before every import or restore (newest 10 of each kept). The game is running, so a restore "
-                       "happens at the next start: it puts the backup back as a new generation and keeps the current save as an older one.");
+    ImGui::TextWrapped("%s", tr("The game copies your save at every start and before every import or restore (newest 10 of each kept). The game is running, so a restore "
+                                "happens at the next start: it puts the backup back as a new generation and keeps the current save as an older one."));
     if (!waiting.empty()) {
-      ImGui::TextColored(t.conflict, "Waiting for the next start: %s", waiting.c_str());
+      ImGui::TextColored(t.conflict, tr("Waiting for the next start: %s"), waiting.c_str());
       ImGui::SameLine();
-      if (ImGui::SmallButton("Cancel")) hle::savebackup::cancel_queued_restore(sroot);
+      if (ImGui::SmallButton(tr("Cancel"))) hle::savebackup::cancel_queued_restore(sroot);
       ImGui::SameLine();
-      if (ImGui::SmallButton("Restart now")) restart_now(act.on ? act.name : "");
+      if (ImGui::SmallButton(tr("Restart now"))) restart_now(act.on ? act.name : "");
     }
     const auto backups = hle::savebackup::list(sroot);
-    if (backups.empty()) ImGui::TextDisabled("No backups yet. The first one is made at the next start.");
+    if (backups.empty()) ImGui::TextDisabled("%s", tr("No backups yet. The first one is made at the next start."));
     const hle::savebackup::Entry* picked = nullptr;
     for (size_t i = 0; i < backups.size() && i < 8; ++i) {
       ImGui::PushID((int)(1000 + i));
@@ -443,7 +454,7 @@ void tab_saves() {
     if (picked) {
       if (hold_button("Hold to restore this backup at the next start", 1.5f, t.error)) {
         std::string e;
-        if (hle::savebackup::queue_restore(sroot, picked->folder, &e)) { say("Queued. Use Restart now (unsaved progress in the running game is lost).", false); Z.restart_needed = true; }
+        if (hle::savebackup::queue_restore(sroot, picked->folder, &e)) { say(tr("Queued. Use Restart now (unsaved progress in the running game is lost)."), false); Z.restart_needed = true; }
         else say(e, true);
       }
     }
@@ -451,16 +462,16 @@ void tab_saves() {
   }
 
   // ---- trash
-  if (ImGui::TreeNode("Restore from trash")) {
-    if (Z.trash.empty()) ImGui::TextDisabled("The trash is empty. Cleared and deleted saves wait here; the newest 10 are kept.");
+  if (ImGui::TreeNode((std::string(tr("Restore from trash")) + "###resttrash").c_str())) {
+    if (Z.trash.empty()) ImGui::TextDisabled("%s", tr("The trash is empty. Cleared and deleted saves wait here; the newest 10 are kept."));
     for (size_t i = 0; i < Z.trash.size(); ++i) {
       const auto& e = Z.trash[i];
       ImGui::PushID((int)i);
-      ImGui::Text("%s   %s   %s   %s", e.name.c_str(), e.kind == "delete" ? "deleted" : "cleared", pr::format_time(e.when).c_str(), pr::format_size(e.size).c_str());
+      ImGui::Text("%s   %s   %s   %s", e.name.c_str(), tr(e.kind == "delete" ? "deleted" : "cleared"), pr::format_time(e.when).c_str(), pr::format_size(e.size).c_str());
       ImGui::SameLine();
-      if (ImGui::SmallButton("Restore")) {
+      if (ImGui::SmallButton(tr("Restore"))) {
         std::string err;
-        if (!st.restore(e.folder, &err).empty()) { say("Restored into a new profile.", false); reload(); } else say(err, true);
+        if (!st.restore(e.folder, &err).empty()) { say(tr("Restored into a new profile."), false); reload(); } else say(err, true);
         ImGui::PopID();
         break;
       }

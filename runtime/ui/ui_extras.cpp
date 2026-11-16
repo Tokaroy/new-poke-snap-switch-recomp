@@ -21,6 +21,7 @@
 #include "hle/profiles.h"
 #include "hle/settings.h"
 #include "ui_internal.h"
+#include "ui_i18n.h"
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -133,50 +134,50 @@ void extras_controller() {
   ImGui::Spacing();
   ImGui::Separator();
   ImGui::Spacing();
-  ImGui::TextColored(t.title, "Gyro aim");
-  ImGui::TextWrapped("Tilting a controller with a gyroscope (DualSense, Switch Pro, Joy-Con) moves the camera, added to the right stick. Off by default.");
+  ImGui::TextColored(t.title, "%s", tr("Gyro aim"));
+  ImGui::TextWrapped("%s", tr("Tilting a controller with a gyroscope (DualSense, Switch Pro, Joy-Con) moves the camera, added to the right stick. Off by default."));
   bool on = st::get_bool("gyro_on", false);
-  if (ImGui::Checkbox("Gyro aim", &on)) st::set_bool("gyro_on", on);
+  if (ImGui::Checkbox(tr("Gyro aim"), &on)) st::set_bool("gyro_on", on);
   ImGui::BeginDisabled(!on);
   float sens = st::get_float("gyro_sens", 1.0f);
   ImGui::SetNextItemWidth(ImGui::GetFontSize() * 18.0f);
-  if (ImGui::SliderFloat("Gyro sensitivity", &sens, 0.1f, 4.0f, "%.2f")) st::set_float("gyro_sens", sens);
+  if (ImGui::SliderFloat(tr("Gyro sensitivity"), &sens, 0.1f, 4.0f, "%.2f")) st::set_float("gyro_sens", sens);
   bool ix = st::get_bool("gyro_invert_x", false), iy = st::get_bool("gyro_invert_y", false);
-  if (ImGui::Checkbox("Invert gyro X", &ix)) st::set_bool("gyro_invert_x", ix);
+  if (ImGui::Checkbox(tr("Invert gyro X"), &ix)) st::set_bool("gyro_invert_x", ix);
   ImGui::SameLine();
-  if (ImGui::Checkbox("Invert gyro Y", &iy)) st::set_bool("gyro_invert_y", iy);
+  if (ImGui::Checkbox(tr("Invert gyro Y"), &iy)) st::set_bool("gyro_invert_y", iy);
   ImGui::EndDisabled();
   hle::input::RawInput r = hle::input::hub().raw();
-  if (r.gyro_present) ImGui::TextColored(t.text_dim, "Gyro: %.0f, %.0f deg/s", r.gyro_x, r.gyro_y);
-  else ImGui::TextColored(t.text_dim, "Gyro: none reported (turn gyro aim on with a controller that has one)");
-  ImGui::TextColored(t.text_dim, "Applies at once.");
+  if (r.gyro_present) ImGui::TextColored(t.text_dim, tr("Gyro: %.0f, %.0f deg/s"), r.gyro_x, r.gyro_y);
+  else ImGui::TextColored(t.text_dim, "%s", tr("Gyro: none reported (turn gyro aim on with a controller that has one)"));
+  ImGui::TextColored(t.text_dim, "%s", tr("Applies at once."));
 
   ImGui::Spacing();
-  ImGui::TextColored(t.title, "Rumble");
+  ImGui::TextColored(t.title, "%s", tr("Rumble"));
   bool ron = st::get_bool("rumble_on", true);
-  if (ImGui::Checkbox("Controller rumble", &ron)) st::set_bool("rumble_on", ron);
+  if (ImGui::Checkbox(tr("Controller rumble"), &ron)) st::set_bool("rumble_on", ron);
   ImGui::BeginDisabled(!ron);
   float rs = st::get_float("rumble_strength", 1.0f);
   ImGui::SetNextItemWidth(ImGui::GetFontSize() * 18.0f);
-  if (ImGui::SliderFloat("Rumble strength", &rs, 0.0f, 1.5f, "%.2f")) st::set_float("rumble_strength", rs);
+  if (ImGui::SliderFloat(tr("Rumble strength"), &rs, 0.0f, 1.5f, "%.2f")) st::set_float("rumble_strength", rs);
   ImGui::EndDisabled();
-  ImGui::TextColored(t.text_dim, "Rumble reaches DualSense, Xbox and Switch Pro pads. Applies at once.");
+  ImGui::TextColored(t.text_dim, "%s", tr("Rumble reaches DualSense, Xbox and Switch Pro pads. Applies at once."));
 }
 
 void gallery_section() {
   const Theme& t = theme();
-  ImGui::TextColored(t.title, "Photo gallery");
-  ImGui::TextWrapped("Opens your saved photos for the running profile (\"%s\") in your web browser, from a small server on this PC (127.0.0.1). Nothing leaves the machine.",
+  ImGui::TextColored(t.title, "%s", tr("Photo gallery"));
+  ImGui::TextWrapped(tr("Opens your saved photos for the running profile (\"%s\") in your web browser, from a small server on this PC (127.0.0.1). Nothing leaves the machine."),
                      hle::profiles::active().on ? hle::profiles::active().name.c_str() : "default");
   ImGui::Spacing();
   const int s = g_gallery_state.load();
   ImGui::BeginDisabled(s == 1);
-  if (ImGui::Button("Open gallery in browser")) open_gallery_async();
+  if (ImGui::Button(tr("Open gallery in browser"))) open_gallery_async();
   ImGui::EndDisabled();
   ImGui::SameLine();
-  if (s == 1) ImGui::TextColored(t.text_dim, "Reading photos from the save...");
-  else if (s == 2) ImGui::TextColored(t.good, "Opened. Use it again after taking new photos: it re-reads the save.");
-  else if (s == 3) ImGui::TextColored(t.error, "Could not start the gallery server (needs tools-src\\gallery and Python).");
+  if (s == 1) ImGui::TextColored(t.text_dim, "%s", tr("Reading photos from the save..."));
+  else if (s == 2) ImGui::TextColored(t.good, "%s", tr("Opened. Use it again after taking new photos: it re-reads the save."));
+  else if (s == 3) ImGui::TextColored(t.error, "%s", tr("Could not start the gallery server (needs tools-src\\gallery and Python)."));
 }
 
 }  // namespace snap::ui

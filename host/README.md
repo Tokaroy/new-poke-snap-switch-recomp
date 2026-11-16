@@ -576,6 +576,7 @@ On by default unless noted; each env var restores the old path.
 - The F1 menu is drawn in the game's Settings style (see `analysis/ui/f1_skin.md`). Scale follows the window height (`max(0.75, height / 1080)` times the Menu size row). The last page used is kept in settings key `menu_tab`.
 - Pad: Back+Start opens, L / R switch pages, d-pad / stick move the cursor, left / right change a value, A opens a drop-down, B closes it, then the menu. Mouse and keyboard work as before.
 - Test: `SNAP_UI_TEST=tests/hle/ui_f1_pad_script.txt` (controller only) and `tests/hle/ui_f1_tabs_script.txt` (every page, for captures).
+- Languages: the menu follows the Game language row (`runtime/ui/ui_i18n_table.cpp`, French, German, Spanish, Italian, Japanese, Korean, both Chinese scripts). `python -I tests/hle/ui_i18n_check.py` checks the table; `tests/hle/ui_f1_lang_script.txt` shows every page in Japanese and German.
 
 ## Performance overlay (2026-11-14, `runtime/ui/ui_fps.cpp`)
 

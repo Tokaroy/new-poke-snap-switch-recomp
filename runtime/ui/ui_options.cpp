@@ -8,6 +8,7 @@
 #include <shellapi.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <chrono>
@@ -38,6 +39,7 @@ namespace nvn { const char* FgNotice(); }   // nvn_framegen.cpp: why frame gener
 #include "window_opts.h"
 #include "ui_internal.h"
 #include "ui_skin.h"
+#include "ui_i18n.h"
 #include "imgui_internal.h"   // NavMoveRequestCancel: Left / Right on a focused row change its value
 
 extern "C" void snap_vsync_set(const char* mode);   // runtime/nvn/nvn_vk.cpp [vsync]: live, the next present rebuilds the swapchain
@@ -64,6 +66,46 @@ using Choices = std::vector<std::pair<std::string, std::string>>;   // (stored v
 const char* keep(const std::string& s) { static std::deque<std::string> store; store.push_back(s); return store.back().c_str(); }
 // "Default (<what the default is>)": read from the shared defaults table, so the label follows SNAP_VISUALS and the table's one-line flip.
 std::string default_label(const char* envKey) { return std::string("Default (") + snapdef::def_text(envKey) + ")"; }
+
+// ---- translation at draw time (the tables above stay English; see analysis/i18n/WIRING.md)
+// The first "%s" of a translated format line, replaced by `a`.
+std::string sub(const char* t, const std::string& a) {
+  std::string r = t;
+  const size_t k = r.find("%s");
+  if (k != std::string::npos) r.replace(k, 2, a);
+  return r;
+}
+// A label that may be built at run time ("Default (<what it is>)", "<size> (the game's own)", "<n> fps (custom)", "Monitor <n> <name>"): the whole text first, else the
+// fixed words around the data through one format key each. `data` = text from the PC (monitor list): only the fixed words are translated.
+std::string tx(const std::string& s, bool data = false) {
+  struct Pat { const char* key; const char* pre; const char* suf; bool inner; };
+  static const Pat pats[] = {
+      {"Default (%s)", "Default (", ")", true},
+      {"%s (the game's own)", "", " (the game's own)", false},
+      {"%s (4K)", "", " (4K)", false},
+      {"%s (8K)", "", " (8K)", false},
+      {"%s (typed in)", "", " (typed in)", false},
+      {"%s fps (custom)", "", " fps (custom)", false},
+      {"Monitor %s", "Monitor ", "", false},
+  };
+  bool alpha = false;
+  for (unsigned char c : s) if (std::isalpha(c)) { alpha = true; break; }
+  if (!alpha) return s;
+  if (data) {
+    if (s == "Where the window is") return tr("Where the window is");
+    if (s.rfind("Monitor ", 0) == 0) return sub(tr("Monitor %s"), s.substr(8));
+    return s;
+  }
+  const char* t = tr(s);
+  if (t != s.c_str()) return t;
+  for (const Pat& p : pats) {
+    const size_t a = std::strlen(p.pre), b = std::strlen(p.suf);
+    if (s.size() < a + b || s.compare(0, a, p.pre) != 0 || s.compare(s.size() - b, b, p.suf) != 0) continue;
+    const std::string mid = s.substr(a, s.size() - a - b);
+    return sub(tr(p.key), p.inner ? std::string(tr(mid)) : mid);
+  }
+  return s;
+}
 
 struct Opt {
   const char* key;       // settings key, or "" for a section heading (label is its title)
@@ -682,7 +724,7 @@ struct Pend { std::vector<std::string> names; };
 void pend_one(const Opt& o, void* u) {
   if (o.when != kRestart || env_set_by_hand(o)) return;
   auto it = g_start.find(o.key);
-  if (it != g_start.end() && !same_value(o, it->second, cur_of(o))) ((Pend*)u)->names.push_back(o.label);
+  if (it != g_start.end() && !same_value(o, it->second, cur_of(o))) ((Pend*)u)->names.push_back(tr(o.label));
 }
 
 // look strength has no effect on a neutral look: do not count it alone
@@ -706,10 +748,10 @@ void row_tag(const Opt& o, const SkinRow& r) {
   const SkinPal& p = skin_pal();
   const char* t = nullptr;
   ImVec4 c = p.bar_dim;
-  if (o.when == kSoon) t = "Coming soon";
+  if (o.when == kSoon) t = tr("Coming soon");
   else if (o.when == kRestart) {
-    if (is_pending(o)) { t = "Restart to apply"; c = p.warn; }
-    else t = "Restart needed";
+    if (is_pending(o)) { t = tr("Restart to apply"); c = p.warn; }
+    else t = tr("Restart needed");
   }
   if (!t) return;
   const ImVec2 ts = ImGui::CalcTextSize(t);
@@ -743,6 +785,10 @@ Hit draw_choice(const Opt& o) {
   if (label == cur && !cur.empty() && !std::strcmp(o.key, "gfx_render_scale") && std::atof(cur.c_str()) > 0) label = snappic::dims((float)std::atof(cur.c_str())) + " (typed in)";
   // two or three short answers show as pills side by side (like On / Off); a longer list is a drop-down
   bool pills = !list.empty() && list.size() <= 3 && !o.dyn;
+  const bool data = o.dyn && !o.note;   // monitor names: data from the PC, only the fixed words are translated
+  std::vector<std::string> shown_names;   // the labels as drawn, in the menu's language
+  for (auto& c : list) shown_names.push_back(tx(c.second, data));
+  const std::string shown_label = tx(label, data);
   float total = 0;
   for (auto& c : list) { total += std::max(px(110), ImGui::CalcTextSize(c.second.c_str()).x + px(52)) + px(8); }
   if (total > px(520)) pills = false;
@@ -809,7 +855,7 @@ bool boxed_checkbox(const char* id, bool* b) {
 
 Hit draw_toggle(const Opt& o) {
   const bool on = cur_of(o) != "0" && !cur_of(o).empty();
-  static const char* const names[2] = {"On", "Off"};
+  const char* const names[2] = {tr("On"), tr("Off")};
   const int clicked = skin_segmented("##v", names, 2, on ? 0 : 1, false);
   const Hit h = hit_of_last_item();
   // The gamepad's A only presses buttons: on a value row it must not change the value (Left / Right do, see step_focused_row). Mouse and keyboard still do.
@@ -858,7 +904,7 @@ void draw_row(const Opt& o, bool inline_help) {
   if (o.kind == kSection) {
     ImGui::Dummy(ImVec2(0, px(8)));
     ImGui::Indent(px(10));
-    ImGui::TextColored(theme().title, "%s", o.label);
+    ImGui::TextColored(theme().title, "%s", tr(o.label));
     ImGui::Unindent(px(10));
     ImGui::Dummy(ImVec2(0, px(2)));
     return;
@@ -871,7 +917,7 @@ void draw_row(const Opt& o, bool inline_help) {
   skin_row_begin(r, cid, focused);
   const bool soon = o.when == kSoon;
   // label on the left of the bar, control in the second column
-  r.dl->AddText(ImVec2(r.p.x + r.h * 0.75f, r.p.y + (r.h - ImGui::GetFontSize()) * 0.5f), skin_row_text(r, soon ? 0.6f : 1.0f), o.label);
+  r.dl->AddText(ImVec2(r.p.x + r.h * 0.75f, r.p.y + (r.h - ImGui::GetFontSize()) * 0.5f), skin_row_text(r, soon ? 0.6f : 1.0f), tr(o.label));
   ImGui::SetCursorScreenPos(ImVec2(r.p.x + row_label_w(r), r.p.y + (r.h - skin_control_height()) * 0.5f));
   Hit h;
   ImGui::BeginDisabled(soon);
@@ -891,14 +937,14 @@ void draw_row(const Opt& o, bool inline_help) {
   if (over_bar && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId)) g_help = &o;
   if (o.note) {   // which value is in effect when another row overrides this one
     const std::string n = o.note();
-    if (!n.empty()) { ImGui::Indent(px(24)); ImGui::TextColored(theme().title, "%s", n.c_str()); ImGui::Unindent(px(24)); }
+    if (!n.empty()) { ImGui::Indent(px(24)); ImGui::TextColored(theme().title, "%s", tx(n).c_str()); ImGui::Unindent(px(24)); }
   }
-  if (env_set_by_hand(o)) ImGui::TextColored(theme().error, "    %s is set in the environment and wins over this choice.", st::env_name(o.key) ? st::env_name(o.key) : o.env);
+  if (env_set_by_hand(o)) ImGui::TextColored(theme().error, tr("    %s is set in the environment and wins over this choice."), st::env_name(o.key) ? st::env_name(o.key) : o.env);
   if (inline_help) {
     ImGui::Indent(px(24));
     ImGui::PushStyleColor(ImGuiCol_Text, theme().text_dim);
     ImGui::PushTextWrapPos(0.0f);
-    ImGui::TextUnformatted(o.help);
+    ImGui::TextUnformatted(tr(o.help));
     ImGui::PopTextWrapPos();
     ImGui::PopStyleColor();
     ImGui::Unindent(px(24));
@@ -924,15 +970,15 @@ void draw_help(const std::vector<Opt>& list, const Opt** remembered) {
   if (!o) return;
   std::string extra;
   auto add = [&](const std::string& t) { if (!extra.empty()) extra += "   "; extra += t; };
-  if (o->when == kSoon) add("Coming soon: not in this build yet, so the control is off.");
-  else if (o->when == kLive) add("Applies now.");
-  else add("Restart needed: use Apply and restart at the top.");
+  if (o->when == kSoon) add(tr("Coming soon: not in this build yet, so the control is off."));
+  else if (o->when == kLive) add(tr("Applies now."));
+  else add(tr("Restart needed: use Apply and restart at the top."));
   const std::string dl = default_label(*o);
-  if (!dl.empty()) add("Default: " + dl);
-  if (o->key && std::strcmp(o->key, "gfx_render_scale") == 0) add("Now: scene drawn at " + snappic::dims(snappic::effective(pic_cfg(), pic_ctx()).scene));
+  if (!dl.empty()) add(sub(tr("Default: %s"), tx(dl, o->dyn && !o->note)));
+  if (o->key && std::strcmp(o->key, "gfx_render_scale") == 0) add(sub(tr("Now: scene drawn at %s"), snappic::dims(snappic::effective(pic_cfg(), pic_ctx()).scene)));
   const char* en = st::env_name(o->key) ? st::env_name(o->key) : o->env;
-  if (en) add(std::string("Environment variable: ") + en);
-  skin_help_set(o->help, extra, o->when == kRestart);
+  if (en) add(sub(tr("Environment variable: %s"), en));
+  skin_help_set(tr(o->help), extra, o->when == kRestart);
 }
 
 // One page of option rows; the description goes to the menu's bottom bar.
@@ -1039,12 +1085,12 @@ bool mods_save() {
   {
     std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
     f << out;
-    if (!f.good()) { g_mods_msg = "Could not write mods.json in " + g_mods_root; g_mods_err = true; return false; }
+    if (!f.good()) { g_mods_msg = sub(tr("Could not write mods.json in %s"), g_mods_root); g_mods_err = true; return false; }
   }
   fs::rename(tmp, p, ec);
   if (ec) { fs::remove(p, ec); fs::rename(tmp, p, ec); }
-  if (ec) { g_mods_msg = "Could not replace mods.json: " + ec.message(); g_mods_err = true; return false; }
-  g_mods_msg = "Saved mods.json. The change applies after a restart.";
+  if (ec) { g_mods_msg = sub(tr("Could not replace mods.json: %s"), ec.message()); g_mods_err = true; return false; }
+  g_mods_msg = tr("Saved mods.json. The change applies after a restart.");
   g_mods_err = false;
   return true;
 }
@@ -1064,7 +1110,7 @@ int options_pending_restart(std::string* names) {
   capture_start();
   Pend p;
   for_each_opt(pend_one, &p);
-  if (mods_state() != g_mods_start) p.names.push_back("Mods");
+  if (mods_state() != g_mods_start) p.names.push_back(tr("Mods"));
   if (names) {
     names->clear();
     for (size_t i = 0; i < p.names.size(); ++i) *names += (i ? ", " : "") + p.names[i];
@@ -1073,8 +1119,8 @@ int options_pending_restart(std::string* names) {
 }
 
 void options_restart_bar() {
-  if (const char* why = nvn::FgNotice()) ImGui::TextColored(theme().conflict, "Frame generation is off for this session (%s). The game shows normal frames.", why);   // live fallback: it failed and turned itself off (SNAP_FRAMEGEN_FAIL=init|prepare|generate|present tests it)
-  if (const char* why = snap_rt::FallbackNotice()) ImGui::TextColored(theme().conflict, "Ray tracing is off for this session (%s). The standard lighting is in use.", why);   // live fallback: SNAP_RT could not start
+  if (const char* why = nvn::FgNotice()) ImGui::TextColored(theme().conflict, tr("Frame generation is off for this session (%s). The game shows normal frames."), why);   // live fallback: it failed and turned itself off (SNAP_FRAMEGEN_FAIL=init|prepare|generate|present tests it)
+  if (const char* why = snap_rt::FallbackNotice()) ImGui::TextColored(theme().conflict, tr("Ray tracing is off for this session (%s). The standard lighting is in use."), why);   // live fallback: SNAP_RT could not start
   std::string names;
   const int n = options_pending_restart(&names);
   if (!n) return;
@@ -1086,11 +1132,11 @@ void options_restart_bar() {
     std::string shown = names;
     size_t c1 = 0;
     for (int k = 0; k < 3 && c1 != std::string::npos; ++k) c1 = names.find(", ", c1 == 0 && k == 0 ? 0 : c1 + 2);
-    if (c1 != std::string::npos) shown = names.substr(0, c1) + " and " + std::to_string(n - 3) + " more";
-    ImGui::TextColored(t.conflict, "%d change%s need%s a restart: %s", n, n == 1 ? "" : "s", n == 1 ? "s" : "", shown.c_str());
+    if (c1 != std::string::npos) { char more[1024]; std::snprintf(more, sizeof more, tr("%s and %d more"), names.substr(0, c1).c_str(), n - 3); shown = more; }
+    ImGui::TextColored(t.conflict, n == 1 ? tr("%d change needs a restart: %s") : tr("%d changes need a restart: %s"), n, shown.c_str());
     ImGui::PopTextWrapPos();
     ImGui::SameLine(ImGui::GetWindowWidth() - px(240));
-    if (ImGui::Button("Apply and restart")) restart_game();
+    if (ImGui::Button(tr("Apply and restart"))) restart_game();
   }
   ImGui::EndChild();
   ImGui::PopStyleColor();
@@ -1100,7 +1146,7 @@ void tab_graphics() {
   static const Opt* remembered = nullptr;
   two_pane("gfx", graphics_opts(), &remembered, [] {
     ImGui::Spacing();
-    if (ImGui::CollapsingHeader("Shader cache and compile settings")) shader_cache_section();
+    if (ImGui::CollapsingHeader(tr("Shader cache and compile settings"))) shader_cache_section();
   });
 }
 
@@ -1113,13 +1159,13 @@ void tab_display() {
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
-    if (ImGui::Button("Create problem report")) {
+    if (ImGui::Button(tr("Create problem report"))) {
       char path[1024] = {}, why[512] = {};
       ok = snap_problem_report("game", path, (int)sizeof path, why, (int)sizeof why) != 0;
-      msg = ok ? std::string("Saved on your Desktop: ") + path : std::string("Could not make the report: ") + why;
+      msg = ok ? sub(tr("Saved on your Desktop: %s"), path) : sub(tr("Could not make the report: %s"), why);
     }
     ImGui::SameLine();
-    ImGui::TextColored(theme().text_dim, "A zip with the logs, settings and PC specs. No game files or saves; your user name is removed; nothing is uploaded.");
+    ImGui::TextColored(theme().text_dim, "%s", tr("A zip with the logs, settings and PC specs. No game files or saves; your user name is removed; nothing is uploaded."));
     if (!msg.empty()) ImGui::TextColored(ok ? theme().good : theme().error, "%s", msg.c_str());
   });
 }
@@ -1128,13 +1174,13 @@ void tab_photos() {
   static const Opt* remembered = nullptr;
   two_pane("photos", photo_opts(), &remembered, [] {
     ImGui::Spacing();
-    if (ImGui::Button("Open PNG folder")) {
+    if (ImGui::Button(tr("Open PNG folder"))) {
       std::string d = st::get("photo_dir", "");
       if (d.empty()) { const char* a = std::getenv("APPDATA"); d = std::string(a ? a : ".") + "\\SnapRecomp\\photos"; }
       open_folder(d);
     }
     ImGui::SameLine();
-    ImGui::TextColored(theme().text_dim, "Opens the folder in Explorer.");
+    ImGui::TextColored(theme().text_dim, "%s", tr("Opens the folder in Explorer."));
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
@@ -1145,7 +1191,7 @@ void tab_photos() {
 void audio_output_section() {
   ImGui::Spacing();
   ImGui::Separator();
-  ImGui::TextColored(theme().title, "Output");
+  ImGui::TextColored(theme().title, "%s", tr("Output"));
   for (const Opt& o : audio_opts()) draw_row(o, true);
 }
 
@@ -1156,21 +1202,21 @@ void access_rows() {
 void tab_mods() {
   const Theme& t = theme();
   if (now_secs() - g_mods_loaded > 3.0) mods_reload();
-  ImGui::TextWrapped("Mod packs are folders in %s. A pack higher in the list wins when two packs replace the same game file. The loader reads this list when the game starts, so every change here needs a restart.",
+  ImGui::TextWrapped(tr("Mod packs are folders in %s. A pack higher in the list wins when two packs replace the same game file. The loader reads this list when the game starts, so every change here needs a restart."),
                      g_mods_root.c_str());
-  if (const char* e = std::getenv("SNAP_MODS_DIR")) if (*e) ImGui::TextColored(t.conflict, "SNAP_MODS_DIR is set in the environment: this is the folder it points to.");
+  if (const char* e = std::getenv("SNAP_MODS_DIR")) if (*e) ImGui::TextColored(t.conflict, "%s", tr("SNAP_MODS_DIR is set in the environment: this is the folder it points to."));
   ImGui::Spacing();
-  if (ImGui::Button("Open mods folder")) open_folder(g_mods_root);
+  if (ImGui::Button(tr("Open mods folder"))) open_folder(g_mods_root);
   ImGui::SameLine();
-  if (ImGui::Button("Rescan")) mods_reload();
+  if (ImGui::Button(tr("Rescan"))) mods_reload();
   ImGui::SameLine();
-  ImGui::TextColored(t.conflict, "restart needed");
+  ImGui::TextColored(t.conflict, "%s", tr("restart needed"));
   if (!g_mods_msg.empty()) ImGui::TextColored(g_mods_err ? t.error : t.good, "%s", g_mods_msg.c_str());
   ImGui::Spacing();
   ImGui::Separator();
   if (g_mods.empty()) {
     ImGui::Spacing();
-    ImGui::TextWrapped("No packs found. A pack is a folder with a pack.json next to its <archive>.drp\\<entry> files; see docs\\mods.md.");
+    ImGui::TextWrapped("%s", tr("No packs found. A pack is a folder with a pack.json next to its <archive>.drp\\<entry> files; see docs\\mods.md."));
     return;
   }
   int move_from = -1, move_to = -1;
@@ -1192,12 +1238,12 @@ void tab_mods() {
     ImGui::SameLine();
     ImGui::TextColored(r.enabled ? t.text : t.text_dim, "%d. %s", i + 1, r.name.c_str());
     if (!r.version.empty()) { ImGui::SameLine(); ImGui::TextColored(t.text_dim, "v%s", r.version.c_str()); }
-    if (!r.author.empty()) { ImGui::SameLine(); ImGui::TextColored(t.text_dim, "by %s", r.author.c_str()); }
+    if (!r.author.empty()) { ImGui::SameLine(); ImGui::TextColored(t.text_dim, tr("by %s"), r.author.c_str()); }
     ImGui::SameLine();
-    ImGui::TextColored(r.enabled ? t.good : t.text_dim, r.enabled ? "on" : "off");
+    ImGui::TextColored(r.enabled ? t.good : t.text_dim, "%s", r.enabled ? tr("on") : tr("off"));
     ImGui::Indent(px(70));
-    if (!r.exists) ImGui::TextColored(t.error, "Listed in mods.json but the folder %s is missing.", r.id.c_str());
-    else if (!r.has_json) ImGui::TextColored(t.conflict, "Folder \"%s\" has no pack.json (name and version unknown).", r.id.c_str());
+    if (!r.exists) ImGui::TextColored(t.error, tr("Listed in mods.json but the folder %s is missing."), r.id.c_str());
+    else if (!r.has_json) ImGui::TextColored(t.conflict, tr("Folder \"%s\" has no pack.json (name and version unknown)."), r.id.c_str());
     else if (!r.description.empty()) ImGui::TextColored(t.text_dim, "%s", r.description.c_str());
     ImGui::Unindent(px(70));
     ImGui::PopID();

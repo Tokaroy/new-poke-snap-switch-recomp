@@ -8,6 +8,7 @@
 
 #include "audio/audio_out.h"
 #include "ui_internal.h"
+#include "ui_i18n.h"
 
 namespace snap::ui {
 
@@ -35,13 +36,13 @@ float g_drag[SNAP_VOL_COUNT] = {-1, -1, -1, -1};   // value shown while the slid
 
 void tab_audio() {
   const Theme& t = theme();
-  ImGui::TextWrapped("Volume changes apply at once and are saved in audio.json next to your controls file.");
+  ImGui::TextWrapped("%s", tr("Volume changes apply at once and are saved in audio.json next to your controls file."));
   ImGui::Spacing();
   for (const Row& r : kRows) {
     ImGui::PushID(r.cat);
     float cur = std::clamp(snap_audio_get_volume(r.cat), 0.0f, 1.0f);
     float shown = g_drag[r.cat] >= 0 ? g_drag[r.cat] : cur;
-    ImGui::TextUnformatted(r.label);
+    ImGui::TextUnformatted(tr(r.label));
     ImGui::SetNextItemWidth(std::min(ImGui::GetContentRegionAvail().x * 0.6f, ImGui::GetFontSize() * 30.0f));
     bool changed = false;
     float next = shown;
@@ -64,15 +65,15 @@ void tab_audio() {
     if (released) { snap_audio_set_volume(r.cat, g_drag[r.cat] >= 0 ? g_drag[r.cat] : next); g_drag[r.cat] = -1; }
     else if (!active && !changed) g_drag[r.cat] = -1;
     if (r.stepped) { ImGui::SameLine(); ImGui::TextColored(t.text_dim, "%d%%", (int)std::lround(shown * 100.0f)); }
-    ImGui::TextColored(t.text_dim, "%s", r.hint);
+    ImGui::TextColored(t.text_dim, "%s", tr(r.hint));
     ImGui::Spacing();
     ImGui::PopID();
   }
-  if (ImGui::Button("Reset to original mix")) {
+  if (ImGui::Button(tr("Reset to original mix"))) {
     for (const Row& r : kRows) { snap_audio_set_volume(r.cat, 1.0f); g_drag[r.cat] = -1; }
   }
   ImGui::SameLine();
-  ImGui::TextColored(t.text_dim, "All four back to 100%, the way the game ships.");
+  ImGui::TextColored(t.text_dim, "%s", tr("All four back to 100%, the way the game ships."));
   audio_output_section();
 }
 

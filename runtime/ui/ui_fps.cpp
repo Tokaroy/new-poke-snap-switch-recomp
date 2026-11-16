@@ -27,6 +27,7 @@
 #include "hle/input_core.h"
 #include "hle/settings.h"
 #include "imgui.h"
+#include "ui_i18n.h"
 #include "ui_internal.h"
 
 extern "C" void snap_perf_overlay_timing(int on);   // runtime/nvn/nvn_perf.cpp
@@ -161,7 +162,7 @@ void draw_safe_banner(ImVec2 size) {
   const float k = std::max(0.75f, size.y / 1080.0f);
   ImFont* font = ImGui::GetFont();
   const float fs = 16.0f * k, pad = 7.0f * k;
-  const char* t = "SAFE MODE: mods, HD packs, enhanced effects, frame generation, ray tracing and the shader cache are off for this run";
+  const char* t = tr("SAFE MODE: mods, HD packs, enhanced effects, frame generation, ray tracing and the shader cache are off for this run");
   const ImVec2 ts = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, t);
   const float x = (size.x - ts.x) * 0.5f, y = 8.0f * k;
   ImDrawList* dl = ImGui::GetForegroundDrawList();
@@ -197,14 +198,14 @@ void draw_fps_overlay(ImVec2 size) {
   if (mode == 2) {
     double g, c; snap_perf_overlay_info(&g, &c, &rw, &rh, &hz, aa, (int)sizeof aa);
     char b[128];
-    snprintf(b, sizeof b, "%.2f ms  1%% low %.0f", avg, low1); lines[nl++] = b;
+    snprintf(b, sizeof b, tr("%.2f ms  1%% low %.0f"), avg, low1); lines[nl++] = b;
     if (cpu >= 0 || gpu >= 0) { snprintf(b, sizeof b, "CPU %.2f ms  GPU %.2f ms", cpu, gpu); lines[nl++] = b; }
-    snprintf(b, sizeof b, "Render %dx%d  Out %dx%d", rw, rh, (int)size.x, (int)size.y); lines[nl++] = b;
+    snprintf(b, sizeof b, tr("Render %dx%d  Out %dx%d"), rw, rh, (int)size.x, (int)size.y); lines[nl++] = b;
     lines[nl++] = aa;
     const int cap = snap_window_frame_cap();
     const char* vs = snap_vsync_get();
-    if (cap > 0) snprintf(b, sizeof b, "Cap %d  Vsync %s", cap, vs ? vs : "on");
-    else snprintf(b, sizeof b, "Cap none  Vsync %s", vs ? vs : "on");
+    if (cap > 0) snprintf(b, sizeof b, tr("Cap %d  Vsync %s"), cap, vs ? vs : "on");
+    else snprintf(b, sizeof b, tr("Cap none  Vsync %s"), vs ? vs : "on");
     lines[nl++] = b;
   }
   const float headfs = mode == 2 ? fs * 1.25f : fs * 1.15f;

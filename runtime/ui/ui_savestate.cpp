@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <string>
 
+#include "ui_i18n.h"
 #include "ui_internal.h"
 #include "ui_theme.h"
 
@@ -42,10 +43,10 @@ struct Note {
 
 // What the player reads for a refusal: the reason from the state code, in a sentence.
 std::string refusal_text(int op, const char* why) {
-  std::string s = op == 1 ? "Could not save the state: " : "Could not load the state: ";
-  s += (why && *why) ? why : "unknown reason";
-  s += ". The game goes on as it was.";
-  return s;
+  const std::string reason = (why && *why) ? why : tr("unknown reason");
+  char b[512];
+  std::snprintf(b, sizeof b, tr(op == 1 ? "Could not save the state: %s. The game goes on as it was." : "Could not load the state: %s. The game goes on as it was."), reason.c_str());
+  return b;
 }
 
 }  // namespace
@@ -56,7 +57,7 @@ bool state_note_on() {
   snap_state_info(&si);
   const double now = now_s();
   if (si.busy) {
-    N.text = "Working on the save state...";
+    N.text = tr("Working on the save state...");
     N.bad = false;
     N.until = now + kNoteSecs;
     return true;
@@ -65,8 +66,8 @@ bool state_note_on() {
     N.seen_done = si.done;
     N.bad = !si.last_ok;
     if (si.last_ok) {
-      N.text = si.last_op == 1 ? "State saved. F8 loads it again. One slot, kept until you close the game."
-                               : "State loaded. F5 saves a new one.";
+      N.text = tr(si.last_op == 1 ? "State saved. F8 loads it again. One slot, kept until you close the game."
+                                  : "State loaded. F5 saves a new one.");
     } else {
       N.text = refusal_text(si.last_op, si.last_msg);
     }
@@ -92,32 +93,32 @@ void draw_state_note(ImVec2 size) {
 
 void tab_savestate() {
   const Theme& t = theme();
-  ImGui::TextWrapped("Save the game as it is right now and come back to it, for example to take one photo again. There is one slot. It lives in memory "
+  ImGui::TextWrapped("%s", tr("Save the game as it is right now and come back to it, for example to take one photo again. There is one slot. It lives in memory "
                      "for this run only: it is not written to disk, a new save replaces it, and it is gone when you close the game. Your game saves and "
-                     "album are not touched by a load, so a photo you kept after the state was saved stays in the album.");
+                     "album are not touched by a load, so a photo you kept after the state was saved stays in the album."));
   ImGui::Spacing();
-  ImGui::TextColored(t.text_dim, "F5 saves the state, F8 loads it.");
+  ImGui::TextColored(t.text_dim, "%s", tr("F5 saves the state, F8 loads it."));
   ImGui::Spacing();
   SnapStateInfo si{};
   snap_state_info(&si);
   if (si.busy) ImGui::BeginDisabled();
-  if (ImGui::Button("Save state")) snap_state_request(1, kSlot);
+  if (ImGui::Button(tr("Save state"))) snap_state_request(1, kSlot);
   ImGui::SameLine();
   if (!si.has_state) ImGui::BeginDisabled();
-  if (ImGui::Button("Load state")) snap_state_request(2, kSlot);
+  if (ImGui::Button(tr("Load state"))) snap_state_request(2, kSlot);
   if (!si.has_state) ImGui::EndDisabled();
   if (si.busy) ImGui::EndDisabled();
   ImGui::Spacing();
   if (si.busy) {
-    ImGui::TextColored(t.text_dim, "Working...");
+    ImGui::TextColored(t.text_dim, "%s", tr("Working..."));
   } else if (si.has_state) {
-    ImGui::TextColored(t.good, "A state is saved (this run).");
+    ImGui::TextColored(t.good, "%s", tr("A state is saved (this run)."));
   } else {
-    ImGui::TextColored(t.text_dim, "Nothing saved yet.");
+    ImGui::TextColored(t.text_dim, "%s", tr("Nothing saved yet."));
   }
   if (si.done && !si.busy) {
     const bool bad = !si.last_ok;
-    ImGui::TextColored(bad ? t.error : t.text_dim, "Last: %s", bad ? refusal_text(si.last_op, si.last_msg).c_str() : si.last_msg);
+    ImGui::TextColored(bad ? t.error : t.text_dim, tr("Last: %s"), bad ? refusal_text(si.last_op, si.last_msg).c_str() : si.last_msg);
   }
 }
 

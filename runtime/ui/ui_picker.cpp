@@ -16,10 +16,12 @@
 
 #include "hle/profiles.h"
 #include "ui_font.h"
+#include "ui_i18n.h"
 
 namespace {
 
 using hle::profiles::PickItem;
+using snap::ui::tr;
 
 struct State {
   const PickItem* items = nullptr;
@@ -78,11 +80,12 @@ void paint(HWND h, HDC dc) {
   SetBkMode(mem, TRANSPARENT);
   SelectObject(mem, g->f_title);
   SetTextColor(mem, kTitle);
-  TextOutW(mem, px(28), px(22), L"Choose a save profile", 21);
+  const std::wstring ttl = widen(tr("Choose a save profile"));
+  TextOutW(mem, px(28), px(22), ttl.c_str(), (int)ttl.size());
   SelectObject(mem, g->f_small);
   SetTextColor(mem, kDim);
-  const wchar_t* sub = L"Each profile keeps its own save. You can rename, copy, clear or delete them later in the F1 menu (Saves tab).";
-  TextOutW(mem, px(28), px(60), sub, (int)wcslen(sub));
+  const std::wstring sub = widen(tr("Each profile keeps its own save. You can rename, copy, clear or delete them later in the F1 menu (Saves tab)."));
+  TextOutW(mem, px(28), px(60), sub.c_str(), (int)sub.size());
   for (int i = g->top; i < total_rows() && i < g->top + kVisible; ++i) {
     RECT r = row_rect(i, cl);
     bool sel = i == g->sel;
@@ -99,20 +102,22 @@ void paint(HWND h, HDC dc) {
       TextOutW(mem, r.left + px(18), r.top + px(8), nm.c_str(), (int)nm.size());
       SelectObject(mem, g->f_small);
       SetTextColor(mem, sel ? RGB(120, 100, 80) : kDim);
-      std::wstring info = L"Last played: " + widen(hle::profiles::format_time(g->items[i].last_played)) + L"     Save size: " +
-                          widen(hle::profiles::format_size(g->items[i].size));
+      char ib[256];
+      std::snprintf(ib, sizeof ib, tr("Last played: %s     Save size: %s"), hle::profiles::format_time(g->items[i].last_played).c_str(), hle::profiles::format_size(g->items[i].size).c_str());
+      std::wstring info = widen(ib);
       TextOutW(mem, r.left + px(18), r.top + px(31), info.c_str(), (int)info.size());
     } else {
-      const wchar_t* t = L"+  New profile";
-      TextOutW(mem, r.left + px(18), r.top + px(14), t, (int)wcslen(t));
+      const std::wstring t = widen(tr("+  New profile"));
+      TextOutW(mem, r.left + px(18), r.top + px(14), t.c_str(), (int)t.size());
     }
   }
   if (total_rows() > kVisible) {   // scroll hint
     SelectObject(mem, g->f_small);
     SetTextColor(mem, kDim);
-    wchar_t t[64];
-    std::swprintf(t, 64, L"%d-%d of %d", g->top + 1, std::min(total_rows(), g->top + kVisible), total_rows());
-    TextOutW(mem, cl.right - px(130), px(60), t, (int)wcslen(t));
+    char tb[96];
+    std::snprintf(tb, sizeof tb, tr("%d-%d of %d"), g->top + 1, std::min(total_rows(), g->top + kVisible), total_rows());
+    const std::wstring t = widen(tb);
+    TextOutW(mem, cl.right - px(130), px(60), t.c_str(), (int)t.size());
   }
   SelectObject(mem, g->f_small);
   SetTextColor(mem, kDim);
@@ -141,12 +146,12 @@ void paint(HWND h, HDC dc) {
       return x + ww + px(8) + ts.cx + px(26);
     };
     int x = px(28);
-    x = prompt(x, L"A", L"Choose");
-    prompt(x, L"B", L"Last played profile");
+    x = prompt(x, L"A", widen(tr("Choose")).c_str());
+    prompt(x, L"B", widen(tr("Last played profile")).c_str());
     SetTextColor(mem, kDim);
-    const wchar_t* hint = L"Up/Down, Enter or click also work";
-    SIZE hs; GetTextExtentPoint32W(mem, hint, (int)wcslen(hint), &hs);
-    TextOutW(mem, cl.right - px(28) - hs.cx, cl.bottom - px(38) + px(4), hint, (int)wcslen(hint));
+    const std::wstring hint = widen(tr("Up/Down, Enter or click also work"));
+    SIZE hs; GetTextExtentPoint32W(mem, hint.c_str(), (int)hint.size(), &hs);
+    TextOutW(mem, cl.right - px(28) - hs.cx, cl.bottom - px(38) + px(4), hint.c_str(), (int)hint.size());
   }
   BitBlt(dc, 0, 0, cl.right, cl.bottom, mem, 0, 0, SRCCOPY);
   SelectObject(mem, old);
@@ -314,7 +319,7 @@ extern "C" int snap_ui_pick_profile(const PickItem* items, int count) {
   AdjustWindowRect(&r, WS_CAPTION | WS_SYSMENU, FALSE);
   int ww = r.right - r.left, wh = r.bottom - r.top;
   int sx = GetSystemMetrics(SM_CXSCREEN), sy = GetSystemMetrics(SM_CYSCREEN);
-  HWND h = CreateWindowExW(WS_EX_TOPMOST | WS_EX_APPWINDOW, wc.lpszClassName, L"New Pokemon Snap - choose a save profile", WS_CAPTION | WS_SYSMENU,
+  HWND h = CreateWindowExW(WS_EX_TOPMOST | WS_EX_APPWINDOW, wc.lpszClassName, widen(tr("New Pokemon Snap - choose a save profile")).c_str(), WS_CAPTION | WS_SYSMENU,
                            (sx - ww) / 2, (sy - wh) / 2, ww, wh, nullptr, nullptr, wc.hInstance, nullptr);
   int ret = -1;
   if (h) {
