@@ -15,7 +15,13 @@ function Get-LockText([string]$Path) { try { (Get-Content -LiteralPath $Path -Er
 function Test-LockStale([string]$Path) {
     $t = Get-LockText $Path
     if ($null -eq $t) { return $false }                       # vanished or unreadable: not ours to remove
-    $age = ((Get-Date) - (Get-Item -LiteralPath $Path -ErrorAction SilentlyContinue).LastWriteTime).TotalMinutes
+    # A run slot whose game is still running is busy even if its run_boot died (a killed watcher leaves the hidden-desktop game alive);
+    # taking it then fails the exe copy with "could not copy a stable build\snap exe" (coordinator 2026-11-15)
+    if ((Split-Path $Path -Leaf) -match '^run(\d+)\.lock$') {
+        $slotDir = Join-Path $script:LockRoot "build\runs\slot$($Matches[1])\"
+        if (@(Get-Process snap_boot -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($slotDir, [StringComparison]::OrdinalIgnoreCase) }).Count) { return $false }
+    }
+    $age =((Get-Date) - (Get-Item -LiteralPath $Path -ErrorAction SilentlyContinue).LastWriteTime).TotalMinutes
     if ($age -gt 20) { return $true }
     if ($t -match 'pid=(\d+)') { return -not [bool](Get-Process -Id ([int]$Matches[1]) -ErrorAction SilentlyContinue) }
     return ($age -gt 0.2)                                      # no pid: a half-written file older than ~10 s
