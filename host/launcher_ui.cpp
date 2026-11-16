@@ -2774,6 +2774,8 @@ UiResult show(UiInfo& info) {
     else if (g.view == G::STEAM) { g.block_hot = true; draw_home(); g.block_hot = false; draw_steam(); }
     else draw_home();
     draw_titlebar();
+    static const char* const press_play = std::getenv("SNAP_LAUNCHER_UI_PLAY_AFTER_MS");   // test hook: act as if Play was pressed after this many milliseconds
+    if (press_play && !g.done && ImGui::GetTime() * 1000.0 > std::atof(press_play)) go_play();
     ImGui::Render();
     const float clear[4] = {0.96f, 0.95f, 0.94f, 1.0f};
     g.ctx->OMSetRenderTargets(1, &g.rtv, nullptr);
