@@ -11,7 +11,8 @@
 // Research Camp lab. The course name comes from the player's own extracted English text (album.cpp course_label), never shipped.
 //
 // App id: Discord needs an application id from the developer portal (a public number, not a secret). SNAP_DISCORD_APP_ID or the discord_app_id
-// setting override kDefaultAppId; with neither set the feature stays idle and says so once in the log.
+// setting override kDefaultAppId (runtime/hle/discord_app.h, empty: the owner declined to register one). With none the feature is dormant: no thread,
+// no pipe, and the Discord rows are hidden in the launcher and the F1 menu.
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -30,13 +31,11 @@
 #include "../album.h"
 #define SNAP_HAVE_ALBUM 1   // the Album page's text reader gives the course names; without it the presence shows the mode only
 #endif
+#include "../../runtime/hle/discord_app.h"   // no application id (the owner declined to register one) = dormant: no pipe, no rows
 #include "../../runtime/hle/hle_config.h"
 #include "../../runtime/hle/settings.h"
 
 namespace {
-
-// Registered at discord.com/developers by the project owner; empty until then (see docs/player-options.md).
-constexpr const char* kDefaultAppId = "";
 
 struct Lc { int lc; int course; };   // pack id (LC_<id>) -> research course 1..30 for the name; 0 = unknown (the mode still shows)
 constexpr Lc kLc[] = {
@@ -57,11 +56,7 @@ bool enabled() {
   if (!e.empty()) return truthy(e);
   return truthy(hle::settings::get("discord_presence", "0"));
 }
-std::string app_id() {
-  std::string e = env("SNAP_DISCORD_APP_ID");
-  if (e.empty()) e = hle::settings::get("discord_app_id", "");
-  return e.empty() ? std::string(kDefaultAppId) : e;
-}
+std::string app_id() { return snapdiscord::app_id(hle::settings::get("discord_app_id", "")); }
 
 std::string json_str(const std::string& s) {
   std::string o = "\"";
@@ -204,6 +199,9 @@ extern void (*g_snap_presence_open)(const char* path);   // runtime/hle/fs.cpp: 
 
 // Cheap: one substring test per opened file.
 static void note_open(const char* path) {
+  // Dormant without an application id (decided once at the first file open): no thread, no pipe, nothing logged.
+  static const bool dormant = app_id().empty();
+  if (dormant) return;
   if (!g_started.exchange(true)) std::thread(run).detach();   // sleeps 3 s between checks while presence is off
   const char* lc = std::strstr(path, "LevelComposite/master/LC_");
   if (!lc) lc = std::strstr(path, "LevelComposite\\master\\LC_");

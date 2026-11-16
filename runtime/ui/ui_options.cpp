@@ -30,6 +30,7 @@
 #include "hle/json_lite.h"
 #include "hle/picture_rows.h"   // the Internal resolution / Anti-aliasing / Performance scaling rules, shared with the launcher and the game's own Settings screen
 #include "hle/presets.h"        // the Original / Balanced / Enhanced / Max graphics presets (docs/presets.md), one table for the launcher, F1 and the game's Settings
+#include "hle/discord_app.h"    // Discord rows only with an application id (dormant otherwise)
 #include "nvn/nvn_aa.h"           // HostWindowHeight
 #include "nvn/nvn_rt.h"           // FallbackNotice
 namespace nvn { const char* FgNotice(); }   // nvn_framegen.cpp: why frame generation turned itself off (null while fine)
@@ -608,6 +609,13 @@ std::vector<Opt>& photo_opts() {
       {"shot_dir", "Screenshot folder", kPath, kLive,
        "F12 (or View + R3 on a controller) saves a lossless PNG of the frame at the full render size, before it is scaled to your screen: 5760x3240 with Enhanced at 4K. Empty uses Pictures\\Snap Recomp. The folder is created with the first shot.", "", {}, 0, 0, "", "SNAP_SHOT_DIR"},
       {"shot_hud", "Include the HUD", kToggle, kLive,
+  // docs/player-options.md: Discord Rich Presence is dormant until an application id is set (runtime/hle/discord_app.h), so with none its section and row are not shown.
+  static const bool pruned = [] {
+    if (snapdiscord::app_id(hle::settings::get("discord_app_id", "")).empty())
+      v.erase(std::remove_if(v.begin(), v.end(), [](const Opt& o) { return std::strcmp(o.key, "discord_presence") == 0 || (o.kind == kSection && std::strcmp(o.label, "Discord") == 0); }), v.end());
+    return true;
+  }();
+  (void)pruned;
        "Off saves the 3D scene without the game's HUD (the HUD stays on screen). On saves the frame as shown. Menus and loading screens are always saved as shown.", "0", {}, 0, 0, "", "SNAP_SHOT_HUD"},
       {"", "Free camera", kSection, kLive, "", ""},
       {"freecam", "Free camera", kToggle, kRestart,

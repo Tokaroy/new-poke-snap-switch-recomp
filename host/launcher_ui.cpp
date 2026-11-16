@@ -34,6 +34,7 @@
 #include "mods/mods_core.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+#include "hle/discord_app.h"
 
 #pragma comment(lib, "windowscodecs")
 
@@ -870,8 +871,10 @@ void build_pages() {
                              {{"auto", "Auto (Windows language)"}, {"en", "English"}, {"ja", "Japanese"}, {"fr", "French"}, {"de", "German"}, {"it", "Italian"}, {"es", "Spanish"}, {"ko", "Korean"},
                               {"zh-hans", "Chinese (Simplified)"}, {"zh-hant", "Chinese (Traditional)"}},
                              "The language of the game's own menus and text. Auto follows your Windows display language and falls back to English. Takes effect the next time the game starts."));
-    p.items.push_back(choice("Discord Rich Presence", "discord_presence", S_CFG, "0", {{"0", "Off"}, {"1", "On"}},
-                             "Shows the course you are riding and what you are doing on your Discord profile while the game runs. It talks only to the Discord app on this PC."));
+    // docs/player-options.md: dormant (row hidden) until an application id is set, see runtime/hle/discord_app.h
+    if (!snapdiscord::app_id(g.cfg.get("discord_app_id", "")).empty())
+      p.items.push_back(choice("Discord Rich Presence", "discord_presence", S_CFG, "0", {{"0", "Off"}, {"1", "On"}},
+                               "Shows the course you are riding and what you are doing on your Discord profile while the game runs. It talks only to the Discord app on this PC."));
     {
       Item rep; rep.label = "Create problem report...";rep.kind = K_ACTION; rep.act = UiResult::ProblemReport;
       rep.help = "Saves one zip on your Desktop with the logs, your settings and your PC's specs (Windows, graphics card and driver) for a bug report. Your user name and folders are removed; no game files or saves go in. Nothing is uploaded.";
