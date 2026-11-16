@@ -147,7 +147,9 @@ def check_function(emitter, entry, end):
     """Tags of a function the test can run in isolation, or None."""
     mod = emitter.mod
     insns = [mod.lift(a) for a in range(entry, end, 4)]
-    if insns[-1].kind not in gen.TERMINATORS or not any(i.kind in ('ret', 'b', 'bcond') for i in insns):
+    # a function may end in a call that never returns (a throw / abort helper: 0x373340, 0x36e460, 0x2b6210 end in `bl`): the generator jumps on into the next
+    # function there, Unicorn reports 'left the function' for a case that reaches it and that case is skipped, so the paths that do return are still compared
+    if (insns[-1].kind not in gen.TERMINATORS and insns[-1].kind != 'bl') or not any(i.kind in ('ret', 'b', 'bcond') for i in insns):
         return None
     tags = set()
     for k, ins in enumerate(insns):
@@ -414,6 +416,17 @@ def main():
     words = rng.integers(PTR_LO // 16, PTR_HI // 16, nb, dtype=np.uint64) * np.uint64(16)
     words[rng.random(nb) >= 0.9] = 0
     img[mod.nso.size:mod.nso.size + nb * 8] = words.astype('<u8').tobytes()
+    # imported DATA symbols (GLOB_DAT of an OBJECT symbol, e.g. nn::util::Vector3f::ConstantZero) have no value in the file: the slot is 0, so a function that
+    # reads through it (adrp/ldr x, [got]; ldr q3, [x]) faulted on address 0 in Unicorn and every case was skipped (0x373740, 2026-11-16). Point each such slot at an
+    # all-zero 64-byte block of the image's own rodata (the constants the game imports this way are zero vectors / matrices); both sides read the same bytes.
+    zero_at = next((o for o in range(0x1000 * ((mod.nso.text[0] + mod.nso.text[1] + 0xFFF) // 0x1000), mod.nso.size - 64, 64) if not any(img[o:o + 64])), None)
+    n_obj = 0
+    if zero_at is not None:
+        for roff, rtype, rsym, radd in mod.nso.relocs:
+            if rtype == 1025 and 0 <= rsym < len(mod.nso.syms) and (mod.nso.syms[rsym][1] & 0xF) == 1 and not any(img[roff:roff + 8]):
+                img[roff:roff + 8] = (BASE + zero_at).to_bytes(8, 'little')
+                n_obj += 1
+    print(f'imported data symbols pointed at a zero block: {n_obj}', flush=True)
     img = bytes(img)
     (BLD / 'main.img').write_bytes(img)
     text_end = (mod.nso.text[0] + mod.nso.text[1] + 0xFFF) & ~0xFFF
