@@ -1,0 +1,16 @@
+# fixture: tut_cand_new4
+# Yard scan tutorial, hover test (2026-11-16): ONE X at f7500 (a repeating X or A spam made Pikachu leave in earlier probes; with one X it stays at the screen's lower left),
+# A taps for Rita's lines ("You saw that Pokemon's name pop up", "And did you also notice that [?]", "That tells you there's something you can take a closer look at!",
+# then "First, move [stick] over the [?]"), then a slow pan (left, then down) to put the reticle on Pikachu. The camera does not move while a bubble waits for A.
+# Known state (2026-11-16): no "?" marker or name pop-up shows in the world on HEAD or on the 11-14 15:15 build (build\w\eyes); the [?] in the bubbles is a flat teal square on HEAD.
+repeat @f300 @f7400 60 6 A
+@f7500 8 X
+@f7770 6 A
+@f7970 6 A
+@f8300 6 A
+@f8450 6 A
+@f8600 6 A
+repeat @f8750 @f9050 30 15 rx=-0.25
+repeat @f9050 @f9350 30 15 ry=0.25
+repeat @f8300 @f9450 25 1 shot=1
+end @f9500
