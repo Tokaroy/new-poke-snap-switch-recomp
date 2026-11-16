@@ -1,21 +1,25 @@
 // SPDX-License-Identifier: MIT
-// Atmosphere effects (project code, ours): four display-only pre-tonemap effects, each with its own switch, all OFF by default.
+// Atmosphere effects (project code, ours): six display-only pre-tonemap effects, each with its own switch, all OFF by default.
 //   SNAP_ATMOS_SHAFTS=1    light shafts: a half-resolution screen-space radial march toward the sun's screen position over the sky mask (the sun sits at a set angle from the view direction)
 //   SNAP_ATMOS_FOG=1       height fog: distance and height falloff, tinted by the sky colour seen this frame, thicker toward the ground under the view
 //   SNAP_ATMOS_EXPOSURE=1  auto exposure (eye adaptation): log-average luminance of the scene, smoothed over about 0.7 s, applied as a gain on the HDR colour
 //   SNAP_ATMOS_BLOOM=1     bloom: a 6-level mip chain (13-tap downsample, tent upsample) of the HDR highlights above a soft knee, added back at a low strength
-//   SNAP_ATMOS=1           turns all four on (an explicit SNAP_ATMOS_<NAME>=0 still wins)
+//   SNAP_ATMOS_CLOUDS=1    cloud shadows: drifting noise-based shadows on every surface below the clouds (steep faces get less), faded with distance, world-space wind
+//   SNAP_ATMOS_SKY=1       sky gradient: warm glow toward the (camera-relative) sun, pale haze at the horizon, a deeper zenith, on sky pixels only
+//   SNAP_ATMOS=1           turns all six on (an explicit SNAP_ATMOS_<NAME>=0 still wins)
 // Where: the Fx pre-tonemap slot (nvn_fx.cpp), on the linear RGBA16F scene colour before the upscaler and the game's tonemap read it, after the Enhanced
 // lighting pass. The slot never runs on photo or Evaluation frames (FxIsPhotoFrame) nor inside an occlusion query, so photos and their scores never see
 // any of it; Pre() checks that again.   SNAP_LIGHT_AB=<P> (see lighting_preset.h) turns the effects on in odd blocks of P presents only (same-view A/B).
 // Passes per scene frame: bloom chain down (2 levels, or 6 with bloom) + up (5), statistics A (16x9 tiles) + B (2x1 smoothed state), shaft march (half res),
 // one composite on the scene colour for all four (blend ONE / ONE_MINUS_SRC_ALPHA, see atmos_comp.frag). Every pass is a full-screen triangle.
-// Tunables (env, test aids): SNAP_ATMOS_SHAFT_INTENSITY (0.35), _DECAY (0.95 per step along the ray), _LENGTH (0.45 of the screen height), _STEPS (24), _G (0.55), _AZIMUTH (25 degrees right of the view), _ELEVATION (45), _SUN (r,g,b);
+// Tunables (env, test aids): SNAP_ATMOS_SHAFT_INTENSITY (0.9), _DECAY (0.95 per step along the ray), _LENGTH (0.45 of the screen height), _STEPS (24), _G (0.55), _AIR (0.03 per unit of distance), _CONTRAST (2, power on the open-sky fraction), _AZIMUTH (25 degrees right of the view), _ELEVATION (45), _SUN (r,g,b);
 //   SNAP_ATMOS_FOG_DENSITY (0.002), _FALLOFF (0.12 per unit), _BASE (0, offset of the fog's zero level above the ground), _MAX (0.55), _START (4);
 //   SNAP_ATMOS_EXPOSURE_KEY (1, log2 of the mean luminance the exposure aims at; the game's daylight mean is about 2.4 = 1.25), _STRENGTH (0.5), _MIN (0.6), _MAX (2), _TIME (0.7 s);
-//   SNAP_ATMOS_BLOOM_STRENGTH (0.1), _THRESHOLD (3, times the adapted mean luminance), _KNEE (0.5, same unit);
+//   SNAP_ATMOS_BLOOM_STRENGTH (0.2), _THRESHOLD (1.5, times the adapted mean luminance), _KNEE (0.5, same unit);
+//   SNAP_ATMOS_CLOUD_STRENGTH (0.3), _SCALE (120 world units per noise cell), _SPEED (15 units/s), _COVER (0.55), _FADE (4000 units);
+//   SNAP_ATMOS_SKY_STRENGTH (1, scales all sky terms), _HAZE (0.25), _GLOW (0.35), _ZENITH (0.15, darkening overhead); the sun is the shafts' (_AZIMUTH, _ELEVATION);
 //   every tunable is a dev_envf value: with SNAP_DEV=1 it shows in the F1 tuning page and ctl `set`;
-//   SNAP_ATMOS_DEBUG=1 shafts alone, 8 shafts diagnosis (red: sun behind the camera, green: no sun, blue: open sky along the ray), 3 bloom alone, 4 fog amount, 5 exposure gain; SNAP_ATMOS_LOG=1 state log.
+//   SNAP_ATMOS_DEBUG=1 shafts alone, 8 shafts diagnosis (red: sun behind the camera, green: no sun, blue: open sky along the ray), 3 bloom alone, 4 fog amount, 5 exposure gain, 6 cloud cover / sky glow; SNAP_ATMOS_LOG=1 state log.
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -36,7 +40,7 @@ constexpr uint32_t kStride = 512, kSlots = 16;
 
 struct Img { VkImage img = VK_NULL_HANDLE; VkDeviceMemory mem = VK_NULL_HANDLE; VkImageView view = VK_NULL_HANDLE; VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED; uint32_t w = 0, h = 0; };
 struct U {   // std140, all vec4 (atmos_common.glsl)
-  float ivp[16], vp[16], eye[4], light[4], size[4], cam[4], fog[4], fogB[4], shaft[4], shaftB[4], sunCol[4], expo[4], expoB[4], bloom[4], flags[4], pass[4], dbg[4];
+  float ivp[16], vp[16], eye[4], light[4], size[4], cam[4], fog[4], fogB[4], shaft[4], shaftB[4], sunCol[4], expo[4], expoB[4], bloom[4], flags[4], pass[4], dbg[4], cloud[4], cloudB[4], sky[4], flags2[4];
 };
 static_assert(sizeof(U) <= kStride && sizeof(U) % 4 == 0, "uniform slot");
 
@@ -51,7 +55,7 @@ struct G {
   Img chain[kLevels], shaft, tile0, tile1, tile2, state[2];
   uint32_t w = 0, h = 0;
   int cur = 0; bool haveHist = false; int lastPresent = -1000;
-  std::chrono::steady_clock::time_point lastT{}; bool haveT = false;
+  std::chrono::steady_clock::time_point lastT{}; bool haveT = false; double cloudTime = 0.0;
   // SNAP_ATMOS_LOG readback ring
   VkBuffer rb = VK_NULL_HANDLE; VkDeviceMemory rbMem = VK_NULL_HANDLE; float* rbPtr = nullptr; bool rbPend[4] = {}; int rbPresent[4] = {}; int rbNext = 0; int rbCount = 0;
 } g;
@@ -64,21 +68,21 @@ bool Want(const char* name) {
   const char* m = getenv("SNAP_ATMOS");
   return m && *m && atoi(m) != 0;
 }
-struct Wants { bool shafts, fog, expo, bloom; };
+struct Wants { bool shafts, fog, expo, bloom, clouds, sky; };
 // The four switches are plain bools read every frame; with SNAP_DEV=1 they are live params (host\ab_capture.ps1 -Effect SNAP_ATMOS_SHAFTS -Values 0,1).
-bool g_want[4];
+bool g_want[6];
 Wants GetWants() {
   static bool init = false;
   if (!init) {
     init = true;
-    static const char* const names[4] = {"SNAP_ATMOS_SHAFTS", "SNAP_ATMOS_FOG", "SNAP_ATMOS_EXPOSURE", "SNAP_ATMOS_BLOOM"};
-    for (int i = 0; i < 4; i++) { g_want[i] = Want(names[i]); dev_param_b(names[i], &g_want[i], g_want[i]); }
+    static const char* const names[6] = {"SNAP_ATMOS_SHAFTS", "SNAP_ATMOS_FOG", "SNAP_ATMOS_EXPOSURE", "SNAP_ATMOS_BLOOM", "SNAP_ATMOS_CLOUDS", "SNAP_ATMOS_SKY"};
+    for (int i = 0; i < 6; i++) { g_want[i] = Want(names[i]); dev_param_b(names[i], &g_want[i], g_want[i]); }
   }
-  return {g_want[0], g_want[1], g_want[2], g_want[3]};
+  return {g_want[0], g_want[1], g_want[2], g_want[3], g_want[4], g_want[5]};
 }
 bool Enabled() {
   const Wants w = GetWants();
-  return !g.failed && (w.shafts || w.fog || w.expo || w.bloom) && snaplight::ab_on((unsigned long long)g_presentCount);
+  return !g.failed && (w.shafts || w.fog || w.expo || w.bloom || w.clouds || w.sky) && snaplight::ab_on((unsigned long long)g_presentCount);
 }
 
 void ImgBar(VkCommandBuffer cb, Img& im, VkImageLayout to) {
@@ -281,10 +285,10 @@ void Pre(ReplayCtx& cx) {
 
   // the sun's direction (shafts only). The game's shadow caster axis is not a fixed world sun (it changes with the camera's yaw), so the sun is
   // placed relative to the camera: SNAP_ATMOS_SHAFT_AZIMUTH degrees to the right of the view direction (0 = straight ahead), SNAP_ATMOS_SHAFT_ELEVATION above the horizon.
-  const bool doShafts = wn.shafts;
+  const bool doShafts = wn.shafts, doClouds = wn.clouds, doSky = wn.sky;
   const int dbgMode = dev_envi("SNAP_ATMOS_DEBUG", 0, 0, 8);
   float L[3] = {0, 1, 0};
-  if (doShafts) {
+  if (doShafts || doSky) {   // the camera-relative sun (shafts and the sky gradient share it)
     double h[4]; const double pin[4] = {0.0, 0.0, 1e-6, 1.0};
     for (int r = 0; r < 4; r++) h[r] = cam->ivp[r][0] * pin[0] + cam->ivp[r][1] * pin[1] + cam->ivp[r][2] * pin[2] + cam->ivp[r][3] * pin[3];
     double fx = h[0] / h[3] - cam->eye[0], fz = h[2] / h[3] - cam->eye[2];
@@ -295,14 +299,14 @@ void Pre(ReplayCtx& cx) {
     L[0] = (float)(std::cos(el) * hx); L[1] = (float)std::sin(el); L[2] = (float)(std::cos(el) * hz);
   }
   const bool doFog = wn.fog, doExpo = wn.expo, doBloom = wn.bloom;
-  if (!doShafts && !doFog && !doExpo && !doBloom) return;
-  const bool needStats = doFog || doExpo || doBloom || doShafts;   // bloom and shafts need the mean luminance (relative threshold, scene scale)
+  if (!doShafts && !doFog && !doExpo && !doBloom && !doClouds && !doSky) return;
+  const bool needStats = true;   // every effect reads the mean luminance or the sky colour state   // bloom and shafts need the mean luminance (relative threshold, scene scale)
   const int nLev = doBloom ? kLevels : (needStats ? 2 : 0);
 
   const auto now = std::chrono::steady_clock::now();
   float dt = g.haveT ? std::chrono::duration<float>(now - g.lastT).count() : 0.05f;
   dt = std::min(0.25f, std::max(0.001f, dt));
-  g.lastT = now; g.haveT = true;
+  g.lastT = now; g.haveT = true; g.cloudTime += dt;
   const bool histOk = g.haveHist && g_presentCount - g.lastPresent <= 120;
 
   float jx, jy; FxJitter(&jx, &jy);
@@ -312,24 +316,30 @@ void Pre(ReplayCtx& cx) {
   for (int i = 0; i < 3; i++) { u.eye[i] = (float)cam->eye[i]; u.light[i] = L[i]; }
   u.light[3] = (float)(g_presentCount & 1023);
   u.size[0] = (float)g.w; u.size[1] = (float)g.h; u.size[2] = jx; u.size[3] = jy;
-  u.cam[0] = cam->nearZ; u.cam[1] = doShafts ? 1.f : 0.f; u.cam[2] = dt; u.cam[3] = histOk ? 1.f : 0.f;
+  u.cam[0] = cam->nearZ; u.cam[1] = (doShafts || doSky) ? 1.f : 0.f; u.cam[2] = dt; u.cam[3] = histOk ? 1.f : 0.f;
   // every tunable goes through dev_envf: plain getenv without SNAP_DEV, a live param (F1 Tuning page, ctl `set`) with it
   u.fog[0] = dev_envf("SNAP_ATMOS_FOG_DENSITY", 0.002f, 0.f, 0.1f); u.fog[1] = dev_envf("SNAP_ATMOS_FOG_FALLOFF", 0.12f, 0.f, 1.f);
   u.fog[2] = dev_envf("SNAP_ATMOS_FOG_BASE", 0.f, -50.f, 50.f); u.fog[3] = dev_envf("SNAP_ATMOS_FOG_MAX", 0.55f, 0.f, 1.f);
   u.fogB[0] = dev_envf("SNAP_ATMOS_FOG_START", 4.f, 0.f, 100.f);
-  u.shaft[0] = dev_envf("SNAP_ATMOS_SHAFT_INTENSITY", 0.35f, 0.f, 8.f); u.shaft[1] = dev_envf("SNAP_ATMOS_SHAFT_DECAY", 0.95f, 0.5f, 1.f);
+  u.shaft[0] = dev_envf("SNAP_ATMOS_SHAFT_INTENSITY", 0.9f, 0.f, 8.f); u.shaft[1] = dev_envf("SNAP_ATMOS_SHAFT_DECAY", 0.95f, 0.5f, 1.f);
   u.shaft[2] = dev_envf("SNAP_ATMOS_SHAFT_LENGTH", 0.45f, 0.05f, 1.5f);
   u.shaft[3] = (float)dev_envi("SNAP_ATMOS_SHAFT_STEPS", 24, 4, 64);
-  u.shaftB[0] = dev_envf("SNAP_ATMOS_SHAFT_G", 0.55f, 0.f, 0.95f); u.shaftB[1] = 0.f;
-  u.shaftB[2] = 0.f; u.shaftB[3] = 0.f;
+  u.shaftB[0] = dev_envf("SNAP_ATMOS_SHAFT_G", 0.55f, 0.f, 0.95f); u.shaftB[1] = dev_envf("SNAP_ATMOS_SHAFT_AIR", 0.03f, 0.f, 1.f);
+  u.shaftB[2] = dev_envf("SNAP_ATMOS_SHAFT_CONTRAST", 2.0f, 0.5f, 6.f); u.shaftB[3] = 0.f;
   u.sunCol[0] = 1.0f; u.sunCol[1] = 0.88f; u.sunCol[2] = 0.65f;
   if (const char* sc = getenv("SNAP_ATMOS_SUN")) { float a, b, d; if (sscanf(sc, "%f,%f,%f", &a, &b, &d) == 3) { u.sunCol[0] = a; u.sunCol[1] = b; u.sunCol[2] = d; } }
   u.expo[0] = dev_envf("SNAP_ATMOS_EXPOSURE_KEY", 1.f, -8.f, 4.f); u.expo[1] = dev_envf("SNAP_ATMOS_EXPOSURE_STRENGTH", 0.5f, 0.f, 1.f);
   u.expo[2] = dev_envf("SNAP_ATMOS_EXPOSURE_MIN", 0.6f, 0.1f, 1.f); u.expo[3] = dev_envf("SNAP_ATMOS_EXPOSURE_MAX", 2.f, 1.f, 8.f);
   u.expoB[0] = dev_envf("SNAP_ATMOS_EXPOSURE_TIME", 0.7f, 0.05f, 5.f);
-  u.bloom[0] = dev_envf("SNAP_ATMOS_BLOOM_STRENGTH", 0.1f, 0.f, 1.f); u.bloom[1] = dev_envf("SNAP_ATMOS_BLOOM_THRESHOLD", 3.f, 0.f, 16.f); u.bloom[2] = dev_envf("SNAP_ATMOS_BLOOM_KNEE", 0.5f, 0.f, 1.f);
+  u.bloom[0] = dev_envf("SNAP_ATMOS_BLOOM_STRENGTH", 0.2f, 0.f, 1.f); u.bloom[1] = dev_envf("SNAP_ATMOS_BLOOM_THRESHOLD", 1.5f, 0.f, 16.f); u.bloom[2] = dev_envf("SNAP_ATMOS_BLOOM_KNEE", 0.5f, 0.f, 1.f);
   u.flags[0] = doFog; u.flags[1] = doShafts; u.flags[2] = doExpo; u.flags[3] = doBloom;
   u.dbg[0] = (float)dbgMode;
+  u.cloud[0] = dev_envf("SNAP_ATMOS_CLOUD_STRENGTH", 0.3f, 0.f, 1.f); u.cloud[1] = dev_envf("SNAP_ATMOS_CLOUD_SCALE", 120.f, 5.f, 5000.f);
+  u.cloud[2] = dev_envf("SNAP_ATMOS_CLOUD_SPEED", 15.f, 0.f, 500.f); u.cloud[3] = dev_envf("SNAP_ATMOS_CLOUD_COVER", 0.55f, 0.f, 1.f);
+  u.cloudB[0] = (float)std::fmod(g.cloudTime, 100000.0); u.cloudB[1] = dev_envf("SNAP_ATMOS_CLOUD_FADE", 4000.f, 20.f, 40000.f);
+  u.sky[0] = dev_envf("SNAP_ATMOS_SKY_STRENGTH", 1.0f, 0.f, 3.f); u.sky[1] = dev_envf("SNAP_ATMOS_SKY_HAZE", 0.25f, 0.f, 2.f);
+  u.sky[2] = dev_envf("SNAP_ATMOS_SKY_GLOW", 0.35f, 0.f, 3.f); u.sky[3] = dev_envf("SNAP_ATMOS_SKY_ZENITH", 0.15f, 0.f, 0.8f);
+  u.flags2[0] = doClouds; u.flags2[1] = doSky;
 
   // all uniform slots first (slot 0 main, 1+i downsample i, 7+i upsample i), one barrier, then the passes
   MemBar(cx.cb);
@@ -394,7 +404,7 @@ void Pre(ReplayCtx& cx) {
       cw = cam->vp[3][0] * ex[0] + cam->vp[3][1] * ex[1] + cam->vp[3][2] * ex[2] + cam->vp[3][3];
       static int sl; if (sl++ % 90 == 0) fprintf(stderr, "atmos: sun clip w %.3f ndc (%.3f %.3f) L (%.3f %.3f %.3f) eye (%.1f %.1f %.1f)\n", cw, cw != 0 ? cxn / cw : 0.0, cw != 0 ? cyn / cw : 0.0, L[0], L[1], L[2], cam->eye[0], cam->eye[1], cam->eye[2]);
     }
-    static int logged; if (logged++ < 3) fprintf(stderr, "atmos: p%d %ux%u shafts %d fog %d exposure %d bloom %d (levels %d) debug %d light toward (%.3f %.3f %.3f) history %d dt %.1f ms\n", g_presentCount, g.w, g.h, (int)doShafts, (int)doFog, (int)doExpo, (int)doBloom, nLev, dbgMode, L[0], L[1], L[2], (int)histOk, dt * 1000.f);
+    static int logged; if (logged++ < 3) fprintf(stderr, "atmos: p%d %ux%u shafts %d fog %d exposure %d bloom %d clouds %d sky %d (levels %d) debug %d light toward (%.3f %.3f %.3f) history %d dt %.1f ms\n", g_presentCount, g.w, g.h, (int)doShafts, (int)doFog, (int)doExpo, (int)doBloom, (int)doClouds, (int)doSky, nLev, dbgMode, L[0], L[1], L[2], (int)histOk, dt * 1000.f);
   }
   FxDepthDone(cx, z, prevZ);
 }

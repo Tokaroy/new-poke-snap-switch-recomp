@@ -19,6 +19,10 @@ layout(set = 0, binding = 4, std140) uniform U {
     vec4 flags;    // x: fog on, y: shafts on, z: exposure on, w: bloom on
     vec4 pass;     // per pass: x first downsample (1) or not, zw: destination size in pixels
     vec4 dbg;
+    vec4 cloud;    // cloud shadows: x strength, y world units per noise cell, z wind speed (units/s), w coverage 0..1
+    vec4 cloudB;   // x time (s), y fade-out distance, zw: unused
+    vec4 sky;      // sky gradient: x strength (all terms), y horizon haze, z sun glow, w zenith darkening
+    vec4 flags2;   // x: cloud shadows on, y: sky gradient on
 } u;
 
 float lumOf(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }

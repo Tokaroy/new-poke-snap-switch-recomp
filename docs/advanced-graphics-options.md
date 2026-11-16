@@ -41,7 +41,7 @@ The groups below are how rows are described in this document and in help text. O
 | Post effects & HDR | Output tab (HDR expand, HDR mode widen, HDR peak Auto) |
 | Frame rate & pacing | Display tab (widen frame cap) |
 | Lens | New tab "Lens" (tab 15, appended after Interface): Zoom bokeh, Motion blur. Both display only, see `docs/lens-effects.md` |
-| Atmosphere | New tab "Atmosphere" (tab 16, appended after Lens; tab 11 was full at its 6-row limit): Light shafts, Height fog, Auto exposure, Soft glow. All display only, see `docs/atmosphere.md` |
+| Atmosphere | New tab "Atmosphere" (tab 16, appended after Lens; tab 11 was full at its 6-row limit): Light shafts, Height fog, Auto exposure, Soft glow, Cloud shadows, Sky gradient. All display only, see `docs/atmosphere.md` |
 
 ## 4. Row table
 
@@ -67,10 +67,12 @@ Kind is two-choice (c) or pulldown (p). "Widen" means the key already has a row;
 | Shadows & lighting | Soft particles (New) | p, 11 | default (Off), 1 (On) | default (Off) | `SNAP_SOFT_PARTICLES` / `soft_particles` | Restart | Landed 2026-11-16: dust, splash and pollen layer drawn at the scene's resolution. Applies after restart. | Particle fill 4x; about +0.0 ms in a light frame |
 | Lens | Zoom bokeh (New, 2026-11-15) | p, 4 | Off, Light 0.6, Medium 1, Strong 1.6 | Off | `SNAP_BOKEH_DOF` / `gfx_bokeh_dof` | Restart | Round background blur while you zoom, focused on the reticle. Photos stay sharp. Applies after restart. | Moderate (see `docs/lens-effects.md`); nothing when not zoomed |
 | Lens | Motion blur (New, 2026-11-15) | p, 4 | Off, Light 0.5, Medium 1, Strong 2 | Off | `SNAP_MOTION_BLUR` / `gfx_motion_blur` | Restart | Blur along the camera motion while the ride moves or you turn. Photos stay sharp. Applies after restart. | Low to moderate (see `docs/lens-effects.md`) |
-| Atmosphere | Light shafts (New, 2026-11-15) | c | Off, On | Off | `SNAP_ATMOS_SHAFTS` / `atmos_shafts` | Restart | Soft rays of sunlight through gaps in leaves and rock, pointing at the sun. Photos are unchanged. Applies after restart. | About 0.5 ms at 4K (`docs/atmosphere.md`) |
+| Atmosphere | Light shafts (New, 2026-11-15) | c | Off, On | Off | `SNAP_ATMOS_SHAFTS` / `atmos_shafts` | Restart | Soft rays of sunlight through gaps in leaves and rock, pointing at the sun. Photos are unchanged. Applies after restart. | About 0.4 ms at 4K (`docs/atmosphere.md`) |
 | Atmosphere | Height fog (New, 2026-11-15) | c | Off, On | Off | `SNAP_ATMOS_FOG` / `atmos_fog` | Restart | Haze that thickens with distance and toward the ground, tinted by the sky. Photos are unchanged. Applies after restart. | About 0.18 ms at 4K |
 | Atmosphere | Auto exposure (New, 2026-11-15) | c | Off, On | Off | `SNAP_ATMOS_EXPOSURE` / `atmos_exposure` | Restart | Eyes adjust over about a second: dark caves lift, bright beaches ease down. Photos are unchanged. Applies after restart. | About 0.16 ms at 4K |
 | Atmosphere | Soft glow (New, 2026-11-15) | c | Off, On | Off | `SNAP_ATMOS_BLOOM` / `atmos_bloom` | Restart | A soft glow around bright highlights without washing the picture out. Photos are unchanged. Applies after restart. | About 0.27 ms at 4K |
+| Atmosphere | Cloud shadows (New, 2026-11-16) | c | Off, On | Off | `SNAP_ATMOS_CLOUDS` / `atmos_clouds` | Restart | Slow cloud shadows drift across the ground and water. Photos are unchanged. Applies after restart. | About 0.2 ms at 4K |
+| Atmosphere | Sky gradient (New, 2026-11-16) | c | Off, On | Off | `SNAP_ATMOS_SKY` / `atmos_sky` | Restart | A warm glow toward the sun, pale haze at the horizon and a deeper blue overhead. Photos are unchanged. Applies after restart. | About 0.15 ms at 4K |
 | Water | Water reflections (New, 2026-11-15) | c | Off, On | Off | `SNAP_WATER_SSR` / `water_ssr` | Live | The sea mirrors the shore, rocks and Pokémon around it. Photos are unchanged. | One full-screen pass plus a copy while the sea is on screen (see `docs/water-effects.md`) |
 | Water | Water caustics (New, 2026-11-15) | c | Off, On | Off | `SNAP_WATER_CAUSTICS` / `water_caustics` | Live | Rippling light patterns on shallow sea floors and rocks. Photos are unchanged. | Same pass as reflections; no extra pass |
 | Water | Shoreline foam (New, 2026-11-15) | c | Off, On | Off | `SNAP_WATER_FOAM` / `water_foam` | Live | White foam where the water meets sand and rock. Photos are unchanged. | Same pass as reflections; no extra pass |

@@ -306,7 +306,7 @@ for _t in TABS:
             _r['default'] = _VD[VISUAL_KEYS[_r['key']]]
     # Atmosphere effects (runtime/nvn/nvn_atmos.cpp, docs/atmosphere.md), display only, all off by default, never drawn in photos. Tab 11 (Shadows & AO) had one free slot
     # by the time these landed, so they take a tab of their own (tab 16, the first of a fourth set). Keys atmos_* -> SNAP_ATMOS_* (settings.cpp kEnvKeys)
-    ('Atmosphere', 'Light, haze and glow. Photos are unchanged.', [
+    ('Atmosphere', 'Light, haze, glow, clouds and sky. Photos are unchanged.', [
         row('Light shafts', 'p', 'opt', 'atmos_shafts', 'default', (('default', 'Off'), ('1', 'On')),
             'Sunbeams through leaves and haze. Photos are unchanged.' + R),
         row('Height fog', 'p', 'opt', 'atmos_fog', 'default', (('default', 'Off'), ('1', 'On')),
@@ -315,6 +315,10 @@ for _t in TABS:
             'Caves open up and bright beaches ease down over about a second. Photos are unchanged.' + R),
         row('Soft glow', 'p', 'opt', 'atmos_bloom', 'default', (('default', 'Off'), ('1', 'On')),
             'A wide, soft glow around the brightest highlights. Photos are unchanged.' + R),
+        row('Cloud shadows', 'p', 'opt', 'atmos_clouds', 'default', (('default', 'Off'), ('1', 'On')),
+            'Slow cloud shadows drift across the ground. Photos are unchanged.' + R),
+        row('Sky gradient', 'p', 'opt', 'atmos_sky', 'default', (('default', 'Off'), ('1', 'On')),
+            'Warm glow toward the sun, pale horizon haze, deeper blue overhead. Photos are unchanged.' + R),
     ]),
     # Water effects (runtime/nvn/nvn_ssr.cpp, docs/water-effects.md), display only, off by default, never drawn in photos. Live through snap_water_fx_set.
     # Keys water_ssr / water_caustics / water_foam -> SNAP_WATER_SSR / SNAP_WATER_CAUSTICS / SNAP_WATER_FOAM (settings.cpp kEnvKeys); stored "1" or erased.
