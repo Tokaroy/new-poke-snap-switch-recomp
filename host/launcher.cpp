@@ -88,6 +88,9 @@ namespace snap_launcher {
 std::string check_romfs(const std::string& root, const hle::Json& data) {
   std::error_code ec;
   if (!fs::is_directory(fs::u8path(root), ec))
+extern "C" void snap_crashlog_rotate(const wchar_t* logs_dir);   // host/mods/crashlog.cpp
+extern "C" void snap_crashlog_set_dir(const char* utf8_dir);
+
     return "The game folder cannot be found:\n" + root + "\n\nIs the drive or network share connected? Use \"Change game folder\" to pick it again.";
   const hle::Json* sents = data.get("sentinels");
   if (!sents || sents->a.empty()) return "";   // no published check shipped: nothing to compare
@@ -817,3 +820,5 @@ bool prepare(Result& r) {
 }
 
 }  // namespace snap_launcher
+    snap_crashlog_rotate(logs.c_str());   // host/mods/crashlog.cpp: last run's stderr.log and trace.log become *.prev
+    snap_crashlog_set_dir(U8(logs.wstring()).c_str());   // _crash.txt goes next to the log

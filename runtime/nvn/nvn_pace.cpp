@@ -5,6 +5,7 @@
 #include <mmsystem.h>
 
 #include "nvn_pace.h"
+#include "nvn_quirks.h"   // driver quirk table (present_wait)
 
 #include <algorithm>
 #include <atomic>
@@ -341,7 +342,7 @@ double PanelHz() {
 }
 
 void AppendDeviceExt(VkPhysicalDevice phys, std::vector<const char*>& dext, VkPhysicalDeviceVulkan11Features* f11) {
-  if (kLegacy || EnvZero("SNAP_PACE_WAIT")) return;
+  if (kLegacy || EnvZero("SNAP_PACE_WAIT") || snap_quirks::Off("present_wait")) return;
   uint32_t n = 0;
   vkEnumerateDeviceExtensionProperties(phys, nullptr, &n, nullptr);
   std::vector<VkExtensionProperties> ep(n);

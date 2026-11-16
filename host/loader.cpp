@@ -51,9 +51,11 @@ static thread_local GuestThread *g_cur = nullptr;
 thread_local Cpu *loader::g_tls_cpu = nullptr;   // the Cpu of the last host call on this thread (crash reports)
 
 void (*g_fatal_hook)(const char *) = nullptr;
+extern "C" void snap_crashlog_fatal(const char *kind, const char *detail);   // host/mods/crashlog.cpp: _crash.txt
 static void die(const char *msg) {
     fprintf(stderr, "loader: %s\n", msg);
     fflush(stderr);
+    snap_crashlog_fatal("fatal load error", msg);
     if (g_fatal_hook) g_fatal_hook(msg);   // the launcher shows it in a dialog
     exit(2);
 }

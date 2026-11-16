@@ -126,8 +126,13 @@ static void crash_host_stack(const CONTEXT *src) {
 }
 static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep) {
     Cpu *g_cpu_dbg = g_tls_cpu ? g_tls_cpu : ::g_cpu_dbg;
+extern "C" void snap_crashlog_seh(EXCEPTION_POINTERS *ep, const char *guest, int stage);   // host/mods/crashlog.cpp: _crash.txt (stage 1 early, 2 after the stack was printed)
     fprintf(stderr, "CRASH on guest thread type %#llx (tid %lu)\n", (unsigned long long)os_current_thread_type(), GetCurrentThreadId());
     fprintf(stderr, "HOST CRASH code=%#lx at host %p, accessed %p\n", ep->ExceptionRecord->ExceptionCode,
+    char crash_guest[400] = "";
+    if (g_cpu_dbg) snprintf(crash_guest, sizeof crash_guest, "thread type %#llx, x0=%#llx x1=%#llx sp=%#llx", (unsigned long long)os_current_thread_type(), (unsigned long long)g_cpu_dbg->x[0], (unsigned long long)g_cpu_dbg->x[1], (unsigned long long)g_cpu_dbg->sp);
+    snap_crashlog_seh(ep, crash_guest, 1);   // first report before anything that can fail (symbolize); the stage 2 call below has x30 too
+    if (g_cpu_dbg) { const size_t n = strlen(crash_guest); snprintf(crash_guest + n, sizeof crash_guest - n, " x30=%s", symbolize(g_cpu_dbg->x[30]).c_str()); }
             ep->ExceptionRecord->ExceptionAddress,
             ep->ExceptionRecord->NumberParameters > 1 ? (void *)ep->ExceptionRecord->ExceptionInformation[1] : nullptr);
     fprintf(stderr, "  host image base %p, rip offset %#llx; guest cpu x0=%#llx x1=%#llx x30=%s sp=%#llx\n", (void *)GetModuleHandleA(nullptr),
@@ -170,6 +175,7 @@ static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep) {
     fflush(stderr);
     return EXCEPTION_EXECUTE_HANDLER;
 }
+    snap_crashlog_seh(ep, crash_guest, 2);
 
 // ---------------------------------------------------------------------------------------------------- test (a): C++ exceptions
 
@@ -462,11 +468,14 @@ static std::atomic<uint64_t> g_presents{0}, g_submits{0};
 extern "C" void snap_highfps_on_present(uint64_t n);
 static void hook_present(void *, int slot, int w, int h) {
     snap_window_on_present();   // blocks here while the window is paused (focus lost)
+extern "C" void snap_crashlog_test_tick(unsigned long long n);   // host/mods/crashlog.cpp (SNAP_CRASH_TEST)
+extern "C" void snap_crashlog_install();                            // host/mods/crashlog.cpp: abort() and terminate write _crash.txt
     uint64_t n = ++g_presents;
     snap_highfps_on_present(n);   // host/mods/highfps.cpp (SNAP_FPS); returns at once when unused
     if (n <= 3 || n % 30 == 0) trace("nvn: present #%llu slot %d %dx%d (submits %llu)", (unsigned long long)n, slot, w, h, (unsigned long long)g_submits.load());
 }
 static void hook_submit(void *, int, int) { ++g_submits; }
+    snap_crashlog_test_tick(n);   // host/mods/crashlog.cpp: SNAP_CRASH_TEST forced crash (test aid); one cached getenv otherwise
 extern "C" uint64_t snap_present_count() { return g_presents.load(std::memory_order_relaxed); }   // host/mods/lodanim.cpp (SNAP_DRAW_DISTANCE_AB)
 // The game window. nn::vi::GetNativeWindow must hand the NVN layer a real HWND (nvnWindowBuilderSetNativeWindow -> Vulkan Win32
 // surface); the HLE vi layer only returns a token. A dedicated UI thread owns the window and pumps its messages; closing the
@@ -877,6 +886,7 @@ static DWORD WINAPI run_thread(LPVOID) {
         if (oc.tp_init_var && !*(uint64_t *)oc.tp_init_var) *(uint64_t *)oc.tp_init_var = add_stub("tp_init", tp_init_hook)->addr;
         if (oc.tp_destroy_var && !*(uint64_t *)oc.tp_destroy_var) *(uint64_t *)oc.tp_destroy_var = add_stub("tp_destroy", tp_destroy_hook)->addr;
         trace("os_init: tp_init_var=%#llx (value %#llx) tp_destroy_var=%#llx", (unsigned long long)oc.tp_init_var, oc.tp_init_var ? (unsigned long long)*(uint64_t *)oc.tp_init_var : 0ull, (unsigned long long)oc.tp_destroy_var);
+    snap_crashlog_install();
     }
     if (full) {
         g_svc_handler = svc_dispatch;

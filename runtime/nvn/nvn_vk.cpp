@@ -19,6 +19,7 @@
 #include "nvn_freecam.h"           // free camera clean shot
 #include "nvn_hdr.h"   // HDR10 output (SNAP_HDR=1)
 #include "nvn_downsample.h"   // [area] present downscale
+#include "nvn_quirks.h"   // driver quirk table (SNAP_QUIRK)
 #include "nvn_rt.h"   // [rt] SNAP_RT=1 ray tracing track
 #include "nvn_pace.h"   // [pace] frame clock for the limiter and the guest vsync (SNAP_PACE=legacy restores the old limiter)
 #include "upscale/upscale_nvn.h"   // [upscale] DLSS / FSR / XeSS (SNAP_UPSCALER)
@@ -81,9 +82,11 @@ void LogError(const char* fmt, ...) {
 
 // VK_ERROR_DEVICE_LOST / SURFACE_LOST never recover here (no device or surface rebuild): without this the guest keeps running on a
 // frozen window and the log fills at frame rate. Same exit as closing the window: wait (5 s) for a save in flight, then leave.
+extern "C" void snap_crashlog_fatal(const char* kind, const char* detail);   // host/mods/crashlog.cpp: _crash.txt (Options > Problem report picks it up)
 static void FatalGpuLoss(const char* where, VkResult r) {
   LogError("%s: %s (%d): unrecoverable, exiting", where, r == VK_ERROR_DEVICE_LOST ? "VK_ERROR_DEVICE_LOST" : "VK_ERROR_SURFACE_LOST_KHR", (int)r);
   fflush(stderr);
+  { char d[160]; snprintf(d, sizeof d, "%s: %s", where, r == VK_ERROR_DEVICE_LOST ? "VK_ERROR_DEVICE_LOST" : "VK_ERROR_SURFACE_LOST_KHR"); snap_crashlog_fatal("fatal GPU error", d); }
   snap_fs_drain_for_exit(5000);
   ExitProcess(1);
 }
@@ -291,6 +294,7 @@ bool Host::Init(bool wantValidation) {
   if (!phys) { LogError("no Vulkan 1.3 GPU with graphics+present queue"); return false; }
   vkGetPhysicalDeviceMemoryProperties(phys, &memProps);
   Log("GPU: %s", props.deviceName);
+  snap_quirks::Init(props.vendorID, props.deviceID, props.driverVersion, props.deviceName);   // nvn_quirks.h: which entries apply to this GPU and driver
 
   VkPhysicalDeviceFeatures2 f2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
   vkGetPhysicalDeviceFeatures2(phys, &f2);
@@ -348,15 +352,15 @@ bool Host::Init(bool wantValidation) {
     qpv.pNext = &qcb; qcb.pNext = &q13;
     VkPhysicalDeviceFeatures2 q2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &qpv};
     vkGetPhysicalDeviceFeatures2(phys, &q2);
-    if (has(VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME) && qpv.provokingVertexLast && on("SNAP_VK_PROVOKING")) {
+    if (has(VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME) && qpv.provokingVertexLast && on("SNAP_VK_PROVOKING") && !snap_quirks::Off("provoking_vertex")) {
       dext.push_back(VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME); pvf.provokingVertexLast = VK_TRUE; g_provokingLast = true;
       pvf.pNext = f11.pNext; f11.pNext = &pvf;
     }
-    if (has(VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME) && qcb.customBorderColors && qcb.customBorderColorWithoutFormat && on("SNAP_VK_BORDER")) {
+    if (has(VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME) && qcb.customBorderColors && qcb.customBorderColorWithoutFormat && on("SNAP_VK_BORDER") && !snap_quirks::Off("custom_border_color")) {
       dext.push_back(VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME); cbf.customBorderColors = cbf.customBorderColorWithoutFormat = VK_TRUE; g_customBorder = true;
       cbf.pNext = f11.pNext; f11.pNext = &cbf;
     }
-    if (q13.subgroupSizeControl && on("SNAP_VK_SGPIN")) {
+    if (q13.subgroupSizeControl && on("SNAP_VK_SGPIN") && !snap_quirks::Off("subgroup_pin")) {
       VkPhysicalDeviceVulkan13Properties p13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES};
       VkPhysicalDeviceProperties2 pp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &p13};
       vkGetPhysicalDeviceProperties2(phys, &pp);
