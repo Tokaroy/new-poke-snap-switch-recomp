@@ -63,6 +63,13 @@ GEN = ROOT / 'generated' / ('subset' if MODNAME == 'main' else 'subset_sdk')
 BLD = ROOT / 'build' / ('subset' if MODNAME == 'main' else 'subset_sdk')
 if MODNAME == 'sdk':
     OUT = OUT / 'sdk_diff'
+# SNAP_DIFF_TAG=<name>: a separate output set (analysis/recomp/diff_<name>, generated/subset_<name>, build/subset_<name>) so a sweep does not
+# overwrite the standard report or another run's objects.
+TAG = os.environ.get('SNAP_DIFF_TAG', '')
+if TAG:
+    OUT = OUT / f'diff_{TAG}'
+    GEN = GEN.with_name(GEN.name + f'_{TAG}')
+    BLD = BLD.with_name(BLD.name + f'_{TAG}')
 
 
 def peak_rss_mb():
@@ -179,8 +186,10 @@ QUOTA = [('nvn', 12), ('hot', 2), ('atomic', 75), ('jump_table', 60), ('fp_simd'
          ('loops', 70)]
 
 
-def pick_functions(mod, starts_abs, count, r, extra=()):
-    """Deterministic subset: [(entry, end, category, tags)] in address order plus the Emitter."""
+def pick_functions(mod, starts_abs, count, r, extra=(), sweep=None):
+    """Deterministic subset: [(entry, end, category, tags)] in address order plus the Emitter.
+    sweep=(index, size): instead of the category quotas, slice number `index` of `size` functions out of every function the test can run in
+    isolation (address order); the pool sizes returned then carry 'sweep_total' (slice count basis)."""
     w = mod.words
     if MODNAME == 'sdk':
         import snap_gen
@@ -230,7 +239,16 @@ def pick_functions(mod, starts_abs, count, r, extra=()):
             pools['loops'].append(s)
     picks, seen, out_ = [], set(), []
     end_of = dict(fns)
-    for cat, quota in QUOTA:
+    if sweep is not None:
+        poolset = {k: set(pools[k]) for k, _ in QUOTA}
+        pools['sweep_total'] = list(range(len(feats)))
+        member = {s: [k for k, _ in QUOTA if s in poolset[k]] for s in sorted(feats)[sweep[0] * sweep[1]:(sweep[0] + 1) * sweep[1]]}
+        for s, cats in member.items():
+            tags = check_function(emitter, BASE + s, BASE + end_of[s])
+            if tags is not None:
+                seen.add(s)
+                out_.append((BASE + s, BASE + end_of[s], cats[0] if cats else 'other', tags))
+    for cat, quota in ([] if sweep is not None else QUOTA):
         pool = sorted(set(pools[cat]))
         if cat == 'nvn':
             first = [s for s in NVN_LOADERS if s in pool]
@@ -351,6 +369,10 @@ def main():
     ap.add_argument('--jt-source', choices=('map', 'generator'), default='map', help='jump table targets: the maps or the generator resolver')
     ap.add_argument('--only', default='', help='comma list of hex entry offsets to restrict the picks (debug)')
     ap.add_argument('--show', type=int, default=25)
+    ap.add_argument('--sweep', default='', metavar='I:SIZE', help='slice I (0-based) of SIZE functions out of every function that can run in isolation, instead of the category quotas (driver: tests/snap_sweep.py)')
+    ap.add_argument('--replay', default='', metavar='FILE', help='re-run one minimized repro (a JSON from <out>/repro/) on both sides')
+    ap.add_argument('--sweep-count', action='store_true', help='print how many functions the sweep covers (SWEEP_TOTAL n) and exit')
+    ap.add_argument('--no-minimize',action='store_true', help='skip shrinking the inputs of failing functions')
     args = ap.parse_args()
     lower_priority()
     r = random.Random(args.seed)
@@ -362,7 +384,16 @@ def main():
     T['discover_s'] = round(time.time() - t0, 1)
     t1 = time.time()
     extra = [int(x, 16) for x in args.add.split(',') if x]
-    picks, emitter, pool_sizes, nmain = pick_functions(mod, starts_abs, args.functions, r, extra)
+    replay = json.loads(Path(args.replay).read_text()) if args.replay else None
+    if replay:
+        args.only = replay['entry']
+        extra = [int(replay['entry'], 16)]
+    sweep = tuple(int(t) for t in args.sweep.split(':')) if args.sweep else None
+    if args.sweep_count:
+        _, _, pool_sizes, _ = pick_functions(mod, starts_abs, 0, r, (), (0, 0))
+        print(f'SWEEP_TOTAL {pool_sizes["sweep_total"]}')
+        return 0
+    picks, emitter, pool_sizes, nmain = pick_functions(mod, starts_abs, args.functions, r, extra, sweep)
     if args.only:
         want = {BASE + int(x, 16) for x in args.only.split(',')}
         main_set = picks[:nmain]
@@ -472,6 +503,17 @@ def main():
     for k, (e, en, cat, tags) in enumerate(picks):
         per_fn[k] = {'cases': 0, 'skips': Counter()}
         runner.begin(e, en, sites[e])
+        if replay:
+            fpcr, x, sp, nzcv, v, patches = case_from_json(replay['case'])
+            res = runner._run1((fpcr, x, sp, nzcv, v), patches, args.steps, False)
+            if isinstance(res, tuple) and not isinstance(res[0], str):
+                cases.append((k, fpcr, x, sp, nzcv, v, True, res[1], sorted(patches.items())))
+                expect.append(res[0])
+                per_fn[k]['cases'] += 1
+            else:
+                per_fn[k]['skips'][str(res)[:80]] += 1
+            runner.end()
+            continue
         for ci in range(args.cases + args.retry_untested):
             if ci >= args.cases and per_fn[k]['cases'] >= 3:
                 break          # the extra states only top up a function that has fewer than 3 accepted cases
@@ -549,6 +591,115 @@ def main():
                      'tags': ','.join(sorted(tags)), 'status': st, 'cases_run': ncmp[k], 'cases_unicorn_ok': per_fn[k]['cases'],
                      'detail': detail})
     OUT.mkdir(parents=True, exist_ok=True)
+
+    # ---- mismatches: shrink the inputs of every failing function to the fewest non-zero registers that still differ, and save a repro
+    def group_of(k):
+        for exe_, idxs_ in harness_groups:
+            if k in idxs_:
+                return exe_, idxs_.index(k)
+        return None, None
+
+    def still_fails(k, cands):
+        """Per candidate state: None (Unicorn cannot run it), [] (the two sides agree) or the differences."""
+        exe_, local = group_of(k)
+        e_, en_ = picks[k][0], picks[k][1]
+        runner.begin(e_, en_, sites[e_])
+        rows_, exp_, idx_ = [], [], []
+        for j, c in enumerate(cands):
+            res = runner._run1((c['fpcr'], c['x'], c['sp'], c['nz'], c['v']), c['patches'], args.steps, False)
+            if isinstance(res, tuple) and not isinstance(res[0], str):
+                rows_.append((local, c['fpcr'], c['x'], c['sp'], c['nz'], c['v'], True, res[1], sorted(c['patches'].items())))
+                exp_.append(res[0])
+                idx_.append(j)
+        runner.end()
+        out_ = [None] * len(cands)
+        if rows_:
+            recs_, err_ = run_harness(exe_, work, buf0, rows_, [(BASE, BLD / 'main.img')], stubs=True)
+            for jx, rec in enumerate(recs_):
+                out_[idx_[jx]] = diff_state(rec, exp_[jx], check_pc=False, check_mem=True, check_nzcv=False)
+        return out_
+
+    def reductions(c):
+        """Single-field simplifications of a state: [(label, new state)]."""
+        out_ = []
+        for i in range(29):
+            if c['x'][i]:
+                n = dict(c, x=list(c['x'])); n['x'][i] = 0; out_.append((f'x{i}=0', n))
+        for i in range(32):
+            if c['v'][i]:
+                n = dict(c, v=list(c['v'])); n['v'][i] = 0; out_.append((f'v{i}=0', n))
+        if c['nz']:
+            out_.append(('nzcv=0', dict(c, nz=0)))
+        if c['fpcr']:
+            out_.append(('fpcr=0', dict(c, fpcr=0)))
+        for a in list(c['patches']):
+            n = dict(c, patches=dict(c['patches'])); del n['patches'][a]; out_.append((f'patch {a:#x} dropped', n))
+        return out_
+
+    def minimize(k, ci):
+        _, fpcr0, x0, sp0, nz0, v0, _, _, patches0 = cases[ci]
+        cur = {'fpcr': fpcr0, 'x': list(x0), 'sp': sp0, 'nz': nz0, 'v': list(v0), 'patches': dict(patches0)}
+        d_cur = still_fails(k, [cur])[0] or []
+        for _round in range(8):
+            reds = reductions(cur)
+            if not reds:
+                break
+            res = still_fails(k, [n for _, n in reds])
+            keep = [(lab, n, d) for (lab, n), d in zip(reds, res) if d]
+            if not keep:
+                break
+            comb = dict(cur, x=list(cur['x']), v=list(cur['v']), patches=dict(cur['patches']))
+            for lab, n, _ in keep:       # apply every reduction that kept the failure on its own, then check them together
+                for i_ in range(len(cur['x'])):
+                    if n['x'][i_] != cur['x'][i_]:
+                        comb['x'][i_] = n['x'][i_]
+                for i_ in range(len(cur['v'])):
+                    if n['v'][i_] != cur['v'][i_]:
+                        comb['v'][i_] = n['v'][i_]
+                comb['nz'] = n['nz'] if n['nz'] != cur['nz'] else comb['nz']
+                comb['fpcr'] = n['fpcr'] if n['fpcr'] != cur['fpcr'] else comb['fpcr']
+                if n['patches'] != cur['patches']:
+                    comb['patches'] = {a: b for a, b in comb['patches'].items() if a in n['patches']}
+            dc = still_fails(k, [comb])[0]
+            if dc:
+                cur, d_cur = comb, dc
+            else:
+                cur, d_cur = keep[0][1], keep[0][2]
+        return cur, d_cur
+
+    mism = []
+    for k in sorted(fails):
+        ci, d0 = fails[k]
+        e, en, cat, tags = picks[k]
+        ent = f'{e - BASE:#x}'
+        rec = {'entry': ent, 'end': f'{en - BASE:#x}', 'insns': (en - e) // 4, 'category': cat, 'tags': sorted(tags), 'status': 'fail',
+               'first_diff': d0[:6], 'seed': args.seed, 'cflags': args.cflags}
+        try:
+            if args.no_minimize:
+                raise RuntimeError('minimize off')
+            cur, dmin = minimize(k, ci)
+            rec['case'] = case_to_json(cur['fpcr'], cur['x'], cur['sp'], cur['nz'], cur['v'], cur['patches'])
+            rec['minimized'] = True
+            rec['diff'] = dmin[:12]
+        except Exception as ex:   # the original failing case is still a repro
+            _, fpcr0, x0, sp0, nz0, v0, _, _, patches0 = cases[ci]
+            rec['case'] = case_to_json(fpcr0, x0, sp0, nz0, v0, dict(patches0))
+            rec['minimized'] = False
+            rec['diff'] = d0[:12]
+            rec['minimize_note'] = str(ex)[:120]
+        nz_regs = len(rec['case']['x']) + len(rec['case']['v'])
+        rec['nonzero_registers'] = nz_regs
+        rec['replay'] = f'SNAP_DIFF_TAG=<tag> tools\\venv-recomp\\Scripts\\python -I tests\\snap_func.py --cflags "{args.cflags}" --replay analysis\\recomp\\{OUT.relative_to(ROOT / "analysis" / "recomp") if TAG else ""}\\repro\\{ent}.json'
+        (OUT / 'repro').mkdir(exist_ok=True)
+        (OUT / 'repro' / f'{ent}.json').write_text(json.dumps(rec, indent=1))
+        (OUT / 'repro' / f'{ent}.s').write_text(disasm_text(img, BASE, e, en) + '\n')
+        (OUT / 'repro' / f'{ent}.c').write_text(lifted_text(gen.fname(e)))
+        mism.append(rec)
+    for k in sorted(crashed):
+        e, en, cat, tags = picks[k]
+        mism.append({'entry': f'{e - BASE:#x}', 'end': f'{en - BASE:#x}', 'insns': (en - e) // 4, 'category': cat, 'tags': sorted(tags),
+                     'status': 'crash', 'diff': [crashed[k][:200]], 'minimized': False, 'seed': args.seed, 'cflags': args.cflags})
+    (OUT / 'mismatches.json').write_text(json.dumps(mism, indent=1))
     cols = list(rows[0])
     with open(OUT / 'diff_results.tsv', 'w', encoding='utf-8') as f:
         f.write('\t'.join(cols) + '\n')
@@ -596,6 +747,34 @@ def make_case(r, rich=False):
     x[30] = SENTINEL
     sp = STACK_TOP - r.randrange(0, 0x100, 16)
     return rand_fpcr(r), x, sp, r.getrandbits(4) << 28, [rand_v(r) for _ in range(32)]
+
+
+def case_to_json(fpcr, x, sp, nzcv, v, patches):
+    """Only the non-zero state: a minimized repro is a handful of registers."""
+    return {'fpcr': hex(fpcr), 'sp': hex(sp), 'nzcv': hex(nzcv),
+            'x': {str(i): hex(val) for i, val in enumerate(x[:31]) if val},
+            'v': {str(i): hex(val) for i, val in enumerate(v) if val},
+            'patches': {hex(a): hex(val) for a, val in dict(patches).items()}}
+
+
+def case_from_json(c):
+    x = [int(c['x'].get(str(i), '0'), 16) for i in range(31)]
+    v = [int(c['v'].get(str(i), '0'), 16) for i in range(32)]
+    return int(c['fpcr'], 16), x, int(c['sp'], 16), int(c['nzcv'], 16), v, {int(a, 16): int(val, 16) for a, val in c['patches'].items()}
+
+
+def lifted_text(fn_name):
+    """The generated C of one function from the current subset chunks (local, gitignored output)."""
+    pat = re.compile(r'(?ms)^void %s\(Cpu \*c\) \{.*?(?=^void f_[0-9a-f]+\(Cpu \*c\) \{|\Z)' % re.escape(fn_name))
+    for f in sorted(GEN.glob('subset_*.c')):
+        m = pat.search(f.read_text())
+        if m:
+            return m.group(0)
+    return ''
+
+
+def disasm_text(img, base, entry, end):
+    return '\n'.join(f'{i.address - base:#08x}  {i.mnemonic:8} {i.op_str}' for i in _CS.disasm(bytes(img[entry - base:end - base]), entry))
 
 
 class Runner:
