@@ -63,6 +63,7 @@ float style_pad_glyph(ImDrawList* dl, ImVec2 pos, float h, int pad_button);     
 
 // ---- audio tab (ui_audio.cpp)
 void tab_audio();
+void access_rows();   // the Accessibility rows of ui_options.cpp (vision, flashing, menu size, mono audio), appended to the Accessibility tab
 
 // ---- shader precompile UI (ui_shaders.cpp)
 bool shader_screen_active(double now);   // first-launch prompt or the progress screen is wanted this frame

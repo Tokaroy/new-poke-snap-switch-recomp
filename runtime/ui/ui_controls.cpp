@@ -392,13 +392,28 @@ void tab_controller() {
 
 void tab_access() {
   Mapping& m = S.edit;
-  desc("Options that change how the controls and this menu behave. They apply at once.");
+  desc("Options that make the game and these menus easier to see and use. Every option starts off and applies at once.");
   ImGui::Spacing();
+  ImGui::TextColored(theme().title, "Controls");
   ImGui::Separator();
   ImGui::Spacing();
   bool ch = false;
   ch |= checkbox("ZL: toggle instead of hold", &m.toggle_zl, "One press holds ZL down until the next press, for players who cannot keep a trigger held. Applies to every ZL binding.");
   ch |= checkbox("ZR: toggle instead of hold", &m.toggle_zr, "The same for ZR, the camera shutter in the game.");
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextUnformatted("Other buttons that toggle");
+  ImGui::SameLine(px(250));
+  for (int b : {kA, kB, kX, kY, kL, kR}) {
+    bool on = (m.toggle_buttons >> b) & 1u;
+    ImGui::PushID(b);
+    if (ImGui::Checkbox(button_name(b), &on)) { if (on) m.toggle_buttons |= 1u << b; else m.toggle_buttons &= ~(1u << b); ch = true; }
+    ImGui::PopID();
+    ImGui::SameLine();
+  }
+  ImGui::NewLine();
+  ImGui::Indent(px(30));
+  desc("A press holds the button down until the next press, for any button the game wants held (zoom, scan, and so on). SNAP_ACCESS_TOGGLE=ZL,Y does the same from a script.");
+  ImGui::Unindent(px(30));
   ImGui::AlignTextToFramePadding();
   ImGui::TextUnformatted("Menu size (UI scale)");
   ImGui::SameLine(px(250));
@@ -409,6 +424,7 @@ void tab_access() {
   desc("Scales text and buttons in this menu. The change applies when you release the slider. The menu also grows with the window on larger screens.");
   ImGui::Unindent(px(30));
   if (ch) apply();
+  access_rows();
 }
 
 void tab_test() {

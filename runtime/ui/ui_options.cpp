@@ -507,6 +507,33 @@ std::vector<Opt>& audio_opts() {
   return v;
 }
 
+// Accessibility rows (hle/access.h, docs/accessibility.md): every one defaults to off. They are stored as settings keys; hle::settings::apply pushes them into
+// hle::access, so a change shows on the next frame, in the game and in the launcher.
+std::vector<Opt>& access_opts() {
+  static std::vector<Opt> v = {
+      {"", "Vision", kSection, kLive, "", ""},
+      {"access_cvd", "Color vision correction", kChoice, kLive,
+       "Shifts colors that are hard to tell apart into ones you can see, over the whole game picture including the HUD and menus. Pick the type that matches your color vision. This menu is not corrected, and photos, the Evaluation and saved screenshots are not changed.",
+       "off", {{"off", "Off"}, {"protanopia", "Protanopia (red-blind)"}, {"deuteranopia", "Deuteranopia (green-blind)"}, {"tritanopia", "Tritanopia (blue-yellow)"}}},
+      {"access_cvd_strength", "Correction strength", kChoice, kLive,
+       "How much of the correction is applied: 10% is a light touch, 100% the full shift.", "100",
+       {{"10", "10%"}, {"20", "20%"}, {"30", "30%"}, {"40", "40%"}, {"50", "50%"}, {"60", "60%"}, {"70", "70%"}, {"80", "80%"}, {"90", "90%"}, {"100", "100%"}}},
+      {"access_flash", "Reduce flashing", kChoice, kLive,
+       "Limits how fast the whole picture can get brighter or darker from one frame to the next, so Illumina Orb bursts, the camera flash and other bright flashes fade in over a few frames instead of snapping. Gentle changes little, Strong spreads a flash over about half a second.",
+       "off", {{"off", "Off"}, {"gentle", "Gentle"}, {"standard", "Standard"}, {"strong", "Strong"}}},
+      {"", "This menu and the launcher", kSection, kLive, "", ""},
+      {"access_ui_size", "Text and menu size", kChoice, kLive,
+       "Makes the launcher and this menu bigger. It multiplies the Menu size slider above. The game's own screens are not changed (see the HUD size row in Display).",
+       "100", {{"100", "100%"}, {"125", "125%"}, {"150", "150%"}, {"200", "200%"}}},
+      {"access_contrast", "High-contrast menus", kToggle, kLive,
+       "Black panels with white text and a bright outline, for this menu and the launcher.", "0"},
+      {"", "Sound", kSection, kLive, "", ""},
+      {"access_mono", "Mono audio", kToggle, kLive,
+       "Plays the same sound in both ears. Useful if you hear well in only one ear or use a single speaker.", "0"},
+  };
+  return v;
+}
+
 // After the Look flips: every option that follows a visual_defaults.h row takes that row's new default (and the "Default (...)" label of the choice rows).
 void refresh_look_defaults() {
   for (auto* list : {&graphics_opts(), &display_opts(), &photo_opts()})
@@ -965,6 +992,10 @@ void audio_output_section() {
   for (const Opt& o : audio_opts()) draw_row(o, true);
 }
 
+void access_rows() {
+  for (const Opt& o : access_opts()) draw_row(o, true);
+}
+
 void tab_mods() {
   const Theme& t = theme();
   if (now_secs() - g_mods_loaded > 3.0) mods_reload();
@@ -1021,7 +1052,7 @@ void tab_mods() {
 // ---- scripted-test entry points (ui_test.cpp): the same code the controls run
 namespace {
 const Opt* find_opt(const std::string& key) {
-  for (auto* list : {&graphics_opts(), &display_opts(), &photo_opts(), &audio_opts()})
+  for (auto* list : {&graphics_opts(), &display_opts(), &photo_opts(), &audio_opts(), &access_opts()})
     for (const Opt& o : *list) if (o.kind != kSection && key == o.key) return &o;
   return nullptr;
 }

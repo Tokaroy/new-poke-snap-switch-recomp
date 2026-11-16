@@ -20,6 +20,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "hle/access.h"
 #include "hle/hle.h"
 #include "hle/input_core.h"
 #include "imgui.h"
@@ -142,6 +143,41 @@ void ensure_window(HWND h) {
 // ---- colors: the swapchain is often an sRGB format, which would brighten straight ImGui colors; pre-convert them
 float lin(float c) { return std::pow(std::clamp(c, 0.0f, 1.0f), 2.2f); }
 ImVec4 fb(const ImVec4& c) { return g.srgb ? ImVec4(lin(c.x), lin(c.y), lin(c.z), c.w) : c; }
+
+// Accessibility: the high-contrast theme (white on black, blue selection, yellow headings) replaces the light palette in place while the row is on.
+// The original values are kept when it is first switched on and put back when it is switched off.
+void set_high_contrast(bool on) {
+  static bool applied = false;
+  static Theme saved;
+  static bool have_saved = false;
+  if (on == applied) return;
+  Theme& t = theme();
+  if (on) {
+    if (!have_saved) { saved = t; have_saved = true; }
+    t.backdrop = ImVec4(0, 0, 0, 0.62f);
+    t.panel = ImVec4(0.02f, 0.02f, 0.02f, 1.0f);
+    t.panel_alt = ImVec4(0.09f, 0.09f, 0.09f, 1.0f);
+    t.border = ImVec4(1, 1, 1, 1);
+    t.text = ImVec4(1, 1, 1, 1);
+    t.text_dim = ImVec4(0.84f, 0.84f, 0.84f, 1);
+    t.title = ImVec4(1.0f, 0.90f, 0.20f, 1);
+    t.accent = ImVec4(0.0f, 0.30f, 0.85f, 1);
+    t.accent_hover = ImVec4(1.0f, 0.85f, 0.0f, 1);
+    t.accent_active = ImVec4(0.10f, 0.45f, 1.0f, 1);
+    t.on_accent = ImVec4(1, 1, 1, 1);
+    t.slot = ImVec4(0.17f, 0.17f, 0.17f, 1);
+    t.slot_hover = ImVec4(0.30f, 0.30f, 0.30f, 1);
+    t.slot_listening = ImVec4(0.0f, 0.55f, 0.65f, 1);
+    t.conflict = ImVec4(1.0f, 0.66f, 0.0f, 1);
+    t.good = ImVec4(0.45f, 1.0f, 0.55f, 1);
+    t.error = ImVec4(1.0f, 0.45f, 0.40f, 1);
+    t.toast_bg = ImVec4(0, 0, 0, 1);
+  } else if (have_saved) {
+    t = saved;
+  }
+  applied = on;
+  g.applied_scale = 0;   // apply_style runs again with the new colors
+}
 
 void apply_style(float scale) {
   const Theme& t = theme();
@@ -416,7 +452,9 @@ static void ui_present_impl(const SnapUiFrame* f) {
   ImDrawData* dd = nullptr;
   {
     std::lock_guard<std::recursive_mutex> lk(g.mu);
-    const float scale = std::clamp(hubr.mapping().ui_scale, 0.5f, 3.0f) * std::max(1.0f, size.y / 1080.0f);
+    const hle::access::State& acc = hle::access::state();
+    set_high_contrast(acc.contrast != 0);
+    const float scale = std::clamp(hubr.mapping().ui_scale, 0.5f, 3.0f) * std::clamp(acc.ui_size, 100, 200) / 100.0f * std::max(0.75f, size.y / 1080.0f);
     if (std::fabs(scale - g.applied_scale) > 0.001f) apply_style(scale);
     ImGui_ImplVulkan_NewFrame();
     ImGui_ImplWin32_NewFrame();
