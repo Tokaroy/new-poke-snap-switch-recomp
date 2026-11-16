@@ -63,14 +63,14 @@ Each strip has a JSON next to it with the pixel diff, the photo-frame check and 
 
 ## Cost at 3840x2160
 
-GPU time of the full-screen pass at 3840x2160 on the beach (`host\ab_capture.ps1` per-pass deltas, `SNAP_WATER_TIME=1`), measured while other jobs ran on the same GPU, so read them as upper bounds. The exclusive bench did not run: it queued behind `build/heavy.priority` and never got all slots, and a non-exclusive repeat drifted 5.0 to 8.5 ms per frame with the ocean off, so it says nothing about the pass. Redo it as `-Exclusive` when no priority reservation is set.
+GPU time of the full-screen pass at 3840x2160 on the beach (`host\ab_capture.ps1` per-pass deltas, `SNAP_WATER_TIME=1`), measured while other jobs ran on the same GPU, so read them as upper bounds. The ocean row was re-measured in one exclusive run (all run slots, no other job on the GPU), numbers below.
 
 | Effect | Extra GPU time |
 |---|---|
 | Reflections | about 0.5 ms (pass) plus about 0.15 ms for the depth copies and the forced depth writes on the sea draws |
 | Caustics | about 0.08 ms |
 | Shoreline foam | about 0.07 ms |
-| Ocean waves | about 0.07 ms more pass time and 0.08 ms of copies with the reflections on, plus the three 128x128 FFT cascades (not timed on their own; they are 4 small compute dispatches per frame). Beach A/B: `analysis/water/ab_beach_ocean.png` |
+| Ocean waves | an exclusive run on the beach (all four water rows on, ocean toggled): `water fx` 0.004 ms off, 0.075 ms on; `water copy` 0.021 ms off, 0.056 ms on; about 0.11 ms in all. The FFT compute (three 128x128 cascades, a few small dispatches) is not listed as its own pass in that run. Strip: `analysis/water/ab_beach_ocean.png` |
 
 The copies and the pass run only while a water effect is on and the sea is on screen.
 
