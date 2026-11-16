@@ -29,6 +29,9 @@ std::atomic<uint64_t> g_inject_buttons{0};   // NpadButton bits a host mod holds
 std::atomic<int64_t> g_inject_until_ns{0};   // steady_clock ns until which g_inject_buttons is held
 std::atomic<bool> g_shot_req{false};          // screenshot key (consume_screenshot)
 bool consume_screenshot() { return g_shot_req.exchange(false); }
+extern "C" void snap_state_request(int op, const char* name);   // runtime/os/os_state.cpp: queue a save (1) or load (2); a worker thread does it
+extern "C" int snap_state_idle();
+extern "C" int snap_state_count(const char* kind);   // "saves..." / "loads..." (ok) or "done..." (ok or refused) finished since the process started
 
 // ---------------------------------------------------------------------------------------------------------------
 // names
@@ -750,12 +753,17 @@ bool Hub::save(std::string* err) {
 //       ride>=<x>              moving and the progress along the rail (rail object +0x70, about 0.9 per second) is at least x
 //       ride_end               a ride was seen and the rail has not moved for 90 presents
 //       film<=<n>              the course HUD's film counter (72 at the start) is at most n
+//       state=idle             no save-state request is queued or running (see the save=/load= tokens below)
+//       state=saves>=<n>       n saves finished ok since the start (also state=loads>=<n>; state=done>=<n> counts refused ones too). Use these after a
+//                              save=/load= line: they cannot miss a request that finished between two polls, `state=idle` can.
+// Save states: the tokens save=<name> and load=<name> (once, when their entry starts) save the whole game to RAM / bring it back (one slot; docs/save-states.md).
+// They run on their own thread and drain the game first, so follow them with `wait state=idle`. The script's own clock and HLE route state keep running forward.
 // Frame timing (load-independent): write the start as @f<frame> (e.g. "@f600 30 A", "repeat @f0 @f3000 90 15 A") and the whole line counts
 // guest presents (nvn present count) since the segment began, so a slow PC does not shift it; end/period/hold may carry an optional @f prefix.
 // A token is a Switch button name (A B X Y L R ZL ZR Plus Minus Left Up Right Down StickL StickR ...) or an axis
 // lx=<f> ly=<f> rx=<f> ry=<f> with f in [-1, 1] (y up positive).
 namespace {
-struct ScriptEntry { double start, end, period, hold; uint64_t buttons; int32_t ax[4]; bool has_ax[4]; int seg; bool frames; float rumble_lo, rumble_hi; bool has_rumble; float gyro_yaw, gyro_pitch; bool has_gyro; bool is_end; int shot_n; bool screenshot; std::string cond; std::vector<std::string> fc; };
+struct ScriptEntry { double start, end, period, hold; uint64_t buttons; int32_t ax[4]; bool has_ax[4]; int seg; bool frames; float rumble_lo, rumble_hi; bool has_rumble; float gyro_yaw, gyro_pitch; bool has_gyro; bool is_end; int shot_n; bool screenshot; std::string cond; std::vector<std::string> fc; int state_op = 0; std::string state_name; mutable bool state_prev = false; };
 struct Script {
   bool loaded = false;
   uint64_t t0 = 0;
@@ -823,6 +831,14 @@ bool route_cond(const std::string& c0, std::string* why) {
   } else if (c.rfind("film<=", 0) == 0) {
     r = g_film.load() >= 0 && g_film.load() <= std::atoi(c.c_str() + 6);
     std::snprintf(b, sizeof b, "film counter %d", g_film.load());
+  } else if (c == "state=idle") {   // no save/load request queued or running (runtime/os/os_state.cpp)
+    r = snap_state_idle() != 0;
+    std::snprintf(b, sizeof b, "state worker %s", r ? "idle" : "busy");
+  } else if (c.rfind("state=saves>=", 0) == 0 || c.rfind("state=loads>=", 0) == 0 || c.rfind("state=done>=", 0) == 0) {   // counters never race: state=loads>=2 = two loads finished ok
+    const size_t ge = c.find(">=");
+    const int n = std::atoi(c.c_str() + ge + 2), have = snap_state_count(c.c_str() + 6);
+    r = have >= n;
+    std::snprintf(b, sizeof b, "%s: %d", c.substr(6, ge - 6).c_str(), have);
   } else {
     std::snprintf(b, sizeof b, "unknown condition");
   }
@@ -920,6 +936,10 @@ void route_dialog() {
   g_dialog_f = f;
 }
 
+// A save-state load rewound the game: what the hooks reported since the save is stale. The film counter is only reported when the HUD changes it,
+// so forget it until the next report (runtime/nvn/nvn_state.cpp PostLoad).
+void route_state_loaded() { g_film = -1; }
+
 void route_film(int count) {
   if (!route_on()) return;
   if (g_route_log && count != g_film.load()) log("route: film counter %d present %d", count, nvn::g_presentCount);
@@ -946,6 +966,10 @@ bool script_token(const std::string& t, ScriptEntry& en) {
       return true;
     }
     if (k == "if") { en.cond = t.substr(eq + 1); return true; }   // if=<cond>: the entry presses only while the wait condition holds (`!` negates), e.g. `repeat @f60 @f600 90 8 Down if=!focus=AllCheck`
+    if (k == "save" || k == "load") {   // save=<name> / load=<name>: an in-RAM save state of the whole game, once when the entry starts (docs/save-states.md); wait state=idle for it to finish
+      en.state_op = k == "save" ? 1 : 2; en.state_name = t.substr(eq + 1);
+      return true;
+    }
     if (k == "shot") {   // shot=<n>: while the entry is active, ask NVN_FRAME_DUMP for a frame every n presents (needs NVN_FRAME_DUMP; test evidence aid)
       en.shot_n = std::max(1, std::atoi(t.c_str() + eq + 1));
       return true;
@@ -1105,8 +1129,9 @@ void script_apply(uint64_t now_ns_v, PadSample& p) {
     } else {
       on = now >= en.start && now < en.start + en.hold;
     }
-    if (!on) continue;
+    if (!on) { en.state_prev = false; continue; }
     if (!en.cond.empty() && !route_cond(en.cond, nullptr)) continue;
+    if (en.state_op && !en.state_prev) { en.state_prev = true; snap_state_request(en.state_op, en.state_name.c_str()); }   // edge: once per entry start
     if (en.is_end) {
       log("input script: end of route reached (segment %d, present %d); exiting", seg, nvn::g_presentCount);
       std::fflush(stdout);

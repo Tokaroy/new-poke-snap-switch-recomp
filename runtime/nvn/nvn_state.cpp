@@ -28,7 +28,7 @@
 #include "nvn_shiny.h"
 
 #include <atomic>
-namespace hle::input { extern std::atomic<bool> g_shot_req; }   // runtime/hle/input_core.cpp: the screenshot request flag
+namespace hle::input { extern std::atomic<bool> g_shot_req; void route_state_loaded(); }   // runtime/hle/input_core.cpp: the screenshot request flag
 
 extern "C" {
 struct SnapStateHooks {
@@ -165,6 +165,7 @@ int PreLoad(char *why, int cap) {
 
 void PostLoad() {   // guest memory is restored; the GPU is idle; every guest thread is parked
   std::lock_guard<std::mutex> lk(g_mu);
+  hle::input::route_state_loaded();   // the HLE route signals (film counter) were reported for the state that is gone
   // 1. objects made since the save: the restored guest names none of them
   std::vector<Zombie> dead;
   std::unordered_set<const void *> deadSet;

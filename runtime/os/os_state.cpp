@@ -29,11 +29,28 @@ struct SnapStateHooks {
 static const SnapStateHooks *g_xh = nullptr;
 extern "C" void snap_state_set_hooks(const SnapStateHooks *h) { g_xh = h; }
 
+// Requests from the HLE layer (route tokens), SNAP_CHECKPOINT and the player's buttons. op 1 = save, 2 = load. They only queue; one worker thread does the drain.
+extern "C" {
+struct SnapStateInfo {
+    int busy, has_state, last_op, last_ok, saves, loads, done;
+    unsigned long long last_done_ms, saved_ms;   // GetTickCount64-style ms of the last finished request / the last good save
+    char last_msg[112];
+};
+void snap_state_request(int op, const char *name);
+int snap_state_idle();
+int snap_state_count(const char *kind);
+void snap_state_info(SnapStateInfo *out);
+}
+
 using namespace oslay;
 
 namespace osk {
 
 std::atomic<int> g_sphase{0};   // 0 idle, 1 drain: no thread is granted a core at a clean site
+using StateInfo = ::SnapStateInfo;
+void state_request(int op, const char *name);
+bool state_idle();
+uint64_t g_process_start_ms = 0;
 
 namespace {
 enum { SITE_NONE = 0, SITE_WAIT = 1, SITE_ACQ = 2 };
@@ -723,7 +740,7 @@ void save_load_driver(TestPlan p) {
     if (!ok || p.load_s < 0) return;
     const uint64_t saved_at = now_us();
     if (p.shots) { Sleep(1500); take_shot(); log("state shot A (save + 1.5 s)"); }
-    Sleep((std::max)(0, p.load_s - p.save_s) * 1000 - (int)((now_us() - saved_at) / 1000));
+    Sleep((DWORD)(std::max)(0, (p.load_s - p.save_s) * 1000 - (int)((now_us() - saved_at) / 1000)));
     for (int i = 0; i < p.loops; i++) {
         if (i) Sleep(p.lgap * 1000);
         std::string w;
@@ -734,7 +751,121 @@ void save_load_driver(TestPlan p) {
         if (p.shots && lok) { Sleep(1500); take_shot(); log("state shot B%d (load + 1.5 s)", i + 1); }
     }
 }
+
+// ---- requests from route scripts, SNAP_CHECKPOINT and the player's buttons -------------------------------------------------------------
+// A save or load drains every guest thread, so it can never run on one: requests go to one worker thread. Save and load return at once;
+// snap_state_idle() says when the worker is done (route condition `state=idle`).
+enum { OP_SAVE = 1, OP_LOAD = 2 };
+struct Req { int op; std::string name; };
+std::mutex g_rq_mu;
+std::condition_variable g_rq_cv;
+std::deque<Req> g_rq;
+bool g_rq_started = false;
+std::atomic<int> g_rq_busy{0};
+std::string g_slot_name;
+std::mutex g_info_mu;
+StateInfo g_info;
+
+void run_request(const Req &r) {
+    std::string why;
+    if (r.op == OP_SAVE) {
+        const bool ok = do_save(why);
+        log("state save '%s': %s in %.0f ms: %zu threads, %zu MiB guest memory in %zu ranges, %zu KiB host stack; process commit %zu MiB%s%s", r.name.c_str(), ok ? "ok" : "REFUSED",
+            g_slot.save_ms, g_slot.ts.size(), g_slot.bytes_mem >> 20, g_slot.ranges.size(), g_slot.bytes_stack >> 10, private_mib(), ok ? "" : ": ", ok ? "" : why.c_str());
+        std::lock_guard<std::mutex> lk(g_info_mu);
+        if (ok) { g_slot_name = r.name; g_info.has_state = true; g_info.saves++; g_info.saved_ms = GetTickCount64(); }
+        g_info.done++; g_info.last_op = OP_SAVE; g_info.last_ok = ok; g_info.last_done_ms = GetTickCount64();
+        snprintf(g_info.last_msg, sizeof g_info.last_msg, "%s", ok ? "state saved" : why.c_str());
+        if (!ok && !g_slot.valid) g_info.has_state = false;
+    } else {
+        bool ok = false;
+        {
+            std::lock_guard<std::mutex> lk(g_info_mu);
+            if (!g_info.has_state) why = "no saved state";
+            else if (!r.name.empty() && r.name != g_slot_name) why = "no state named '" + r.name + "' (the slot holds '" + g_slot_name + "')";
+            else why = "ok";
+            ok = why == "ok";
+        }
+        if (ok) { why.clear(); ok = do_load(why); }
+        if (ok) log("state load '%s': ok %s ms; process commit %zu MiB", r.name.c_str(), why.c_str(), private_mib());
+        else log("state load '%s': REFUSED: %s; process commit %zu MiB", r.name.c_str(), why.c_str(), private_mib());
+        std::lock_guard<std::mutex> lk(g_info_mu);
+        if (ok) g_info.loads++;
+        g_info.done++; g_info.last_op = OP_LOAD; g_info.last_ok = ok; g_info.last_done_ms = GetTickCount64();
+        snprintf(g_info.last_msg, sizeof g_info.last_msg, "%s", ok ? "state loaded" : why.c_str());
+    }
+}
+
+void request_worker() {
+    for (;;) {
+        Req r;
+        {
+            std::unique_lock<std::mutex> lk(g_rq_mu);
+            g_rq_cv.wait(lk, [] { return !g_rq.empty(); });
+            r = g_rq.front();
+            g_rq.pop_front();
+            g_rq_busy = 1;
+        }
+        run_request(r);
+        std::lock_guard<std::mutex> lk(g_rq_mu);
+        g_rq_busy = 0;
+    }
+}
+
+// SNAP_CHECKPOINT=save:<name>@t<s>,load:<name>@t<s>[x<n>],... timed actions, seconds from process start (x<n>: repeat n times, 4 s apart)
+void checkpoint_driver(std::string spec) {
+    struct Act { int op; std::string name; int at; int times; };
+    std::vector<Act> acts;
+    size_t i = 0;
+    while (i < spec.size()) {
+        size_t j = spec.find(',', i);
+        if (j == std::string::npos) j = spec.size();
+        std::string t = spec.substr(i, j - i);
+        i = j + 1;
+        const bool sv = t.rfind("save:", 0) == 0, ld = t.rfind("load:", 0) == 0;
+        if (!sv && !ld) continue;
+        Act a{sv ? OP_SAVE : OP_LOAD, "", 0, 1};
+        size_t at = t.find("@t");
+        a.name = t.substr(5, at == std::string::npos ? std::string::npos : at - 5);
+        if (at != std::string::npos) {
+            a.at = atoi(t.c_str() + at + 2);
+            size_t x = t.find('x', at);
+            if (x != std::string::npos) a.times = (std::max)(1, atoi(t.c_str() + x + 1));
+        }
+        acts.push_back(a);
+    }
+    std::stable_sort(acts.begin(), acts.end(), [](const Act &a, const Act &b) { return a.at < b.at; });
+    for (const Act &a : acts)
+        for (int n = 0; n < a.times; n++) {
+            const int due_ms = (a.at + n * 4) * 1000;
+            const uint64_t up = GetTickCount64() - g_process_start_ms;
+            if (up < (uint64_t)due_ms) Sleep((DWORD)(due_ms - up));
+            state_request(a.op, a.name.c_str());
+            while (!state_idle()) Sleep(20);
+        }
+}
 }  // namespace
+
+void state_request(int op, const char *name) {
+    {
+        std::lock_guard<std::mutex> lk(g_rq_mu);
+        g_rq.push_back({op, name ? name : ""});
+        if (!g_rq_started) { g_rq_started = true; std::thread(request_worker).detach(); }
+    }
+    g_rq_cv.notify_one();
+}
+
+bool state_idle() {
+    std::lock_guard<std::mutex> lk(g_rq_mu);
+    return g_rq.empty() && !g_rq_busy.load();
+}
+
+StateInfo state_info() {
+    std::lock_guard<std::mutex> lk(g_info_mu);
+    StateInfo i = g_info;
+    i.busy = !state_idle();
+    return i;
+}
 
 void state_gate_wait(Thread *t, Lock &lk) {
     if (g_sphase.load(std::memory_order_relaxed) == 0) return;
@@ -757,6 +888,8 @@ bool state_gate_acq(Thread *t, Lock &lk) {
 }
 
 void state_init() {
+    g_process_start_ms = GetTickCount64();
+    if (const char *c = getenv("SNAP_CHECKPOINT")) std::thread(checkpoint_driver, std::string(c)).detach();
     const char *e = getenv("SNAP_STATE_TEST");
     if (!e) return;
     if (strncmp(e, "census@t", 8) == 0) {
@@ -776,3 +909,11 @@ void state_init() {
 }
 
 }  // namespace osk
+
+extern "C" void snap_state_request(int op, const char *name) { osk::state_request(op, name); }
+extern "C" int snap_state_idle() { return osk::state_idle() ? 1 : 0; }
+extern "C" void snap_state_info(SnapStateInfo *out) { *out = osk::state_info(); }
+extern "C" int snap_state_count(const char *kind) {
+    const SnapStateInfo i = osk::state_info();
+    return kind && kind[0] == 'l' ? i.loads : kind && kind[0] == 's' ? i.saves : i.done;
+}
