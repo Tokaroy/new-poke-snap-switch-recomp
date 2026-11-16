@@ -14,13 +14,14 @@
 #pragma once
 #include <vulkan/vulkan.h>
 #include <cstdint>
+#include <functional>
 
 namespace nvn {
 struct Host;
 struct ReplayCtx;
 struct TextureImpl;
 
-bool FgWanted();                       // SNAP_FRAMEGEN=1 (read once)
+bool FgWanted();                       // SNAP_FRAMEGEN=fsr (or 1), read once
 void FgDeviceCreated(Host* h);         // loads the DLL and creates the DLL's device context (after the upscaler's DeviceCreated)
 void FgDestroy(Host* h);               // device is going away
 void FgForgetTexture(const TextureImpl* t);   // DestroyTexture: drops a pending frame keyed by that window texture
@@ -47,6 +48,17 @@ bool FgBeginPresent(Host* h, TextureImpl* src, bool hdr);
 // Records the interpolation into the present command buffer; returns the sRGB image (TRANSFER_SRC_OPTIMAL, same size as src) to blit,
 // or VK_NULL_HANDLE when nothing is to be shown (the real frame is then presented alone).
 VkImage FgRecordGenerate(Host* h, VkCommandBuffer cb, TextureImpl* src);
-void FgSleepHalf();                    // waits until half a base frame after FgBeginPresent
+void FgSleepHalf();                    // waits until half a base frame after FgBeginPresent (SNAP_FRAMEGEN_THREAD=0: the old path that blocks the game thread)
 void FgNotePresent(bool generated);    // every vkQueuePresentKHR (generated = the interpolated one): counters, SNAP_FRAMEGEN_LOG / _TRACE
+
+// Presenter thread (2026-11-16). A game frame with frame generation presents twice. Timing the second present with a sleep on the game
+// thread cost half a base frame per frame, so with no frame limit the presented rate fell back to the plain rate (the SavageWindRecomp
+// finding). Both vkQueuePresentKHR calls of such a frame are now queued here with a due time and made by this thread; the game thread
+// records and submits both frames and moves on. Order is kept: a frame that is not generated waits for the queue to drain first.
+bool FgThreaded();                                  // the presenter thread is in use (frame generation on, SNAP_FRAMEGEN_THREAD not 0)
+void FgPresentAt(std::function<void()> present, int64_t dueNs);   // runs `present` on the presenter thread at dueNs (steady clock ns)
+void FgDrainPresents();                             // waits until every queued present was made; call with the queue mutex NOT held
+int64_t FgReleaseNs();                              // steady-clock ns of the last FgBeginPresent (the game frame's present time)
+double FgBaseDt();                                  // smoothed base frame time in seconds (0 until measured)
+int64_t FgNowNs();
 }  // namespace nvn

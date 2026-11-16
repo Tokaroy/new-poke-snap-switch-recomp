@@ -1709,6 +1709,7 @@ bool WindowImpl::Recreate() {
 
 void DestroyWindow(WindowImpl* w) {
   Host* h = w->host;
+  if (h && h->device && FgWanted()) FgDrainPresents();   // [framegen] no queued present may name this swapchain
   if (h && h->device) {
     vkDeviceWaitIdle(h->device);
     for (auto s : w->renderDone) vkDestroySemaphore(h->device, s, nullptr);
@@ -1797,15 +1798,18 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
   snap_rt::OnPresent();   // [rt]
   if (g_hooks.on_present) g_hooks.on_present(g_hooks.user, slot, src->b.width, src->b.height);
 
-  uint32_t idx = 0;
-  // The acquire semaphore must have no pending wait: gate reuse on the timeline value of the submit that waited it.
-  if (w->needRecreate && !w->Recreate()) return false;
-  const uint32_t ak = w->acquireNext++ % (uint32_t)w->acquireSems.size();
   // [framegen] With frame generation a game frame presents twice: pass 0 the interpolated frame (previous real frame -> this one,
   // nvn_framegen.cpp), pass 1 (half a base frame later) the real frame. Without it, or when nothing is to be shown, only pass 1 runs.
   const bool fgPend = FgWanted() && FgBeginPresent(h, src, w->hdr);
+  const bool fgThr = fgPend && !snap_pace::Legacy() && FgThreaded();   // both presents of this frame go through the presenter thread
+  bool fgGeneratedQueued = false;
+  if (!fgThr && FgWanted() && !snap_pace::Legacy() && FgThreaded()) { lk.unlock(); FgDrainPresents(); lk.lock(); }   // keep the order: earlier queued presents first
   for (int pass = 0;; pass++) {
   bool realPass = true;
+  uint32_t idx = 0;
+  // The acquire semaphore must have no pending wait: gate reuse on the timeline value of the submit that waited it.
+  if (w->needRecreate) { if (FgWanted()) { lk.unlock(); FgDrainPresents(); lk.lock(); } if (!w->Recreate()) return false; }   // [framegen] no queued present may name the old swapchain
+  const uint32_t ak = w->acquireNext++ % (uint32_t)w->acquireSems.size();
   // [pace] The timeline wait and vkAcquireNextImageKHR block on the GPU and the display but touch no queue, so the default model
   // drops the queue lock around them (other threads keep submitting); Recreate (vkDeviceWaitIdle) retakes it. Legacy holds it.
   const bool dropLock = !snap_pace::Legacy();
@@ -1819,6 +1823,7 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
   }
   for (int attempt = 0; attempt < 3; attempt++) {
     if (w->needRecreate) {
+      if (FgWanted() && dropLock) FgDrainPresents();   // [framegen] (lock is dropped here)
       if (dropLock) lk.lock();
       const bool ok = w->Recreate();
       if (dropLock) lk.unlock();
@@ -1864,15 +1869,15 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
     vkCmdPipelineBarrier2(cb, &di);
   };
   Transition(cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-  // Debug frame dump (NVN_FRAME_DUMP=<dir> [NVN_FRAME_DUMP_FROM=<sec> _TO=<sec> _EVERY=<sec> _MAX=<n>]): copies the game's window texture (no overlay) into a host buffer
-  // and writes a half-size BMP after the submit. Used for screenshots when the desktop capture is unavailable (hidden desktop).
-  static const char* fdDir = getenv("NVN_FRAME_DUMP");
-  static const double fdFrom = getenv("NVN_FRAME_DUMP_FROM") ? atof(getenv("NVN_FRAME_DUMP_FROM")) : 0.0;
   VkImage blitSrc = src->image;   // [framegen] the interpolated image on pass 0
   if (fgPend && pass == 0) {
     if (VkImage gen = FgRecordGenerate(h, cb, src)) { blitSrc = gen; realPass = false; }
   }
   if (realPass) ShotOnPresent(h, cb, src);   // screenshot key (nvn_shot.cpp): the window texture at render size, before the downscale
+  // Debug frame dump (NVN_FRAME_DUMP=<dir> [NVN_FRAME_DUMP_FROM=<sec> _TO=<sec> _EVERY=<sec> _MAX=<n>]): copies the game's window texture (no overlay) into a host buffer
+  // and writes a half-size BMP after the submit. Used for screenshots when the desktop capture is unavailable (hidden desktop).
+  static const char* fdDir = getenv("NVN_FRAME_DUMP");
+  static const double fdFrom = getenv("NVN_FRAME_DUMP_FROM") ? atof(getenv("NVN_FRAME_DUMP_FROM")) : 0.0;
   static const double fdTo = getenv("NVN_FRAME_DUMP_TO") ? atof(getenv("NVN_FRAME_DUMP_TO")) : 1e9;
   static const double fdEvery = getenv("NVN_FRAME_DUMP_EVERY") ? atof(getenv("NVN_FRAME_DUMP_EVERY")) : 1.0;
   static const int fdMax = getenv("NVN_FRAME_DUMP_MAX") ? atoi(getenv("NVN_FRAME_DUMP_MAX")) : 60;
@@ -1886,24 +1891,32 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
   if (fdPost) { fdW = w->scExtent.width; fdH = w->scExtent.height; fdBgra = w->scFormat == VK_FORMAT_B8G8R8A8_UNORM || w->scFormat == VK_FORMAT_B8G8R8A8_SRGB; }
   const bool fdBurstNow = g_fdBurst > 0 && (g_fdBurst-- % 4) == 0;   // NVN_THUMB_LOG: a photo-thumbnail draw requests a short burst of frames
   const bool fdHdr = fdPost && w->hdr;   // HDR10 swapchain: the dump is the raw A2B10G10R10 PQ image, written through snap_hdr::DumpPQ
-  if (realPass && fdDir && *fdDir && fdCount < fdMax && src->fi && src->fi->bytes == 4 && src->fi->aspect == VK_IMAGE_ASPECT_COLOR_BIT) {
+  // NVN_FRAME_DUMP_GEN=1 (frame generation): the interpolated frames are dumped too (file prefix g, real frames f), and each NVN_FRAME_DUMP_AT point
+  // dumps a run of NVN_FRAME_DUMP_GEN_N (default 6) consecutive images, so a generated frame is read next to its two real neighbours.
+  static const bool fdGen = getenv("NVN_FRAME_DUMP_GEN") != nullptr;
+  static const int fdGenN = getenv("NVN_FRAME_DUMP_GEN_N") ? std::max(1, atoi(getenv("NVN_FRAME_DUMP_GEN_N"))) : 6;
+  static int fdRun = 0;
+  if ((realPass || fdGen) && fdDir && *fdDir && fdCount < fdMax && src->fi && src->fi->bytes == 4 && src->fi->aspect == VK_IMAGE_ASPECT_COLOR_BIT) {
     const double nowS = std::chrono::duration<double>(std::chrono::steady_clock::now() - fdT0).count();
     // NVN_FRAME_DUMP_AT=<p1,p2,...>: dump at those present counts instead of by time (frame-exact comparisons between runs)
     static std::vector<int> fdAt = [] { std::vector<int> v; if (const char* e = getenv("NVN_FRAME_DUMP_AT")) for (const char* c = e; *c;) { v.push_back(atoi(c)); while (*c && *c != ',') c++; if (*c == ',') c++; } return v; }();
     static size_t fdAtIdx = 0;
     bool fdAtNow = false;
-    if (!fdAt.empty()) { if (fdAtIdx < fdAt.size() && g_presentCount >= fdAt[fdAtIdx]) { fdAtNow = true; fdAtIdx++; } }
+    if (!fdAt.empty()) {
+      if (fdAtIdx < fdAt.size() && g_presentCount >= fdAt[fdAtIdx]) { fdAtNow = true; fdAtIdx++; fdRun = fdGen ? fdGenN - 1 : 0; }
+      else if (fdRun > 0) { fdAtNow = true; fdRun--; }
+    }
     if (fdBurstNow || fdAtNow || (fdAt.empty() && nowS >= fdFrom && nowS <= fdTo && nowS >= fdNext)) {
       fdNext = nowS + fdEvery;
       if (CreateHostBuffer(h, (uint64_t)fdW * fdH * (fdHdr && snap_hdr::IsScrgb() ? 8 : 4), VK_BUFFER_USAGE_TRANSFER_DST_BIT, &fdBuf, &fdMem, &fdMap)) {
         VkBufferImageCopy bc{}; bc.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; bc.imageExtent = {src->HW(), src->HH(), 1};
-        if (!fdPost) vkCmdCopyImageToBuffer(cb, src->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, fdBuf, 1, &bc);
+        if (!fdPost) vkCmdCopyImageToBuffer(cb, realPass ? src->image : blitSrc, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, fdBuf, 1, &bc);
         VkMemoryBarrier2 mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
         mb.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT; mb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
         mb.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT; mb.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
         VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO}; di.memoryBarrierCount = 1; di.pMemoryBarriers = &mb;
         vkCmdPipelineBarrier2(cb, &di);
-        snprintf(fdName, sizeof fdName, "%s/f%04d_p%d_t%.1f.bmp", fdDir, fdCount++, g_presentCount, nowS);
+        snprintf(fdName, sizeof fdName, "%s/%c%04d_p%d_t%.1f.bmp", fdDir, realPass ? 'f' : 'g', fdCount++, g_presentCount, nowS);
       } else { fdBuf = VK_NULL_HANDLE; }
     }
   }
@@ -2042,24 +2055,41 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
 
   ShotAfterSubmit(h, q->timeline, v);   // screenshot key (nvn_shot.cpp): the PNG is written on its own thread
   FcShotAfterSubmit(h, q->timeline, v);   // free camera clean shot (nvn_freecam.cpp): writes the PNG once the frame's copy is done
-  VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
-  pi.waitSemaphoreCount = 1; pi.pWaitSemaphores = &w->renderDone[idx];
-  pi.swapchainCount = 1; pi.pSwapchains = &w->swapchain; pi.pImageIndices = &idx;
-  pi.pNext = snap_pace::PresentChain(w->swapchain);   // [pace] present id for the queue depth cap
-  VkResult pr;
-  snap_pace::Stamp(snap_pace::M_QP_BEGIN);
-  { snap_perf::Scope perfScope(snap_perf::C_PRESENT); pr = vkQueuePresentKHR(h->queue, &pi); }
-  snap_pace::Stamp(snap_pace::M_QP_END);
-  snap_pace::Presented(w->swapchain, pr);
-  if (pr == VK_ERROR_OUT_OF_DATE_KHR || pr == VK_SUBOPTIMAL_KHR) w->needRecreate = true;
-  else if (pr == VK_ERROR_DEVICE_LOST || pr == VK_ERROR_SURFACE_LOST_KHR) FatalGpuLoss("vkQueuePresentKHR", pr);
-  else if (pr < 0) LogError("vkQueuePresentKHR failed: %d", (int)pr);
+  // vkQueuePresentKHR and what follows it. With frame generation on the presenter thread (nvn_framegen.h) this runs there at the due time,
+  // taking the queue mutex itself; otherwise it runs here with the mutex held (lockHeld).
+  const VkSemaphore rdSem = w->renderDone[idx];
+  const bool generatedFrame = !realPass;
+  auto doPresent = [h, w, rdSem, idx, generatedFrame](bool lockHeld) {
+    std::unique_lock<std::mutex> ql(h->queueMutex, std::defer_lock);
+    if (!lockHeld) ql.lock();
+    uint32_t pidx = idx;
+    VkSemaphore rds = rdSem;
+    VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+    pi.waitSemaphoreCount = 1; pi.pWaitSemaphores = &rds;
+    pi.swapchainCount = 1; pi.pSwapchains = &w->swapchain; pi.pImageIndices = &pidx;
+    pi.pNext = snap_pace::PresentChain(w->swapchain);   // [pace] present id for the queue depth cap
+    VkResult pr;
+    snap_pace::Stamp(snap_pace::M_QP_BEGIN);
+    { snap_perf::Scope perfScope(snap_perf::C_PRESENT); pr = vkQueuePresentKHR(h->queue, &pi); }
+    snap_pace::Stamp(snap_pace::M_QP_END);
+    snap_pace::Presented(w->swapchain, pr);
+    if (pr == VK_ERROR_OUT_OF_DATE_KHR || pr == VK_SUBOPTIMAL_KHR) w->needRecreate = true;
+    else if (pr == VK_ERROR_DEVICE_LOST || pr == VK_ERROR_SURFACE_LOST_KHR) FatalGpuLoss("vkQueuePresentKHR", pr);
+    else if (pr < 0) LogError("vkQueuePresentKHR failed: %d", (int)pr);
+    if (FgWanted()) FgNotePresent(generatedFrame);   // [framegen]
+  };
+  if (fgThr) {
+    // The interpolated frame goes out as soon as it is ready; the real frame half a base frame after the game frame's present time.
+    int64_t due = FgNowNs();
+    if (realPass && fgGeneratedQueued) due = FgReleaseNs() + (int64_t)(std::clamp(FgBaseDt() > 0 ? FgBaseDt() : 0.0167, 0.004, 0.05) * 0.5e9);
+    FgPresentAt([doPresent]() { doPresent(false); }, due);
+    if (!realPass) fgGeneratedQueued = true;
+  } else doPresent(true);
   w->acquireValue[ak] = v;
   w->slotSem[slot] = q->timeline;
   w->slotValue[slot] = v;
-  if (FgWanted()) FgNotePresent(!realPass);   // [framegen]
   if (realPass) break;
-  lk.unlock(); FgSleepHalf(); lk.lock();   // the real frame follows half a base frame after the interpolated one
+  if (!fgThr) { lk.unlock(); FgSleepHalf(); lk.lock(); }   // the real frame follows half a base frame after the interpolated one
   }
   return true;
 }

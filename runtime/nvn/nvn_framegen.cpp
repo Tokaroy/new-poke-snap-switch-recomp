@@ -14,7 +14,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <condition_variable>
+#include <deque>
 #include <mutex>
+#include <thread>
 #include <unordered_map>
 
 #include "nvn_framegen.h"
@@ -48,9 +51,16 @@ struct State {
   int64_t lastNs = 0, releaseNs = 0; double dtEma = 0.0; uint64_t sinceNs = 0;
   Pend cur; bool curShow = false;
   // stats
-  uint64_t presents = 0, generatedShown = 0, prepared = 0, dispatched = 0, windowPresents = 0, windowGen = 0; int64_t windowNs = 0;
+  uint64_t presents = 0, generatedShown = 0, prepared = 0, dispatched = 0, dbgMiss = 0, dbgReset = 0, dbgNoHud = 0, windowPresents = 0, windowGen = 0; int64_t windowNs = 0;
   FILE* trace = nullptr; int64_t traceT0 = 0;
 } G;
+
+// Presenter thread: the queued presents of frame generation (nvn_framegen.h). One thread, FIFO, each job has a due time.
+struct Presenter {
+  std::mutex mu; std::condition_variable cv, idleCv;
+  std::deque<std::pair<int64_t, std::function<void()>>> q;
+  std::thread th; bool started = false, stop = false, busy = false;
+} P;
 
 int64_t NowNs() { return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 
@@ -166,8 +176,10 @@ void FgDeviceCreated(Host* h) {
   Logf("framegen: ready (panel %.1f Hz%s)", PanelHz(), ForceOn() ? ", rate gate forced open" : "");
 }
 
+static void PresenterStop();
 void FgDestroy(Host* h) {
   if (!G.h || G.h != h) return;
+  PresenterStop();
   if (G.presents) Logf("framegen: summary: %llu presents, %llu generated frames shown, %llu frames prepared, %llu dispatched, %u failures",
                        (unsigned long long)G.presents, (unsigned long long)G.generatedShown, (unsigned long long)G.prepared, (unsigned long long)G.dispatched, snap_framegen::Failures());
   snap_framegen::Release();
@@ -266,9 +278,11 @@ bool FgBeginPresent(Host*, TextureImpl* src, bool hdr) {
   G.active = want;
   if (G.active != was) Logf("framegen: %s (base %.1f fps, panel %.1f Hz)", want ? "on" : "off", G.dtEma > 0 ? 1.0 / G.dtEma : 0.0, PanelHz());
   auto it = G.pend.find(src);
-  if (it == G.pend.end()) { G.prevPrepared = false; return false; }   // a real-only frame (photo guard, menu, hold): the next prepared frame starts a new history
+  if (it == G.pend.end()) { G.prevPrepared = false; G.dbgMiss++; return false; }   // a real-only frame (photo guard, menu, hold): the next prepared frame starts a new history
   G.cur = it->second; G.pend.erase(it);
   G.curShow = G.active && !G.cur.reset && G.cur.hud >= 0 && snap_framegen::Usable();
+  if (G.cur.reset) G.dbgReset++;
+  if (G.cur.hud < 0) G.dbgNoHud++;
   return true;
 }
 
@@ -306,6 +320,52 @@ void FgSleepHalf() {
   os_host_block_end();
 }
 
+bool FgThreaded() {
+  static const bool on = [] { const char* e = getenv("SNAP_FRAMEGEN_THREAD"); return !(e && e[0] == '0'); }();
+  return on && G.ready && !G.failed;
+}
+
+static void PresenterMain() {
+  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);   // the game's process runs BelowNormal; the due times are what this thread is for
+  std::unique_lock<std::mutex> lk(P.mu);
+  for (;;) {
+    P.cv.wait(lk, [] { return P.stop || !P.q.empty(); });
+    if (P.q.empty()) { if (P.stop) return; continue; }
+    auto job = std::move(P.q.front()); P.q.pop_front();
+    P.busy = true;
+    lk.unlock();
+    if (job.first > NowNs()) WaitUntilNs(job.first);
+    job.second();
+    lk.lock();
+    P.busy = false;
+    P.idleCv.notify_all();
+  }
+}
+
+void FgPresentAt(std::function<void()> present, int64_t dueNs) {
+  std::lock_guard<std::mutex> lk(P.mu);
+  if (!P.started) { P.started = true; P.stop = false; P.th = std::thread(PresenterMain); }
+  P.q.emplace_back(dueNs, std::move(present));
+  P.cv.notify_one();
+}
+
+void FgDrainPresents() {
+  std::unique_lock<std::mutex> lk(P.mu);
+  if (!P.started) return;
+  P.idleCv.wait(lk, [] { return P.q.empty() && !P.busy; });
+}
+
+static void PresenterStop() {
+  { std::unique_lock<std::mutex> lk(P.mu); if (!P.started) return; P.stop = true; P.cv.notify_all(); }
+  if (P.th.joinable()) P.th.join();
+  std::lock_guard<std::mutex> lk(P.mu);
+  P.started = false; P.q.clear(); P.busy = false;
+}
+
+int64_t FgReleaseNs() { return G.releaseNs; }
+double FgBaseDt() { return G.dtEma; }
+int64_t FgNowNs() { return NowNs(); }
+
 void FgNotePresent(bool generated) {
   if (!G.ready) return;
   const int64_t now = NowNs();
@@ -319,8 +379,8 @@ void FgNotePresent(bool generated) {
     if (!G.windowNs) G.windowNs = now;
     if (now - G.windowNs >= 1000000000LL) {
       const double s = (double)(now - G.windowNs) * 1e-9;
-      Logf("framegen: p%d base %.1f fps, presented %.1f fps, generated %.1f fps, active %d, failures %u", g_presentCount, (G.windowPresents - G.windowGen) / s,
-           G.windowPresents / s, G.windowGen / s, (int)G.active, snap_framegen::Failures());
+      Logf("framegen: p%d base %.1f fps, presented %.1f fps, generated %.1f fps, active %d, failures %u, prepared %llu, no-prepare %llu, reset %llu, no-hud %llu", g_presentCount, (G.windowPresents - G.windowGen) / s,
+           G.windowPresents / s, G.windowGen / s, (int)G.active, snap_framegen::Failures(), (unsigned long long)G.prepared, (unsigned long long)G.dbgMiss, (unsigned long long)G.dbgReset, (unsigned long long)G.dbgNoHud);
       G.windowPresents = G.windowGen = 0; G.windowNs = now;
     }
   }

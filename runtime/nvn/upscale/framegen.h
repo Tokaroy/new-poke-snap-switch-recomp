@@ -18,7 +18,7 @@ namespace snap_framegen {
 using snap_upscale::DeviceCtx;
 using snap_upscale::Image;
 
-bool Wanted();           // SNAP_FRAMEGEN=1 (read once)
+bool Wanted();           // SNAP_FRAMEGEN=fsr (or 1), read once
 bool Load();             // the DLL beside the exe (false: unavailable, logged once)
 bool Init(const DeviceCtx& c);
 bool Usable();           // loaded and not failed

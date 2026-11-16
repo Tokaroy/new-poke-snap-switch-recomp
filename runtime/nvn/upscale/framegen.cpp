@@ -91,8 +91,8 @@ void DepthLayout(VkCommandBuffer cb, const Image& depth, VkImageLayout from, VkI
 bool Wanted() {
   if (!F.wantedRead) {
     F.wantedRead = true;
-    const char* e = getenv("SNAP_FRAMEGEN");
-    F.wanted = e && e[0] == '1';
+    const char* e = getenv("SNAP_FRAMEGEN");   // "fsr" (or the older "1") = this module; "dlss" = nvn_framegen_dlss.cpp
+    F.wanted = e && (e[0] == '1' || _stricmp(e, "fsr") == 0);
   }
   return F.wanted;
 }

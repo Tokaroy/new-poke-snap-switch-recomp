@@ -2,7 +2,7 @@
 // High frame rate spike (docs/high-fps-plan.md, WP1 first half). Everything here is inert unless an env switch is set, so the default
 // game (SNAP_FPS unset or 60) keeps its original 60 fps pacing, byte for byte.
 //
-//   SNAP_FPS=90|120|144|165|240 target simulation rate. Re-applies nvnHostSetFramePacing(fps) from the present hook (also right after the
+//   SNAP_FPS=72|90|120|144|165|240 target simulation rate. Re-applies nvnHostSetFramePacing(fps) from the present hook (also right after the
 //                               SNAP_FAST_BOOT window, which hard-codes 60).
 //   SNAP_FPS_UNCAPPED=1         measurement only: limiter off (nvnHostSetFramePacing(0)) so the real uncapped rate shows. Works with SNAP_FPS.
 //   SNAP_FPS_TRACE=<csv>        diagnostic: per clock update row (see below). Forces g_fnprof (slow; not for perf numbers).
@@ -154,8 +154,8 @@ struct Init {
         const char* e = std::getenv("SNAP_FPS");
         if (e && *e) {
             int v = std::atoi(e);
-            if (v == 90 || v == 120 || v == 144 || v == 165 || v == 240) g_fps = v;
-            else if (v != 60) std::fprintf(stderr, "[highfps] SNAP_FPS=%s ignored (use 60, 90, 120, 144, 165 or 240)\n", e);
+            if (v == 72 || v == 90 || v == 120 || v == 144 || v == 165 || v == 240) g_fps = v;
+            else if (v != 60) std::fprintf(stderr, "[highfps] SNAP_FPS=%s ignored (use 60, 72, 90, 120, 144, 165 or 240)\n", e);
         }
         if (const char* u = std::getenv("SNAP_FPS_UNCAPPED")) g_uncapped = *u && *u != '0';
         if (const char* f = std::getenv("SNAP_FAST_BOOT")) {
