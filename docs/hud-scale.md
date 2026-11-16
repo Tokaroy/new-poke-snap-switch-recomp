@@ -34,7 +34,8 @@ Code: `runtime/nvn/nvn_hud.cpp`, with small hooks in `nvn_draw.cpp` and `nvn_vk.
 - Compound widgets that are more than 40 guest pixels apart (a far-apart label) scale as separate clusters.
 - A menu whose clusters merge into one block that fills the screen stays near 100%, because it already uses the whole screen.
 - The host's own overlays (the F1 menu, the launcher) are not part of the game's interface and are not scaled by this setting.
-- Hidden test runs report a 3840x2160 window whatever `SNAP_WINDOW_H` says, so Auto always picks the 4K step there. Use an explicit value to test other steps.
+- Hidden test runs report a 3840x2160 window whatever `SNAP_WINDOW_H` says when the saved `window.json` has `"mode": "borderless"` (the window then fills the hidden desktop). Add `SNAP_WINDOW_MODE=windowed` to get the requested size: with `SNAP_WINDOW_W=2560 SNAP_WINDOW_H=1440` the log shows `window client 2560x1440` and `[hud] window height 1440: scale 1.25 (auto)`.
+- The `SNAP_HUD_LOG=3` touch self-check can report a miss at 125% to 150% (for example 12 of 13). The lookup picks the smallest shown box under the point, so a box drawn on top of another one's center wins; a miss is expected for stacked draws and was not traced to a real touch error.
 
 ## Developer switches
 
