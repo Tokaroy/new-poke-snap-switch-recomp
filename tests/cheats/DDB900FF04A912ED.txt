@@ -1,0 +1,12 @@
+// Hand-written test file for the cheats wiring (docs/cheats.md). Nothing here changes the game: the store writes back the value it just read.
+// Run: SNAP_CHEATS=1 SNAP_CHEATS_DIR=<this folder> SNAP_CHEATS_ON="No-op store in the heap|Log main header while ZL is held" with the cheat_probe route.
+[Log main header while ZL is held]
+// ZL is key bit 8. Debug log id 7 of the 4 bytes at main + 0x68270 (the first word of a function): "cheat: debug log 7 = ..." in the log while ZL is down
+80000100
+FFF47000 00068270
+20000000
+
+[No-op store in the heap]
+// R0 = 4 bytes at heap + 0x100, then heap + 0x100 = R0. This game sets no heap, so this one is expected to fail and be switched off (the log says so).
+54100000 00000100
+A4000410 00000100

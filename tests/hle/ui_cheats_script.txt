@@ -1,0 +1,6 @@
+# Cheats tab (docs/cheats.md): open F1, go to Cheats and let the overlay frames show it. Run: tests\hle\run_cheats_ui.ps1 (frames go to analysis\ui\cheats_dump).
+24 key F1 1
+24.5 expect_open 1
+25 tab Cheats
+25.2 expect_tab Cheats
+30 quit

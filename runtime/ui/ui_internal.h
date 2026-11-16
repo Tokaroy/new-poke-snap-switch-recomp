@@ -50,6 +50,7 @@ bool menu_rebinding();
 
 // ---- saves tab (ui_saves.cpp): save profiles
 void tab_saves();
+void tab_cheats();      // ui_cheats.cpp: the cheats master switch and one checkbox per cheat (runtime/hle/cheats.h)
 void saves_tab_opened();
 bool saves_test_import(const std::string& fixture, std::string* name_out, std::string* err);   // scripted test
 void saves_test_switch(const std::string& name);

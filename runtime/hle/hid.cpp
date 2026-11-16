@@ -10,6 +10,7 @@
 #include <cstring>
 
 #include "hle.h"
+#include "cheats.h"
 #include "hle_config.h"
 #include "input_core.h"
 #include "shutter_hook.h"
@@ -45,6 +46,7 @@ void write_npad_state(void* dst, uint32_t id, uint32_t style) {
   std::memset(dst, 0, kNpadStateSize);
   ensure_init();
   input::hub().poll();
+  cheats::tick();   // player cheats (cheats.h): once per presented frame, on the game's own thread; does nothing unless switched on
   bool match = id == active_id() && style == active_style() && (g_hid.supported_styles & style);
   store<int64_t>(dst, input::hub().sampling_number());
   if (trace_flags & kTraceHid) {   // log each distinct (id, style, match, buttons) once in a row

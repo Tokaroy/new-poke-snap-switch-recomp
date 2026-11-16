@@ -2724,6 +2724,7 @@ static void test_save_rename_parent() {
 #endif
 
 #include "save_port_tests.h"
+#include "cheats_tests.h"
 
 int main(int argc, char** argv) {
   if (argc > 1) g_root = argv[1];
@@ -2738,6 +2739,7 @@ int main(int argc, char** argv) {
 
   struct T { const char* name; void (*fn)(); } tests[] = {
       {"access.rows", test_access},
+      {"cheats.wiring", test_cheats},
       {"fs.rom", test_fs_rom},
       {"fs.overlay", test_fs_overlay},
       {"save.roundtrip", test_save_roundtrip},

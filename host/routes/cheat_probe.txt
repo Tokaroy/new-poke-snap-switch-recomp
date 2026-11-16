@@ -1,0 +1,9 @@
+# fixture: post_tutorial
+# Cheats wiring probe (docs/cheats.md): florio_eval's start up to the ride, then ZL held in bursts so a key-conditional cheat fires, then the route ends.
+# Run: SNAP_CHEATS=1 SNAP_CHEATS_DIR=<dir with the hand-written cheat file> SNAP_CHEATS_ON="No-op store in the heap|Log main header while ZL is held" powershell -File host\run_boot.ps1 -Route cheat_probe -Timeout 300
+repeat @f300 @f30000 120 8 A
+wait ui=map_select timeout=240
+repeat @f60 @f30000 120 8 A
+wait ride timeout=240
+repeat @f0 @f1500 600 200 ZL
+end @f1500
