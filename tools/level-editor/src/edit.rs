@@ -70,6 +70,28 @@ pub fn move_rail(c: &LoadedCourse, l: usize, seg: usize, idx: usize, delta: Vec3
     Ok(out)
 }
 
+/// Writes that put every point of rail part `seg` at `pts` (same count). Points the part shares with its neighbors move
+/// with it.
+pub fn set_rail_part(c: &LoadedCourse, seg: usize, pts: &[Vec3]) -> Result<Writes, String> {
+    let (l, pi) = rail_ref(c).ok_or("this course has no rail")?;
+    let p = &c.levels[l].paths[pi];
+    let n = p.segments.get(seg).ok_or("no such rail part")?.len();
+    if pts.len() != n {
+        return Err(format!("rail part {seg} has {n} points, not {}", pts.len()));
+    }
+    let mut out = vec![];
+    for node in rail_chain(p) {
+        if let Some(&(_, i)) = node.iter().find(|(s, _)| *s == seg) {
+            if Vec3::from(p.segments[seg][i]).distance(pts[i]) > 1e-6 {
+                for &(s, j) in &node {
+                    out.extend(w3(l, p.offs[s][j], pts[i]));
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// The rail as it is in the original file (same shape as the current one).
 pub fn rail_original(c: &LoadedCourse) -> Option<Vec<Vec<[f32; 3]>>> {
     let (l, pi) = rail_ref(c)?;

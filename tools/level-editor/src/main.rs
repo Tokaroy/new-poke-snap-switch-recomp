@@ -29,6 +29,7 @@ mod level;
 mod modelb;
 mod pick;
 mod place;
+mod procgen;
 mod render;
 mod scenery;
 mod terrain;
@@ -82,6 +83,10 @@ struct Args {
     reskin_keep: Vec<String>,
     reskin_map: Vec<(String, String)>,
     reskin_info: bool,
+    /// --procgen FILE: lay a course made by snap-procgen (its JSON) over the leg's first rail part
+    procgen: Option<PathBuf>,
+    /// --procgen-opts band,swing,relief,props,spawns
+    procgen_opts: Option<procgen::Opts>,
     /// RomFS root holding the original archives (default: `romfs-v262144` beside the data root)
     romfs: Option<PathBuf>,
 }
@@ -352,6 +357,8 @@ fn parse_args() -> Result<Args, String> {
         reskin_keep: vec![],
         reskin_map: vec![],
         reskin_info: false,
+        procgen: None,
+        procgen_opts: None,
         romfs: None,
     };
     let mut it = std::env::args().skip(1);
@@ -515,11 +522,21 @@ fn parse_args() -> Result<Args, String> {
                     .collect::<Result<_, _>>()?
             }
             "--reskin-info" => a.reskin_info = true,
+            "--procgen" => a.procgen = Some(PathBuf::from(val()?)),
+            "--procgen-opts" => {
+                let v = val()?;
+                let f: Vec<f32> = v.split(',').map(|x| x.parse::<f32>()).collect::<Result<_, _>>().map_err(|_| "--procgen-opts: numbers expected")?;
+                if f.len() != 5 {
+                    return Err("--procgen-opts band,swing,relief,props,spawns".into());
+                }
+                let d = procgen::Opts::default();
+                a.procgen_opts = Some(procgen::Opts { band: f[0], swing: f[1], relief: f[2], max_props: f[3] as usize, max_spawns: f[4] as usize, ..d });
+            }
             "--romfs" => a.romfs = Some(val()?.into()),
             "--export" => a.export = Some(val()?.into()),
             "--pack" => a.pack = Some(val()?),
             "-h" | "--help" => {
-                println!("level-editor [--data DIR] [--course LC_001_A] [--variant 1] [--select L:I] [--move L:I:dx,dy,dz] [--export DIR --pack NAME] [--shot out.png] [--size WxH] [--advanced] [--summary] [--selftest]");
+                println!("level-editor [--data DIR] [--course LC_001_A] [--variant 1] [--select L:I] [--move L:I:dx,dy,dz] [--export DIR --pack NAME] [--procgen course.json [--procgen-opts band,swing,relief,props,spawns]] [--shot out.png] [--size WxH] [--advanced] [--summary] [--selftest]");
                 std::process::exit(0);
             }
             _ => return Err(format!("unknown argument {k}")),
@@ -1326,6 +1343,15 @@ fn main() {
             }
         }
     }
+    if let Some(f) = &args.procgen {
+        match ed.generate_course(f, args.procgen_opts.unwrap_or_default()) {
+            Ok(m) => println!("{m}"),
+            Err(e) => {
+                eprintln!("random course: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
     if let Some(t) = args.tool {
         ed.tool = t;
     }
@@ -1353,7 +1379,7 @@ fn main() {
         }
         return;
     }
-    if args.export.is_some() || !args.moves.is_empty() || !args.model_moves.is_empty() || !args.spawn_copies.is_empty() || !args.rail_bends.is_empty() {
+    if args.export.is_some() || args.procgen.is_some() || !args.moves.is_empty() || !args.model_moves.is_empty() || !args.spawn_copies.is_empty() || !args.rail_bends.is_empty() {
         return;
     }
     let opts = eframe::NativeOptions {

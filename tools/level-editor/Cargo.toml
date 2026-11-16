@@ -30,6 +30,8 @@ half = "2.1.0"
 # scenery import: glTF 2.0 (MIT OR Apache-2.0; buffers are read by our code, no image decoding) and OBJ (MIT)
 gltf = { version = "1.4", default-features = false, features = ["utils", "names"] }
 tobj = { version = "4", default-features = false }
+# random course: reads the JSON of the separate snap-procgen tool (MIT OR Apache-2.0; already built for gltf)
+serde_json = "1"
 
 [profile.dev]
 opt-level = 1

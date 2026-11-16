@@ -8,6 +8,7 @@ use crate::edit::{self, History, Issue, Sel, Writes};
 use crate::gizmo;
 use crate::ground;
 use crate::place;
+use crate::procgen;
 use crate::reskin;
 use crate::scenery;
 use crate::level::kind_name;
@@ -49,6 +50,8 @@ enum Action {
     Import(PathBuf),
     /// Write the Reskin panel's model over a species' meshes, into the pack under this folder.
     Reskin(PathBuf),
+    /// Lay the Random course panel's course over this leg (running the generator first when asked).
+    Random { run_generator: bool },
 }
 
 /// The Import a model panel: a user's model file becomes a new scenery model in a mod pack.
@@ -82,6 +85,27 @@ struct ReskinForm {
     /// mesh objects of the chosen species: (species, lines)
     objects: Option<(String, Result<Vec<String>, String>)>,
     msg: Option<(bool, String)>,
+}
+
+/// The Random course panel: a course from the separate snap-procgen tool, by its JSON file or by running it.
+struct RandomForm {
+    json: String,
+    exe: String,
+    seed: String,
+    biome: String,
+    msg: Option<(bool, String)>,
+}
+
+impl Default for RandomForm {
+    fn default() -> Self {
+        RandomForm { json: String::new(), exe: String::new(), seed: "1".into(), biome: "forest".into(), msg: None }
+    }
+}
+
+/// Trees, rocks and bushes of a random course, waiting for the export that imports them as one model.
+struct GenScenery {
+    seed: u64,
+    props: Vec<procgen::BuiltProp>,
 }
 
 struct Drag {
@@ -171,6 +195,9 @@ pub struct EditorApp {
     pub ground_carry: bool,
     gstroke: Option<GroundStroke>,
     import: ImportForm,
+    /// built scenery of a random course, imported into the pack at the next export
+    gen_scenery: Option<GenScenery>,
+    random: RandomForm,
     reskin: ReskinForm,
 }
 
@@ -232,6 +259,8 @@ impl EditorApp {
             ground_carry: true,
             gstroke: None,
             import: ImportForm::default(),
+            gen_scenery: None,
+            random: RandomForm::default(),
             reskin: ReskinForm::default(),
         }
     }
@@ -496,6 +525,17 @@ impl EditorApp {
                     ),
                     Err(e) => (false, e),
                 });
+                if matches!(self.export_msg, Some((true, _))) && self.gen_scenery.is_some() {
+                    match self.import_gen_scenery(&root) {
+                        Ok(m) => {
+                            if let Some((_, msg)) = self.export_msg.as_mut() {
+                                msg.push('\n');
+                                msg.push_str(&m);
+                            }
+                        }
+                        Err(e) => self.export_msg = Some((false, format!("random course scenery: {e}"))),
+                    }
+                }
             }
             Action::Import(root) => {
                 let (Some(c), Ok(data)) = (&mut self.loaded, &self.data) else { return };
@@ -535,6 +575,34 @@ impl EditorApp {
                             ),
                         )
                     }
+                    Err(e) => (false, e),
+                });
+            }
+            Action::Random { run_generator } => {
+                let f = &self.random;
+                let json = if run_generator {
+                    let out = std::env::temp_dir().join(format!("snap-random-course-{}.json", f.seed.trim()));
+                    let r = std::process::Command::new(f.exe.trim().trim_matches('"'))
+                        .args(["--seed", f.seed.trim(), "--biome", &f.biome, "--length-feet", "1300", "--size-feet", "1300", "--out"])
+                        .arg(&out)
+                        .output();
+                    match r {
+                        Ok(o) if o.status.success() => out,
+                        Ok(o) => {
+                            self.random.msg = Some((false, format!("snap-procgen failed: {}", String::from_utf8_lossy(&o.stderr).trim())));
+                            return;
+                        }
+                        Err(e) => {
+                            self.random.msg = Some((false, format!("could not run snap-procgen: {e}")));
+                            return;
+                        }
+                    }
+                } else {
+                    PathBuf::from(f.json.trim().trim_matches('"'))
+                };
+                let r = self.generate_course(&json, procgen::Opts::default());
+                self.random.msg = Some(match r {
+                    Ok(m) => (true, format!("{m}\nSave as a mod pack to try it in the game (the trees, rocks and bushes are added then)."), ),
                     Err(e) => (false, e),
                 });
             }
@@ -828,12 +896,26 @@ impl EditorApp {
         let Some(st) = self.gstroke.take() else { return };
         self.geo_dirty = true;
         if self.ground_carry && !self.ground_op.is_layer() {
-            let mut w: edit::Writes = vec![];
+            let w = self.carry_writes(&st.before);
+            let n = w.len();
+            if n > 0 {
+                let label = format!("{} ground", self.ground_op.label());
+                self.apply(label, Some("ground"), Ok(w));
+            }
+        }
+        self.history.end_interaction();
+        self.status = format!("{} ground (one undo step)", self.ground_op.label());
+    }
+
+    /// Moves that keep spawns and scenery standing on the ground after its heights changed from `before`.
+    fn carry_writes(&self, before: &[f32]) -> edit::Writes {
+        let mut w: edit::Writes = vec![];
+        {
             if let Some(c) = self.loaded.as_ref() {
                 if let Some(t) = c.terrain.as_ref() {
                     let site = self.site();
                     let moved = |p: Vec3| -> Option<f32> {
-                        let old = t.sample(&st.before, p.x, p.z);
+                        let old = t.sample(before, p.x, p.z);
                         let d = t.dy(p.x, p.z) - old;
                         let b = t.base_at(p.x, p.z);
                         (d.abs() > 1e-3 && !b.is_nan() && (p.y - (b + old)).abs() < 1.5).then_some(d)
@@ -860,14 +942,186 @@ impl EditorApp {
                     }
                 }
             }
-            let n = w.len();
-            if n > 0 {
-                let label = format!("{} ground", self.ground_op.label());
-                self.apply(label, Some("ground"), Ok(w));
+        }
+        w
+    }
+
+    /// Flowers a random course can copy: the course's own flower props that have their own spawn point.
+    fn flower_sources(c: &LoadedCourse) -> Vec<Sel> {
+        let mut out: Vec<(String, Sel)> = vec![];
+        for (li, l) in c.levels.iter().enumerate() {
+            for (si, sp) in l.spawns.iter().enumerate() {
+                let flower = (sp.label.starts_with("CH_000_Flower") || sp.label.starts_with("CH_001_Flower")) && sp.alive && sp.alive_off.is_none();
+                if flower && Self::can_copy(c, Sel::Spawn(li, si)).is_ok() && sp.pos != [0.0; 3] && !out.iter().any(|o| o.0 == sp.label) {
+                    out.push((sp.label.clone(), Sel::Spawn(li, si)));
+                }
+            }
+        }
+        out.into_iter().map(|o| o.1).collect()
+    }
+
+    /// Imports a random course's trees, rocks and bushes into the pack as one model with the course's materials. The
+    /// level gains an instance, so the undo history starts over (as after an import).
+    fn import_gen_scenery(&mut self, root: &std::path::Path) -> Result<String, String> {
+        let Some(gs) = self.gen_scenery.take() else { return Ok(String::new()) };
+        let n = gs.props.len();
+        let (Some(c), Ok(data)) = (&mut self.loaded, &self.data) else { return Err("no course loaded".into()) };
+        // the importer puts the model on the surface under its anchor; the OBJ is written relative to that same point
+        let a = gs.props[0].pos;
+        let (_, surf) = render::build_geometry(c, render::Layers::default());
+        let h = surf.raycast(Vec3::new(a.x, 1000.0, a.z), Vec3::NEG_Y, 2000.0, None).map(|h| h.point.y).unwrap_or(0.0);
+        let anchor = Vec3::new(a.x, h, a.z);
+        let dir = std::env::temp_dir().join(format!("snap-random-course-{}", gs.seed));
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let (obj, mtl, mats) = procgen::scenery_obj(&gs.props, anchor, "scenery.mtl");
+        std::fs::write(dir.join("scenery.obj"), obj).map_err(|e| e.to_string())?;
+        std::fs::write(dir.join("scenery.mtl"), mtl).map_err(|e| e.to_string())?;
+        let spec = scenery::Spec {
+            file: dir.join("scenery.obj"),
+            name: format!("SM_USR_Random{}", gs.seed),
+            template: "SM_ENV_001_1_Rock2".into(),
+            materials: mats,
+            scale: 1.0,
+            place: (Vec3::ZERO, 0.0),
+        };
+        let pack = self.pack_name.clone();
+        let lines = match crate::import_pack::import_into(data, c, &spec, Vec3::new(a.x, 0.0, a.z), 0.0, None, root, &pack) {
+            Ok(l) => l,
+            Err(e) => {
+                self.gen_scenery = Some(gs);
+                return Err(e);
+            }
+        };
+        self.history = History::default();
+        self.ov_dirty = true;
+        Ok(format!("Random course scenery: {} props as {}.\n{}", n, spec.name, lines.join("\n")))
+    }
+
+    /// Owner list item 7: lays a course made by snap-procgen (its JSON) over this leg's first rail part: ground relief
+    /// and texture in a band along the rail, a swinging and climbing rail with the same point count and ends, copies of
+    /// the course's own scenery and Pokémon at the generated spots. One undo step.
+    pub fn generate_course(&mut self, json: &std::path::Path, o: procgen::Opts) -> Result<String, String> {
+        let g = procgen::Gen::load(json)?;
+        self.ensure_terrain()?;
+        self.ensure_ground();
+        let c = self.loaded.as_ref().ok_or("no course loaded")?;
+        let (l, pi) = edit::rail_ref(c).ok_or("this course has no rail")?;
+        let rail: Vec<Vec3> = c.levels[l].paths[pi].segments.first().ok_or("the rail has no parts")?.iter().map(|p| Vec3::from(*p)).collect();
+        let t = c.terrain.as_ref().ok_or("this course has no ground to reshape")?;
+        // rays see the course's geometry except the sky, backdrops and lighting helper shapes
+        let model_rays = &self.ground;
+        let solid = |m: usize| c.models.get(m).map(|x| place::Site::kind_of_name(&x.inst.name) != place::SurfaceKind::Skip && !x.inst.name.contains("LightingModel")).unwrap_or(false);
+        let clear = |p: Vec3, d: Vec3, max: f32| model_rays.raycast_where(p, d, max, &solid).map(|h| h.point.distance(p));
+        let plan = procgen::plan(&g, &rail, t, o, &clear)?;
+        let before = t.delta.clone();
+        let flowers = Self::flower_sources(c);
+        if std::env::var_os("SNAP_PROCGEN_DEBUG").is_some() {
+            for (i, (a, b)) in rail.iter().zip(&plan.rail).enumerate() {
+                eprintln!("rail {i}: {a:?} -> {b:?}");
+            }
+        }
+        // Pokémon to copy: flyers (well above the ground) for air spawns, the rest for ground spawns
+        let (mut air, mut land) = (vec![], vec![]);
+        for (_, s) in Self::species_sources(c) {
+            let lift = self.src_height(s);
+            if lift > 1.5 {
+                air.push((s, lift));
+            } else {
+                land.push((s, 0.0));
+            }
+        }
+        let key = Some("random course");
+        let label = || format!("Random course (seed {}, {})", g.seed, g.biome);
+        // 1. ground heights and texture, then everything standing on the ground follows
+        let w: edit::Writes = plan.height.iter().map(|&(i, v)| (ground::LEVEL_HEIGHT, i, v)).chain(plan.layer.iter().map(|&(i, v)| (ground::LEVEL_LAYER, i, v))).collect();
+        self.apply(label(), key, Ok(w));
+        let w = self.carry_writes(&before);
+        self.apply(label(), key, Ok(w));
+        // 2. rail
+        let c = self.loaded.as_ref().unwrap();
+        let w = edit::set_rail_part(c, 0, &plan.rail)?;
+        self.apply(label(), key, Ok(w));
+        // 3. scenery and Pokémon on the new ground
+        let ground_y = |me: &Self, p: glam::Vec2| -> Option<f32> {
+            let t = me.loaded.as_ref()?.terrain.as_ref()?;
+            let h = t.height_at(p.x, p.y);
+            (!h.is_nan()).then_some(h)
+        };
+        // trees, rocks and bushes are built as one model at export; flowers are copies of the course's flower props
+        let mut built = vec![];
+        let mut flower_n = 0;
+        let mut skipped = 0;
+        for (k, pr) in plan.props.iter().enumerate() {
+            let Some(y) = ground_y(self, pr.pos) else {
+                skipped += 1;
+                continue;
+            };
+            if pr.class == "flower" {
+                if flowers.is_empty() {
+                    skipped += 1;
+                    continue;
+                }
+                let src = flowers[(k + g.seed as usize) % flowers.len()];
+                let c = self.loaded.as_mut().unwrap();
+                let rot = edit::rot_of(c, src).map(|r| place::orient(r, Some(pr.yaw), Vec3::Y, false));
+                match edit::place_copy(c, src, Vec3::new(pr.pos.x, y, pr.pos.y), rot, 1.0) {
+                    Ok((_, w)) => {
+                        self.apply(label(), key, Ok(w));
+                        flower_n += 1;
+                    }
+                    Err(_) => skipped += 1,
+                }
+            } else {
+                built.push(procgen::BuiltProp { class: pr.class.clone(), pos: Vec3::new(pr.pos.x, y, pr.pos.y), yaw: pr.yaw, scale: pr.scale });
+            }
+        }
+        let mut placed = std::collections::BTreeMap::<String, usize>::new();
+        for b in &built {
+            *placed.entry(b.class.clone()).or_default() += 1;
+        }
+        placed.insert("flower".into(), flower_n);
+        self.gen_scenery = (!built.is_empty()).then(|| GenScenery { seed: g.seed, props: built });
+        let mut pokemon = vec![];
+        for (k, sp) in plan.spawns.iter().enumerate() {
+            let list = if sp.air && !air.is_empty() { &air } else { &land };
+            if list.is_empty() {
+                continue;
+            }
+            let Some(y) = ground_y(self, sp.pos) else { continue };
+            let (src, lift) = list[(k + g.seed as usize) % list.len()];
+            let c = self.loaded.as_mut().unwrap();
+            let rot = edit::rot_of(c, src).map(|r| place::orient(r, Some(sp.yaw), Vec3::Y, false));
+            if let Ok((ns, w)) = edit::place_copy(c, src, Vec3::new(sp.pos.x, y + lift, sp.pos.y), rot, 1.0) {
+                self.apply(label(), key, Ok(w));
+                pokemon.push(self.label(ns));
             }
         }
         self.history.end_interaction();
-        self.status = format!("{} ground (one undo step)", self.ground_op.label());
+        self.geo_dirty = true;
+        self.ov_dirty = true;
+        self.layers.rail_points = true;
+        let c = self.loaded.as_ref().unwrap();
+        let st = edit::rail_stats(c).ok_or("no rail")?;
+        let issues: Vec<String> = edit::checks(c, &self.ground).into_iter().filter(|i| matches!(i.sel, Sel::Rail(..))).map(|i| i.text).collect();
+        let msg = format!(
+            "Random course seed {} ({}, rail {:.0} ft), {:.3} units per foot: ground reshaped at {} points, rail swings up to {:.1} units and moves {:+.1} to {:+.1} units in height; {}; scenery {:?} (trees, rocks and bushes are added as one model at export){}; {} Pokémon ({}); rail checks: {}",
+            g.seed,
+            g.biome,
+            g.rail_length(),
+            plan.scale,
+            plan.height.len(),
+            plan.swing,
+            plan.rail_relief.0,
+            plan.rail_relief.1,
+            st.summary(),
+            placed,
+            if skipped > 0 { format!(" ({skipped} spots had no matching model or ground)") } else { String::new() },
+            pokemon.len(),
+            pokemon.join(", "),
+            if issues.is_empty() { "none".into() } else { issues.join("; ") }
+        );
+        self.status = msg.clone();
+        Ok(msg)
     }
 
     /// Command-line terrain stroke: `n` dabs of the current terrain brush at (x, z).
@@ -999,6 +1253,7 @@ impl EditorApp {
                 self.export_ui(ui, &mut acts);
                 self.import_ui(ui, &mut acts);
                 self.reskin_ui(ui, &mut acts);
+                self.random_ui(ui, &mut acts);
                 ui.separator();
                 self.parts(ui, &mut acts);
             });
@@ -1674,6 +1929,53 @@ impl EditorApp {
                 .clicked()
             {
                 acts.push(Action::Import(PathBuf::from(&self.export_dir)));
+            }
+            if let Some((ok, m)) = &f.msg {
+                ui.colored_label(if *ok { egui::Color32::LIGHT_GREEN } else { egui::Color32::LIGHT_RED }, m);
+            }
+        });
+    }
+
+    fn random_ui(&mut self, ui: &mut egui::Ui, acts: &mut Vec<Action>) {
+        if self.loaded.is_none() {
+            return;
+        }
+        egui::CollapsingHeader::new("Random course").default_open(false).show(ui, |ui| {
+            let f = &mut self.random;
+            ui.weak("Lays a course made from a seed over this leg's first rail part: new hills and hollows along the rail, a winding path, trees, rocks, flowers and Pokémon. The rail keeps its start and end, so the rest of the leg still follows. One undo step.");
+            ui.horizontal(|ui| {
+                ui.label("Course file");
+                ui.text_edit_singleline(&mut f.json).on_hover_text("Full path of a course .json written by snap-procgen (format 2)");
+            });
+            if ui.add_enabled(!f.json.trim().is_empty(), egui::Button::new("Lay this course over the leg")).on_disabled_hover_text("Fill in the course file first").clicked() {
+                acts.push(Action::Random { run_generator: false });
+            }
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.label("Generator");
+                ui.text_edit_singleline(&mut f.exe).on_hover_text("Full path of snap-procgen.exe, a separate program that makes courses from a seed");
+            });
+            ui.horizontal(|ui| {
+                ui.label("Seed");
+                ui.add(egui::TextEdit::singleline(&mut f.seed).desired_width(80.0)).on_hover_text("Any whole number; the same seed makes the same course");
+                egui::ComboBox::from_label("Look")
+                    .selected_text(f.biome.as_str())
+                    .show_ui(ui, |ui| {
+                        for b in ["forest", "beach", "volcano", "cave", "snow", "night"] {
+                            ui.selectable_value(&mut f.biome, b.to_string(), b);
+                        }
+                    })
+                    .response
+                    .on_hover_text("The generator's terrain style: how steep the hills are, how much is bare ground");
+            });
+            let ready = !f.exe.trim().is_empty() && f.seed.trim().parse::<u64>().is_ok();
+            if ui
+                .add_enabled(ready, egui::Button::new("Make a course from the seed"))
+                .on_hover_text("Runs the generator, then lays its course over the leg")
+                .on_disabled_hover_text("Fill in the generator and a whole-number seed first")
+                .clicked()
+            {
+                acts.push(Action::Random { run_generator: true });
             }
             if let Some((ok, m)) = &f.msg {
                 ui.colored_label(if *ok { egui::Color32::LIGHT_GREEN } else { egui::Color32::LIGHT_RED }, m);
