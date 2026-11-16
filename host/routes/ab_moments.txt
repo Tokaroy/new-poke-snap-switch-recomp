@@ -4,3 +4,5 @@
 florio_start   = ride>=8
 florio_mid     = ride>=40
 florio_late    = ride>=90
+beach_start    = ride>=1
+beach_sea      = ride>=3

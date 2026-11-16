@@ -46,6 +46,12 @@ Exit code: 0 PASS, 10 photo FAIL, 11 photo INCONCLUSIVE, 20 the run produced no 
 
 **Pick a moment where film is left.** The route's own A taps shoot film while it rides: at `ride40` of `core_florio_a` the film is used up and the photo check reads
 INCONCLUSIVE ("no film left"). `ride8` (`florio_start` in `ab_moments.txt`) has film.
+The beach route (`core_beach_0`) is the same: its shutter taps use all 72 films before `ride40`, so ride it to `beach_start` (`ride>=1`) or `beach_sea` (`ride>=3`).
+A run with `-NoPhoto` always ends INCONCLUSIVE (the shutter pass is skipped); the photo check needs a run without it.
+
+**A hash difference needs a baseline.** The check compares the image hash of the first photo frame of each value. Animated water can change it between values with no effect
+involved: `core_beach_0`, `beach_sea`, `SNAP_RT_REFLECT` 0 against 1 read FAIL with 4 different photo-frame hashes inside one value and 1.1% of the pixels changed, and the effect
+counters showed 0 draws on photo frames. Add a repeated value (`-Values 0,1,0`): if the two 0 frames differ the verdict is INCONCLUSIVE (noise), if they match and the 1 frame differs it is a real FAIL.
 
 ## How it works
 
