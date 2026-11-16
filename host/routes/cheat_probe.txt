@@ -6,4 +6,6 @@ wait ui=map_select timeout=240
 repeat @f60 @f30000 120 8 A
 wait ride timeout=240
 repeat @f0 @f1500 600 200 ZL
+# R once, between the first and the second ZL burst: the marker cheat stores while R is down, so the first burst logs the word as it was and the later ones log the marker
+@f400 8 R
 end @f1500

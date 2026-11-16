@@ -1,5 +1,5 @@
-// Hand-written test file for the cheats wiring (docs/cheats.md). Nothing here changes the game: the store writes back the value it just read.
-// Run: SNAP_CHEATS=1 SNAP_CHEATS_DIR=<this folder> SNAP_CHEATS_ON="No-op store in the heap|Log main header while ZL is held" with the cheat_probe route.
+// Hand-written test file for the cheats wiring (docs/cheats.md). The heap store writes back the value it just read (and fails: no heap). The marker store writes one word of unused page tail past the end of the main module's data (main + 0x2891800; the data segment ends at 0x28916f8), which the game never reads.
+// Run: SNAP_CHEATS=1 SNAP_CHEATS_DIR=<this folder> SNAP_CHEATS_ON="Log main header while ZL is held|Write a marker past the end of the main module's data while R is held|Log that word while ZL is held" (the heap one is meant to fail) with the cheat_probe route.
 [Log main header while ZL is held]
 // ZL is key bit 8. Debug log id 7 of the 4 bytes at main + 0x68270 (the first word of a function): "cheat: debug log 7 = ..." in the log while ZL is down
 80000100
@@ -10,3 +10,15 @@ FFF47000 00068270
 // R0 = 4 bytes at heap + 0x100, then heap + 0x100 = R0. This game sets no heap, so this one is expected to fail and be switched off (the log says so).
 54100000 00000100
 A4000410 00000100
+
+[Write a marker past the end of the main module's data while R is held]
+// Main module region, offset 0x2891800: the last page of the module's data, after its zero-initialized part ends (RW segment end 0x28916f8), so the game never uses it.
+// R is key bit 7. Type 0 store: 4 bytes of 0xC0DE1234 at main + 0x2891800.
+80000080
+04000000 02891800 C0DE1234
+20000000
+
+[Log that word while ZL is held]
+80000100
+FFF48000 02891800
+20000000

@@ -40,7 +40,7 @@ The problem report's `system.txt` has a `Cheats active: yes/no` line. `yes` mean
 - HLE test `cheats.wiring` (`tests/hle/cheats_tests.h`): hand-written text, a 64 KiB buffer standing in for the heap. Covers the master section, an off cheat doing nothing, the saved enabled-names list, a key-conditional store with the key up and down, a store past the mapped range failing the run without a crash, a parse error naming its line, and the master switch and `Cheats active` following `SNAP_CHEATS`.
 - VM suite: `runtime\hle\cheat\build.bat` (synthetic words only).
 - Tab: `tests/hle/run_cheats_ui.ps1` (F1 > Cheats on screen, two `expect` checks).
-- In game: `host/routes/cheat_probe.txt` with the hand-written file `tests/cheats/DDB900FF04A912ED.txt` (a store that writes back the value it just read, and a ZL-conditional debug log). Results are under "Verification results".
+- In game: `host/routes/cheat_probe.txt` with the hand-written file `tests/cheats/DDB900FF04A912ED.txt` (a heap store that fails by design, a ZL-conditional debug log, and an R-conditional store into main-module data with a read-back). Results are under "Verification results".
 
 ## Verification results
 
@@ -54,7 +54,9 @@ Run 2026-11-16 on a build with the cheats wiring, route `cheat_probe`, `SNAP_CHE
 
 - The F1 Cheats tab (`tests/hle/run_cheats_ui.ps1`, 2 checks pass, frame `analysis/ui/cheats_tab.png`, local): the "Allow cheats" switch is on, the status line and file path show, "Read the file again" is there, the ZL cheat is ticked, and the heap cheat is unticked because it had already been switched off after its failure.
 
-Not covered in the game: a cheat that writes to main-module data. The probe file has none, so nothing in it changes the game's own state.
+Write test against main-module data (run 2026-11-16, same route and file, a second build with the marker cheat; log `analysis/boot/runs/3-20261116_020235/boot_stderr.log`, local): the file's marker cheat is `04000000 02891800 C0DE1234` under a key condition on R, and a second cheat logs the same word under ZL (`FFF48000 02891800`). The address is main + 0x2891800: the data segment of the 2.0.1 main module ends at 0x28916f8 (`analysis/import/v262144-main.elf`, RW PT_LOAD at 0xc61000, memsz 0x1c306f8), so this is unused page tail inside the mapped image and the game never reads it. The route holds ZL in bursts and taps R once between them. Read-back: 200 log lines `debug log 8 = 0` before the R press, then 396 lines `debug log 8 = 0xc0de1234` after it. No `cheats: ... failed` line for the marker cheat. A store into the main module therefore works and a key-conditional store takes effect on the frame the key is down.
+
+Not covered: a cheat that changes real game state (a pointer chain, a counter). The probe only writes where nothing reads.
 
 ## Not done
 
