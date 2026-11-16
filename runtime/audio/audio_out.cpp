@@ -520,14 +520,18 @@ void core_mix(float* dst, uint32_t frames) {
   }
   if (g.upmixOn && dc >= 6) g.upmix.process(dst, dc, frames);
   if (snap_access_mono()) {   // left and right pairs (front, and the surround pairs of a 5.1 / 7.1 mix) play their average; centre and LFE stay
+    double dsum = 0;   // how far apart the two sides were before they were averaged (logged a few times, so a run can show the mixer did the work)
     for (uint32_t f = 0; f < frames; ++f) {
       float* fr = dst + (size_t)f * dc;
       for (uint32_t c = 0; c + 1 < dc; c += 2) {
         if (dc >= 6 && (c == 2)) continue;   // centre + LFE are not a pair
         const float m = 0.5f * (fr[c] + fr[c + 1]);
+        dsum += (double)(fr[c] - fr[c + 1]) * (fr[c] - fr[c + 1]);
         fr[c] = fr[c + 1] = m;
       }
     }
+    static int mono_logs = 0;
+    if (dsum > 0 && mono_logs < 3) { ++mono_logs; std::fprintf(stderr, "[audio] mono audio on: left-right difference before averaging rms %.5f, after 0 (%u ch)\n", std::sqrt(dsum / (double)(frames ? frames : 1)), dc); }
   }
   // master x device volume, ramped over the block
   const float target = g.muted.load(std::memory_order_relaxed) ? 0.0f : g.vol[SNAP_VOL_MASTER].load(std::memory_order_relaxed) * g.deviceVol[g.activeDevice].load(std::memory_order_relaxed);

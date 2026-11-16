@@ -1277,14 +1277,19 @@ void Hub::poll(int min_interval_ms) {
   }
   PadSample p = map_pad(map_, r);
   // toggle mode: a press of a toggle button (ZL / ZR switches, the accessibility.toggle_buttons list, SNAP_ACCESS_TOGGLE) flips it on or off instead of holding it
+  // SNAP_ACCESS_TOGGLE_SCRIPT=1 (test runs): latch what the input script presses instead of the physical pad, so a route can exercise the latch.
+  static const bool script_latch = std::getenv("SNAP_ACCESS_TOGGLE_SCRIPT") != nullptr;
   const uint64_t tmask = toggle_mask_effective(map_);
-  tog_state_ &= tmask; tog_prev_ &= tmask;
-  if (tmask) {
-    const uint64_t down = p.buttons & tmask;
+  auto latch = [&](uint64_t& buttons) {
+    tog_state_ &= tmask; tog_prev_ &= tmask;
+    if (!tmask) return;
+    const uint64_t before = tog_state_, down = buttons & tmask;
     tog_state_ ^= down & ~tog_prev_;
     tog_prev_ = down;
-    p.buttons = (p.buttons & ~tmask) | tog_state_;
-  }
+    buttons = (buttons & ~tmask) | tog_state_;
+    if (tog_state_ != before) log("access: toggle latch %#llx -> %#llx present=%d", (unsigned long long)before, (unsigned long long)tog_state_, nvn::g_presentCount);
+  };
+  if (!script_latch) latch(p.buttons);
   preview_ = p;
   pad_ = p;
   touch_ = map_touch(map_, r);
@@ -1302,6 +1307,7 @@ void Hub::poll(int min_interval_ms) {
       apply_rumble(backend_.get(), sr_lo, sr_hi, "script", pad_.buttons, true);
     }
   }
+  if (script_latch && !open) latch(pad_.buttons);
   if (!open) {   // host-side presses (host/mods/skips.cpp, SNAP_SKIP_CUTSCENES): OR-ed onto the pad like a script entry
     const uint64_t inj = g_inject_buttons.load(std::memory_order_relaxed);
     if (inj && std::chrono::steady_clock::now().time_since_epoch().count() < g_inject_until_ns.load(std::memory_order_relaxed)) { pad_.buttons |= inj; pad_.connected = true; }
