@@ -1181,7 +1181,7 @@ std::string mods_root_dir() {
 std::string lower_s(std::string t) { for (char& c : t) c = (char)std::tolower((unsigned char)c); return t; }
 
 // Files two enabled packs both change, worked out by the game's own loader from mods.json as saved (zips are read from
-// their file list, not unpacked). Refreshed after every load, toggle and move.
+// their file list, not unpacked). Refreshed after every load and save.
 struct ModClash { std::string path, winner, loser; };   // winner / loser: pack ids
 std::vector<ModClash> g_mod_clash;
 int g_mod_clash_top = 0;   // first line shown in the details panel (mouse wheel)
@@ -1259,6 +1259,7 @@ void save_mods() {
   for (const auto& k : g.mods_keep) add(k.first, k.second);
   mj.j.set("packs", arr);
   mj.save();
+  mods_find_conflicts();   // the list follows mods.json as saved
 }
 
 int mods_on() { int n = 0; for (const ModPack& p : g.mods) n += p.enabled ? 1 : 0; return n; }
@@ -1269,7 +1270,6 @@ void mods_toggle(int i) {
   if (i < 0 || i >= (int)g.mods.size()) return;
   g.mods[(size_t)i].enabled = !g.mods[(size_t)i].enabled;
   save_mods();
-  mods_find_conflicts();
   mods_toast(g.mods[(size_t)i].name + (g.mods[(size_t)i].enabled ? " is on. It loads at the next start." : " is off."));
 }
 void mods_move(int i, int d) {   // d -1 = higher priority
@@ -1277,7 +1277,6 @@ void mods_move(int i, int d) {   // d -1 = higher priority
   if (i < 0 || j < 0 || i >= (int)g.mods.size() || j >= (int)g.mods.size()) return;
   std::swap(g.mods[(size_t)i], g.mods[(size_t)j]);
   save_mods();
-  mods_find_conflicts();
   g.row = j + 1;
 }
 void mods_open_folder() {
