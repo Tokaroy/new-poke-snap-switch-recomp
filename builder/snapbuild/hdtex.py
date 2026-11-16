@@ -227,7 +227,7 @@ def plan(cache, settings, models_sha, bc7=False, exclude=(), max_edge=MAX_EDGE, 
         if (ow, oh) == (t.w, t.h):
             continue
         ofmt = out_format(t.fmt, cat, bc7)
-        mips = 1 if t.mips == 1 and cat != 'shadow' else im.mip_count(ow, oh)   # shadows gain a chain: at 2x to 4x they would shimmer
+        mips = 1 if t.mips == 1 else im.mip_count(ow, oh)
         it = Item(rel, cat, t.fmt, t.w, t.h, t.mips, idx[rel][0], ofmt, ow, oh, mips, nutexb_bytes(ofmt, ow, oh, mips), scale,
                   cs.get('model', ''), float(cs.get('strength', 1.0)), float(cs.get('denoise', 0.0)),
                   float(settings.get('_boost', 0.0)) if cat == 'scenery' else 0.0)

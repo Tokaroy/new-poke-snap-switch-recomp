@@ -490,7 +490,7 @@ class ShadowTests(unittest.TestCase):
         off = H.process_shadow(self.item(n, 2, 0.0), px, False)[0][..., 3].astype(np.float32) / 255
         self.assertLess(np.abs(off - plain).max(), 0.15)                 # strength 0: plain enlargement, only de-ringed
 
-    def test_planned_only_with_cats_and_gets_mips(self):
+    def test_planned_only_with_cats_and_keeps_mips(self):
         t = Path(tempfile.mkdtemp())
         rel = 'nx/Pack/LevelComposite/master/LC_001_A.drp/LV^M^1^s^0^Shadow.nutexb'
         write_cache(t, {rel: make_nutexb(0x4a5, 128, 128, 1)[0]})
@@ -498,7 +498,7 @@ class ShadowTests(unittest.TestCase):
         self.assertEqual((items, counts), ([], {'shadow': 1}))           # the textures pack never builds shadows
         items, _ = H.plan(t, H.level_settings('hd'), {}, cats=['shadow'])
         self.assertEqual(len(items), 1)
-        self.assertEqual((items[0].out_w, items[0].out_fmt, items[0].out_mips), (256, 0x4a5, im.mip_count(256, 256)))
+        self.assertEqual((items[0].out_w, items[0].out_fmt, items[0].out_mips), (256, 0x4a5, 1))
         items, _ = H.plan(t, H.level_settings('ultra'), {}, cats=['shadow'])
         self.assertEqual(items[0].out_w, 512)
         items, _ = H.plan(t, H.level_settings('custom', ['shadow.scale=0']), {}, cats=['shadow'])
