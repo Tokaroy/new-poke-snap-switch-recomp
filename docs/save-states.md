@@ -252,3 +252,14 @@ Conditions:
 4. M2 and later wait until no other worker is editing `runtime/os` and `runtime/nvn`.
 
 If condition 1 fails, the fallback is "not yet": revisit after the CPU-side stall work, which also touches the scheduler.
+
+## 6. Using it in test runs (stage 2, built)
+
+One in-RAM slot per process. A save drains every guest thread (about 0.5 to 1 s, 2.5 GiB copied), a load takes about 0.3 to 0.4 s. A load is refused, with the reason in the log, when the thread, queue or window sets changed since the save. Both run on a worker thread, so a script never blocks on them.
+
+- Route tokens (`runtime/hle/input_core.cpp`): `@f10 8 save=<name>` and `@f10 8 load=<name>` fire once when their line starts.
+- Wait on counters, not on idle: `wait state=saves>=<n>`, `wait state=loads>=<n>`, `wait state=done>=<n>` (finished requests, refused ones included). `wait state=idle` also exists but can miss a request that finished between two polls.
+- Timer form for any route: `SNAP_CHECKPOINT=save:<name>@t<s>,load:<name>@t<s>x<n>` (seconds from process start; `x<n>` repeats the load n times, 4 s apart). The log lines are `[os] state save '<name>': ok ...` and `[os] state load '<name>': ok ...` (or `REFUSED: <reason>`).
+- A load rewinds the game, not the host: the script clock and present count keep running, and the HLE film mirror is reset (`route_state_loaded`). Wait for something the game reports again after the load (a photo taken, `ride`) before checking it.
+- Example: `host/routes/savestate_florio.txt` rides, saves, takes photos and loads three times; the film counter goes 67 back to 70 each time (run `3-20261116_014027`).
+- Names are labels only (one slot); a load of another name than the saved one is refused.
