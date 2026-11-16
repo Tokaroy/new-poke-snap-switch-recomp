@@ -540,6 +540,45 @@ class NearestEngine:
         return {k: self.upscale(v) for k, v in items}
 
 
+class PackStateTests(unittest.TestCase):
+    """Each pack keeps its own state: building the shadow pack must not touch the color pack's records."""
+    def run_status(self, *extra):
+        import argparse
+        from snapbuild import hdtex_cli as C
+        t = Path(tempfile.mkdtemp())
+        old = os.environ.get('LOCALAPPDATA')
+        os.environ['LOCALAPPDATA'] = str(t)
+        try:
+            p = argparse.ArgumentParser()
+            C.add_args(p)
+            a = p.parse_args(['--status', '--cache', str(t / 'cache'), '--mods-dir', str(t / 'mods'), *extra])
+            lines = []
+            C.main(a, say=lines.append)
+        finally:
+            if old is None:
+                os.environ.pop('LOCALAPPDATA', None)
+            else:
+                os.environ['LOCALAPPDATA'] = old
+        return t, '\n'.join(lines)
+
+    def test_status_honors_pack_id(self):
+        _, out = self.run_status('--pack-id', 'hd-shadows')
+        self.assertIn('hd-shadows', out)
+        self.assertNotIn('hd-ai-textures', out)
+        _, out = self.run_status()
+        self.assertIn('hd-ai-textures', out)
+
+    def test_other_pack_gets_its_own_work_folder(self):
+        import argparse
+        from snapbuild import hdtex_cli as C
+        p = argparse.ArgumentParser()
+        C.add_args(p)
+        d = C.work_dir(p.parse_args(['--level', 'hd']))
+        s = C.work_dir(p.parse_args(['--level', 'hd', '--pack-id', 'hd-shadows']))
+        self.assertEqual(s, d / 'packs' / 'hd-shadows')
+        self.assertEqual(C.work_dir(p.parse_args(['--level', 'hd', '--pack-id', 'hd-shadows', '--work', 'x'])), Path('x'))
+
+
 @unittest.skipIf(TEXCONV is None, 'texconv.exe not available (set SNAP_TEXCONV)')
 class RunTests(unittest.TestCase):
     def test_end_to_end(self):

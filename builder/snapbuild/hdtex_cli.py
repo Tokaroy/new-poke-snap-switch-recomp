@@ -84,19 +84,19 @@ def show_plan(items, counts, est, say):
         f'{gb(est["vram_peak"])} of textures at the busiest course (originals {gb(est["vram_peak_orig"])}; an upper bound)')
 
 
-def status(cache, work, mods, say, emit=None):
+def status(cache, work, mods, say, emit=None, pack_id=H.PACK_ID):
     idx = H.read_index(cache)
     on = (Path(cache) / 'capture.on').exists()
     say(f'Texture cache {cache}: {len(idx)} textures, capture during play {"on" if on else "off"}')
     st = H.load_state(work)
     tot = sum(r.get('bytes', 0) for r in st['outputs'].values())
     kept = len(st.get('retired', {}))
-    say(f'Pack {Path(mods) / H.PACK_ID}: {len(st["outputs"])} textures, {gb(tot)}' + (f' ({kept} kept from another level)' if kept else ''))
+    say(f'Pack {Path(mods) / pack_id}: {len(st["outputs"])} textures, {gb(tot)}' + (f' ({kept} kept from another level)' if kept else ''))
     mj = Path(mods) / 'mods.json'
     en = None
     if mj.exists():
         for e in json.loads(mj.read_text(encoding='utf-8')).get('packs', []):
-            if e.get('id') == H.PACK_ID:
+            if e.get('id') == pack_id:
                 en = e.get('enabled', True)
     say('In game: ' + ('on' if en else 'off' if en is not None else 'not set up'))
     last = Path(work) / 'last_run.json'
@@ -105,7 +105,7 @@ def status(cache, work, mods, say, emit=None):
         r = json.loads(last.read_text(encoding='utf-8'))
         say(f'Last build: level {r.get("level")}, {r.get("built")} built, {r.get("failed")} failed, {r.get("seconds", 0) / 60:.1f} min')
     if emit:
-        emit({'status': {'cache': str(cache), 'captured': len(idx), 'capture_on': on, 'pack': str(Path(mods) / H.PACK_ID),
+        emit({'status': {'cache': str(cache), 'captured': len(idx), 'capture_on': on, 'pack': str(Path(mods) / pack_id),
                          'pack_textures': len(st['outputs']), 'pack_bytes': tot, 'kept_from_other_level': kept, 'enabled': en,
                          'ab_originals': str(Path(work) / 'ab-orig') if (Path(work) / 'ab-orig').is_dir() else None,
                          'last_build': {k: r.get(k) for k in ('level', 'built', 'failed', 'seconds', 'date')} if r else None}})
@@ -234,9 +234,18 @@ def main(a, table=None, say=None):
         return _main(a, table, say_json, emit)
 
 
+def work_dir(a):
+    """--work, else the default folder; another pack than the default gets its own subfolder, so one pack's build never retires
+    another pack's records."""
+    if a.work:
+        return Path(a.work)
+    w = H.default_work()
+    return w if a.pack_id == H.PACK_ID else w / 'packs' / a.pack_id
+
+
 def _main(a, table, say, emit):
     cache = Path(a.cache) if a.cache else H.default_cache()
-    work = Path(a.work) if a.work else H.default_work()
+    work = work_dir(a)
     mods = Path(a.mods_dir) if a.mods_dir else H.default_mods()
     tdir = S.tools_dir(a.tools_dir)
     pins = H.load_pins()
@@ -250,7 +259,7 @@ def _main(a, table, say, emit):
         say(f'Texture capture during play is {a.capture}. Cache: {cache}')
         return 0
     if a.status:
-        return status(cache, work, mods, say, emit)
+        return status(cache, work, mods, say, emit, a.pack_id)
     if a.collect:
         collect(a.collect, cache, a.save_dir, ROUTES, a.route_timeout, say)
         if not a.level:
