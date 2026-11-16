@@ -1,0 +1,10 @@
+# fixture: tut_cand_new4
+# Skip probe for the yard scan tutorial: the tutorial shows "(+) Skip" at the top right. A held Plus (2.5 s) opens "Skip the tutorial?" with No preselected; Up moves to Yes, A confirms.
+# A taps through the lab dialogue to f9000, Plus held at f9000, Up at f9250, A at f9320; a frame every 150 presents from f8800.
+# Pass = the Skip label and Rita's bubbles are gone and the normal lab flow (hub / Lental Map) follows; fail = the tutorial or the dialog stays.
+repeat @f300 @f9000 60 6 A
+repeat @f9000 @f9160 400 150 Plus
+repeat @f9250 @f9290 200 6 Up
+repeat @f9320 @f13000 120 6 A
+repeat @f8800 @f13000 150 1 shot=1
+end @f13100

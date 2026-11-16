@@ -1,0 +1,16 @@
+# fixture: unlock_all
+# Scan probe on a ride (regression guard for "scanning does nothing", 2026-11-16): Florio Day, ride started, then X scans with a frame shot every 15 presents.
+# Pass: after a scan the HUD labels subjects (a "?" marker over scannable objects and Pokemon, a name pop-up when the reticle is on a Pokemon); fail: no marker ever shows.
+# Run: powershell -File host\run_boot.ps1 -Route scan_ride_probe -BuildDir <build dir> -Timeout 420 -ShotMax 40   (frames: analysis\boot\route_scan_ride_probe_*.png)
+wait ui=title timeout=200
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=300
+@f90 6 A
+wait ui=map_select:CourseSelect timeout=60
+@f180 6 A
+wait ride timeout=300
+wait rail>=6 timeout=150
+# two scans (f60, f240), a frame every 15 presents from f50 to f420
+repeat @f60 @f420 180 20 X
+repeat @f50 @f420 15 1 shot=1
+end @f440

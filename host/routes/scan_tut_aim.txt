@@ -1,0 +1,10 @@
+# fixture: tut_cand_new4
+# Aiming probe for the yard scan tutorial: same taps as scan_tut_probe (A through the lab dialogue and Rita's lines, X taps from f7500), then after the scan the camera pans
+# right (Pikachu runs off to the right after the scan; "Use (stick) to move the reticle so it's on the (?)") in near-continuous right-stick holds from f11500, a frame every 90
+# presents from f11400. Pass = a "?" marker shows over Pikachu somewhere in the pan and the dialogue advances; fail = the loop line stays and no "?" ever appears.
+repeat @f300 @f60000 60 6 A
+repeat @f7500 @f11400 90 6 X
+repeat @f11500 @f12400 100 90 rx=0.4
+repeat @f12400 @f13200 100 90 rx=-0.4
+repeat @f11400 @f13300 90 1 shot=1
+end @f13400

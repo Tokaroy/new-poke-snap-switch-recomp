@@ -1,0 +1,10 @@
+# fixture: tut_cand_new4
+# Probe for the yard scan tutorial (Rita: "Press X to run a scan", then "And did you also notice that [?]", "Use (stick) to move [reticle] so it's on the [?]"). A taps through the lab
+# dialogue and Rita's lines, X taps (scan) start at f7500 once the yard prompt is up (an X pressed earlier is spent before the tutorial asks for it), a frame every 300 presents from f7200.
+# Known state (2026-11-16, HEAD and v1.1.0 and the 11-14 build): the scan wave plays and the bubble advances, Pikachu then runs off screen and the "?" never appears, so the last
+# bubble loops (scan_tut_aim pans the whole yard and finds nothing). Since v1.1.0 the inline glyphs in the bubbles are flat squares (proper icons in the 11-14 15:15 build).
+# The tutorial itself can be skipped: scan_tut_skip.
+repeat @f300 @f60000 60 6 A
+repeat @f7500 @f60000 90 6 X
+repeat @f7200 @f13000 300 1 shot=1
+end @f13100
