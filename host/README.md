@@ -413,6 +413,9 @@ All off by default; developer switches only (no options rows yet; rows wanted ar
 | `SNAP_FX_LOG=1` | Logs frame phases, camera, shadow caster capture, photo holds and effect runs (`fx:` lines on stderr). |
 | `SNAP_FX_TIME=1` | GPU time of the whole pre-tonemap Fx block (timestamps; avg/max logged every 300 blocks). |
 | `SNAP_CONTACT_SHADOWS=1` | Screen-space contact shadows (`nvn_contact.cpp`, `shaders/contact.frag`). Tuning (test aids): `SNAP_CONTACT_STRENGTH` (0.5), `SNAP_CONTACT_LEN` (0.4 world units), `SNAP_CONTACT_THICK` (0.15), `SNAP_CONTACT_FADE` (45 view units), `SNAP_CONTACT_LSIGN` (+1/-1 forces the light direction sign), `SNAP_CONTACT_DEBUG` (2 tints, 3 view distance, 4 normal, 5 sun facing, 6 depth, 7 the factor itself, 100 cycles). |
+| `SNAP_FOLIAGE_AA=1` | Leaf edge smoothing (`nvn_foliage.cpp`, `docs/foliage-effects.md`): alpha-tested scene draws dither their edge (hashed alpha) instead of a hard discard; photo frames keep the game's own draw. Live in the dev loop (`dev_param`). |
+| `SNAP_LEAF_TRANSLUCENCY=0.5\|1` | Leaf translucency: back-lit glow on alpha-tested lit materials when the camera looks toward the sun. Test aids: `SNAP_LEAF_DEBUG=1` (paints the term red across the whole d range), `SNAP_LEAF_FLIP=1` (uses the opposite sign of the light direction). |
+| `SNAP_SOFT_PARTICLES=1` | Draws the half-resolution particle layer (960x540 colour + depth, creation sites in `FoliageParticleBoost`) at the scene's resolution. Restart only (targets are sized at creation). `SNAP_SOFT_PARTICLES_SEL` bitmask (default 6) picks which of the three targets A/B/C to boost. |
 
 Regenerate the host SPIR-V headers (`nvn_fx_spv.h`, `nvn_contact_spv.h`) after editing a shader: `tools\venv-recomp\Scripts\python -I runtime\nvn\shaders\make_fx_spv.py`.
 

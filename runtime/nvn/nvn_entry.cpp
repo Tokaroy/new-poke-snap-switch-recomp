@@ -17,6 +17,7 @@
 #include "nvn_shiny.h"
 #include "nvn_hdphoto.h"
 #include "nvn_internal.h"
+#include "nvn_foliage.h"
 #include "hle/visual_defaults.h"   // default anisotropy comes from the shared table
 #include "hle/lighting_preset.h"   // SNAP_LIGHTING parser shared with host/mods/gamemods.cpp
 #include "upscale/upscale_nvn.h"   // [upscale]
@@ -262,6 +263,7 @@ Boolean TextureInitialize(void* tex, const void* b) {
     uint64_t chain[8] = {}; const int nChain = GuestCallChain(chain, 8);
     if (!tag) for (int i = 0; i < nChain; i++) if (chain[i] == kGuestMain + kEvalDepthRet) tag = kTagEvalDepth;   // call-site tag
     t->scale = g_scale.For(*tb, tag);
+    { uint64_t rel[8]; for (int i = 0; i < nChain; i++) rel[i] = chain[i] - kGuestMain; t->scale *= FoliageParticleBoost(t, tb->width, tb->height, tb->format, rel, nChain); }   // [foliage] SNAP_SOFT_PARTICLES: full-resolution particle targets
     if (tag == kTagEvalDepth) ModelNoteEvalDepth(t);   // nvn_model.cpp: the evaluation pass draws original meshes
     { uint64_t rel[8]; for (int i = 0; i < nChain; i++) rel[i] = chain[i] - kGuestMain; UpscaleTagTexture(t, rel, nChain, tag); }   // [upscale]
     if (g_scale.scale != 1.0f || g_scale.shadowRes) { static const bool lg = getenv("SNAP_SCALE_LOG") != nullptr; if (lg && (tb->width >= 192 || t->scale != 1.0f)) {
@@ -289,6 +291,7 @@ Boolean TextureInitialize(void* tex, const void* b) {
   return 1;  // the VkImage is created lazily (first use as render target / present source)
 }
 void TextureFinalize(void* tex) {
+    FoliageTextureGone(t);      // [foliage]
   if (auto* t = Impl<TextureImpl>(tex, MAGIC_TEXTURE)) {
     if (t->acctPool) PoolAcct(t->acctPool, t->acctVa, -t->acctBytes);
     if (t->arenaSlot >= 0) ArenaUnacct(t->arenaSlot, t->arenaBytes);

@@ -252,6 +252,13 @@ TABS = [
         # live (runtime/nvn/nvn_contact.cpp snap_contact_shadows_set); stored as "1" or erased
         row('Contact shadows', 'p', 'opt', 'contact_shadows', 'default', (('default', 'Off'), ('1', 'On')),
             'Thin shadows where Pokémon and objects touch the ground. Needs the sun.'),
+        # foliage and particle upgrades (runtime/nvn/nvn_foliage.cpp): display only, photos keep the game's draw; read at start
+        row('Leaf edge smoothing', 'p', 'opt', 'foliage_aa', 'default', (('default', 'Off'), ('1', 'On')),
+            'Smooths jagged leaf and grass edges. Best with Anti-aliasing. Photos are unchanged.' + R),
+        row('Leaf translucency', 'p', 'opt', 'leaf_translucency', 'default', (('default', 'Off'), ('0.5', 'Subtle'), ('1', 'Strong')),
+            'Sunlight glows through leaves seen from the shade side. Photos are unchanged.' + R),
+        row('Soft particles', 'p', 'opt', 'soft_particles', 'default', (('default', 'Off'), ('1', 'On')),
+            'Dust, splashes and pollen fade where they meet the ground. Photos are unchanged.' + R),
     ]),
     # Tab 12 (third set): performance overlay, live (runtime/ui/ui_fps.cpp); F3 cycles the mode too
     ('Performance', 'On-screen frame rate and timing.', [

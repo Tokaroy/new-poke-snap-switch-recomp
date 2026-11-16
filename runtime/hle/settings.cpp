@@ -116,6 +116,7 @@ const struct { const char* key; const char* env; } kEnvKeys[] = {
     {"photo_export", "SNAP_PHOTO_EXPORT"},    {"photo_dir", "SNAP_PHOTO_DIR"}, {"hd_photos", "SNAP_HD_PHOTOS"},    {"neo_speed", "SNAP_NEO_SPEED"}, {"film", "SNAP_FILM"},
     {"freecam", "SNAP_FREECAM"}, {"freecam_freeze", "SNAP_FREECAM_FREEZE"},   // free camera rows (host/mods/freecam.cpp, docs/freecam.md)
     {"skip_cutscenes", "SNAP_SKIP_CUTSCENES"},
+    {"foliage_aa", "SNAP_FOLIAGE_AA"}, {"leaf_translucency", "SNAP_LEAF_TRANSLUCENCY"}, {"soft_particles", "SNAP_SOFT_PARTICLES"},   // foliage / particle rows (runtime/nvn/nvn_foliage.cpp; restart)
     {"fps_target", "SNAP_FPS"},   // Frame rate target row (90 / 120 / 144; "default" = 60, the game's own); host/mods/highfps.cpp, uipace.cpp
     {"game_language", "SNAP_GAME_LANGUAGE"},   // Game language row: ja | en | fr | de | it | es | ko | zh-hans | zh-hant, unset = Auto (Windows language, else English); docs/player-options.md
     {"gfx_bokeh_dof", "SNAP_BOKEH_DOF"}, {"gfx_motion_blur", "SNAP_MOTION_BLUR"},   // lens effect rows (runtime/nvn/nvn_lens_fx.cpp; strength, unset = off; restart)

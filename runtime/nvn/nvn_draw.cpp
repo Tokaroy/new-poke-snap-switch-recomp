@@ -33,6 +33,7 @@
 #include "nvn_freecam.h"           // free camera clean shot
 #include "hle/lighting_preset.h"   // SNAP_LIGHTING parser (shared with host/mods/gamemods.cpp, nvn_entry.cpp)
 #include "nvn_internal.h"
+#include "nvn_foliage.h"
 #include "nvn_pipeline.h"
 #include "nvn_rt.h"   // [rt] SNAP_RT=1 ray tracing track
 #include "os/perf.h"   // SNAP_PERF instrumentation
@@ -302,6 +303,10 @@ static void MakePipeDesc(PipeDesc& pd, DrawState& d, VkPrimitiveTopology topo, c
   pd.depthFmt = (int32_t)rt.depth; pd.stencilFmt = (int32_t)rt.stencil; pd.samples = rt.samples;
   // the effective multisample count (render target samples win over the multisample state), as the pipeline uses it
   if (!(rt.samples > 1)) pd.samples = d.ms.samples > 1 ? d.ms.samples : 1;
+  {   // pad2 bit 0: hashed / covered alpha edge for alpha-tested scene draws (SNAP_FOLIAGE_AA, nvn_foliage.cpp); 0 = the game's own test
+    DsSt dsv; dsv.bits = d.ds.bits;
+    pd.pad2 = FoliagePipeBits(pd.alphaFunc, pd.alphaRef, pd.nColor ? pd.colorFmt[0] : 0, pd.depthFmt, DsGet(dsv, DS_DT, 1) != 0, pd.nColor, (pd.blendEn & 1u) != 0);
+  }
 }
 
 // 1 for an unsigned-integer colour format, 2 for a signed one, else 0 (used to bitcast float fragment outputs, PatchIntOutputs).
@@ -352,14 +357,18 @@ VkPipeline CreateGraphicsPipelineImpl(Host* h, const PipeDesc& pd, StageProg* co
       for (int i = 0; i < pd.nColor && i < 8; i++) { const int k = IntColorKind((VkFormat)pd.colorFmt[i]); intKinds[i] = k; intKindBits |= (uint32_t)k << (16 + 2 * i); }
       const bool useAlt = pd.pad0 != 0 && fp.modAlt != VK_NULL_HANDLE && !fp.spvAlt.empty();   // SNAP_XLATE_AB alternate translation
       const int pcfTaps = (intKindBits == 0 && !useAlt) ? (int)pd.pad1 : 0;   // (pad1 = taps; the variant key below only needs "on")   // P5: soft shadow taps (nvn_shadowpcf.cpp), fragment color outputs only
-      const uint32_t vkey = (uint32_t)(alpha ? af : 0) | ((uint32_t)pd.nColor << 4) | (dual ? 0x100u : 0u) | intKindBits | (useAlt ? 0x80000000u : 0u) | ((uint32_t)pcfTaps << 16);
+      const bool foliageHash = alpha && (pd.pad2 & 1) != 0;   // SNAP_FOLIAGE_AA: dithered edge (0x200) or alpha-to-coverage output (0x400, multisampled targets)
+      const bool foliageA2c = foliageHash && pd.samples > 1;
+      const int foliageLeaf = alpha ? (int)(((pd.pad2 >> 4) & 15u) | (((pd.pad2 >> 1) & 1u) << 4)) : 0;   // SNAP_LEAF_TRANSLUCENCY level 0..8 (vkey bits 11..15)
+      const uint32_t vkey = (uint32_t)(alpha ? af : 0) | ((uint32_t)pd.nColor << 4) | (dual ? 0x100u : 0u) | intKindBits | (useAlt ? 0x80000000u : 0u) | ((uint32_t)pcfTaps << 16) | (foliageHash ? (foliageA2c ? 0x400u : 0x200u) : 0u) | ((uint32_t)foliageLeaf << 11);
       std::lock_guard<std::mutex> fl(fragMu);
       auto it = fp.fragMods.find(vkey);
       if (it == fp.fragMods.end()) {
         std::vector<uint32_t> cur = useAlt ? fp.spvAlt : fp.spv, tmp;
         bool alphaOk = false;
         if (alpha) {
-          if (PatchAlphaTest(cur, af, tmp)) { cur = tmp; alphaOk = true; }
+          if ((foliageHash || foliageLeaf) && PatchAlphaHash(cur, af, foliageA2c, foliageHash, foliageLeaf, tmp)) { cur = tmp; alphaOk = true; }
+          else if (PatchAlphaTest(cur, af, tmp)) { cur = tmp; alphaOk = true; }
           else LogError("alpha test (func %d): fragment shader has no float vec4 output at location 0, test ignored", af);
         }
         const VkShaderModule baseMod = useAlt ? fp.modAlt : fp.mod;
@@ -430,7 +439,7 @@ VkPipeline CreateGraphicsPipelineImpl(Host* h, const PipeDesc& pd, StageProg* co
   if (g_provokingLast) { provoking.provokingVertexMode = VK_PROVOKING_VERTEX_MODE_LAST_VERTEX_EXT; rs.pNext = &provoking; }   // NVN/Maxwell flat shading
   VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
   ms.rasterizationSamples = (VkSampleCountFlagBits)std::max(pd.samples, 1);
-  ms.alphaToCoverageEnable = pd.ms.a2c ? VK_TRUE : VK_FALSE;
+  ms.alphaToCoverageEnable = (pd.ms.a2c || ((pd.pad2 & 1) && pd.samples > 1 && alpha)) ? VK_TRUE : VK_FALSE;
   DsSt dsv; dsv.bits = pd.dsBits;
   VkPipelineDepthStencilStateCreateInfo dss{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
   dss.depthTestEnable = DsGet(dsv, DS_DT, 1); dss.depthWriteEnable = DsGet(dsv, DS_DW, 1);
@@ -1114,6 +1123,17 @@ void DoDraw(ReplayCtx& cx, const Cmd& c0) {
       DebugDumpSampledTexture(cx, w.r.t, tag);
     }
   }
+  { static const bool folLog = getenv("SNAP_FOLIAGE_LOG") != nullptr;   // [foliage] debug census of alpha-tested / blended scene draws (nvn_foliage.cpp)
+    if (folLog && cx.rt[0] && p->st[1].valid) {
+      FoliageDrawInfo fi{}; fi.present = g_presentCount; fi.vs = p->st[0].key; fi.fs = p->st[1].key; fi.alphaFunc = d.color.alphaFunc; fi.alphaRef = d.alphaRef;
+      fi.nColor = rt.nColor; fi.colorFmt0 = cx.rt[0]->b.format; fi.rtW = cx.rt[0]->b.width; fi.rtH = cx.rt[0]->b.height; fi.rtSamples = cx.rt[0]->b.samples; fi.depthFmt = cx.rt[8] ? cx.rt[8]->b.format : 0;
+      fi.blend0 = (d.color.blendEn & 1) != 0; fi.depthWrite = DsGet(d.ds, DS_DW, 1) != 0; fi.depthTest = DsGet(d.ds, DS_DT, 1) != 0;
+      fi.srcRgb = d.blend[0].srcRgb; fi.dstRgb = d.blend[0].dstRgb; fi.srcA = d.blend[0].srcA; fi.dstA = d.blend[0].dstA;
+      for (auto& w : texWrites) if (w.r.t && fi.nTex < 8) fi.tex[fi.nTex++] = {(int)w.binding, (uint32_t)w.r.t->b.format, (uint32_t)w.r.t->b.width, (uint32_t)w.r.t->b.height};
+      fi.nVerts = c.i[2]; fi.nInst = c.i[indexed ? 5 : 4];
+      fi.rtLabel = FoliageTexLabel(cx.rt[0]); fi.dsLabel = FoliageTexLabel(cx.rt[8]);
+      FoliageLogDraw(fi);
+    } }
   if (DebugDrawLogActive()) {
     DebugDrawLog("draw prog=%d prim=%d n=%d rt0=%p(%dx%d f%x) vp=%d:", (int)p->id, c.i[0], c.i[2], (void*)cx.rt[0], cx.rt[0] ? cx.rt[0]->b.width : 0, cx.rt[0] ? cx.rt[0]->b.height : 0, cx.rt[0] ? cx.rt[0]->b.format : 0, cx.vpSet);
     for (auto& w : texWrites) if (w.r.t) DebugDrawLog(" [b%d t=%p f%x %dx%d fl%x pool=%d]", w.binding, (void*)w.r.t, w.r.t->b.format, w.r.t->b.width, w.r.t->b.height, w.r.t->b.flags, w.r.t->b.pool != nullptr);

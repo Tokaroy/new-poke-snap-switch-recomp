@@ -336,6 +336,16 @@ std::vector<Opt>& graphics_opts() {
       {"contact_shadows", "Contact shadows", kChoice, kLive,
        "Thin screen-space shadows where Pokemon and objects touch the ground, traced toward the sun (runtime/nvn/nvn_contact.cpp). Only frames with the sun's moving shadows get them. Off is the game's own look.", "default",
        {{"default", "Off"}, {"1", "On"}}, 0, 0, "", "SNAP_CONTACT_SHADOWS", get_contact, set_contact},
+      // foliage and particle upgrades (runtime/nvn/nvn_foliage.cpp): display only, photos and their scores keep the game's own draw; restart to apply
+      {"foliage_aa", "Leaf edge smoothing", kChoice, kRestart,
+       "Smooths the jagged edges of leaves and grass, which the game cuts out with a hard test that anti-aliasing cannot reach. Works best with Anti-aliasing or a render scale above 1. Photos are unchanged.", "default",
+       {{"default", "Off (the game's own)"}, {"1", "On"}}, 0, 0, "", "SNAP_FOLIAGE_AA"},
+      {"leaf_translucency", "Leaf translucency", kChoice, kRestart,
+       "Sunlight glows through leaves when you look at them from the shade side. Off is the game's own look. Photos are unchanged.", "default",
+       {{"default", "Off (the game's own)"}, {"0.5", "Subtle"}, {"1", "Strong"}}, 0, 0, "", "SNAP_LEAF_TRANSLUCENCY"},
+      {"soft_particles", "Soft particles", kChoice, kRestart,
+       "Dust, splashes and pollen fade out where they meet the ground and objects instead of cutting a hard line, and draw at full resolution. Photos are unchanged.", "default",
+       {{"default", "Off (the game's own)"}, {"1", "On"}}, 0, 0, "", "SNAP_SOFT_PARTICLES"},
       // lens effects (runtime/nvn/nvn_lens_fx.cpp): display only, never in the photo or in anything photo scoring reads; restart to apply
       {"gfx_bokeh_dof", "Zoom bokeh", kChoice, kRestart,
        "While you zoom, the background blurs into round bokeh like a telephoto lens, focused on what is under the reticle. The strength grows with the zoom and it is off when you are not zoomed. Photos stay sharp and scores are unchanged.", "default",
