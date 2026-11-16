@@ -37,6 +37,7 @@ namespace nvn { const char* FgNotice(); }   // nvn_framegen.cpp: why frame gener
 #include "mods/mods_core.h"
 #include "window_opts.h"
 #include "ui_internal.h"
+#include "ui_skin.h"
 #include "imgui_internal.h"   // NavMoveRequestCancel: Left / Right on a focused row change its value
 
 extern "C" void snap_vsync_set(const char* mode);   // runtime/nvn/nvn_vk.cpp [vsync]: live, the next present rebuilds the swapchain
@@ -686,16 +687,39 @@ float g_scroll_req = -1;   // scripted test: scroll the option list to this frac
 std::map<std::string, float> g_edit;   // slider value while it is held (committed on release: each commit writes a file)
 std::map<std::string, std::string> g_text;
 
-void badge(const Opt& o) {
-  const Theme& t = theme();
-  ImGui::SameLine();
-  if (o.when == kSoon) ImGui::TextColored(t.text_dim, "coming soon");
-  else if (o.when == kLive) ImGui::TextColored(t.good, "applies now");
-  else if (is_pending(o)) ImGui::TextColored(t.title, "changed: restart to apply");
-  else ImGui::TextColored(t.text_dim, "restart needed");
+// Small tag at the right end of a row bar: only what the player has to act on (the description bar says the rest).
+void row_tag(const Opt& o, const SkinRow& r) {
+  const SkinPal& p = skin_pal();
+  const char* t = nullptr;
+  ImVec4 c = p.bar_dim;
+  if (o.when == kSoon) t = "Coming soon";
+  else if (o.when == kRestart) {
+    if (is_pending(o)) { t = "Restart to apply"; c = p.warn; }
+    else t = "Restart needed";
+  }
+  if (!t) return;
+  const ImVec2 ts = ImGui::CalcTextSize(t);
+  const float s2 = 0.82f;
+  const ImVec2 sz(ts.x * s2, ts.y * s2);
+  const ImU32 col = skin_col(r.e > 0.5f ? p.row_focus_text : c);
+  r.dl->AddText(ImGui::GetFont(), ImGui::GetFontSize() * s2, ImVec2(r.p.x + r.w - r.h * 0.7f - sz.x, r.p.y + (r.h - sz.y) * 0.5f), col, t);
 }
 
-void draw_choice(const Opt& o) {
+// What a draw_xxx function found out about its control this frame.
+struct Hit {
+  bool hot = false;     // pointer over it, keyboard or pad focus on it, or being dragged
+  bool focus = false;   // keyboard or pad focus
+};
+Hit hit_of_last_item() {
+  Hit h;
+  h.focus = ImGui::IsItemFocused();
+  h.hot = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) || h.focus || ImGui::IsItemActive();
+  return h;
+}
+
+float row_label_w(const SkinRow& r) { return std::max(px(330), r.w * 0.44f); }
+
+Hit draw_choice(const Opt& o) {
   const std::string cur = cur_of(o);
   Choices dyn;
   const Choices& list = o.dyn ? (dyn = o.dyn()) : o.choices;
@@ -703,28 +727,60 @@ void draw_choice(const Opt& o) {
   for (auto& c : list) if (c.first == cur) label = c.second;
   if (label == cur && !cur.empty() && !std::strcmp(o.key, "frame_cap")) label = cur + " fps (custom)";
   if (label == cur && !cur.empty() && !std::strcmp(o.key, "gfx_render_scale") && std::atof(cur.c_str()) > 0) label = snappic::dims((float)std::atof(cur.c_str())) + " (typed in)";
-  ImGui::SetNextItemWidth(px(250));
-  if (ImGui::BeginCombo("##v", label.c_str())) {
+  // two or three short answers show as pills side by side (like On / Off); a longer list is a drop-down
+  bool pills = !list.empty() && list.size() <= 3 && !o.dyn;
+  float total = 0;
+  for (auto& c : list) { total += std::max(px(110), ImGui::CalcTextSize(c.second.c_str()).x + px(52)) + px(8); }
+  if (total > px(520)) pills = false;
+  Hit h;
+  if (pills) {
+    std::vector<const char*> names;
+    int sel = -1;
+    for (size_t i = 0; i < list.size(); ++i) { names.push_back(list[i].second.c_str()); if (list[i].first == cur) sel = (int)i; }
+    const int clicked = skin_segmented("##v", names.data(), (int)names.size(), sel, false);
+    h = hit_of_last_item();
+    if (clicked >= 0 && clicked != sel) {
+      if (!((std::strcmp(o.key, "gfx_preset") == 0 || std::strcmp(o.key, "gfx_profile") == 0) && list[(size_t)clicked].first == "custom")) set_of(o, list[(size_t)clicked].first);
+    }
+    return h;
+  }
+  // as wide as the label needs (room is left for the "Restart needed" tag)
+  const float room = std::max(px(300), ImGui::GetContentRegionAvail().x - px(190));
+  const float w = std::clamp(ImGui::CalcTextSize(label.c_str()).x + skin_control_height() * 2.3f, px(300), room);
+  const ImVec2 at = ImGui::GetCursorScreenPos();
+  if (skin_dropdown("##v", label.c_str(), w, false)) ImGui::OpenPopup("##pop");
+  h = hit_of_last_item();
+  ImGui::SetNextWindowPos(ImVec2(at.x, at.y + skin_control_height() + px(4)));
+  ImGui::SetNextWindowSizeConstraints(ImVec2(w, 0), ImVec2(std::max(w, px(420)), px(420)));
+  if (ImGui::BeginPopup("##pop")) {
     for (auto& c : list) {
       if (ImGui::Selectable(c.second.c_str(), c.first == cur)) set_of(o, c.first);
-      if (ImGui::IsItemHovered() || ImGui::IsItemFocused()) g_help = &o;
+      if (ImGui::IsItemHovered() || ImGui::IsItemFocused()) h.hot = true;
+      if (c.first == cur && ImGui::IsWindowAppearing()) ImGui::SetItemDefaultFocus();
     }
-    ImGui::EndCombo();
+    ImGui::EndPopup();
   }
+  return h;
 }
 
-void draw_slider(const Opt& o) {
+Hit draw_slider(const Opt& o) {
   const std::string cur = cur_of(o);
   float v = (float)std::atof(cur.c_str());
   auto it = g_edit.find(o.key);
   float tmp = it != g_edit.end() ? it->second : v;
-  ImGui::SetNextItemWidth(px(250));
-  const bool changed = ImGui::SliderFloat("##v", &tmp, o.lo, o.hi, o.fmt, ImGuiSliderFlags_AlwaysClamp);
-  if (changed) g_edit[o.key] = tmp;
-  if (ImGui::IsItemDeactivatedAfterEdit()) {
-    set_of(o, fmt_float(std::round(tmp * 100.0f) / 100.0f));
+  const float span = std::max(1e-6f, o.hi - o.lo);
+  float frac = std::clamp((tmp - o.lo) / span, 0.0f, 1.0f);
+  char text[64];
+  std::snprintf(text, sizeof text, o.fmt, tmp);
+  bool released = false;
+  const bool changed = skin_slider("##v", &frac, text, px(300), false, &released);
+  const Hit h = hit_of_last_item();
+  if (changed) g_edit[o.key] = o.lo + frac * span;
+  if (released && g_edit.count(o.key)) {
+    set_of(o, fmt_float(std::round(g_edit[o.key] * 100.0f) / 100.0f));
     g_edit.erase(o.key);
   } else if (!ImGui::IsItemActive() && !changed) g_edit.erase(o.key);
+  return h;
 }
 
 // An unchecked box is the same pale grey as the panel: give it an outline.
@@ -737,11 +793,14 @@ bool boxed_checkbox(const char* id, bool* b) {
   return ch;
 }
 
-void draw_toggle(const Opt& o) {
-  bool b = cur_of(o) != "0" && !cur_of(o).empty();
-  const bool changed = boxed_checkbox("##v", &b);
-  // The gamepad's A only presses buttons: on a value row it must not change the value (Left / Right do, see step_focused_row). Mouse and keyboard still toggle.
-  if (changed && !(ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false) && !ImGui::IsMouseClicked(0))) set_of(o, b ? "1" : "0");
+Hit draw_toggle(const Opt& o) {
+  const bool on = cur_of(o) != "0" && !cur_of(o).empty();
+  static const char* const names[2] = {"On", "Off"};
+  const int clicked = skin_segmented("##v", names, 2, on ? 0 : 1, false);
+  const Hit h = hit_of_last_item();
+  // The gamepad's A only presses buttons: on a value row it must not change the value (Left / Right do, see step_focused_row). Mouse and keyboard still do.
+  if (clicked >= 0 && (clicked == 0) != on) set_of(o, clicked == 0 ? "1" : "0");
+  return h;
 }
 
 // Left / Right (d-pad, arrow keys) on the focused row change its value one step; nothing else about the row moves.
@@ -769,42 +828,53 @@ void step_focused_row(const Opt& o) {
   ImGui::NavMoveRequestCancel();
 }
 
-void draw_path(const Opt& o) {
+Hit draw_path(const Opt& o) {
   auto it = g_text.find(o.key);
   if (it == g_text.end()) it = g_text.emplace(o.key, cur_of(o)).first;
   char buf[520];
   std::snprintf(buf, sizeof buf, "%s", it->second.c_str());
   ImGui::SetNextItemWidth(px(420));
   if (ImGui::InputText("##v", buf, sizeof buf)) it->second = buf;
+  const Hit h = hit_of_last_item();
   if (ImGui::IsItemDeactivatedAfterEdit()) set_of(o, it->second);
+  return h;
 }
 
 void draw_row(const Opt& o, bool inline_help) {
   if (o.kind == kSection) {
-    ImGui::Spacing();
+    ImGui::Dummy(ImVec2(0, px(8)));
+    ImGui::Indent(px(10));
     ImGui::TextColored(theme().title, "%s", o.label);
-    ImGui::Separator();
+    ImGui::Unindent(px(10));
+    ImGui::Dummy(ImVec2(0, px(2)));
     return;
   }
   ImGui::PushID(o.key);
-  ImGui::BeginGroup();
-  ImGui::AlignTextToFramePadding();
-  ImGui::TextUnformatted(o.label);
-  ImGui::SameLine(px(275));
-  ImGui::BeginDisabled(o.when == kSoon);
+  ImGuiContext& g = *GImGui;
+  const ImGuiID cid = ImGui::GetID("##v");
+  const bool focused = (g.NavCursorVisible && g.NavId == cid) || ImGui::IsPopupOpen("##pop");
+  SkinRow r;
+  skin_row_begin(r, cid, focused);
+  const bool soon = o.when == kSoon;
+  // label on the left of the bar, control in the second column
+  r.dl->AddText(ImVec2(r.p.x + r.h * 0.75f, r.p.y + (r.h - ImGui::GetFontSize()) * 0.5f), skin_row_text(r, soon ? 0.6f : 1.0f), o.label);
+  ImGui::SetCursorScreenPos(ImVec2(r.p.x + row_label_w(r), r.p.y + (r.h - skin_control_height()) * 0.5f));
+  Hit h;
+  ImGui::BeginDisabled(soon);
   switch (o.kind) {
-    case kChoice: draw_choice(o); break;
-    case kSlider: draw_slider(o); break;
-    case kToggle: draw_toggle(o); break;
-    case kPath: draw_path(o); break;
+    case kChoice: h = draw_choice(o); break;
+    case kSlider: h = draw_slider(o); break;
+    case kToggle: h = draw_toggle(o); break;
+    case kPath: h = draw_path(o); break;
     default: break;
   }
   ImGui::EndDisabled();
-  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) || ImGui::IsItemFocused() || ImGui::IsItemActive()) g_help = &o;
-  if (ImGui::IsItemFocused() && o.when != kSoon) step_focused_row(o);
-  badge(o);
-  ImGui::EndGroup();
-  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) g_help = &o;
+  if (h.hot) g_help = &o;
+  if (h.focus && !soon) step_focused_row(o);
+  row_tag(o, r);
+  const bool over_bar = ImGui::IsMouseHoveringRect(r.p, ImVec2(r.p.x + r.w, r.p.y + r.h)) && ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows);
+  skin_row_end(r, false);
+  if (over_bar && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId)) g_help = &o;
   if (o.note) {   // which value is in effect when another row overrides this one
     const std::string n = o.note();
     if (!n.empty()) { ImGui::Indent(px(24)); ImGui::TextColored(theme().title, "%s", n.c_str()); ImGui::Unindent(px(24)); }
@@ -832,52 +902,35 @@ std::string default_label(const Opt& o) {
   return o.def;
 }
 
+// The description of the focused row goes to the bar at the bottom of the menu (the game's Settings screen does the same).
 void draw_help(const std::vector<Opt>& list, const Opt** remembered) {
-  const Theme& t = theme();
   const Opt* o = g_help ? g_help : *remembered;
   if (!o) for (auto& x : list) if (x.kind != kSection) { o = &x; break; }
   *remembered = o;
   if (!o) return;
-  ImGui::TextColored(t.title, "%s", o->label);
-  ImGui::Spacing();
-  ImGui::TextWrapped("%s", o->help);
-  ImGui::Spacing();
-  auto wrapped = [](const ImVec4& c, const char* fmt, const char* a) {
-    ImGui::PushStyleColor(ImGuiCol_Text, c);
-    ImGui::PushTextWrapPos(0.0f);
-    ImGui::Text(fmt, a);
-    ImGui::PopTextWrapPos();
-    ImGui::PopStyleColor();
-  };
-  if (o->when == kSoon) wrapped(t.text_dim, "Coming soon: not in this build yet, so the control is off.%s", "");
-  else if (o->when == kLive) wrapped(t.good, "Applies now.%s", "");
-  else wrapped(t.title, "Restart needed: use \"Apply and restart\" at the top.%s", "");
+  std::string extra;
+  auto add = [&](const std::string& t) { if (!extra.empty()) extra += "   "; extra += t; };
+  if (o->when == kSoon) add("Coming soon: not in this build yet, so the control is off.");
+  else if (o->when == kLive) add("Applies now.");
+  else add("Restart needed: use Apply and restart at the top.");
   const std::string dl = default_label(*o);
-  if (!dl.empty()) wrapped(t.text_dim, "Default: %s", dl.c_str());
-  if (o->key && std::strcmp(o->key, "gfx_render_scale") == 0) {
-    const std::string b = snappic::dims(snappic::effective(pic_cfg(), pic_ctx()).scene);   // whichever row decided it
-    wrapped(t.text_dim, "Now: scene drawn at %s", b.c_str());
-  }
+  if (!dl.empty()) add("Default: " + dl);
+  if (o->key && std::strcmp(o->key, "gfx_render_scale") == 0) add("Now: scene drawn at " + snappic::dims(snappic::effective(pic_cfg(), pic_ctx()).scene));
   const char* en = st::env_name(o->key) ? st::env_name(o->key) : o->env;
-  if (en) { wrapped(t.text_dim, "%s", "Override with the environment variable:"); wrapped(t.text_dim, "%s", en); }
+  if (en) add(std::string("Environment variable: ") + en);
+  skin_help_set(o->help, extra, o->when == kRestart);
 }
 
-// Two-pane page: `extra` draws below the options in the left pane (the shader cache on the Graphics tab).
+// One page of option rows; the description goes to the menu's bottom bar.
 void two_pane(const char* id, std::vector<Opt>& list, const Opt** remembered, void (*extra)()) {
   g_help = nullptr;
-  const float w = ImGui::GetContentRegionAvail().x;
-  const float lw = w * 0.64f;
-  if (ImGui::BeginChild(id, ImVec2(lw, 0))) {
+  if (ImGui::BeginChild(id, ImVec2(0, 0), ImGuiChildFlags_NavFlattened)) {   // flattened: the rows are the d-pad's targets (not a scroll box to enter with A)
     if (g_scroll_req >= 0) { ImGui::SetScrollY(g_scroll_req * ImGui::GetScrollMaxY()); g_scroll_req = -1; }
     for (const Opt& o : list) draw_row(o, false);
     if (extra) extra();
   }
   ImGui::EndChild();
-  ImGui::SameLine();
-  ImGui::PushStyleColor(ImGuiCol_ChildBg, theme().panel_alt);
-  if (ImGui::BeginChild((std::string(id) + "_help").c_str(), ImVec2(0, 0), ImGuiChildFlags_Borders)) draw_help(list, remembered);
-  ImGui::EndChild();
-  ImGui::PopStyleColor();
+  draw_help(list, remembered);
 }
 
 // ---- mods ------------------------------------------------------------------------------------------------------------

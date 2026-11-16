@@ -10,9 +10,12 @@
 
 #include "hle/hle.h"
 #include "hle/input_core.h"
+#include "hle/settings.h"
 #include "imgui.h"
+#include "imgui_internal.h"   // GImGui: is the pad / keyboard cursor showing
 #include "nvn/nvn_dev.h"
 #include "ui_internal.h"
+#include "ui_skin.h"
 #include "ui_theme.h"
 
 namespace snap::ui {
@@ -241,14 +244,6 @@ void reset_button(Device d) {
 const char* const kTabs[] = {"Bindings", "Mouse", "Controller", "Accessibility", "Audio", "Graphics", "Display", "Photos", "Mods", "Saves", "Save state", "Cheats", "Test input", "Tuning"};
 constexpr int kTabCount = (int)(sizeof kTabs / sizeof kTabs[0]);
 int tab_count() { return dev_on() ? kTabCount : kTabCount - 1; }   // "Tuning" (ui_tune.cpp) exists only with SNAP_DEV=1
-
-bool begin_tab(const char* name) {
-  ImGuiTabItemFlags fl = 0;
-  if (S.want_tab && std::string(S.want_tab) == name) { fl = ImGuiTabItemFlags_SetSelected; S.want_tab = nullptr; }
-  const bool open = ImGui::BeginTabItem(name, nullptr, fl);
-  if (open) for (int i = 0; i < kTabCount; ++i) if (std::string(kTabs[i]) == name) S.cur_tab = i;
-  return open;
-}
 
 void tab_bindings(float footer_h) {
   const Theme& t = theme();
@@ -498,6 +493,11 @@ void menu_tick_save() {
 }
 
 void menu_select_tab(const char* name) { S.want_tab = name; }
+const char* menu_current_tab() { return kTabs[std::clamp(S.cur_tab, 0, kTabCount - 1)]; }
+static std::atomic<bool> g_page_cursor{false};
+static char g_nav_dbg[200];
+bool menu_page_cursor() { return g_page_cursor.load(); }
+const char* menu_nav_debug() { return g_nav_dbg; }
 bool menu_rebinding() { return S.rb.active; }
 bool menu_begin_rebind(int action, Device dev, int slot) {
   if (action < 0 || action >= kActionCount) return false;
@@ -506,6 +506,19 @@ bool menu_begin_rebind(int action, Device dev, int slot) {
 }
 
 void draw_menu(ImVec2 size, bool* want_close) {
+  // opened just now? (draw_menu only runs while the menu is open, so a gap means it was closed)
+  static double last_draw = -10.0;
+  static bool tab_restored = false;
+  const bool just_opened = ImGui::GetTime() - last_draw > 0.3;
+  last_draw = ImGui::GetTime();
+  if (just_opened) skin_open_started();
+  if (!tab_restored) {   // the page the player used last (settings key menu_tab); a scripted test may override it below
+    tab_restored = true;
+    const std::string last = hle::settings::get("menu_tab", "");
+    for (int i = 0; i < kTabCount; ++i) if (last == kTabs[i] && i < tab_count()) S.cur_tab = i;
+  }
+  SkinScope skin_scope;   // the game-style dark palette for everything the menu draws; the picker and shader screens keep the light theme
+  const SkinPal& pal = skin_pal();
   const Theme& t = theme();
   bool esc_used = false;
   const bool was_rebinding = S.rb.active;
@@ -514,30 +527,54 @@ void draw_menu(ImVec2 size, bool* want_close) {
 
   // controller: LB/RB switch pages, B closes (the same as Escape)
   if (!S.rb.active && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) && !ImGui::IsAnyItemActive()) {
-    if (ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false)) S.want_tab = kTabs[(S.cur_tab + tab_count() - 1) % tab_count()];
-    if (ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false)) S.want_tab = kTabs[(S.cur_tab + 1) % tab_count()];
+    const bool lb = ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false), rb = ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false);
+    if (lb) S.want_tab = kTabs[(S.cur_tab + tab_count() - 1) % tab_count()];
+    if (rb) S.want_tab = kTabs[(S.cur_tab + 1) % tab_count()];
+    if (lb || rb) skin_cursor_first_row();   // the cursor lands on the new page's first row
     if (!esc_used && !was_rebinding && ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) *want_close = true;
   }
+  if (S.want_tab) {   // L / R, a click on a tab, or the scripted test
+    for (int i = 0; i < kTabCount; ++i) if (std::string(kTabs[i]) == S.want_tab) S.cur_tab = i;
+    S.want_tab = nullptr;
+  }
+  if (S.cur_tab < 0 || S.cur_tab >= tab_count()) S.cur_tab = 0;
 
-  ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), size, col(t.backdrop));
+  const float open_f = skin_open_factor();
+  ImGui::PushStyleVar(ImGuiStyleVar_Alpha, open_f);
+  ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), size, skin_col(pal.backdrop));
   const float scale = ImGui::GetFontSize() / t.font_px;
   const float w = std::min(size.x * t.panel_width, t.panel_max_w * scale);
   const float h = std::min(size.y * t.panel_height, 1100.0f * scale);
-  style_shadow(ImGui::GetBackgroundDrawList(), ImVec2((size.x - w) * 0.5f, (size.y - h) * 0.5f), ImVec2(w, h), t.window_round * scale);
-  ImGui::SetNextWindowPos(ImVec2(size.x * 0.5f, size.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+  const ImVec2 wpos((size.x - w) * 0.5f, (size.y - h) * 0.5f + (1.0f - open_f) * px(18));   // slides up a little as it fades in
+  style_shadow(ImGui::GetBackgroundDrawList(), wpos, ImVec2(w, h), t.window_round * scale);
+  ImGui::SetNextWindowPos(wpos, ImGuiCond_Always);
   ImGui::SetNextWindowSize(ImVec2(w, h), ImGuiCond_Always);
   const ImGuiWindowFlags wf = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
-                              ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
-  if (!ImGui::Begin("Controls##snapmenu", nullptr, wf)) { ImGui::End(); return; }
+                              ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground;
+  if (!ImGui::Begin("Controls##snapmenu", nullptr, wf)) { ImGui::End(); ImGui::PopStyleVar(); return; }
+  skin_cursor_apply();
+  const ImVec2 wp = ImGui::GetWindowPos(), ws = ImGui::GetWindowSize();
+  const float round = ImGui::GetStyle().WindowRounding;
+  {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(wp, ImVec2(wp.x + ws.x, wp.y + ws.y), skin_col(pal.panel), round);
+    dl->AddRect(wp, ImVec2(wp.x + ws.x, wp.y + ws.y), skin_col(pal.panel_edge), round, 0, std::max(1.0f, px(1.5f)));
+  }
 
-  // header
-  ImGui::AlignTextToFramePadding();
-  ImGui::TextColored(t.title, "Settings");
-  ImGui::SameLine();
-  ImGui::TextDisabled("   game input is paused while this menu is open");
-  const char* closeLabel = "Close  (F1)";
-  ImGui::SameLine(ImGui::GetWindowWidth() - ImGui::CalcTextSize(closeLabel).x - ImGui::GetStyle().FramePadding.x * 2 - ImGui::GetStyle().WindowPadding.x);
-  if (ImGui::Button(closeLabel)) *want_close = true;
+  // page tabs: the game's Settings strip (L and R tags at the ends)
+  {
+    const char* names[kTabCount];
+    const int n = tab_count();
+    for (int i = 0; i < n; ++i) names[i] = kTabs[i];
+    const int clicked = skin_tabs(names, n, S.cur_tab, ImGui::GetContentRegionAvail().x);
+    if (clicked >= 0) S.cur_tab = clicked;
+    ImGui::Dummy(ImVec2(0, px(10)));
+  }
+  static int drawn_tab = -1;
+  if (just_opened) drawn_tab = -1;
+  const bool page_changed = S.cur_tab != drawn_tab;
+  if (page_changed && drawn_tab >= 0) hle::settings::set("menu_tab", kTabs[S.cur_tab]);
+  drawn_tab = S.cur_tab;
 
   // notice from loading or saving the controls file
   const uint64_t serial = hub().message_serial();
@@ -558,95 +595,55 @@ void draw_menu(ImVec2 size, bool* want_close) {
 
   options_restart_bar();   // "N changes need a restart" with the Apply and restart button
 
-  const float footer_h = ImGui::GetTextLineHeightWithSpacing() * 3.4f;
-  if (ImGui::BeginTabBar("tabs", ImGuiTabBarFlags_None)) {
-    if (begin_tab("Bindings")) { tab_bindings(footer_h); ImGui::EndTabItem(); }
-    if (begin_tab("Mouse")) {
-      if (ImGui::BeginChild("p", ImVec2(0, -footer_h))) tab_mouse();
-      ImGui::EndChild();
-      ImGui::EndTabItem();
-    }
-    if (begin_tab("Controller")) {
-      if (ImGui::BeginChild("p", ImVec2(0, -footer_h))) tab_controller();
-      ImGui::EndChild();
-      ImGui::EndTabItem();
-    }
-    if (begin_tab("Accessibility")) {
-      if (ImGui::BeginChild("p", ImVec2(0, -footer_h))) tab_access();
-      ImGui::EndChild();
-      ImGui::EndTabItem();
-    }
-    if (begin_tab("Audio")) {
-      if (ImGui::BeginChild("p", ImVec2(0, -footer_h))) tab_audio();
-      ImGui::EndChild();
-      ImGui::EndTabItem();
-    }
-    if (begin_tab("Graphics")) {
-      if (ImGui::BeginChild("p", ImVec2(0, -footer_h))) tab_graphics();
-      ImGui::EndChild();
-      ImGui::EndTabItem();
-    }
-    if (begin_tab("Display")) {
-      if (ImGui::BeginChild("p", ImVec2(0, -footer_h))) tab_display();
-      ImGui::EndChild();
-      ImGui::EndTabItem();
-    }
-    if (begin_tab("Photos")) {
-      if (ImGui::BeginChild("p", ImVec2(0, -footer_h))) tab_photos();
-      ImGui::EndChild();
-      ImGui::EndTabItem();
-    }
-    if (begin_tab("Mods")) {
-      if (ImGui::BeginChild("p", ImVec2(0, -footer_h))) tab_mods();
-      ImGui::EndChild();
-      ImGui::EndTabItem();
-    }
-    if (begin_tab("Saves")) {
-      if (ImGui::BeginChild("p", ImVec2(0, -footer_h))) tab_saves();
-      ImGui::EndChild();
-      ImGui::EndTabItem();
-    }
-    if (begin_tab("Save state")) {
-      if (ImGui::BeginChild("p", ImVec2(0, -footer_h))) tab_savestate();
-      ImGui::EndChild();
-      ImGui::EndTabItem();
-    }
-    if (begin_tab("Cheats")) {
-      if (ImGui::BeginChild("p", ImVec2(0, -footer_h))) tab_cheats();
-      ImGui::EndChild();
-      ImGui::EndTabItem();
-    }
-    if (begin_tab("Test input")) {
-      if (ImGui::BeginChild("p", ImVec2(0, -footer_h))) tab_test();
-      ImGui::EndChild();
-      ImGui::EndTabItem();
-    }
-    if (dev_on() && begin_tab("Tuning")) {   // SNAP_DEV=1 only (ui_tune.cpp)
-      if (ImGui::BeginChild("p", ImVec2(0, -footer_h))) tab_tune();
-      ImGui::EndChild();
-      ImGui::EndTabItem();
-    }
-    ImGui::EndTabBar();
+  const float bar_h = px(122);   // the description bar at the bottom edge of the panel
+  const float footer_h = bar_h - ImGui::GetStyle().WindowPadding.y + px(6);
+  const std::string page = kTabs[S.cur_tab];
+  if (page == "Bindings") tab_bindings(footer_h + ImGui::GetTextLineHeightWithSpacing() * 1.4f);
+  else if (ImGui::BeginChild("p", ImVec2(0, -footer_h), ImGuiChildFlags_NavFlattened)) {   // flattened: the rows are the d-pad's targets, not a scroll box to enter with A
+    if (page == "Mouse") tab_mouse();
+    else if (page == "Controller") tab_controller();
+    else if (page == "Accessibility") tab_access();
+    else if (page == "Audio") tab_audio();
+    else if (page == "Graphics") tab_graphics();
+    else if (page == "Display") tab_display();
+    else if (page == "Photos") tab_photos();
+    else if (page == "Mods") tab_mods();
+    else if (page == "Saves") tab_saves();
+    else if (page == "Save state") tab_savestate();
+    else if (page == "Cheats") tab_cheats();
+    else if (page == "Test input") tab_test();
+    else if (page == "Tuning" && dev_on()) tab_tune();   // SNAP_DEV=1 only (ui_tune.cpp)
   }
-  if (S.want_tab) S.want_tab = nullptr;
+  if (page != "Bindings") {
+    ImGuiContext& gc = *GImGui;
+    g_page_cursor = gc.NavId != 0 && gc.NavId != ImGui::GetCurrentWindow()->ChildId && gc.NavWindow && gc.NavWindow->RootWindow == ImGui::GetCurrentWindow()->RootWindow;   // the pad / keyboard cursor is on an item of the page
+    std::snprintf(g_nav_dbg, sizeof g_nav_dbg, "navid=%08x navwin=%s vis=%d childid=%08x childwin=%08x childflags=%x", (unsigned)gc.NavId, gc.NavWindow ? gc.NavWindow->Name : "-", (int)gc.NavCursorVisible,
+                  (unsigned)ImGui::GetCurrentWindow()->ChildId, (unsigned)ImGui::GetCurrentWindow()->ID, (unsigned)ImGui::GetCurrentWindow()->ChildFlags);
+    ImGui::EndChild();
+  } else {
+    g_page_cursor = false;
+  }
 
   confirm_reset();
 
-  // footer: feedback line and file
-  ImGui::Separator();
-  const double now = now_s();
-  if (now < S.note_until) ImGui::TextColored(t.good, "%s", S.note.c_str());
-  else if (S.dirty) ImGui::TextDisabled("Saving...");
-  else if (now < S.saved_flash_until) ImGui::TextColored(t.good, "Saved");
-  else ImGui::TextDisabled("Saved automatically.");
-  ImGui::SameLine();
-  std::string path = hub().config_path();
-  std::string right = "F1 or hold Back+Start (0.5 s) closes the menu     " + path;
-  float tw = ImGui::CalcTextSize(right.c_str()).x;
-  ImGui::SameLine(std::max(ImGui::GetCursorPosX(), ImGui::GetWindowWidth() - tw - ImGui::GetStyle().WindowPadding.x));
-  ImGui::TextDisabled("%s", right.c_str());
-  style_footer_prompts(true, true);
+  // bottom bar: the description of the focused row (or a hint), the Back tag and the save status
+  {
+    const double now = now_s();
+    std::string status;
+    bool status_good = false;
+    if (now < S.note_until) { status = S.note; status_good = true; }
+    else if (S.dirty) status = "Saving...";
+    else if (now < S.saved_flash_until) { status = "Saved"; status_good = true; }
+    else status = "Saved automatically";
+    ImGui::PushClipRect(wp, ImVec2(wp.x + ws.x, wp.y + ws.y), false);
+    if (!skin_help_pending()) skin_help_set("Game input is paused while this menu is open. F1 or hold Back+Start closes it.", hub().config_path(), false);
+    const ImVec2 bmin(wp.x, wp.y + ws.y - bar_h), bmax(wp.x + ws.x, wp.y + ws.y);
+    skin_help_draw(bmin, ws.x, bar_h);
+    if (skin_bar_prompts(bmin, bmax, true, status.c_str(), status_good)) *want_close = true;
+    ImGui::PopClipRect();
+  }
   ImGui::End();
+  ImGui::PopStyleVar();
 }
 
 bool draw_toast(ImVec2 size, double now) {

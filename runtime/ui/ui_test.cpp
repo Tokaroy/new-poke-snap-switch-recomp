@@ -7,7 +7,7 @@
 //   <t> press <key:P|pad:east|mouse:left|...> <seconds> hold a source down through the input hub
 //   <t> expect_button <A|ZL|...> <0|1>                  the bit the game reads from npad 0
 //   <t> expect_preview <A|...> <0|1>                    the mapped state while the menu hides input from the game
-//   <t> expect_open <0|1> / expect_rebinding <0|1>
+//   <t> expect_open <0|1> / expect_rebinding <0|1> / expect_tab <Name_with_underscores>
 //   <t> expect_bind <A|...> <kb|mouse|pad> <slot> <src|none>
 //   <t> shot <file.bmp>             copy the window client area from the screen (needs a visible window)
 //   <t> opt <key> <value>, expect_opt, expect_when, expect_pending <n>, expect_env <NAME> <value>   option pages (ui_options.cpp); "-" = empty value
@@ -222,6 +222,15 @@ void run(const std::string& line, double t) {
     int want = 1;
     is >> want;
     check(overlay_open() == (want != 0), "menu open == " + std::to_string(want));
+  } else if (cmd == "expect_tab") {   // the page the menu shows (names as in the tab strip; underscores stand for spaces)
+    std::string want;
+    is >> want;
+    for (char& ch : want) if (ch == '_') ch = ' ';
+    check(want == menu_current_tab(), "tab == " + want + " (is " + menu_current_tab() + ")");
+  } else if (cmd == "expect_focus") {   // expect_focus <0|1>: the cursor is on an item of the page (after a d-pad move)
+    int want = 1;
+    is >> want;
+    check(menu_page_cursor() == (want != 0), "page cursor == " + std::to_string(want) + " (" + menu_nav_debug() + ")");
   } else if (cmd == "expect_rebinding") {
     int want = 1;
     is >> want;

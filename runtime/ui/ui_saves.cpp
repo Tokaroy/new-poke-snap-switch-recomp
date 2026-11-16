@@ -205,7 +205,12 @@ void restart_now(const std::string& profile_name) {
 bool hold_button(const char* label, float secs, const ImVec4& color) {
   static ImGuiID held = 0;
   static double since = 0;
-  ImGui::PushStyleColor(ImGuiCol_Button, color);
+  // skin-contrast: on the dark menu the text is light, so a pale status color (green) is darkened until the label reads
+  ImVec4 face = color;
+  const ImVec4 tx = ImGui::GetStyle().Colors[ImGuiCol_Text];
+  const auto lum = [](const ImVec4& c) { return 0.3f * c.x + 0.59f * c.y + 0.11f * c.z; };
+  if (lum(tx) > 0.6f && lum(face) > 0.45f) { face.x *= 0.5f; face.y *= 0.5f; face.z *= 0.5f; }
+  ImGui::PushStyleColor(ImGuiCol_Button, face);
   ImGui::Button(label);
   ImGui::PopStyleColor();
   ImGuiID id = ImGui::GetItemID();

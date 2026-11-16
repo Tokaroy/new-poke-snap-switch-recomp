@@ -1,0 +1,19 @@
+# F1 menu tab walk (analysis/ui/f1_skin.md): open F1, show every tab for 2 s. Dump frames with NVN_FRAME_DUMP_FROM=27 EVERY=2 (one frame per tab).
+# Keep the page list in step with kTabs in runtime/ui/ui_controls.cpp (Tuning is dev only).
+25 key F1 1
+26 expect_open 1
+26 tab Bindings
+28 tab Mouse
+30 tab Controller
+32 tab Accessibility
+34 tab Audio
+36 tab Graphics
+38 tab Display
+40 tab Photos
+42 tab Mods
+44 tab Saves
+46 tab Save_state
+48 tab Cheats
+50 tab Benchmark
+52 tab Test_input
+55 quit

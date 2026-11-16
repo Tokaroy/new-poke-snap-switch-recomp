@@ -43,6 +43,9 @@ void tune_toggle_overlay();
 bool tune_tick();                                // once per present; true when the dev layer draws this frame
 void draw_tune_overlay(ImVec2 size);
 void tab_tune();
+const char* menu_current_tab();           // the page shown now (scripted test: expect_tab)
+const char* menu_nav_debug();
+bool menu_page_cursor();                  // the pad / keyboard cursor sits on an item of the page (scripted test: expect_focus)
 void menu_select_tab(const char* name);   // scripted test: Bindings, Mouse, Controller, Accessibility, Test
 // Rebinding as the UI performs it (a click on a slot); used by the scripted test.
 bool menu_begin_rebind(int action, hle::input::Device dev, int slot);

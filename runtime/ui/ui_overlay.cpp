@@ -370,6 +370,8 @@ void feed_gamepad(ImGuiIO& io, bool enabled) {
 
 }  // namespace
 
+ImVec4 overlay_fb(const ImVec4& c) { return fb(c); }   // for ui_skin.cpp: the same sRGB pre-conversion the ImGui style colors get
+
 bool overlay_open() { return g.open.load(); }
 void* overlay_hwnd() { return g.hwnd; }
 

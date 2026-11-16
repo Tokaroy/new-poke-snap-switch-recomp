@@ -1,0 +1,59 @@
+# F1 menu with the controller only (analysis/ui/f1_skin.md): open with Back+Start held, walk every page with R then back with L, move the cursor
+# with the d-pad (expect_focus: the cursor lands on the first row after L / R and moves with the d-pad), press A and B on that row, close the menu with B. Presses are long and spaced so a slow frame cannot drop one.
+# Keep the page list in step with kTabs in runtime/ui/ui_controls.cpp (Tuning is dev only).
+24 press pad:back 1.5
+24 press pad:start 1.5
+26.5 expect_open 1
+27 expect_tab Bindings
+28 press pad:rshoulder 0.4
+29.1 expect_tab Mouse
+29.8 press pad:rshoulder 0.4
+30.9 expect_tab Controller
+31.6 press pad:rshoulder 0.4
+32.7 expect_tab Accessibility
+33.4 press pad:rshoulder 0.4
+34.5 expect_tab Audio
+35.2 press pad:rshoulder 0.4
+36.3 expect_tab Graphics
+37 press pad:rshoulder 0.4
+38.1 expect_tab Display
+38.8 press pad:rshoulder 0.4
+39.9 expect_tab Photos
+40.6 press pad:rshoulder 0.4
+41.7 expect_tab Mods
+42.4 press pad:rshoulder 0.4
+43.5 expect_tab Saves
+44.2 press pad:rshoulder 0.4
+45.3 expect_tab Save_state
+46 press pad:rshoulder 0.4
+47.1 expect_tab Cheats
+47.8 press pad:rshoulder 0.4
+48.9 expect_tab Benchmark
+49.6 press pad:rshoulder 0.4
+50.7 expect_tab Test_input
+51.4 press pad:lshoulder 0.4
+52.5 expect_tab Benchmark
+53.2 press pad:lshoulder 0.4
+54.3 expect_tab Cheats
+55 press pad:lshoulder 0.4
+56.1 expect_tab Save_state
+56.8 press pad:lshoulder 0.4
+57.9 expect_tab Saves
+58.6 press pad:lshoulder 0.4
+59.7 expect_tab Mods
+60.4 press pad:lshoulder 0.4
+61.5 expect_tab Photos
+62.2 press pad:lshoulder 0.4
+63.3 expect_tab Display
+64 press pad:lshoulder 0.4
+65.1 expect_tab Graphics
+66.1 expect_focus 1
+66.5 press pad:dpad_down 0.4
+67.7 expect_focus 1
+68.1 press pad:dpad_down 0.4
+69.3 expect_focus 1
+69.7 press pad:south 0.4
+71.7 press pad:east 0.4
+73.1 press pad:east 0.4
+74.5 expect_open 0
+75.5 quit
