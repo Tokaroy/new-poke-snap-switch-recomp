@@ -792,6 +792,21 @@ void route_dump() {
 }  // namespace
 
 bool route_on() { return g_route_on.load(std::memory_order_relaxed); }
+// One-run A/B capture tool (host/mods/abcap.cpp, docs/ab-capture.md): read a route "wait" condition from host code, and hold buttons on top of the script.
+static std::atomic<uint64_t> g_ab_buttons{0};
+extern "C" int snap_route_cond(const char* c, char* why, int n) {
+  route_enable();
+  std::string w;
+  const bool r = route_cond(c ? c : "", &w);
+  if (why && n > 0) std::snprintf(why, (size_t)n, "%s", w.c_str());
+  return r ? 1 : 0;
+}
+extern "C" void snap_input_force_buttons(const char* names) {   // space separated Switch button names ("A", "A B"); "" releases
+  uint64_t m = 0;
+  std::istringstream is(names ? names : "");
+  for (std::string t; is >> t;) { const int b = button_from_name(t); if (b >= 0) m |= 1ull << b; }
+  g_ab_buttons.store(m);
+}
 
 void route_ui(uint64_t player, const char* scene, const char* state, int event, const char* elem, uint64_t lr) {
   const int f = nvn::g_presentCount;
@@ -1051,6 +1066,7 @@ void script_apply(uint64_t now_ns_v, PadSample& p) {
     for (int i = 0; i < 4; ++i) if (en.has_ax[i]) (&p.lx)[i] = en.ax[i];
     p.connected = true;
   }
+  if (const uint64_t ab = g_ab_buttons.load()) { cur |= ab; p.buttons |= ab; p.connected = true; }   // snap_input_force_buttons (A/B capture tool)
   if (cur != last) { last = cur; log("input script: seg %d t=%.2f buttons=%#llx", seg, now, (unsigned long long)cur); }
 }
 }  // namespace

@@ -13,6 +13,7 @@
 //   in upscale.cpp: that present and the next two stay native (no Fx), and a press of A / ZR / R holds six presents (the photo pass often runs at the start of
 //   a present and downscales the previous one). Fx work is never recorded while an occlusion query scope is open (Evaluation counts visible pixels in one).
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -274,7 +275,11 @@ void FxBeforeSubmit(int n, CmdList* const* lists) {
   if (Log()) fprintf(stderr, "fx: p%d photo submit: Fx held\n", g_presentCount);
 }
 
-void FxNoteRan() { F.ranFrame = true; }
+// Counters for host\ab_capture.ps1 (docs/ab-capture.md): effect passes that drew, and how many of those drew on a photo frame (a gating bug; must stay 0)
+static std::atomic<uint64_t> g_ranTotal{0}, g_ranOnPhoto{0};
+uint64_t FxRanCount() { return g_ranTotal.load(std::memory_order_relaxed); }
+uint64_t FxRanOnPhotoCount() { return g_ranOnPhoto.load(std::memory_order_relaxed); }
+void FxNoteRan() { F.ranFrame = true; g_ranTotal++; if (FxIsPhotoFrame()) g_ranOnPhoto++; }
 
 void FxOnPresent() {
   if (F.phase && AbP() > 0 && Log()) fprintf(stderr, "fx: AB p%d scene %s\n", g_presentCount, F.frameHold ? "OFF (held)" : (F.ranFrame ? "ON (effect drew)" : "ON (eligible, effect skipped)"));   // g_presentCount is already the number the frame dump uses

@@ -1,0 +1,6 @@
+# Named moments for host\ab_capture.ps1 -Moment <name>:   <name> = <route wait condition>   (host/README.md "Waiting on game state")
+# `ride<N>` needs no entry (ride40 = ride>=40, the rail progress; Florio: 0 at the start, about 116 at the end of the first rail, about 0.9 per second).
+# Add a line per scene you want to compare; any route can be ridden to it, the route's own lines run until the condition holds.
+florio_start   = ride>=8
+florio_mid     = ride>=40
+florio_late    = ride>=90

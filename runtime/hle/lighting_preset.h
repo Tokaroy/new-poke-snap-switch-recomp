@@ -9,6 +9,7 @@
 //   SNAP_LIGHTING=maximum (alias ultra)      -> level 2: one shadow-map size step above Enhanced, 4x shadow distance, SSAO quality ultra, more occlusion samples
 // Every explicit switch (SNAP_SHADOW_RES, SNAP_SHADOW_DISTANCE, SNAP_SSAO_QUALITY, ...) still wins over the preset.
 #pragma once
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 
@@ -26,7 +27,15 @@ inline int level() {
 // SNAP_LIGHT_AB=<P> (test aid): the lighting features (shadow distance and fade, bias, filter, SSAO force) are on only in odd blocks of P presents,
 // off in even ones: same-view A/B pairs inside one run. Unset = always on.
 inline int ab_period() { static const int p = [] { const char* e = getenv("SNAP_LIGHT_AB"); return e ? atoi(e) : 0; }(); return p; }
-inline bool ab_on(unsigned long long present) { const int p = ab_period(); return p <= 0 || ((present / (unsigned long long)p) & 1ull) != 0; }
+// Live override for the one-run A/B capture tool (host/mods/abcap.cpp, host\ab_capture.ps1, docs/ab-capture.md): -1 = SNAP_LIGHT_AB decides (the default),
+// 0 = every effect that asks ab_on() is off (the game's own picture), 1 = on. Only the tool writes it.
+inline std::atomic<int>& ab_force() { static std::atomic<int> v{-1}; return v; }
+inline bool ab_on(unsigned long long present) {
+  const int f = ab_force().load(std::memory_order_relaxed);
+  if (f >= 0) return f != 0;
+  const int p = ab_period();
+  return p <= 0 || ((present / (unsigned long long)p) & 1ull) != 0;
+}
 inline bool enhanced() { return level() >= 1; }
 inline int shadow_res() { const int l = level(); return l == 2 ? 4096 : l == 1 ? 2048 : 0; }          // 0 = the game's 1024 (fixed sizes, superseded by shadow_res_for_scale)
 // Shadow-map side that follows the internal render resolution: the smallest power of two at or above the scene height (1080 x render scale), at least 2048, at most 8192;
