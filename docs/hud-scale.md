@@ -14,7 +14,7 @@ The interface (ride HUD, menus, dialogue boxes, the viewfinder) is drawn for a 1
 
 The setting is live: the next frame uses it.
 
-Auto picks by window height: under 1260 px is 100%, under 1800 px is 125% (1440p), under 2500 px is 150% (4K), under 3600 px is 175%, above that 200%. A 1080p window stays at 100%, which is the original look.
+Auto is 100%, the original look, at every window size (2026-11-16 hotfix). Auto used to pick 125% at 1440p, 150% at 4K and more above that, but on the owner's 4K screen panels sat off-center and oversized and typewriter dialogue clipped; a size is only used when you choose it.
 
 ## How it works
 

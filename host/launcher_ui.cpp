@@ -782,8 +782,8 @@ void build_pages() {
     p.items.push_back(choice("Ultrawide", "gfx_ultrawide", S_CFG, "auto", {{"auto", "Auto (wider 3D view)"}, {"off", "Off (16:9 with side bars)"}},
                              "On a screen wider than 16:9, Auto shows more of the world at the sides. Menus, the interface and your photos stay 16:9."));
     p.items.push_back(choice("HUD scale", "hud_scale", S_CFG, "auto",
-                             {{"auto", "Auto (by screen height)"}, {"100", "100%"}, {"125", "125%"}, {"150", "150%"}, {"175", "175%"}, {"200", "200%"}},
-                             "Makes the viewfinder HUD, menus and dialogue bigger on large screens. The 3D view and photos stay as they are. Auto: 100% at 1080p, 125% at 1440p, 150% at 4K."));
+                             {{"auto", "Auto (100%)"}, {"100", "100%"}, {"125", "125%"}, {"150", "150%"}, {"175", "175%"}, {"200", "200%"}},
+                             "Makes the viewfinder HUD, menus and dialogue bigger on large screens. The 3D view and photos stay as they are. Auto is 100%: pick a size to scale."));
     p.items.push_back(choice("Pause in background", "pause_on_focus_loss", S_WIN, "1", {{"1", "On"}, {"0", "Off"}},
                              "Pauses the game when you switch to another window.", E_BOOL));
     p.items.push_back(choice("Mute in background", "mute_in_background", S_WIN, "1", {{"1", "On"}, {"0", "Off"}},

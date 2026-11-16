@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// HUD scale (SNAP_HUD_SCALE = auto | 100 | 125 | 150 | 175 | 200). Design, limits and results: docs/hud-scale.md.
+// HUD scale (SNAP_HUD_SCALE = auto (100%) | 100 | 125 | 150 | 175 | 200). Design, limits and results: docs/hud-scale.md.
 //
 // The game draws its interface (HUD, menus, dialogue) straight into the 1920x1080 window texture as many small sprite and text draws, each with
 // its own positions in guest pixels. A HUD scale s > 1 enlarges those draws around the screen center by changing the viewport (and scissor) a
@@ -47,7 +47,9 @@ int g_log = 0;
 
 struct Geom { int ew = 0, eh = 0, dx = 0, dy = 0, dw = 0, dh = 0, sx = 0, sy = 0, sw = 0, sh = 0; float rs = 1.0f, xoff = 0.0f; bool ok = false; } g_geom;
 
-float AutoFor(int h) { return h < 1260 ? 1.0f : h < 1800 ? 1.25f : h < 2500 ? 1.5f : h < 3600 ? 1.75f : 2.0f; }
+// Auto means 100% (no scaling) until the placement is right at every size: the owner's 4K screen showed off-center, oversized panels with the old
+// height steps (<1260 1.0, <1800 1.25, <2500 1.5, <3600 1.75, else 2.0). A size is only used when it is chosen.
+float AutoFor(int) { return 1.0f; }
 
 // "auto", "100".."200", or a factor ("1.5")
 float ParseSetting(const std::string& s, bool* isAuto) {
