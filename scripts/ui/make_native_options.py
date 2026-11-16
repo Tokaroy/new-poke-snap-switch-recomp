@@ -295,6 +295,28 @@ for _t in TABS:
     for _r in _t[2]:
         if _r['key'] in VISUAL_KEYS:
             _r['default'] = _VD[VISUAL_KEYS[_r['key']]]
+    # Atmosphere effects (runtime/nvn/nvn_atmos.cpp, docs/atmosphere.md), display only, all off by default, never drawn in photos. Tab 11 (Shadows & AO) had one free slot
+    # by the time these landed, so they take a tab of their own (tab 16, the first of a fourth set). Keys atmos_* -> SNAP_ATMOS_* (settings.cpp kEnvKeys)
+    ('Atmosphere', 'Light, haze and glow. Photos are unchanged.', [
+        row('Light shafts', 'p', 'opt', 'atmos_shafts', 'default', (('default', 'Off'), ('1', 'On')),
+            'Sunbeams through leaves and haze. Photos are unchanged.' + R),
+        row('Height fog', 'p', 'opt', 'atmos_fog', 'default', (('default', 'Off'), ('1', 'On')),
+            'Haze that thickens toward the ground and the distance. Photos are unchanged.' + R),
+        row('Auto exposure', 'p', 'opt', 'atmos_exposure', 'default', (('default', 'Off'), ('1', 'On')),
+            'Caves open up and bright beaches ease down over about a second. Photos are unchanged.' + R),
+        row('Soft glow', 'p', 'opt', 'atmos_bloom', 'default', (('default', 'Off'), ('1', 'On')),
+            'A wide, soft glow around the brightest highlights. Photos are unchanged.' + R),
+    ]),
+    # Water effects (runtime/nvn/nvn_ssr.cpp, docs/water-effects.md), display only, off by default, never drawn in photos. Live through snap_water_fx_set.
+    # Keys water_ssr / water_caustics / water_foam -> SNAP_WATER_SSR / SNAP_WATER_CAUSTICS / SNAP_WATER_FOAM (settings.cpp kEnvKeys); stored "1" or erased.
+    ('Water', 'Sea reflections, caustics and foam. Photos are unchanged.', [
+        row('Water reflections', 'p', 'opt', 'water_ssr', 'default', (('default', 'Off'), ('1', 'On')),
+            'The sea mirrors the shore, rocks and Pokémon around it. Photos are unchanged.'),
+        row('Water caustics', 'p', 'opt', 'water_caustics', 'default', (('default', 'Off'), ('1', 'On')),
+            'Rippling light patterns on shallow sea floors and rocks. Photos are unchanged.'),
+        row('Shoreline foam', 'p', 'opt', 'water_foam', 'default', (('default', 'Off'), ('1', 'On')),
+            'White foam where the water meets sand and rock. Photos are unchanged.'),
+    ]),
             assert _r['default'] in [c[0] for c in _r['choices']], (_r['label'], _r['default'])
 
 RESET_NOTE = ' Restore Default Settings resets only this tab.'

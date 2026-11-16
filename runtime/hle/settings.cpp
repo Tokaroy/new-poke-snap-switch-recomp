@@ -116,6 +116,7 @@ const struct { const char* key; const char* env; } kEnvKeys[] = {
     {"photo_export", "SNAP_PHOTO_EXPORT"},    {"photo_dir", "SNAP_PHOTO_DIR"}, {"hd_photos", "SNAP_HD_PHOTOS"},    {"neo_speed", "SNAP_NEO_SPEED"}, {"film", "SNAP_FILM"},
     {"freecam", "SNAP_FREECAM"}, {"freecam_freeze", "SNAP_FREECAM_FREEZE"},   // free camera rows (host/mods/freecam.cpp, docs/freecam.md)
     {"skip_cutscenes", "SNAP_SKIP_CUTSCENES"},
+    {"atmos_shafts", "SNAP_ATMOS_SHAFTS"}, {"atmos_fog", "SNAP_ATMOS_FOG"}, {"atmos_exposure", "SNAP_ATMOS_EXPOSURE"}, {"atmos_bloom", "SNAP_ATMOS_BLOOM"},   // atmosphere rows (runtime/nvn/nvn_atmos.cpp; "1" or unset; restart)
     {"foliage_aa", "SNAP_FOLIAGE_AA"}, {"leaf_translucency", "SNAP_LEAF_TRANSLUCENCY"}, {"soft_particles", "SNAP_SOFT_PARTICLES"},   // foliage / particle rows (runtime/nvn/nvn_foliage.cpp; restart)
     {"fps_target", "SNAP_FPS"},   // Frame rate target row (90 / 120 / 144; "default" = 60, the game's own); host/mods/highfps.cpp, uipace.cpp
     {"game_language", "SNAP_GAME_LANGUAGE"},   // Game language row: ja | en | fr | de | it | es | ko | zh-hans | zh-hant, unset = Auto (Windows language, else English); docs/player-options.md

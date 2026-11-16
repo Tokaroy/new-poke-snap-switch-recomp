@@ -41,6 +41,7 @@ The groups below are how rows are described in this document and in help text. O
 | Post effects & HDR | Output tab (HDR expand, HDR mode widen, HDR peak Auto) |
 | Frame rate & pacing | Display tab (widen frame cap) |
 | Lens | New tab "Lens" (tab 15, appended after Interface): Zoom bokeh, Motion blur. Both display only, see `docs/lens-effects.md` |
+| Atmosphere | New tab "Atmosphere" (tab 16, appended after Lens; tab 11 was full at its 6-row limit): Light shafts, Height fog, Auto exposure, Soft glow. All display only, see `docs/atmosphere.md` |
 
 ## 4. Row table
 
@@ -66,6 +67,13 @@ Kind is two-choice (c) or pulldown (p). "Widen" means the key already has a row;
 | Shadows & lighting | Soft particles (New) | p, 11 | default (Off), 1 (On) | default (Off) | `SNAP_SOFT_PARTICLES` / `soft_particles` | Restart | Landed 2026-11-16: dust, splash and pollen layer drawn at the scene's resolution. Applies after restart. | Particle fill 4x; about +0.0 ms in a light frame |
 | Lens | Zoom bokeh (New, 2026-11-15) | p, 4 | Off, Light 0.6, Medium 1, Strong 1.6 | Off | `SNAP_BOKEH_DOF` / `gfx_bokeh_dof` | Restart | Round background blur while you zoom, focused on the reticle. Photos stay sharp. Applies after restart. | Moderate (see `docs/lens-effects.md`); nothing when not zoomed |
 | Lens | Motion blur (New, 2026-11-15) | p, 4 | Off, Light 0.5, Medium 1, Strong 2 | Off | `SNAP_MOTION_BLUR` / `gfx_motion_blur` | Restart | Blur along the camera motion while the ride moves or you turn. Photos stay sharp. Applies after restart. | Low to moderate (see `docs/lens-effects.md`) |
+| Atmosphere | Light shafts (New, 2026-11-15) | c | Off, On | Off | `SNAP_ATMOS_SHAFTS` / `atmos_shafts` | Restart | Soft rays of sunlight through gaps in leaves and rock, pointing at the sun. Photos are unchanged. Applies after restart. | About 0.5 ms at 4K (`docs/atmosphere.md`) |
+| Atmosphere | Height fog (New, 2026-11-15) | c | Off, On | Off | `SNAP_ATMOS_FOG` / `atmos_fog` | Restart | Haze that thickens with distance and toward the ground, tinted by the sky. Photos are unchanged. Applies after restart. | About 0.18 ms at 4K |
+| Atmosphere | Auto exposure (New, 2026-11-15) | c | Off, On | Off | `SNAP_ATMOS_EXPOSURE` / `atmos_exposure` | Restart | Eyes adjust over about a second: dark caves lift, bright beaches ease down. Photos are unchanged. Applies after restart. | About 0.16 ms at 4K |
+| Atmosphere | Soft glow (New, 2026-11-15) | c | Off, On | Off | `SNAP_ATMOS_BLOOM` / `atmos_bloom` | Restart | A soft glow around bright highlights without washing the picture out. Photos are unchanged. Applies after restart. | About 0.27 ms at 4K |
+| Water | Water reflections (New, 2026-11-15) | c | Off, On | Off | `SNAP_WATER_SSR` / `water_ssr` | Live | The sea mirrors the shore, rocks and Pokémon around it. Photos are unchanged. | One full-screen pass plus a copy while the sea is on screen (see `docs/water-effects.md`) |
+| Water | Water caustics (New, 2026-11-15) | c | Off, On | Off | `SNAP_WATER_CAUSTICS` / `water_caustics` | Live | Rippling light patterns on shallow sea floors and rocks. Photos are unchanged. | Same pass as reflections; no extra pass |
+| Water | Shoreline foam (New, 2026-11-15) | c | Off, On | Off | `SNAP_WATER_FOAM` / `water_foam` | Live | White foam where the water meets sand and rock. Photos are unchanged. | Same pass as reflections; no extra pass |
 
 Notes on specific rows:
 
@@ -100,6 +108,7 @@ The lighting stream (see `docs/lighting-rt-plan.md`) uses this contract:
 - Then add the key to `kEnvKeys` in `runtime/hle/settings.cpp`, the switch to `host/README.md`, and the native `row(...)` in tab 11, slots 4 to 6 (slot 1 to 3 are shadow distance, AO radius, AO strength).
 - Reserved row order in tab 11: Lighting preset, Shadow softness, RT toggle. A second new tab ("Lighting & RT") takes the rest. It starts empty and is not added to `TABS` until it has at least one row.
 - Update 2026-11-14: tab 11 now holds Shadow distance and Contact shadows (slots 1 and 2), so AO radius and strength move to slots 3 and 4 and the lighting rows to 5 and 6. Tab 12 is "Performance" (performance overlay mode and corner, `runtime/ui/ui_fps.cpp`); "Lighting & RT" becomes tab 13, inserted before Performance or appended after it (insert before to keep lighting next to Shadows & AO; the route `native_options_tabs` then needs one more R).
+- Update 2026-11-15: tab 11 had one free slot (a page holds six rows), so the three water rows (reflections, caustics, shoreline foam) went into their own "Water" tab after Atmosphere, native tab 17. All three are `kLive` rows backed by `snap_water_fx_set`. See `docs/water-effects.md`.
 - `gfx_lighting` `ultra` currently does nothing; either implement it or remove it from the F1 choices before the native row ships.
 
 ## 7. Testing and docs per row
