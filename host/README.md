@@ -427,6 +427,7 @@ Regenerate the host SPIR-V headers (`nvn_fx_spv.h`, `nvn_contact_spv.h`) after e
 | `SNAP_SSAO_FORCE=1\|2` | Turn the SSAO passes on in the course (1 strict, 2 relaxed). Experimental: draws nothing yet. |
 | `SNAP_SSAO_GTAO=1`, `SNAP_GTAO_KEY=<hex>` | Replace the HBAO fragment shader with GTAO. Experimental, needs the HBAO key. |
 | `SNAP_LIGHT_AB=<P>`, `NVN_P1_LOG=1` | Test aids: toggle the features every P presents; log PerViewCBuffer binds. |
+| `SNAP_BOKEH_DOF=<s>`, `SNAP_MOTION_BLUR=<s>` | Lens effects (2026-11-15, `runtime/nvn/nvn_lens_fx.cpp`, `docs/lens-effects.md`; menu tab 15 "Lens", rows "Zoom bokeh" 0.6 / 1 / 1.6 and "Motion blur" 0.5 / 1 / 2; default off, restart). Display only: pre-tonemap Fx effects, never run on photo frames. Bokeh: round background blur while ZL zooms (ride 36 degrees, zoomed 14.44 degrees), focus = median depth under the reticle. Motion blur: camera motion applied to the depth buffer. Test aids: `SNAP_BOKEH_FORCE=<zoom>`, `SNAP_BOKEH_BASE_FOV`, `SNAP_BOKEH_DEBUG=1`, `SNAP_MBLUR_DEBUG=1`, `SNAP_LENS_LOG=1`, `SNAP_LENS_TIME=1` (GPU ms per effect); `SNAP_LIGHT_AB` toggles them too. Proof scripts: `scripts/lens/`, route `lens_zoom`. |
 
 ## Layers and registration order (`bind_host_layers` in `boot.cpp`)
 

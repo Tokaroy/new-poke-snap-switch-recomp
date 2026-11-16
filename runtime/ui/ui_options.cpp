@@ -333,6 +333,13 @@ std::vector<Opt>& graphics_opts() {
       {"contact_shadows", "Contact shadows", kChoice, kLive,
        "Thin screen-space shadows where Pokemon and objects touch the ground, traced toward the sun (runtime/nvn/nvn_contact.cpp). Only frames with the sun's moving shadows get them. Off is the game's own look.", "default",
        {{"default", "Off"}, {"1", "On"}}, 0, 0, "", "SNAP_CONTACT_SHADOWS", get_contact, set_contact},
+      // lens effects (runtime/nvn/nvn_lens_fx.cpp): display only, never in the photo or in anything photo scoring reads; restart to apply
+      {"gfx_bokeh_dof", "Zoom bokeh", kChoice, kRestart,
+       "While you zoom, the background blurs into round bokeh like a telephoto lens, focused on what is under the reticle. The strength grows with the zoom and it is off when you are not zoomed. Photos stay sharp and scores are unchanged.", "default",
+       {{"default", "Off (the game's own)"}, {"0.6", "Light"}, {"1", "Medium"}, {"1.6", "Strong"}}, 0, 0, "", "SNAP_BOKEH_DOF"},
+      {"gfx_motion_blur", "Motion blur", kChoice, kRestart,
+       "Blurs the picture along the camera's motion while the NEO-ONE moves or you turn, like a real shutter. Display only: photos stay sharp and scores are unchanged. Costs a little GPU time.", "default",
+       {{"default", "Off (the game's own)"}, {"0.5", "Light"}, {"1", "Medium"}, {"2", "Strong"}}, 0, 0, "", "SNAP_MOTION_BLUR"},
       {"ssao_quality", "Ambient occlusion", kChoice, kRestart,
        "Soft contact shadows in corners and under objects. High and Ultra take more samples. The courses draw no ambient occlusion while you play (their contact shadows are baked in); the effect shows only on the photo-select screen, so this does not change the course view or its frame rate.", "default",
        {{"default", "Default"}, {"high", "High (96 samples)"}, {"ultra", "Ultra (256 samples)"}}, 0, 0, "", "SNAP_SSAO_QUALITY"},

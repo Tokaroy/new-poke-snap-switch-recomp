@@ -270,6 +270,15 @@ TABS = [
         row('Frame generation', 'p', 'opt', 'frame_generation', 'default', (('default', 'Off'), ('1', 'On')),
             'FSR adds computed frames between real ones. Menus stay out. Off under 50 fps.' + R),
     ]),
+    # Tab 15 (third set): lens effects (runtime/nvn/nvn_lens_fx.cpp), display only; keys gfx_bokeh_dof / gfx_motion_blur -> SNAP_BOKEH_DOF / SNAP_MOTION_BLUR (settings.cpp)
+    ('Lens', 'Camera lens effects. Photos stay sharp.', [
+        row('Zoom bokeh', 'p', 'opt', 'gfx_bokeh_dof', 'default',
+            (('default', 'Off'), ('0.6', 'Light'), ('1', 'Medium'), ('1.6', 'Strong')),
+            'Round background blur while you zoom, focused on the reticle. Photos stay sharp.' + R),
+        row('Motion blur', 'p', 'opt', 'gfx_motion_blur', 'default',
+            (('default', 'Off'), ('0.5', 'Light'), ('1', 'Medium'), ('2', 'Strong')),
+            'Blur along the camera motion while the ride moves or you turn. Photos stay sharp.' + R),
+    ]),
 ]
 VISUAL_KEYS = {'gfx_sharpen': 'SNAP_SHARPEN', 'gfx_aniso': 'SNAP_ANISO', 'gfx_ui_font': 'SNAP_UI_FONT_SCALE',
                'photo_export': 'SNAP_PHOTO_EXPORT', 'hd_photos': 'SNAP_HD_PHOTOS'}

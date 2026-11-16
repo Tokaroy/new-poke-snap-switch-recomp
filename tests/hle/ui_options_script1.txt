@@ -92,6 +92,9 @@
 31.42 opt gfx_hdr_expand 0.50
 31.43 opt gfx_lod_bias -1.5
 31.44 opt shiny 512
+# lens effects (2026-11-15, runtime/nvn/nvn_lens_fx.cpp): restart rows
+31.444 opt gfx_bokeh_dof 1
+31.445 opt gfx_motion_blur 0.5
 # photo_export is off by default now (runtime/hle/visual_defaults.h, original look, 2026-11-13), so the test turns it ON to stay a change
 31.6 opt photo_export 1
 31.7 opt neo_speed 2.00
@@ -105,7 +108,7 @@
 32.2 mods move beta -1
 32.4 expect_mods beta:1,alpha:0
 32.5 expect_opt gfx_preset custom
-32.6 expect_pending 23
+32.6 expect_pending 25
 33 expect_opt gfx_render_scale 1.50
 34 tab Graphics
 38 scroll 0.5

@@ -40,6 +40,7 @@ The groups below are how rows are described in this document and in help text. O
 | Ambient occlusion | New tab "Shadows & AO" (radius, strength); existing AO rows stay on Effects |
 | Post effects & HDR | Output tab (HDR expand, HDR mode widen, HDR peak Auto) |
 | Frame rate & pacing | Display tab (widen frame cap) |
+| Lens | New tab "Lens" (tab 15, appended after Interface): Zoom bokeh, Motion blur. Both display only, see `docs/lens-effects.md` |
 
 ## 4. Row table
 
@@ -60,6 +61,8 @@ Kind is two-choice (c) or pulldown (p). "Widen" means the key already has a row;
 | Shadows & lighting | Lighting preset | p | default (Original), enhanced, maximum (`high` and `ultra` are aliases) | default | `SNAP_LIGHTING` / `gfx_lighting` | Restart | Landed 2026-11-15: PCSS soft shadows, render-scale shadow map, 2x/4x distance, GTAO and contact shadows. See `docs/lighting-enhanced.md`. Opt-in: costs frame time at 4K. | Moderate |
 | Shadows & lighting | Reserved 2: shadow softness / filtering | p | set by the lighting stream | original | set by the lighting stream | TBD | Reserved. | TBD |
 | Shadows & lighting | Reserved 3: ray-traced effects on/off | c or p | set by the RT stream | off | set by the RT stream | TBD | Reserved. | High |
+| Lens | Zoom bokeh (New, 2026-11-15) | p, 4 | Off, Light 0.6, Medium 1, Strong 1.6 | Off | `SNAP_BOKEH_DOF` / `gfx_bokeh_dof` | Restart | Round background blur while you zoom, focused on the reticle. Photos stay sharp. Applies after restart. | Moderate (see `docs/lens-effects.md`); nothing when not zoomed |
+| Lens | Motion blur (New, 2026-11-15) | p, 4 | Off, Light 0.5, Medium 1, Strong 2 | Off | `SNAP_MOTION_BLUR` / `gfx_motion_blur` | Restart | Blur along the camera motion while the ride moves or you turn. Photos stay sharp. Applies after restart. | Low to moderate (see `docs/lens-effects.md`) |
 
 Notes on specific rows:
 

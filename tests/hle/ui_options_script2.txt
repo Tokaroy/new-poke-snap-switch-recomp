@@ -20,6 +20,8 @@
 20.94 expect_opt vsync adaptive
 20.95 expect_opt shiny 512
 20.96 expect_opt contact_shadows 1
+20.964 expect_opt gfx_bokeh_dof 1
+20.965 expect_opt gfx_motion_blur 0.5
 20.97 expect_opt fps_overlay detailed
 20.98 expect_opt fps_overlay_corner bl
 21 expect_env SNAP_RENDER_SCALE 1.50
@@ -49,6 +51,8 @@
 21.85 expect_env SNAP_VSYNC adaptive
 21.86 expect_env SNAP_SHINY 1
 21.87 expect_env SNAP_SHINY_ODDS 512
+21.871 expect_env SNAP_BOKEH_DOF 1
+21.872 expect_env SNAP_MOTION_BLUR 0.5
 22 expect_mods beta:1,alpha:0
 24 key F1 1
 26 expect_open 1

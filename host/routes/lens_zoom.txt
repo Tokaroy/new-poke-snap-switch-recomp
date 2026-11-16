@@ -1,0 +1,15 @@
+# fixture: post_tutorial
+# Lens effects (bokeh depth of field, motion blur): a Florio ride with a long ZL zoom. Used by scripts\lens\run_lens_compare.ps1 (same-moment Off/On pairs, SNAP_LIGHT_AB)
+# and for reading the zoom field of view (SNAP_LENS_LOG=1). No photo is taken, so scores are not touched.
+# Run: powershell -File host\run_boot.ps1 -Route lens_zoom -Timeout 400
+# 1) Slow A taps: title, lab hub "Research", Lental Map (Florio is the only open course), course start.
+repeat @f300 @f30000 120 8 A
+wait ui=map_select timeout=240
+repeat @f60 @f30000 120 8 A
+wait ride timeout=240
+# 2) Riding: a slow right-stick yaw wobble, the ZL zoom held from 400 to 1000 presents after the ride start, released for 500, then held again.
+repeat @f0 @f30000 400 60 rx=0.25
+repeat @f200 @f30000 400 60 rx=-0.25
+@f400 600 ZL
+@f1500 600 ZL
+end @f2300
