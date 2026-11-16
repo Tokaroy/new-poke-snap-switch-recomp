@@ -67,7 +67,23 @@ glslangValidator process (BelowNormal, hidden) and applied at the next frame bou
 `[dev] shader <name> reloaded live in N ms (generation G)`; on an error it shows `[dev] shader <name>: COMPILE ERROR, keeping the previous shader`
 and the red box. Consumers must poll `dev_spv_changed`. Dropping a `<name>.spv` in the folder also works (for a shader without a source file).
 
+## Scripts: use a private control directory
+
+Control files are named by game process id, and every SNAP_DEV game on the PC writes to the same `build/ctl`. A script that picks "the newest
+`.info`" can talk to another session's game (this happened once: a `set` reached a stranger's run). Start your own game with
+`SNAP_DEV_CTL=<private dir>` and talk to that directory only, or take the pid from your own `run_boot` / `snap_boot` process.
+
 ## Cost
 
 SNAP_DEV unset: one cached-bool test per call, nothing else (checked on the present path: `if (dev_on()) dev_frame(...)`). Overlay or timing on:
 timestamp pairs around each marked pass, one query pool read per present.
+
+Reference build with every dev branch folded away: `host\build_snap.py --out build\w\<you>_off --cflags-extra=-DSNAP_DEV_DISABLED` (`dev_on()`
+becomes `constexpr false`). Use it as the A side of an A/B to show the unset case costs nothing.
+
+## Verified (2026-11-15)
+
+F1 > Tuning, F4 overlay and the red error box, in a hidden Florio ride at 4K (screenshots in `analysis\devloop\`, local only). Hot reload of
+`lfx_ao.frag` while the game ran: `[dev] shader lfx_ao reloaded live in 122 ms (generation 1)`, `[dev] lighting: shader lfx_ao applied (pipelines
+rebuilt)`; a bad edit logged `COMPILE ERROR, keeping the previous shader` and showed the box; the fixed file applied again (generation 3).
+Control channel: `ping`, `list`, `passes`, `shaders`, `set`, `get`, `reset` all answered.

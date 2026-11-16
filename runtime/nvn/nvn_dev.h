@@ -21,7 +21,11 @@ typedef struct VkCommandBuffer_T* VkCommandBuffer;
 
 // ---- on/off ------------------------------------------------------------------------------------------------------------
 bool dev_env_on();                                       // nvn_dev.cpp: SNAP_DEV is set to something other than 0
+#ifdef SNAP_DEV_DISABLED   // -DSNAP_DEV_DISABLED (build_snap.py --cflags-extra): every dev branch folds away; the reference build for "off costs nothing" A/B runs
+constexpr bool dev_on() { return false; }
+#else
 inline bool dev_on() { static const bool v = dev_env_on(); return v; }
+#endif
 
 // ---- live-tunable values -----------------------------------------------------------------------------------------------
 // Register once (any time, repeat calls with the same name and pointer are fine). *p keeps whatever value the caller gave it, unless the env var
