@@ -24,7 +24,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from . import fetch, hdtex as H, hdtex_setup as S, hdtex_classify as hc
+from . import fetch, hdtex as H, hdtex_romfs as R, hdtex_setup as S, hdtex_classify as hc
 
 ROUTES = H.BUILDER / 'hdtex_routes'
 PACK_META = {'hd-shadows': {'name': 'HD shadows (made on this PC)', 'version': '1', 'author': 'Snap Recomp Builder',
@@ -62,6 +62,7 @@ def add_args(p):
     p.add_argument('--pause-locks', help='developer use: pause while a *.lock in this folder names a timing run')
     p.add_argument('--from-data', metavar='ROOT', help='read the course textures straight from your unpacked game files (no play-through); with --cats')
     p.add_argument('--cats', help='only these texture categories, comma list (shadow = the HD shadows row, lightmap = the Lighting row)')
+    p.add_argument('--from-romfs', metavar='ROMFS', help='read the course textures from the game archives of this extracted romfs folder (no unpacked tree needed); with --cats')
     p.add_argument('--pack-id', default=H.PACK_ID, help='mod pack to write (default hd-ai-textures; HD shadows uses hd-shadows)')
     p.add_argument('--pause-game', action='store_true', help='background build: wait while the game is running')
     p.add_argument('--report', help='write the run report (JSON) here as well')
@@ -307,6 +308,12 @@ def _main(a, table, say, emit):
     bc7 = {'off': False, 'on': True, 'all': 'all'}[a.bc7]
     cats = [c.strip() for c in a.cats.split(',') if c.strip()] if a.cats else None
     index = None
+    if a.from_romfs and not a.from_data:
+        c = cats or ['shadow']
+        got = R.extract(a.from_romfs, work, [x for x in c if x in ('shadow', 'lightmap')], say)
+        if got is None:
+            return 1
+        a.from_data = str(got)
     if a.from_data:
         suffixes = tuple(({'shadow': '^Shadow.nutexb', 'lightmap': '^0^Lightmap.nutexb'}[c]) for c in (cats or ['shadow']) if c in ('shadow', 'lightmap'))
         if not suffixes:

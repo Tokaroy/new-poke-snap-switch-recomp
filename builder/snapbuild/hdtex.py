@@ -181,6 +181,9 @@ def nutexb_bytes(fmt, w, h, mips):
     return nb.layout(w, h, bpb, bw, bh, mips)[1] + nb.FOOTER
 
 
+SHADOW_MAX_EDGE = 2048   # sun-shadow maps stop at 2048: a 4096 map is 16 MB, and about 80 of the 4,562 originals are already 2048
+
+
 def target_size(w, h, scale, max_edge):
     s = min(float(scale), max_edge / max(w, h))
     if s <= 1.0:
@@ -223,7 +226,7 @@ def plan(cache, settings, models_sha, bc7=False, exclude=(), max_edge=MAX_EDGE, 
         scale = int(cs.get('scale', 0))
         if scale <= 1:
             continue
-        ow, oh = target_size(t.w, t.h, scale, max_edge)
+        ow, oh = target_size(t.w, t.h, scale, min(max_edge, SHADOW_MAX_EDGE) if cat == 'shadow' else max_edge)
         if (ow, oh) == (t.w, t.h):
             continue
         ofmt = out_format(t.fmt, cat, bc7)

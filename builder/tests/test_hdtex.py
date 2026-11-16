@@ -490,6 +490,15 @@ class ShadowTests(unittest.TestCase):
         off = H.process_shadow(self.item(n, 2, 0.0), px, False)[0][..., 3].astype(np.float32) / 255
         self.assertLess(np.abs(off - plain).max(), 0.15)                 # strength 0: plain enlargement, only de-ringed
 
+    def test_shadow_edge_is_capped(self):
+        t = Path(tempfile.mkdtemp())
+        rels = {f'nx/Pack/LevelComposite/master/LC_001_A.drp/LV^M^{n}^s^0^Shadow.nutexb': make_nutexb(0x4a5, n, n, 1)[0] for n in (512, 1024, 2048)}
+        write_cache(t, rels)
+        items, _ = H.plan(t, H.level_settings('hd'), {}, cats=['shadow'])
+        self.assertEqual(sorted((i.src_w, i.out_w) for i in items), [(512, 1024), (1024, 2048)])   # 2048 stays as the game has it
+        items, _ = H.plan(t, H.level_settings('ultra'), {}, cats=['shadow'])
+        self.assertEqual(sorted((i.src_w, i.out_w) for i in items), [(512, 2048), (1024, 2048)])
+
     def test_planned_only_with_cats_and_keeps_mips(self):
         t = Path(tempfile.mkdtemp())
         rel = 'nx/Pack/LevelComposite/master/LC_001_A.drp/LV^M^1^s^0^Shadow.nutexb'

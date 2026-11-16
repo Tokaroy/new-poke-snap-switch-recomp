@@ -16,7 +16,7 @@ Raw entry (no 'Oodl' tag): payload[:dsize] is the data.
 Encrypted archives: whole chunk (words 1..) XORed with the per-chunk xorshift stream; done by
 tools/oodle_build/drp_xor.dll (built from scripts/drp_xor/drp_xor.rs).
 """
-import argparse, ctypes, hashlib, os, struct, sys, time, zlib
+import argparse, ctypes, hashlib, os, re, struct, sys, time, zlib
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -76,13 +76,21 @@ def main():
     ap.add_argument("--no-write", action="store_true", help="decode and verify only")
     ap.add_argument("--sample", type=int, default=0, help="K entries per ext spread over all archives (implies --no-write)")
     ap.add_argument("--manifest", default="")
+    ap.add_argument("--name", default="", help="only entries whose name matches this regular expression (re.search)")
+    ap.add_argument("--outdir", default="", help="write here instead of extracted/drp-v262144 (for example a work folder)")
+    ap.add_argument("--romfs", default="", help="the extracted romfs folder (default extracted/romfs-v262144)")
     a = ap.parse_args()
     rc.set_belownormal()
     xor = ctypes.CDLL(str(DLL))
     xor.drp_xor.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p]
-    global MANIFEST
+    global MANIFEST, OUTDIR, RFS
     if a.manifest:
         MANIFEST = Path(a.manifest)
+    if a.outdir:
+        OUTDIR = Path(a.outdir)
+    if a.romfs:
+        RFS = Path(a.romfs)
+    name_rx = re.compile(a.name) if a.name else None
     if a.sample:
         a.no_write = True
     exts = set(x for x in a.ext.split(",") if x)
@@ -125,6 +133,8 @@ def main():
         sel = []
         for e in ents:
             if exts and e["ext"] not in exts:
+                continue
+            if name_rx and not name_rx.search(e["name"]):
                 continue
             if sample_keys is not None:
                 if (arch, e["idx"]) in sample_keys:
