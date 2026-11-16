@@ -29,6 +29,8 @@
 #include "hle/json_lite.h"
 #include "hle/picture_rows.h"   // the Internal resolution / Anti-aliasing / Performance scaling rules, shared with the launcher and the game's own Settings screen
 #include "nvn/nvn_aa.h"           // HostWindowHeight
+#include "nvn/nvn_rt.h"           // FallbackNotice
+namespace nvn { const char* FgNotice(); }   // nvn_framegen.cpp: why frame generation turned itself off (null while fine)
 #include "hle/settings.h"
 #include "hle/visual_defaults.h"   // the one table of visual defaults (original look vs extras)
 #include "mods/mods_core.h"
@@ -947,6 +949,8 @@ int options_pending_restart(std::string* names) {
 }
 
 void options_restart_bar() {
+  if (const char* why = nvn::FgNotice()) ImGui::TextColored(theme().conflict, "Frame generation is off for this session (%s). The game shows normal frames.", why);   // live fallback: it failed and turned itself off (SNAP_FRAMEGEN_FAIL=init|prepare|generate|present tests it)
+  if (const char* why = snap_rt::FallbackNotice()) ImGui::TextColored(theme().conflict, "Ray tracing is off for this session (%s). The standard lighting is in use.", why);   // live fallback: SNAP_RT could not start
   std::string names;
   const int n = options_pending_restart(&names);
   if (!n) return;

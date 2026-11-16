@@ -1069,6 +1069,7 @@ bool InitQueue(QueueImpl* q) {
 void DestroyQueue(QueueImpl* q) {
   Host* h = q->host;
   QueueFinishImpl(q);
+  snap_rt::QueueDestroyed(q);   // [rt]
   QueueLive(q, false);   // [audit F4] everything it submitted has completed: stamps naming it count as passed
   ShotDrain();   // screenshot jobs wait on this queue's timeline value: let them finish before it is destroyed
   for (auto cb : q->freeCbs) vkFreeCommandBuffers(h->device, q->pool, 1, &cb);

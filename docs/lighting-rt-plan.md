@@ -196,6 +196,11 @@ Switches: `SNAP_RT=0|1` master (device features), then `SNAP_RT_SHADOWS=0|1|soft
 - Photo gate: PASS (`ab_capture` photo-frame check: 0 RT draws on 6 photo presents, 292 on ordinary frames). The freeze check reads FAIL because scenes differ with time running, so it does not apply to a jittered effect; the hard mode is deterministic.
 - Alpha-tested casters were not built: the gate below says to stop when the result is not visibly better.
 
+**Live fallback and lifetime rules (all RT features).**
+- If RT cannot run, the session continues on the raster path: no ray tracing extension, a failed allocation or setup, or three acceleration structure creations failing in a row. The runtime logs one `[rt] fallback to raster: <reason>` line, the F1 menu shows the reason (`snap_rt::FallbackNotice`), and the receivers go back to the game's own shadow taps (the pipeline variant key changes, so no ray query pipeline is used afterwards). A lost device cannot be recovered; that case is not handled here.
+- Test it with `SNAP_RT_FORCE_FAIL=ext|setup|shadow|build` (comma list): `ext` behaves as a GPU without the extensions, `setup` fails the scene buffers, `shadow` fails the shadow buffers, `build` fails every acceleration structure creation.
+- Per-frame slots (descriptor set, query results, mapped flag and stat words) are reused only after the queue timeline passes the value stamped when the slot was recorded; a busy slot skips that frame's RT work. Retired acceleration structures and their allocator ranges are released through the graveyard (`RetireFn`), which waits for the same timelines, and device shutdown releases them at idle. A buffer whose bind or map fails is discarded, and shutdown cleans a half-built setup.
+
 **M4. RTAO in the SSAO slot (9 days).**
 - Needs M1 (scene-opaque capture), M2, and P4 (SSAO force proven). At the SSAOCreate draw, replace the program with a host fullscreen pipeline that reads the bound depth and normal textures, casts 2-4 short cosine rays (0.5-2 m), accumulates temporally with a bilateral denoise into the same 1920x1080 target; keep the game's blur and composite. Add a distance cutoff and strength so baked AO is not doubled on the static world.
 - Acceptance: std checks; 4-10 ms at 4K measured (decision point on cost); A/B in a creature close-up.

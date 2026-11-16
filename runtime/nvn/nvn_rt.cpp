@@ -71,10 +71,11 @@ bool MakeBuf(Host* h, uint64_t size, VkBufferUsageFlags usage, VkMemoryPropertyF
   ai.allocationSize = mr.size; ai.memoryTypeIndex = h->FindMemoryType(mr.memoryTypeBits, props);
   if (addr) ai.pNext = &fl;
   if (ai.memoryTypeIndex == UINT32_MAX || vkAllocateMemory(h->device, &ai, nullptr, &o->mem) != VK_SUCCESS) { vkDestroyBuffer(h->device, o->buf, nullptr); *o = Buf{}; return false; }
-  vkBindBufferMemory(h->device, o->buf, o->mem, 0);
+  auto discard = [&] { vkDestroyBuffer(h->device, o->buf, nullptr); vkFreeMemory(h->device, o->mem, nullptr); *o = Buf{}; return false; };
+  if (vkBindBufferMemory(h->device, o->buf, o->mem, 0) != VK_SUCCESS) return discard();
   o->size = size;
   if (addr) { VkBufferDeviceAddressInfo ba{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO}; ba.buffer = o->buf; o->addr = vkGetBufferDeviceAddress(h->device, &ba); }
-  if (props & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) vkMapMemory(h->device, o->mem, 0, VK_WHOLE_SIZE, 0, &o->map);
+  if ((props & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) && vkMapMemory(h->device, o->mem, 0, VK_WHOLE_SIZE, 0, &o->map) != VK_SUCCESS) return discard();
   return true;
 }
 void FreeBuf(Host* h, Buf& b) {
@@ -142,7 +143,7 @@ struct Entry {
   uint32_t calm = 0; bool isStatic = false;   // consecutive frames the converted vertices stayed within tolerance of the copy taken at the last BLAS build
 };
 struct FrameDraw { uint64_t key; uint32_t vcount; uint64_t arenaOff; float inv[16]; float eye[3]; };
-struct Dead { VkAccelerationStructureKHR as; uint64_t frame; };
+struct Dead { Entry entry; uint64_t token; };   // retired entry: its AS and allocator ranges are released when the queue timeline passes the retire stamp (RetireFn)
 
 struct Stats {   // per-window aggregates for the log line
   uint32_t frames = 0; uint64_t draws = 0, tris = 0, xfbBytes = 0, blasBuilt = 0, blasTris = 0, blasReused = 0, instances = 0, skipped = 0;
@@ -168,11 +169,13 @@ struct G {
   VkDescriptorPool dpool = VK_NULL_HANDLE; VkDescriptorSet sets[kSlots] = {}; VkSampler samp = VK_NULL_HANDLE;
   std::unordered_map<uint64_t, Entry> entries;
   std::vector<FrameDraw> frame; int framePresent = -1;
-  std::vector<Dead> dead;
+  std::vector<Dead> dead; uint64_t retireNext = 0;
   TextureImpl* sceneDepth = nullptr;   // dereferenced only between a capture and the same frame's tonemap draw
   const TextureImpl* lastDepth = nullptr;   // compared only (a new scene depth target = a new course: cache flushed)
   uint64_t capFrame = 0;       // frames that were built (age unit of the cache)
   uint32_t slot = 0; bool slotUsed[kSlots] = {}; bool slotTs[kSlots] = {}; uint64_t slotFrame[kSlots] = {};
+  struct Done { VkSemaphore sem = VK_NULL_HANDLE; uint64_t value = 0; };
+  Done slotDone[kSlots];       // the queue timeline value that signals when the commands recorded for each slot have completed
   int debug = 0, logEvery = 120, ttl = 900, flipY = 0;
   Stats st; int lastLogPresent = 0;
   bool loggedCamFail = false, loggedNoPos = false;
@@ -180,6 +183,24 @@ struct G {
   std::unordered_set<uint64_t> curA, curB, prevA, prevB;   // per-frame key sets for both key forms (identity only / with constants)
   uint64_t kDraws = 0, kA = 0, kB = 0, kStA = 0, kStB = 0, kFrames = 0;
 } g;
+
+// A slot's mapped words, descriptor set and query results belong to the GPU until its queue timeline reaches the stamp taken when the slot was recorded (g.mu held).
+bool SlotReady(uint32_t slot) {
+  const auto& m = g.slotDone[slot];
+  if (!m.sem) return true;
+  uint64_t done = 0;
+  return g.h && vkGetSemaphoreCounterValue(g.h->device, m.sem, &done) == VK_SUCCESS && done >= m.value;
+}
+
+// ---- live fallback: when RT cannot run (no extension, allocation or creation failure) the session continues on the raster path; one log line, the F1 menu shows the reason
+char g_why[160] = {};   // first reason only; written once under g.mu or at device creation, read by the UI thread (a torn read of a short string is harmless, it is only text)
+void NoteWhy(const char* why) { if (!g_why[0]) { snprintf(g_why, sizeof g_why, "%s", why); fprintf(stderr, "[rt] fallback to raster: %s\n", why); } }
+bool Forced(const char* what) {   // SNAP_RT_FORCE_FAIL=ext,setup,shadow,build (comma list) fails that stage on purpose, to test the fallback
+  static const std::string v = [] { const char* e = getenv("SNAP_RT_FORCE_FAIL"); return std::string(e ? e : ""); }();
+  return !v.empty() && v.find(what) != std::string::npos;
+}
+int g_createFails = 0;   // consecutive acceleration structure creation failures; three in a row turn RT off for the session
+bool CreateFailed() { if (++g_createFails >= 3) { g_failed = true; NoteWhy("acceleration structure creation keeps failing"); } return false; }
 
 // Scene geometry capture (M1/M2: the debug overlay and the future AO / reflection passes). With SNAP_RT_SHADOWS set and neither SNAP_RT_DEBUG nor SNAP_RT_SCENE=1 only the
 // shadow casters are captured (small buffers, no scene BLAS work).
@@ -203,12 +224,13 @@ void Bar(VkCommandBuffer cb) {   // everything before -> everything after (a few
   vkCmdPipelineBarrier2(cb, &di);
 }
 
-void Fail(const char* why) { if (!g_failed) fprintf(stderr, "[rt] disabled: %s\n", why); g_failed = true; }
+void Fail(const char* why) { g_failed = true; NoteWhy(why); }
 
 bool Setup(Host* h) {
   if (g.ready) return true;
   if (g_failed) return false;
-  g.h = h;
+  g.h = h;   // set before any allocation: DeviceShutdown cleans a half-built setup that belongs to this host
+  if (Forced("setup")) { Fail("forced failure (SNAP_RT_FORCE_FAIL=setup)"); return false; }
   g.debug = EnvInt("SNAP_RT_DEBUG", 0);
   g.logEvery = EnvInt("SNAP_RT_LOG", (g.debug || ShadowsRequested()) ? 120 : 0);
   g.ttl = EnvInt("SNAP_RT_TTL", 900);
@@ -289,12 +311,23 @@ bool Setup(Host* h) {
   return true;
 }
 
-void KillEntry(Host* h, Entry& e) {
+void FreeRetired(Host* h, const Entry& e) {   // the GPU has finished with it (or the device is idle at shutdown); g.mu held
+  if (e.as) pDestroyAs(h->device, e.as, nullptr);
   if (e.arenaBytes) g.arenaR.Free(e.arenaOff, e.arenaBytes);
   if (e.blasBytes) g.blasR.Free(e.blasOff, e.blasBytes);
-  if (e.as) g.dead.push_back({e.as, g.capFrame});
-  (void)h;
+}
+void KillEntry(Host* h, Entry& e) {   // the entry's AS and ranges may still be read by recorded or in-flight commands: they are released through the graveyard, which waits for the queue timelines
+  if (!e.as && !e.arenaBytes && !e.blasBytes) { e = Entry{}; return; }
+  const uint64_t token = ++g.retireNext;
+  g.dead.push_back({e, token});
   e = Entry{};
+  RetireFn([h, token] {
+    std::lock_guard<std::mutex> lk(g.mu);
+    auto it = std::find_if(g.dead.begin(), g.dead.end(), [token](const Dead& d) { return d.token == token; });
+    if (it == g.dead.end()) return;   // DeviceShutdown already released it at device idle
+    FreeRetired(h, it->entry);
+    g.dead.erase(it);
+  });
 }
 void Evict(Host* h, uint64_t keep = 0) {   // drop entries past their TTL (unstable ones, seen fewer than 3 frames, after 2)
   for (auto it = g.entries.begin(); it != g.entries.end();) {
@@ -304,11 +337,6 @@ void Evict(Host* h, uint64_t keep = 0) {   // drop entries past their TTL (unsta
   }
 }
 void Flush(Host* h) { for (auto& kv : g.entries) KillEntry(h, kv.second); g.entries.clear(); g.frame.clear(); }
-void ReapDead(Host* h) {
-  for (size_t i = 0; i < g.dead.size();) {
-    if (g.capFrame - g.dead[i].frame > 8) { pDestroyAs(h->device, g.dead[i].as, nullptr); g.dead[i] = g.dead.back(); g.dead.pop_back(); } else i++;
-  }
-}
 
 uint64_t HashKey(const DrawInfo& di, bool withCb) {
   uint64_t x = 1469598103934665603ull;
@@ -392,12 +420,13 @@ uint64_t Align256(uint64_t v) { return (v + 255) & ~255ull; }
 bool ShSetup(Host* h) {
   if (S.ready) return true;
   if (S.failed) return false;
+  if (Forced("shadow")) { S.failed = true; NoteWhy("forced failure (SNAP_RT_FORCE_FAIL=shadow)"); return false; }
   const uint64_t arenaB = (uint64_t)EnvInt("SNAP_RT_CAST_MB", 64) << 20, blasB = (uint64_t)EnvInt("SNAP_RT_CAST_BLAS_MB", 192) << 20;
   const VkMemoryPropertyFlags dl = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
   const VkBufferUsageFlags asIn = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
   if (!MakeBuf(h, arenaB, VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | asIn, dl, &S.arena, true) ||
       !MakeBuf(h, blasB, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR, dl, &S.blasStore, true) ||
-      !MakeBuf(h, (uint64_t)kMaxInstances * sizeof(VkAccelerationStructureInstanceKHR), asIn | VK_BUFFER_USAGE_TRANSFER_DST_BIT, dl, &S.inst, true)) { S.failed = true; fprintf(stderr, "[rt] shadows: buffer allocation failed\n"); return false; }
+      !MakeBuf(h, (uint64_t)kMaxInstances * sizeof(VkAccelerationStructureInstanceKHR), asIn | VK_BUFFER_USAGE_TRANSFER_DST_BIT, dl, &S.inst, true)) { S.failed = true; NoteWhy("RT shadow buffers could not be allocated"); fprintf(stderr, "[rt] shadows: buffer allocation failed\n"); return false; }
   VkAccelerationStructureGeometryKHR geo{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
   geo.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR; geo.geometry.instances.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR; geo.geometry.instances.data.deviceAddress = S.inst.addr;
   VkAccelerationStructureBuildGeometryInfoKHR bi{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
@@ -405,10 +434,10 @@ bool ShSetup(Host* h) {
   VkAccelerationStructureBuildSizesInfoKHR sz{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
   const uint32_t n = std::min(kMaxInstances, g_maxInstances ? g_maxInstances : kMaxInstances);
   pBuildSizes(h->device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &bi, &n, &sz);
-  if (!MakeBuf(h, sz.accelerationStructureSize + 256, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR, dl, &S.tlasStore, true)) { S.failed = true; return false; }
+  if (!MakeBuf(h, sz.accelerationStructureSize + 256, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR, dl, &S.tlasStore, true)) { S.failed = true; NoteWhy("RT shadow TLAS storage could not be allocated"); return false; }
   VkAccelerationStructureCreateInfoKHR ci{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR};
   ci.buffer = S.tlasStore.buf; ci.size = sz.accelerationStructureSize; ci.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
-  if (pCreateAs(h->device, &ci, nullptr, &S.tlas) != VK_SUCCESS) { S.failed = true; return false; }
+  if (pCreateAs(h->device, &ci, nullptr, &S.tlas) != VK_SUCCESS) { S.failed = true; NoteWhy("RT shadow TLAS could not be created"); return false; }
   VkAccelerationStructureDeviceAddressInfoKHR ai{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR}; ai.accelerationStructure = S.tlas;
   S.tlasAddr = pAsAddr(h->device, &ai);
   S.ready = true;
@@ -416,13 +445,12 @@ bool ShSetup(Host* h) {
   return true;
 }
 
-void ShShutdown(Host* h) {
-  if (!S.ready) return;
+void ShShutdown(Host* h) {   // also cleans a half-built setup (every destroy below is null safe)
   for (auto& kv : S.pool) for (auto& p : kv.second) if (p.as) pDestroyAs(h->device, p.as, nullptr);
   S.pool.clear();
   if (S.tlas) pDestroyAs(h->device, S.tlas, nullptr);
   for (Buf* b : {&S.arena, &S.blasStore, &S.inst, &S.tlasStore}) FreeBuf(h, *b);
-  S.ready = false;
+  S.ready = false; S.tlas = VK_NULL_HANDLE;
 }
 
 // A pooled BLAS able to hold `prims` triangles: classes are powers of two (at least 128 triangles); an AS built with fewer triangles than it was sized for is valid.
@@ -440,10 +468,12 @@ bool PoolGet(Host* h, uint32_t prims, PooledAs* out) {
   pBuildSizes(h->device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &bi, &cls, &sz);
   const uint64_t bytes = Align256(sz.accelerationStructureSize);
   if (S.blasTop + bytes > S.blasStore.size) return false;
+  if (Forced("build")) { Fail("forced failure (SNAP_RT_FORCE_FAIL=build)"); return false; }
   PooledAs p; p.off = S.blasTop; p.bytes = bytes; p.scratch = sz.buildScratchSize;
   VkAccelerationStructureCreateInfoKHR ci{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR};
   ci.buffer = S.blasStore.buf; ci.offset = p.off; ci.size = sz.accelerationStructureSize; ci.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
-  if (pCreateAs(h->device, &ci, nullptr, &p.as) != VK_SUCCESS) return false;
+  if (pCreateAs(h->device, &ci, nullptr, &p.as) != VK_SUCCESS) return CreateFailed();
+  g_createFails = 0;
   S.blasTop += bytes;
   VkAccelerationStructureDeviceAddressInfoKHR ai{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR}; ai.accelerationStructure = p.as;
   p.addr = pAsAddr(h->device, &ai);
@@ -650,7 +680,8 @@ void AppendDeviceExt(VkPhysicalDevice phys, std::vector<const char*>& dext, VkPh
   vkEnumerateDeviceExtensionProperties(phys, nullptr, &n, ep.data());
   auto has = [&](const char* s) { for (auto& e : ep) if (!strcmp(e.extensionName, s)) return true; return false; };
   const char* need[] = {VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME, VK_KHR_RAY_QUERY_EXTENSION_NAME, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME, VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME};
-  for (const char* s : need) if (!has(s)) { fprintf(stderr, "[rt] off: device lacks %s\n", s); return; }
+  if (Forced("ext")) { NoteWhy("forced failure (SNAP_RT_FORCE_FAIL=ext)"); return; }
+  for (const char* s : need) if (!has(s)) { char b[120]; snprintf(b, sizeof b, "this GPU lacks %s", s); NoteWhy(b); return; }
   VkPhysicalDeviceAccelerationStructureFeaturesKHR qa{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
   VkPhysicalDeviceRayQueryFeaturesKHR qr{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
   VkPhysicalDeviceTransformFeedbackFeaturesEXT qt{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT};
@@ -681,7 +712,7 @@ void DeviceCreated(Host* h) {
   L(pCmdBuild, "vkCmdBuildAccelerationStructuresKHR"); L(pAsAddr, "vkGetAccelerationStructureDeviceAddressKHR");
   L(pBindXfb, "vkCmdBindTransformFeedbackBuffersEXT"); L(pBeginXfb, "vkCmdBeginTransformFeedbackEXT"); L(pEndXfb, "vkCmdEndTransformFeedbackEXT");
 #undef L
-  if (!pCreateAs || !pDestroyAs || !pBuildSizes || !pCmdBuild || !pAsAddr || !pBindXfb || !pBeginXfb || !pEndXfb) { fprintf(stderr, "[rt] off: entry points missing\n"); g_on = false; return; }
+  if (!pCreateAs || !pDestroyAs || !pBuildSizes || !pCmdBuild || !pAsAddr || !pBindXfb || !pBeginXfb || !pEndXfb) { NoteWhy("the driver does not export the ray tracing entry points"); g_on = false; return; }
   VkPhysicalDeviceAccelerationStructurePropertiesKHR pa{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR};
   VkPhysicalDeviceTransformFeedbackPropertiesEXT pt{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_PROPERTIES_EXT};
   pa.pNext = &pt;
@@ -694,12 +725,13 @@ void DeviceCreated(Host* h) {
           (unsigned long long)pt.maxTransformFeedbackBufferSize, pt.maxTransformFeedbackBufferDataStride, (int)pt.transformFeedbackQueries);
 }
 
-void DeviceShutdown(Host* h) {
-  if (!g.ready) return;
+void DeviceShutdown(Host* h) {   // the device is idle here; also cleans a half-built setup (g.h is set before the first allocation)
+  std::lock_guard<std::mutex> lk(g.mu);
+  if (g.h != h) return;
   VkDevice d = h->device;
   Flush(h);
   ShShutdown(h);
-  for (auto& x : g.dead) pDestroyAs(d, x.as, nullptr);
+  for (auto& x : g.dead) FreeRetired(h, x.entry);
   g.dead.clear();
   if (g.tlas) pDestroyAs(d, g.tlas, nullptr);
   for (Buf* b : {&g.arena, &g.shadow, &g.flags, &g.blasStore, &g.scratch, &g.instStore, &g.tlasStore, &g.stats}) FreeBuf(h, *b);
@@ -714,7 +746,18 @@ void DeviceShutdown(Host* h) {
   if (g.samp) vkDestroySampler(d, g.samp, nullptr);
   if (g.ovlVs) vkDestroyShaderModule(d, g.ovlVs, nullptr);
   if (g.ovlFs) vkDestroyShaderModule(d, g.ovlFs, nullptr);
-  g.ready = false;
+  g.ready = false; g.h = nullptr; g.tlas = VK_NULL_HANDLE;
+  for (auto& m : g.slotDone) m = G::Done{};
+}
+
+void QueueDestroyed(QueueImpl* q) {   // after the queue finished its work, before its timeline semaphore is destroyed
+  std::lock_guard<std::mutex> lk(g.mu);
+  for (auto& m : g.slotDone) if (m.sem == q->timeline) m = G::Done{};
+}
+
+const char* FallbackNotice() {
+  if (!Wanted() || !g_why[0]) return nullptr;
+  return g_why;
 }
 
 // Vertex modules: gl_Position (member 0 of the gl_PerVertex block) gets Xfb decorations (buffer 0, offset 0, stride 16) plus the TransformFeedback
@@ -806,6 +849,10 @@ void OnTonemap(ReplayCtx& cx, const char*) {   // called by FxAfterDraw: tonemap
   if (!Capture() || FxIsPhotoFrame()) return;
   std::lock_guard<std::mutex> lk(g.mu);
   if (!g.ready || g.frame.empty()) return;
+  if (!cx.q || !SlotReady(g.slot % kSlots)) {   // the slot's descriptors, query results and mapped words still belong to the GPU: skip this frame's RT work (the capture is dropped, entries rebuild)
+    g.frame.clear(); g.curA.clear(); g.curB.clear(); g.st.skipped++;
+    return;
+  }
   Host* h = cx.h; VkCommandBuffer cb = cx.cb;
   TextureImpl* t = cx.rt[0];
   std::vector<FrameDraw> draws; draws.swap(g.frame);
@@ -881,7 +928,7 @@ void OnTonemap(ReplayCtx& cx, const char*) {   // called by FxAfterDraw: tonemap
       if (!g.blasR.Alloc(sz.accelerationStructureSize, &off)) { Evict(h, draws[di].key); if (!g.blasR.Alloc(sz.accelerationStructureSize, &off)) { g.st.skipped++; continue; } }
       VkAccelerationStructureCreateInfoKHR ci{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR};
       ci.buffer = g.blasStore.buf; ci.offset = off; ci.size = sz.accelerationStructureSize; ci.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
-      if (pCreateAs(h->device, &ci, nullptr, &e.as) != VK_SUCCESS) { g.blasR.Free(off, sz.accelerationStructureSize); e.as = VK_NULL_HANDLE; g.st.skipped++; continue; }
+      if (Forced("build") || pCreateAs(h->device, &ci, nullptr, &e.as) != VK_SUCCESS) { g.blasR.Free(off, sz.accelerationStructureSize); e.as = VK_NULL_HANDLE; g.st.skipped++; if (Forced("build")) Fail("forced failure (SNAP_RT_FORCE_FAIL=build)"); else CreateFailed(); continue; }
       e.blasOff = off; e.blasBytes = sz.accelerationStructureSize; e.scratchNeed = sz.buildScratchSize;
       VkAccelerationStructureDeviceAddressInfoKHR ai{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR}; ai.accelerationStructure = e.as;
       e.blasAddr = pAsAddr(h->device, &ai);
@@ -901,7 +948,6 @@ void OnTonemap(ReplayCtx& cx, const char*) {   // called by FxAfterDraw: tonemap
   if (timed) vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, g.qp, slot * kQ + 1);
   // 3. TLAS over everything alive
   Evict(h);
-  ReapDead(h);
   uint32_t ninst = 0;
   {
     uint64_t bytes = (uint64_t)std::min<size_t>(g.entries.size(), kMaxInstances) * sizeof(VkAccelerationStructureInstanceKHR);
@@ -1007,6 +1053,14 @@ void OnTonemap(ReplayCtx& cx, const char*) {   // called by FxAfterDraw: tonemap
   }
   if (timed) vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, g.qp, slot * kQ + 3);
   Bar(cb);   // the capture of the next frame writes the arena again
+  {   // the mapped flag and stat words written by this frame's GPU work become host visible; the slot is free again once the batch's timeline value passes
+    VkMemoryBarrier2 hb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+    hb.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT; hb.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+    hb.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT; hb.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+    VkDependencyInfo hd{VK_STRUCTURE_TYPE_DEPENDENCY_INFO}; hd.memoryBarrierCount = 1; hd.pMemoryBarriers = &hb;
+    vkCmdPipelineBarrier2(cb, &hd);
+    g.slotDone[slot] = {cx.q->timeline, cx.q->value + 1};   // SubmitLists signals value + 1 once after the whole batch
+  }
   if (ovl) {   // put back the viewport and scissor the game had set (nvn_aa.cpp does the same after its passes)
     if (cx.vpHave & 1) { const float* v = cx.vpGuest[0]; VkViewport vp = MakeNvnViewport(h->originMode, v[0], v[1], v[2], v[3], t->scale); vkCmdSetViewport(cb, 0, 1, &vp); }
     else cx.vpSet = false;
@@ -1026,19 +1080,19 @@ void OnTonemap(ReplayCtx& cx, const char*) {   // called by FxAfterDraw: tonemap
     const uint32_t old = (slot + kSlots - 4) % kSlots;
     uint64_t r[10] = {};
     g.slotTs[slot] = true;   // all stamps of this slot are recorded by now
-    if (g.slotTs[old] && vkGetQueryPoolResults(h->device, g.qp, old * kQ, 5, sizeof r, r, 16, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) == VK_SUCCESS && r[1] && r[3] && r[5] && r[7] && r[9]) {
+    if (g.slotTs[old] && SlotReady(old) && vkGetQueryPoolResults(h->device, g.qp, old * kQ, 5, sizeof r, r, 16, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) == VK_SUCCESS && r[1] && r[3] && r[5] && r[7] && r[9]) {
       // stamps: r[0] start, r[8] end of convert, r[2] end of BLAS builds, r[4] end of TLAS, r[6] end of overlay
       const double ms = (double)g.tsPeriod * 1e-6;
       g.st.gpuBuildMs += (double)(r[4] - r[0]) * ms; g.st.gpuBlasMs += (double)(r[2] - r[8]) * ms; g.st.gpuConvMs += (double)(r[8] - r[0]) * ms; g.st.gpuN++;
       if (g.slotUsed[old]) { g.st.gpuOvlMs += (double)(r[6] - r[4]) * ms; g.st.ovlN++; }
     }
-    if (g.slotUsed[old]) {
+    if (g.slotUsed[old] && SlotReady(old)) {
       const uint32_t* s = static_cast<const uint32_t*>(g.stats.map) + old * 8;
       if (s[0]) { for (int i = 0; i < 8; i++) g.st.cls[i] += s[i]; g.st.clsN++; }
     }
   }
   // motion flags of the frame 4 slots back: a draw whose vertices stayed within tolerance of its BLAS copy for staticFrames frames keeps its BLAS
-  {
+  if (SlotReady((slot + kSlots - 4) % kSlots)) {
     const uint32_t old = (slot + kSlots - 4) % kSlots;
     const uint32_t* fw = static_cast<const uint32_t*>(g.flags.map) + (size_t)old * kMaxDraws;
     const std::vector<uint64_t>& ks = g.slotKeys[old];

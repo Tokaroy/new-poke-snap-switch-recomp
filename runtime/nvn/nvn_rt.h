@@ -27,7 +27,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace nvn { struct Host; struct ReplayCtx; struct TextureImpl; }
+namespace nvn { struct Host; struct ReplayCtx; struct TextureImpl; struct QueueImpl; }
 
 namespace snap_rt {
 
@@ -38,7 +38,9 @@ bool Capture();   // On() and SNAP_RT_CAPTURE != 0
 // Device setup (nvn_vk.cpp): adds the extensions and chains the feature structs after f11; sets f12.bufferDeviceAddress.
 void AppendDeviceExt(VkPhysicalDevice phys, std::vector<const char*>& dext, VkPhysicalDeviceVulkan11Features* f11, VkPhysicalDeviceVulkan12Features* f12);
 void DeviceCreated(nvn::Host* h);
-void DeviceShutdown(nvn::Host* h);
+void DeviceShutdown(nvn::Host* h);   // device idle: releases everything, also a half-built setup
+void QueueDestroyed(nvn::QueueImpl* q);   // after the queue finished, before its timeline semaphore is destroyed (clears the RT slots' completion stamps that name it)
+const char* FallbackNotice();   // non-null when RT was asked for but fell back to the raster path this session: a short reason for the F1 menu (SNAP_RT_FORCE_FAIL=ext|setup|shadow|build tests it)
 
 // Vertex module patch (nvn_shader.cpp): decorates gl_Position for transform feedback. Returns true when it changed the module.
 bool PatchVertexXfb(std::vector<uint32_t>& spv, const char* key12);
