@@ -85,6 +85,11 @@ struct ReflInfo { uint64_t tlas = 0, avg = 0; };   // device addresses the water
 // Called by the water pass outside any render pass with the full-resolution scene colour copy it sampled (sampled layout) and the camera view-projection (row-major, clip = vp * (world, 1)).
 // Records the colour cache update. false = nothing to trace against this frame (no TLAS yet, a BLAS was released, photo frame, fallback): the water pass uses the screen-space march alone.
 bool ReflectionPass(nvn::ReplayCtx& cx, VkImageView col, VkSampler samp, const double vp[4][4], ReflInfo* out);
+// ---- RT ambient occlusion (SNAP_RT_AO=1; the AO pass of nvn_lighting_fx.cpp, shaders/lfx_ao_rt.frag) -----------------------------------------------------------------------------
+bool AoOn();   // asked for (env, then the live dev param), RT is up and nothing has failed
+const char* AoNotice();   // non-null when the RT AO fell back to GTAO this session: a short reason for the F1 menu
+VkShaderModule AoModule(nvn::Host* h);   // the RT AO fragment shader (push block of lfx_ao.frag, q.zw = TLAS address); null if it could not be made (fallback)
+bool AoPass(uint64_t* tlas);   // false: use GTAO this frame (photo frame, no TLAS yet); true: *tlas = the scene TLAS device address
 // ---- RT bounce light (SNAP_RT_GI=1 together with SNAP_SSGI=1; the gather pass of nvn_lighting_fx.cpp, shaders/lfx_gi_rt.frag) ------------------------------------------------
 bool GiOn();   // asked for (env, then the live dev param), RT is up and nothing has failed
 const char* GiNotice();   // non-null when the RT gather fell back to the screen-space one this session: a short reason for the F1 menu

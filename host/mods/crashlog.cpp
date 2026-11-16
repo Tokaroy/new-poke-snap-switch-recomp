@@ -24,6 +24,7 @@
 
 extern "C" const char* snap_quirks_gpu_line();       // runtime/nvn/nvn_quirks.cpp
 extern "C" const char* snap_quirks_applied_line();
+extern "C" void snap_audio_log_checks(void);          // runtime/audio/audio_out.cpp: the "[audio] checks:" counter line
 
 namespace {
 

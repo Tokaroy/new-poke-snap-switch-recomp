@@ -112,7 +112,15 @@ void PerfGpuSubmitted(int slot, uint64_t value) {
   g_slots[slot].value = value; g_slots[slot].submitted = true;
 }
 
+static char g_devName[256], g_devDriver[64];   // for the benchmark's settings summary (snap_perf_device_info); written once, from the present thread
+
 void PerfFrameMark(QueueImpl* q, uint64_t presentNo) {
+  if (!g_devName[0]) {
+    const VkPhysicalDeviceProperties& p = q->host->props;
+    snprintf(g_devName, sizeof g_devName, "%s", p.deviceName);
+    if (p.vendorID == 0x10de) snprintf(g_devDriver, sizeof g_devDriver, "%u.%u", (p.driverVersion >> 22) & 0x3ff, (p.driverVersion >> 14) & 0xff);   // NVIDIA's packing
+    else snprintf(g_devDriver, sizeof g_devDriver, "%u.%u.%u", VK_VERSION_MAJOR(p.driverVersion), VK_VERSION_MINOR(p.driverVersion), VK_VERSION_PATCH(p.driverVersion));
+  }
   if (!PerfGpuOn()) return;
   std::lock_guard<std::mutex> lk(q->host->queueMutex);
   double busy = -1, span = -1; int cbs = 0;
@@ -177,6 +185,12 @@ void PerfFrameMark(QueueImpl* q, uint64_t presentNo) {
 }
 
 }  // namespace nvn
+
+// The graphics card name and driver version of the running game (empty until the first present).
+extern "C" void snap_perf_device_info(char* name, int name_len, char* driver, int driver_len) {
+  if (name && name_len > 0) snprintf(name, (size_t)name_len, "%s", nvn::g_devName);
+  if (driver && driver_len > 0) snprintf(driver, (size_t)driver_len, "%s", nvn::g_devDriver);
+}
 
 extern "C" void snap_perf_overlay_timing(int on) {
   nvn::g_overlayTiming.store(on != 0);

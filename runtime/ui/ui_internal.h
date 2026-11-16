@@ -58,9 +58,11 @@ void tab_savestate();   // ui_savestate.cpp: Save state and Load state buttons, 
 bool state_note_on();    // a save state was asked for or just finished: the note is on screen
 void draw_state_note(ImVec2 size);
 void tab_cheats();      // ui_cheats.cpp: the cheats master switch and one checkbox per cheat (runtime/hle/cheats.h)
+void tab_benchmark();   // ui_bench.cpp: starts the ride benchmark (host/benchmark.cpp)
 void saves_tab_opened();
 bool saves_test_import(const std::string& fixture, std::string* name_out, std::string* err);   // scripted test
 void saves_test_switch(const std::string& name);
+bool saves_test_backups(const std::string& action, int n, std::string* what);   // scripted test: the F1 > Saves "Restore a backup" list
 
 // ---- game-style drawing helpers (ui_style.cpp)
 void style_shadow(ImDrawList* dl, ImVec2 pos, ImVec2 size, float round);

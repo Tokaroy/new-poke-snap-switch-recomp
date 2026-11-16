@@ -52,9 +52,10 @@ void main() {
         w *= decay;
         q += stepv;
     }
-    float open = acc / max(wsum, 1e-3);                     // 0..1: how much of the path toward the sun is open sky
-    float pixelSky = isSkyDepth(d) ? 0.0 : 1.0;                  // the shaft is air in front of the surface: sky pixels themselves stay bright, no extra
-    vec3 col = u.sunCol.rgb * (u.shaft.x * phase * open * (0.35 + 0.65 * pixelSky));
+    float open = pow(acc / max(wsum, 1e-3), u.shaftB.z);    // 0..1: how much of the path toward the sun is open sky; the power sharpens rays against the occluders
+    // the shaft is air in front of the surface: thin over nearby leaves (air mass 1 - exp(-distance * density)), full over far geometry, a fixed share on the sky itself
+    float air = isSkyDepth(d) ? 0.35 : 1.0 - exp(-zv * u.shaftB.y);
+    vec3 col = u.sunCol.rgb * (u.shaft.x * phase * open * air);
     if (u.dbg.x > 7.5) col = vec3(0.0, 0.0, open);   // debug 8: red = sun behind the camera, green = no sun, blue = open-sky fraction along the ray
     outV = vec4(col, zOut);
 }

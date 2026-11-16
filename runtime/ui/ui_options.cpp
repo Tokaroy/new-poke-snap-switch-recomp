@@ -47,8 +47,11 @@ extern "C" void snap_vsync_set(const char* mode);   // runtime/nvn/nvn_vk.cpp [v
 extern "C" const char* snap_vsync_get();
 extern "C" void snap_contact_shadows_set(int on);   // runtime/nvn/nvn_contact.cpp: live, the next scene frame
 extern "C" int snap_contact_shadows_get();
+extern "C" void snap_water_fx_set(int which, int on);   // runtime/nvn/nvn_ssr.cpp: 0 reflections, 1 caustics, 2 foam; live, the next scene frame
+extern "C" int snap_water_fx_get(int which);
 extern "C" void snap_hud_scale_set(const char* v);   // runtime/nvn/nvn_hud.cpp: live, the next frame ("auto", "100".."200")
 extern "C" const char* snap_hud_scale_get();
+
 extern "C" int snap_problem_report(const char* who, char* path_out, int path_cap, char* why_out, int why_cap);   // host/mods/problem_report.cpp
 
 namespace snap::ui {
@@ -158,6 +161,19 @@ void set_contact(const std::string& v) {
   else st::erase("contact_shadows");
   snap_contact_shadows_set(v == "1");
 }
+// Water effects (nvn_ssr.cpp): live, remembered as water_ssr / water_caustics / water_foam ("default" = off, erased; exported as SNAP_WATER_*=1 at the next start)
+template <int W> std::string get_water() { return snap_water_fx_get(W) ? "1" : "default"; }
+template <int W> void set_water(const std::string& v) {
+  static const char* const kKey[3] = {"water_ssr", "water_caustics", "water_foam"};
+  if (v == "1") st::set(kKey[W], "1"); else st::erase(kKey[W]);
+  snap_water_fx_set(W, v == "1");
+}
+std::string get_water_ssr() { return get_water<0>(); }
+void set_water_ssr(const std::string& v) { set_water<0>(v); }
+std::string get_water_caustics() { return get_water<1>(); }
+void set_water_caustics(const std::string& v) { set_water<1>(v); }
+std::string get_water_foam() { return get_water<2>(); }
+void set_water_foam(const std::string& v) { set_water<2>(v); }
 // HUD scale: live, remembered as "hud_scale" (auto = erased; exported as SNAP_HUD_SCALE at the next start)
 std::string get_hud_scale() { return snap_hud_scale_get(); }
 void set_hud_scale(const std::string& v) {
@@ -214,9 +230,21 @@ std::string get_aa() { return snappic::aa_row(pic_cfg()); }
 void set_aa(const std::string& v) { pic_store(snappic::with_aa(pic_cfg(), v)); }
 std::string get_perf() { return snappic::perf_row(pic_cfg()); }
 void set_perf(const std::string& v) { pic_store(snappic::with_perf(pic_cfg(), v, pic_ctx())); }
+std::string note_rt_reflect() {   // the Experimental rows: why the ray traced path is not in use this session (the same text as the log line)
+  if (const char* w = snap_rt::ReflectionNotice()) return std::string("Fell back to the standard reflections: ") + w;
+  return "";
+}
+std::string note_rt_gi() {
+  if (const char* w = snap_rt::GiNotice()) return std::string("Fell back to the standard bounce light: ") + w;
+  const char* e = std::getenv("SNAP_RT_GI");
+  const char* s = std::getenv("SNAP_SSGI");
+  if (e && *e && std::atoi(e) != 0 && !(s && *s && std::atoi(s) != 0)) return "Needs the Bounce light row above to be On.";
+  return "";
+}
 std::string note_res() { return snappic::note_resolution(pic_cfg(), pic_ctx()); }
 std::string note_aa() { return snappic::note_aa(pic_cfg(), pic_ctx()); }
 std::string note_perf() { return snappic::note_perf(pic_cfg(), pic_ctx()); }
+std::string note_smaa() { return snappic::note_smaa(pic_cfg(), pic_ctx()); }
 std::string note_sharpen() { return snappic::note_sharpen(pic_cfg()); }
 Choices res_choices() {
   Choices c = {{"auto", snappic::auto_label(pic_cfg(), pic_ctx())}};
@@ -243,7 +271,6 @@ Choices perf_choices() { return {{"off", "Off"}, {"quality", "Quality"}, {"balan
 
 // ---- quality presets. The preset is not stored: it is worked out from the eleven rows below, so changing any row by hand shows "Custom" and
 // setting the rows to a preset's values shows that preset. "" in the table = the row's default (the key is erased, the game's own behavior).
-std::string note_smaa() { return snappic::note_smaa(pic_cfg(), pic_ctx()); }
 // Normal is all defaults. Left out on purpose: draw distance and full-rate animation (photo scores unverified), the lighting preset and
 // upscaler rows (other workers), and the HDR/color rows (not quality).
 struct PresetKey { const char* key; const char* def; const char* vis = nullptr; };   // vis: the visual_defaults.h row the default comes from (follows the Look)
@@ -378,6 +405,9 @@ std::vector<Opt>& graphics_opts() {
        "Smooths jagged edges. FXAA is what the game ships with. SMAA keeps more detail. 2x supersampling draws at twice the window height first (capped at 3x the game's size): very sharp, and costs a lot of GPU time. The Enhanced look sizes it to your screen instead, so 4K stays smooth. "
        "DLAA, FSR and XeSS use an upscaler at full size; they appear when their files are installed (the launcher's Install upscalers button).",
        "default", {}, 0, 0, "", "SNAP_AA", get_aa, set_aa, aa_choices, "SNAP_AA", note_aa},
+      {"gfx_smaa_quality", "SMAA quality", kChoice, kRestart,
+       "Only SMAA reads this. Low is the fastest and misses fine edges. Medium is a good balance. High is the default. Ultra catches the faintest edges and costs the most. Low and Medium skip diagonal and corner handling. Takes effect when SMAA is the anti-aliasing in use.",
+       "high", {{"low", "Low"}, {"medium", "Medium"}, {"high", "High"}, {"ultra", "Ultra"}}, 0, 0, "", "SNAP_SMAA_QUALITY", nullptr, nullptr, nullptr, nullptr, note_smaa},
       {"gfx_upscale_quality", "Performance scaling", kChoice, kRestart,
        "Draws fewer pixels and enlarges them with DLSS, FSR or XeSS, so a slower graphics card keeps up. Off draws at full size. Quality draws 1.5x fewer pixels per side, Balanced about 1.7x, Performance 2x. "
        "It needs an upscaler: picking one here switches Anti-aliasing to the best one you have installed. Photos stay at native size.",
@@ -404,9 +434,6 @@ std::vector<Opt>& graphics_opts() {
       {"gfx_shadow_dist", "Shadow distance", kChoice, kRestart,
        "How far the moving shadows reach (runtime/nvn/nvn_draw.cpp ShadowDistanceOnBind). The same shadow map covers more ground, so shadows get softer; pair it with a higher shadow resolution. Costs no GPU time.", "default",
        {{"default", "1x (the game's own)"}, {"1.5", "1.5x"}, {"2", "2x"}, {"3", "3x"}, {"4", "4x"}, {"6", "6x"}, {"8", "8x"}, {"12", "12x"}, {"16", "16x"}}, 0, 0, "", "SNAP_SHADOW_DISTANCE"},
-      {"gfx_smaa_quality", "SMAA quality", kChoice, kRestart,
-       "Only SMAA reads this. Low is the fastest and misses fine edges. Medium is a good balance. High is the default. Ultra catches the faintest edges and costs the most. Low and Medium skip diagonal and corner handling. Takes effect when SMAA is the anti-aliasing in use.",
-       "high", {{"low", "Low"}, {"medium", "Medium"}, {"high", "High"}, {"ultra", "Ultra"}}, 0, 0, "", "SNAP_SMAA_QUALITY", nullptr, nullptr, nullptr, nullptr, note_smaa},
       {"contact_shadows", "Contact shadows", kChoice, kLive,
        "Thin screen-space shadows where Pokemon and objects touch the ground, traced toward the sun (runtime/nvn/nvn_contact.cpp). Only frames with the sun's moving shadows get them. Off is the game's own look.", "default",
        {{"default", "Off"}, {"1", "On"}}, 0, 0, "", "SNAP_CONTACT_SHADOWS", get_contact, set_contact},
@@ -417,6 +444,9 @@ std::vector<Opt>& graphics_opts() {
       {"leaf_translucency", "Leaf translucency", kChoice, kRestart,
        "Sunlight glows through leaves when you look at them from the shade side. Off is the game's own look. Photos are unchanged.", "default",
        {{"default", "Off (the game's own)"}, {"0.5", "Subtle"}, {"1", "Strong"}}, 0, 0, "", "SNAP_LEAF_TRANSLUCENCY"},
+      {"gfx_pom", "Parallax detail", kChoice, kRestart,
+       "Gives ground, rock and bark real depth: the surface shifts with your viewing angle and its crevices shade themselves (runtime/nvn/nvn_pom.cpp). Costs GPU time on the nearest terrain. Silhouettes, collision and photo scores are unchanged. Off is the game's own look.", "default",
+       {{"default", "Off (the game's own)"}, {"low", "Low"}, {"high", "High"}}, 0, 0, "", "SNAP_POM"},
       {"soft_particles", "Soft particles", kChoice, kRestart,
        "Dust, splashes and pollen fade out where they meet the ground and objects instead of cutting a hard line, and draw at full resolution. Photos are unchanged.", "default",
        {{"default", "Off (the game's own)"}, {"1", "On"}}, 0, 0, "", "SNAP_SOFT_PARTICLES"},
@@ -451,6 +481,48 @@ std::vector<Opt>& graphics_opts() {
       {"gfx_lighting", "Lighting preset", kChoice, kRestart,
        "One switch for the whole lighting look. Enhanced: soft shadows that sharpen where they touch the ground (PCSS), a shadow map that follows your render resolution at twice the reach, ambient occlusion in corners and under objects, and clean contact shadows. Maximum adds a larger shadow map, four times the reach and a finer occlusion pass. The extra passes are skipped while a photo is taken, so scoring is untouched. The separate shadow and occlusion rows above still win over the preset.", "default",
        {{"default", "Original"}, {"enhanced", "Enhanced"}, {"maximum", "Maximum"}}, 0, 0, "", "SNAP_LIGHTING"},
+      // Atmosphere effects (2026-11-15, runtime/nvn/nvn_atmos.cpp, docs/atmosphere.md): six display-only pre-tonemap effects, each off by default and skipped on photo frames
+      {"atmos_shafts", "Light shafts", kChoice, kRestart,
+       "Soft sunbeams: sky seen through gaps in leaves and between trunks is smeared toward the sun into rays and added to the picture. Never in photos, so scores do not change.", "default",
+       {{"default", "Off"}, {"1", "On"}}, 0, 0, "", "SNAP_ATMOS_SHAFTS"},
+      {"atmos_fog", "Height fog", kChoice, kRestart,
+       "Haze that gets thicker toward the ground and with distance, tinted by the sky color of the moment. Never in photos, so scores do not change.", "default",
+       {{"default", "Off"}, {"1", "On"}}, 0, 0, "", "SNAP_ATMOS_FOG"},
+      {"atmos_exposure", "Auto exposure", kChoice, kRestart,
+       "Your eyes adjust: dark caves open up and bright beaches ease down over about a second. Never in photos, so scores do not change.", "default",
+       {{"default", "Off"}, {"1", "On"}}, 0, 0, "", "SNAP_ATMOS_EXPOSURE"},
+      {"atmos_bloom", "Soft glow", kChoice, kRestart,
+       "A wide, soft glow around the brightest highlights, built from a chain of blurred copies of the picture. It is added on top of the game's own bloom and does not wash the picture out. Never in photos, so scores do not change.", "default",
+       {{"default", "Off"}, {"1", "On"}}, 0, 0, "", "SNAP_ATMOS_BLOOM"},
+      {"atmos_clouds", "Cloud shadows", kChoice, kRestart,
+       "Slow cloud shadows drift across the ground and the water, darkening the surfaces they pass over. Never in photos, so scores do not change.", "default",
+       {{"default", "Off"}, {"1", "On"}}, 0, 0, "", "SNAP_ATMOS_CLOUDS"},
+      {"atmos_sky", "Sky gradient", kChoice, kRestart,
+       "A warm glow around the sun's side of the sky, pale haze at the horizon and a deeper blue overhead. Never in photos, so scores do not change.", "default",
+       {{"default", "Off"}, {"1", "On"}}, 0, 0, "", "SNAP_ATMOS_SKY"},
+      // Water effects (runtime/nvn/nvn_ssr.cpp, docs/water-effects.md): live, display only, skipped on photo frames
+      {"water_ssr", "Water reflections", kChoice, kLive,
+       "The sea mirrors the shore, rocks and Pokemon around it (screen-space reflections). Where the screen has nothing to reflect, the game's own sky reflection stays. Never in photos, so scores do not change.", "default",
+       {{"default", "Off"}, {"1", "On"}}, 0, 0, "", "SNAP_WATER_SSR", get_water_ssr, set_water_ssr},
+      {"water_caustics", "Water caustics", kChoice, kLive,
+       "Rippling light patterns on shallow sea floors and the rocks below the waterline. Never in photos, so scores do not change.", "default",
+       {{"default", "Off"}, {"1", "On"}}, 0, 0, "", "SNAP_WATER_CAUSTICS", get_water_caustics, set_water_caustics},
+      {"water_foam", "Shoreline foam", kChoice, kLive,
+       "White foam where the water meets sand and rock, found from how deep the water is at each pixel. Never in photos, so scores do not change.", "default",
+       {{"default", "Off"}, {"1", "On"}}, 0, 0, "", "SNAP_WATER_FOAM", get_water_foam, set_water_foam},
+      {"gfx_bounce", "Bounce light", kChoice, kRestart,
+       "Colored light that bounces off nearby surfaces: green from the grass onto a Pokemon's flank, warm from a rock onto the ground beside it. Display only; the photo itself is never changed. Costs a little GPU time.", "default",
+       {{"default", "Off"}, {"1", "On"}}, 0, 0, "", "SNAP_SSGI"},
+      {"", "Experimental", kSection, kLive, "", ""},
+      {"rt_reflect", "Ray traced water reflections", kChoice, kRestart,
+       "Water reflections traced with the graphics card's ray tracing hardware: where the screen has nothing to reflect, rays look into the scene itself before falling back to the game's sky reflection. Needs a ray tracing graphics card and the Water reflections row On. Experimental: the gain is small on most views. Never in photos, so scores do not change. Costs about 0.5 to 1.5 ms per frame for the scene capture it needs.", "default",
+       {{"default", "Off"}, {"1", "On"}}, 0, 0, "", "SNAP_RT_REFLECT", nullptr, nullptr, nullptr, nullptr, note_rt_reflect},
+      {"rt_gi", "Ray traced bounce light", kChoice, kRestart,
+       "Bounce light gathered by rays instead of the screen-space gather, so geometry off screen or behind a surface can tint it. Needs a ray tracing graphics card and the Bounce light row On. Experimental: the difference is subtle, and it costs about 0.7 ms more than the standard bounce light at 1440p with one ray. Never in photos, so scores do not change.", "default",
+       {{"default", "Off"}, {"1", "On"}}, 0, 0, "", "SNAP_RT_GI", nullptr, nullptr, nullptr, nullptr, note_rt_gi},
+      {"rt_gi_rays", "Ray traced bounce light quality", kChoice, kRestart,
+       "Rays per pixel for the ray traced bounce light. More rays are less grainy and cost more: about 1.3 ms for one, 1.8 ms for two, 3.2 ms for four at 1440p. Only used while Ray traced bounce light is On.", "default",
+       {{"default", "1 ray (fastest)"}, {"2", "2 rays"}, {"4", "4 rays"}}, 0, 0, "", "SNAP_RT_GI_RAYS"},
       {"", "Color", kSection, kLive, "", ""},
       {"look", "Color look", kChoice, kRestart,
        "A color grade on the finished picture. Neutral leaves the game as shipped.", "neutral",
@@ -474,9 +546,10 @@ std::vector<Opt>& graphics_opts() {
       {"", "View", kSection, kLive, "", ""},
       // Field of view row removed (owner 2026-11-12: "turn off fov, hide the option, stop working on it for now"; it changes photo
       // scores). SNAP_FOV still works as a developer env switch, off by default.
-      {"gfx_lod_dist", "Detail distance", kSlider, kRestart,
-       "Pushes out the distances where scenery and Pokemon switch to simpler models (1 to 8, 1 is the game's own). Costs some speed. May change photo scores, being tested.",
-       "1", {}, 1.0f, 8.0f, "%.1fx", "SNAP_LOD_DIST"},
+      {"gfx_lod_dist", "Detail distance", kChoice, kRestart,
+       "How far out scenery and Pokemon keep their detailed models. High is 3 times the game's distance, Max 8 times. Display only: photo scoring "
+       "keeps the game's own models. Costs some speed.",
+       "1", {{"1", "Original"}, {"3", "High"}, {"8", "Max"}}, 0, 0, "", "SNAP_LOD_DIST"},
       {"gfx_lod_force0", "Always full detail", kToggle, kRestart,
        "Every model that is drawn uses its most detailed version at any distance. Costs speed.", "0", {}, 0, 0, "", "SNAP_LOD_FORCE0"},
       {"gfx_draw_dist", "Draw distance", kSlider, kRestart,
@@ -499,32 +572,6 @@ std::vector<Opt>& graphics_opts() {
        {{"on", "On"}, {"adaptive", "Adaptive"}, {"fast", "Fast"}, {"off", "Off"}}, 0, 0, "", "SNAP_VSYNC", get_vsync, set_vsync},
       {"fps_overlay", "Performance overlay", kChoice, kLive,
        "Off is the original game. FPS: the frame rate in a corner. Detailed adds frame time and a frame-time graph, 1% low, CPU and GPU time, "
-      // Atmosphere effects (2026-11-15, runtime/nvn/nvn_atmos.cpp, docs/atmosphere.md): four display-only pre-tonemap effects, each off by default and skipped on photo frames
-      {"atmos_shafts", "Light shafts", kChoice, kRestart,
-       "Sunbeams through the canopy and haze on the beach: a ray march through the sun's shadow map, added to the picture. Courses with the moving sun shadow only. Never in photos, so scores do not change.", "default",
-       {{"default", "Off"}, {"1", "On"}}, 0, 0, "", "SNAP_ATMOS_SHAFTS"},
-      {"atmos_fog", "Height fog", kChoice, kRestart,
-       "Haze that gets thicker toward the ground and with distance, tinted by the sky color of the moment. Never in photos, so scores do not change.", "default",
-       {{"default", "Off"}, {"1", "On"}}, 0, 0, "", "SNAP_ATMOS_FOG"},
-      {"atmos_exposure", "Auto exposure", kChoice, kRestart,
-       "Your eyes adjust: dark caves open up and bright beaches ease down over about a second. Never in photos, so scores do not change.", "default",
-       {{"default", "Off"}, {"1", "On"}}, 0, 0, "", "SNAP_ATMOS_EXPOSURE"},
-      {"atmos_bloom", "Soft glow", kChoice, kRestart,
-       "A wide, soft glow around the brightest highlights, built from a chain of blurred copies of the picture. It is added on top of the game's own bloom and does not wash the picture out. Never in photos, so scores do not change.", "default",
-       {{"default", "Off"}, {"1", "On"}}, 0, 0, "", "SNAP_ATMOS_BLOOM"},
-      // Water effects (runtime/nvn/nvn_ssr.cpp, docs/water-effects.md): live, display only, skipped on photo frames
-      {"water_ssr", "Water reflections", kChoice, kLive,
-       "The sea mirrors the shore, rocks and Pokemon around it (screen-space reflections). Where the screen has nothing to reflect, the game's own sky reflection stays. Never in photos, so scores do not change.", "default",
-       {{"default", "Off"}, {"1", "On"}}, 0, 0, "", "SNAP_WATER_SSR", get_water_ssr, set_water_ssr},
-      {"water_caustics", "Water caustics", kChoice, kLive,
-       "Rippling light patterns on shallow sea floors and the rocks below the waterline. Never in photos, so scores do not change.", "default",
-       {{"default", "Off"}, {"1", "On"}}, 0, 0, "", "SNAP_WATER_CAUSTICS", get_water_caustics, set_water_caustics},
-      {"water_foam", "Shoreline foam", kChoice, kLive,
-       "White foam where the water meets sand and rock, found from how deep the water is at each pixel. Never in photos, so scores do not change.", "default",
-       {{"default", "Off"}, {"1", "On"}}, 0, 0, "", "SNAP_WATER_FOAM", get_water_foam, set_water_foam},
-      {"gfx_bounce", "Bounce light", kChoice, kRestart,
-       "Colored light that bounces off nearby surfaces: green from the grass onto a Pokemon's flank, warm from a rock onto the ground beside it. Display only; the photo itself is never changed. Costs a little GPU time.", "default",
-       {{"default", "Off"}, {"1", "On"}}, 0, 0, "", "SNAP_SSGI"},
        "render and output size, upscaler and anti-aliasing, frame cap and vsync. F3 cycles it (unless F3 is bound to a game button). "
        "It is drawn over the finished picture, so it never appears in your photos.", "default",
        {{"default", "Off"}, {"fps", "FPS"}, {"detailed", "Detailed"}}, 0, 0, "", "SNAP_FPS_OVERLAY", get_fps_overlay, set_fps_overlay},
@@ -583,6 +630,13 @@ std::vector<Opt>& display_opts() {
        {{"auto", "Auto (Windows language)"}, {"en", "English"}, {"ja", "Japanese"}, {"fr", "French"}, {"de", "German"}, {"it", "Italian"}, {"es", "Spanish"}, {"ko", "Korean"},
         {"zh-hans", "Chinese (Simplified)"}, {"zh-hant", "Chinese (Traditional)"}}, 0, 0, "", "SNAP_GAME_LANGUAGE"},
   };
+  // docs/player-options.md: Discord Rich Presence is dormant until an application id is set (runtime/hle/discord_app.h), so with none its section and row are not shown.
+  static const bool pruned = [] {
+    if (snapdiscord::app_id(hle::settings::get("discord_app_id", "")).empty())
+      v.erase(std::remove_if(v.begin(), v.end(), [](const Opt& o) { return std::strcmp(o.key, "discord_presence") == 0 || (o.kind == kSection && std::strcmp(o.label, "Discord") == 0); }), v.end());
+    return true;
+  }();
+  (void)pruned;
   return v;
 }
 
@@ -609,13 +663,6 @@ std::vector<Opt>& photo_opts() {
       {"shot_dir", "Screenshot folder", kPath, kLive,
        "F12 (or View + R3 on a controller) saves a lossless PNG of the frame at the full render size, before it is scaled to your screen: 5760x3240 with Enhanced at 4K. Empty uses Pictures\\Snap Recomp. The folder is created with the first shot.", "", {}, 0, 0, "", "SNAP_SHOT_DIR"},
       {"shot_hud", "Include the HUD", kToggle, kLive,
-  // docs/player-options.md: Discord Rich Presence is dormant until an application id is set (runtime/hle/discord_app.h), so with none its section and row are not shown.
-  static const bool pruned = [] {
-    if (snapdiscord::app_id(hle::settings::get("discord_app_id", "")).empty())
-      v.erase(std::remove_if(v.begin(), v.end(), [](const Opt& o) { return std::strcmp(o.key, "discord_presence") == 0 || (o.kind == kSection && std::strcmp(o.label, "Discord") == 0); }), v.end());
-    return true;
-  }();
-  (void)pruned;
        "Off saves the 3D scene without the game's HUD (the HUD stays on screen). On saves the frame as shown. Menus and loading screens are always saved as shown.", "0", {}, 0, 0, "", "SNAP_SHOT_HUD"},
       {"", "Free camera", kSection, kLive, "", ""},
       {"freecam", "Free camera", kToggle, kRestart,
@@ -632,6 +679,14 @@ std::vector<Opt>& photo_opts() {
       {"shiny", "Shiny Pokemon", kChoice, kRestart,
        "Very rarely, a Pokemon appears in its shiny colors. Cosmetic only; photo scores are unchanged. Needs the shiny texture pack.", "default",
        {{"default", "Off"}, {"4096", "Rare (1 in 4096)"}, {"512", "Common (1 in 512)"}}, 0, 0, "", "SNAP_SHINY"},
+      {"", "Spawn randomizer", kSection, kLive, "", ""},
+      // opt-in, off by default. The game files are untouched: scripts/mods/make_spawn_randomizer.py (run by host\play.ps1 at start,
+      // or by hand) writes the "spawn-randomizer" mod pack from these two keys; see docs/spawn-randomizer.md.
+      {"spawn_rand", "Spawn randomizer", kChoice, kRestart,
+       "Shuffles which Pokemon appear at the spawn points of each course, from the seed below. Within course reuses a course's own Pokemon; All courses can put any Pokemon anywhere. Story and scripted Pokemon stay where they are. Photo scores work as usual. The pack is built when the game is started with host\\play.ps1, or by running scripts\\mods\\make_spawn_randomizer.py.", "default",
+       {{"default", "Off"}, {"within", "Within course"}, {"all", "All courses"}}, 0, 0, "", "SNAP_SPAWN_RAND"},
+      {"spawn_seed", "Randomizer seed", kPath, kRestart,
+       "Any text. The same seed and mode give the same course layouts on every PC, so you can share it. Empty uses the seed \"snap\".", ""},
   };
   return v;
 }
@@ -798,13 +853,13 @@ Hit draw_choice(const Opt& o) {
   for (auto& c : list) shown_names.push_back(tx(c.second, data));
   const std::string shown_label = tx(label, data);
   float total = 0;
-  for (auto& c : list) { total += std::max(px(110), ImGui::CalcTextSize(c.second.c_str()).x + px(52)) + px(8); }
+  for (auto& n : shown_names) { total += std::max(px(110), ImGui::CalcTextSize(n.c_str()).x + px(52)) + px(8); }
   if (total > px(520)) pills = false;
   Hit h;
   if (pills) {
     std::vector<const char*> names;
     int sel = -1;
-    for (size_t i = 0; i < list.size(); ++i) { names.push_back(list[i].second.c_str()); if (list[i].first == cur) sel = (int)i; }
+    for (size_t i = 0; i < list.size(); ++i) { names.push_back(shown_names[i].c_str()); if (list[i].first == cur) sel = (int)i; }
     const int clicked = skin_segmented("##v", names.data(), (int)names.size(), sel, false);
     h = hit_of_last_item();
     if (clicked >= 0 && clicked != sel) {
@@ -814,15 +869,16 @@ Hit draw_choice(const Opt& o) {
   }
   // as wide as the label needs (room is left for the "Restart needed" tag)
   const float room = std::max(px(300), ImGui::GetContentRegionAvail().x - px(190));
-  const float w = std::clamp(ImGui::CalcTextSize(label.c_str()).x + skin_control_height() * 2.3f, px(300), room);
+  const float w = std::clamp(ImGui::CalcTextSize(shown_label.c_str()).x + skin_control_height() * 2.3f, px(300), room);
   const ImVec2 at = ImGui::GetCursorScreenPos();
-  if (skin_dropdown("##v", label.c_str(), w, false)) ImGui::OpenPopup("##pop");
+  if (skin_dropdown("##v", shown_label.c_str(), w, false)) ImGui::OpenPopup("##pop");
   h = hit_of_last_item();
   ImGui::SetNextWindowPos(ImVec2(at.x, at.y + skin_control_height() + px(4)));
   ImGui::SetNextWindowSizeConstraints(ImVec2(w, 0), ImVec2(std::max(w, px(420)), px(420)));
   if (ImGui::BeginPopup("##pop")) {
-    for (auto& c : list) {
-      if (ImGui::Selectable(c.second.c_str(), c.first == cur)) set_of(o, c.first);
+    for (size_t ci = 0; ci < list.size(); ++ci) {
+      const auto& c = list[ci];
+      if (ImGui::Selectable(shown_names[ci].c_str(), c.first == cur)) set_of(o, c.first);
       if (ImGui::IsItemHovered() || ImGui::IsItemFocused()) h.hot = true;
       if (c.first == cur && ImGui::IsWindowAppearing()) ImGui::SetItemDefaultFocus();
     }

@@ -262,7 +262,8 @@ struct TextureImpl {
   uint32_t HW() const { return hostW ? hostW : (uint32_t)b.width; }
   uint32_t HH() const { return hostH ? hostH : (uint32_t)b.height; }
   TextureImpl* shAlt = nullptr; uint64_t shKey = 0; bool shTried = false;   // shiny mod (nvn_shiny.cpp): data key of a body texture and its recolored twin
-  uint64_t biKey = 0; bool biTried = false;             // button icon mod (nvn_btnicon.cpp): data key of the texture (0 = not a candidate)
+  uint8_t pomCls = 0; bool pomTried = false;            // parallax occlusion mapping (nvn_pom.cpp): class from pom_table.txt by content key, 0 = none
+  uint64_t biKey = 0; bool biTried = false;           // button icon mod (nvn_btnicon.cpp): data key of the texture (0 = not a candidate)
   std::vector<std::pair<int, TextureImpl*>>* biAlts = nullptr;   // ... and its generated twins by glyph (freed with the texture)
   TextureImpl* abAlt = nullptr; bool abTried = false;   // SNAP_MODS_AB test aid: the original-texture twin of a replaced texture (see ResolveHandle)
   bool uploaded = false;   // contents defined (static data uploaded, copied to, or rendered to)

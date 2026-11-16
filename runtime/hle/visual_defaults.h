@@ -53,10 +53,10 @@ inline const char* const* look_keys(int* n) {
   *n = (int)(sizeof k / sizeof k[0]);
   return k;
 }
-
-// Enhanced supersampling is relative to the output: render min(2 x window height, budget) lines over 1080,
-// so 1080p renders 2.0, 1440p 2.0 (1.5x of the output), 2160p 2.0 (1.0x of the output), capped at maxScale.
-// budgetH <= 0 means the old rule (2x the window height).
+// The Enhanced look's supersampling scale (the AA step's "ssaa2" when SNAP_AA is not set by hand), relative to the OUTPUT with a pixel budget:
+// render height = min(2 x window height, max(window height, budgetH)), as a scale over the game's 1080 lines, clamped to 1 .. maxScale.
+// 1080p -> 2.0 (2x per side), 1440p -> 2.0 (1.5x), 2160p -> 2.0 (1.0x, SMAA and sharpening only) with the default budget of 2160 lines.
+// budgetH <= 0 means no budget (the full 2x). Used by runtime/nvn/nvn_aa.cpp; pure so tests/hle can check it.
 inline float ssaa_auto_scale(int windowH, float budgetH, float maxScale) {
   const float H = (float)(windowH > 1 ? windowH : 1);
   const float b = budgetH > 0.f ? budgetH : 2.0f * H;

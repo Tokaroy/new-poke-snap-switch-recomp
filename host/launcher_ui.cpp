@@ -9,6 +9,7 @@
 #include <d3d11.h>
 #include <dxgi.h>
 #include <shellapi.h>
+#include <shobjidl.h>
 #include <tlhelp32.h>
 #include <wincodec.h>
 
@@ -23,7 +24,9 @@
 #include <fstream>
 #include <map>
 #include <sstream>
+#include <unordered_map>
 
+#include "album.h"
 #include "imgui.h"
 #include "imgui_impl_dx11.h"
 #include "imgui_impl_win32.h"
@@ -37,7 +40,6 @@
 #include "shaderprep.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
-#include "hle/discord_app.h"
 
 #pragma comment(lib, "windowscodecs")
 
@@ -196,6 +198,7 @@ struct G {
   ImFont* font = nullptr;
   ImFont* art_font = nullptr;    // for the Steam artwork: a system font, never the game's own
   float s = 1, ox = 0, oy = 0;   // design space -> window pixels
+  float tb = 0;                  // height of our own title bar in window pixels (the system frame is removed: WM_NCCALCSIZE)
 
   // the display the game will use (read when the window opens and when the Monitor row changes)
   int disp_w = 1920, disp_h = 1080, disp_hz = 60;
@@ -224,8 +227,9 @@ struct G {
   std::string cache_dir;
   snap_shaderprep::Progress prep;   // <shadercache>\prepare.json (host/shaderprep.cpp): the first-run "prepare shaders" sweep
   double prep_at = 0;               // ImGui time of the last refresh_cache()
+  bool prep_stale = false;          // prepared, but with other shadow / foliage / parallax / effect settings than the player has now
 
-  enum View { HOME, SETTINGS, SAVES, STEAM, MODS } view = HOME;
+  enum View { HOME, SETTINGS, SAVES, STEAM, MODS, ALBUM } view = HOME;
   int home_sel = 0, tab = 0, row = 0;
   bool pulldown = false;
   int pd_sel = 0, pd_top = 0;
@@ -569,6 +573,8 @@ void refresh_picture_text() {
       it.note = snappic::note_perf(c, x);
     } else if (it.key == "gfx_sharpen") {
       it.note = snappic::note_sharpen(c);
+    } else if (it.key == "gfx_smaa_quality") {
+      it.note = snappic::note_smaa(c, x);
     }
   }
 }
@@ -732,12 +738,12 @@ void fit_window() {
   using GetDpi = UINT(WINAPI*)(HWND);
   GetDpi gd = (GetDpi)GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow");
   const float sc = (gd ? gd(g.hwnd) / 96.0f : 1.0f) * (float)access_ui_percent() / 100.0f;
-  RECT r{0, 0, (LONG)(1280 * sc), (LONG)(720 * sc)};
-  AdjustWindowRectEx(&r, (DWORD)GetWindowLongW(g.hwnd, GWL_STYLE), FALSE, 0);
+  g.tb = std::round(34.0f * sc);
+  RECT r{0, 0, (LONG)(1280 * sc), (LONG)(720 * sc + g.tb)};   // the title bar is ours, so the client area is the whole window
   RECT wa{};
   SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
   const int w = std::min<int>(r.right - r.left, wa.right - wa.left), h = std::min<int>(r.bottom - r.top, wa.bottom - wa.top);
-  SetWindowPos(g.hwnd, nullptr, wa.left + (wa.right - wa.left - w) / 2, wa.top + (wa.bottom - wa.top - h) / 2, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+  SetWindowPos(g.hwnd, nullptr, wa.left + (wa.right - wa.left - w) / 2, wa.top + (wa.bottom - wa.top - h) / 2, w, h, SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
 }
 void apply_access_palette() {
   const std::string c = access_value("access_contrast", "SNAP_ACCESS_CONTRAST");
@@ -778,6 +784,8 @@ void build_pages() {
                              "Pauses the game when you switch to another window.", E_BOOL));
     p.items.push_back(choice("Mute in background", "mute_in_background", S_WIN, "1", {{"1", "On"}, {"0", "Off"}},
                              "Silences the game while another window is in front.", E_BOOL));
+    p.items.push_back(choice("When the game closes", "return_to_launcher", S_CFG, "off", {{"off", "Close everything"}, {"on", "Back to this launcher"}},
+                             "Back to this launcher opens it again once the game has closed (saves and settings are written first). Close everything just ends."));
     g.pages.push_back(p);
   }
   // Picture: the four rows in the order the picture is made (Look, then how many pixels, then the edge smoothing, then the upscaler's share), each
@@ -808,6 +816,9 @@ void build_pages() {
     const bool dl = has_dlss(), fs_ = has_fsr(), xe = has_xess();
     aa.ch[6].avail = dl; aa.ch[7].avail = fs_; aa.ch[8].avail = xe;
     p.items.push_back(aa);
+    p.items.push_back(choice("SMAA quality", "gfx_smaa_quality", S_CFG, "high",
+                             {{"low", "Low"}, {"medium", "Medium"}, {"high", "High"}, {"ultra", "Ultra"}},
+                             "Only SMAA reads this. Low is the fastest and misses fine edges. Medium is a good balance. High is the default. Ultra catches the faintest edges and costs the most. Low and Medium skip diagonal and corner handling."));
     Item pf = choice("Performance scaling", "gfx_upscale_quality", S_CFG, "off",
                      {{"off", "Off"}, {"quality", "Quality"}, {"balanced", "Balanced"}, {"performance", "Performance"}},
                      "Draws fewer pixels and enlarges them with DLSS, FSR or XeSS, so a slower graphics card keeps up. Quality draws 1.5x fewer, Balanced 1.7x, Performance 2x. "
@@ -836,6 +847,9 @@ void build_pages() {
     p.items.push_back(choice("Lighting", "gfx_lighting", S_CFG, "default",
                              {{"default", "Original"}, {"enhanced", "Enhanced"}, {"maximum", "Maximum"}},
                              "One switch for the whole lighting look. Enhanced: soft shadows that sharpen where they touch the ground, a shadow map that follows your render resolution at twice the reach, ambient occlusion in corners and under objects, and clean contact shadows. Maximum adds a larger shadow map, four times the reach and a finer occlusion pass. The extra passes are skipped while a photo is taken, so scoring is untouched."));
+    p.items.push_back(choice("Bounce light", "gfx_bounce", S_CFG, "default",
+                             {{"default", "Off"}, {"1", "On"}},
+                             "Colored light that bounces off nearby surfaces, such as green from grass onto a Pokemon. Display only; photos and scoring are untouched."));
     p.items.push_back(choice("Shadow resolution", "gfx_shadow_res", S_CFG, "default",
                              {{"512", "512 (blocky)"}, {"default", "1024 (the game's own)"}, {"2048", "2048"}, {"4096", "4096"}, {"8192", "8192 (very heavy)"}},
                              "Size of the moving shadow map. Higher gives crisper shadow edges and uses more video memory."));
@@ -926,6 +940,9 @@ void build_pages() {
       Item rep; rep.label = "Create problem report...";rep.kind = K_ACTION; rep.act = UiResult::ProblemReport;
       rep.help = "Saves one zip on your Desktop with the logs, your settings and your PC's specs (Windows, graphics card and driver) for a bug report. Your user name and folders are removed; no game files or saves go in. Nothing is uploaded.";
       p.items.push_back(rep);
+      Item chk; chk.label = "Check install..."; chk.kind = K_ACTION; chk.act = UiResult::CheckInstall;
+      chk.help = "Compares your extracted game files and this build's program files with the known-good lists and says in plain words what is wrong: modified, wrong game version, missing or a mixed update. It only reads files and shows no hashes. Nothing is uploaded.";
+      p.items.push_back(chk);
     }
     p.items.push_back(choice("Skip course intro", "skip_course_intro", S_CFG, "0", {{"0", "Off"}, {"1", "On"}},
                              "Plays the fixed fly-over at the start of every course about 8 times faster, so the ride starts after a second or two. Rides, Pokemon and photo scores are not changed."));
@@ -1448,6 +1465,7 @@ void refresh_cache() {
   g.cache_dir = dir;
   g.prep = snap_shaderprep::Progress();
   snap_shaderprep::read_progress(dir, g.prep);
+  g.prep_stale = g.prep.state == 2 && !g.prep.settings.empty() && g.prep.settings != snap_shaderprep::settings_hash(g.info->data_dir);   // the picture settings changed since the sweep
   g.cache_state = 0;
   g.cache_bytes = 0;
   std::error_code ec;
@@ -1475,20 +1493,37 @@ std::string size_text(unsigned long long b) {
 }
 
 // ---------------------------------------------------------------------------------------------------------------- drawing
+std::string album_home_sub();   // launcher_album.inc
 struct Home { const char* label; const char* help; };
 const Home kHome[] = {
     {"Play", "Starts the game with the settings shown on the right. This window closes while you play. Left and right switch profile; the last slot creates a new one."},
     {"Settings", "Display, picture quality, upscaling, frame rate, sound and controls. Everything you change applies when you press Play."},
     {"Saves", "Open the save folder, or import and export a save for a save manager or an emulator."},
+    {"Album", "Browse the photos in your game's album, filter them by course, Pokemon, stars and score, open one full size, and export them as PNG files with a JSON and CSV list. The save is only read, never changed."},
     {"Mods", "Turn mod packs on or off, set which pack wins when two change the same file, and open the mods folder. Changes apply at the next start."},
     {"HD textures", "Sharper textures made from your own game files with a local AI model. Nothing is uploaded."},
     {"Add to Steam", "Adds Snap Recomp to your Steam library as its own game, with artwork, so you can start it from Big Picture or the Steam Deck."},
     {"Updates", "Check for a new version, or go back to the previous one. Nothing installs without you."},
+    {"Benchmark", "Plays one scripted ride through Florio Nature Park on a scratch save (yours is never touched), then shows average fps, 1% and 0.1% lows, a frame-time graph and GPU time per pass. Takes about two minutes."},
     {"Game folder", "Pick a different folder with your extracted game files."},
 };
-constexpr int kHomeN = 8;
-const UiResult kHomeAct[kHomeN] = {UiResult::Play, UiResult::Quit, UiResult::Quit, UiResult::Quit, UiResult::HdTextures, UiResult::Quit, UiResult::Updates, UiResult::GameFolder};
-enum { H_PLAY, H_SETTINGS, H_SAVES, H_MODS, H_HD, H_STEAM, H_UPDATES, H_FOLDER };
+constexpr int kHomeN = 10;
+// 0 = still checking the game folder, 1 = passed, 2 = needs attention (UiInfo::verify, else the plain game_ok flag)
+// Test switch: SNAP_LAUNCHER_UI_CHECKING=1 shows the "checking" look for a picture.
+int verify_state() {
+  static const bool force_checking = std::getenv("SNAP_LAUNCHER_UI_CHECKING") != nullptr;
+  if (force_checking) return 0;
+  return g.info->verify ? g.info->verify->state.load() : (g.info->game_ok ? 1 : 2);
+}
+// Play waits for the check; when it failed the same button takes you to the folder picker instead.
+void go_play(bool safe = false) {
+  const int vs = verify_state();
+  if (vs == 0) { g.toast = "Still checking your game files"; g.toast_until = ImGui::GetTime() + 2.5; return; }
+  g.result = vs == 2 ? UiResult::GameFolder : safe ? UiResult::SafeMode : UiResult::Play;   // safe mode: docs/safe-mode.md
+  g.done = true;
+}
+const UiResult kHomeAct[kHomeN] = {UiResult::Play, UiResult::Quit, UiResult::Quit, UiResult::Quit, UiResult::Quit, UiResult::HdTextures, UiResult::Quit, UiResult::Updates, UiResult::Benchmark, UiResult::GameFolder};
+enum { H_PLAY, H_SETTINGS, H_SAVES, H_ALBUM, H_MODS, H_HD, H_STEAM, H_UPDATES, H_BENCH, H_FOLDER };
 
 void hill(float base, float amp, float freq, float ph, ImU32 col) {
   std::vector<ImVec2> pts;
@@ -1696,6 +1731,60 @@ Item* find_item(bool (*pred)(const Item&)) {
   return nullptr;
 }
 
+// Small line icons for the home menu rows, drawn from shapes in a 20-unit box with its centre at (cx, cy): no image files, they follow the palette.
+void nav_icon(int row, float cx, float cy, ImU32 ink) {
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  const float th = 1.9f * g.s;
+  auto L = [&](float x0, float y0, float x1, float y1) { dl->AddLine(V(cx + x0, cy + y0), V(cx + x1, cy + y1), ink, th); };
+  auto P = [&](std::initializer_list<std::pair<float, float>> pts) {
+    std::vector<ImVec2> v;
+    for (const auto& q : pts) v.push_back(V(cx + q.first, cy + q.second));
+    dl->AddPolyline(v.data(), (int)v.size(), ink, 0, th);
+  };
+  auto R = [&](float x0, float y0, float x1, float y1, float r) { dl->AddRect(V(cx + x0, cy + y0), V(cx + x1, cy + y1), ink, r * g.s, 0, th); };
+  switch (row) {
+    case H_SETTINGS:   // gear: ring with eight teeth
+      dl->AddCircle(V(cx, cy), 5.2f * g.s, ink, 24, th);
+      dl->AddCircleFilled(V(cx, cy), 1.8f * g.s, ink, 12);
+      for (int i = 0; i < 8; ++i) { const float a = (float)i * 0.785398f; L(std::cos(a) * 7.0f, std::sin(a) * 7.0f, std::cos(a) * 9.6f, std::sin(a) * 9.6f); }
+      break;
+    case H_SAVES:      // memory card: a card with a cut corner and a contact strip
+      P({{-7, -9}, {3, -9}, {8, -4}, {8, 9}, {-7, 9}, {-7, -9}});
+      for (int i = 0; i < 3; ++i) L(-3.5f + i * 3.5f, -5.0f, -3.5f + i * 3.5f, -2.0f);
+      L(-3.5f, 4.0f, 4.5f, 4.0f);
+      break;
+    case H_ALBUM:      // photo: frame, sun and hills
+      R(-9, -7, 9, 7, 2.5f);
+      dl->AddCircle(V(cx - 4, cy - 2.5f), 1.8f * g.s, ink, 12, th);
+      P({{-9, 6}, {-3, 0}, {1, 4}, {4, 1}, {9, 6}});
+      break;
+    case H_MODS:       // puzzle block: a square with a knob on top
+      R(-7, -4, 7, 9, 2.0f);
+      dl->AddCircle(V(cx, cy - 6.5f), 2.6f * g.s, ink, 14, th);
+      break;
+    case H_HD:         // texture tiles: 2x2 squares and a sparkle
+      R(-9, -9, -1, -1, 1.5f); R(1, -9, 9, -1, 1.5f); R(-9, 1, -1, 9, 1.5f);
+      L(5, 2, 5, 8); L(2, 5, 8, 5);
+      break;
+    case H_STEAM:      // library: three books on a shelf line
+      R(-8, -8, -3, 5, 1.2f); R(-2, -8, 3, 5, 1.2f);
+      P({{4.5f, -7.5f}, {8.5f, -6.5f}, {6.0f, 5.0f}, {2.0f, 4.0f}});
+      L(-9, 8.5f, 9, 8.5f);
+      break;
+    case H_UPDATES:    // arrow into a tray
+      L(0, -9, 0, 3); L(-4.5f, -1.5f, 0, 3.2f); L(4.5f, -1.5f, 0, 3.2f);
+      L(-8, 4, -8, 8.5f); L(-8, 8.5f, 8, 8.5f); L(8, 8.5f, 8, 4);
+      break;
+    case H_BENCH:      // stopwatch
+      dl->AddCircle(V(cx, cy + 1.5f), 7.2f * g.s, ink, 28, th);
+      L(0, 1.5f, 3.6f, -1.8f); L(-2.2f, -8.4f, 2.2f, -8.4f); L(0, -8.4f, 0, -5.6f);
+      break;
+    case H_FOLDER:     // folder with a tab
+      P({{-9, 7.5f}, {-9, -6.5f}, {-3.5f, -6.5f}, {-1.5f, -4}, {9, -4}, {9, 7.5f}, {-9, 7.5f}});
+      break;
+  }
+}
+
 void draw_home() {
   draw_home_bg();
   ImDrawList* dl = ImGui::GetForegroundDrawList();
@@ -1733,25 +1822,41 @@ void draw_home() {
     {   // "Safe mode" pill (also the X key while Play is selected): the same start with mods, HD packs, enhanced effects, frame generation, RT and the shader cache off
       const float px = x + w - 138, py = y + 14, pw = 116, ph = 28;
       const bool ph_hot = hot(px, py, pw, ph);
-      if (ph_hot && ImGui::IsMouseClicked(0)) { g.result = UiResult::SafeMode; g.done = true; }   // docs/safe-mode.md
+      if (ph_hot && ImGui::IsMouseClicked(0)) go_play(true);
       rrect(px, py, pw, ph, 14, C(ph_hot ? 0xfff3c4 : 0xfbe28a));
       dl->AddRect(V(px, py), V(px + pw, py + ph), C(kOrange), 14 * g.s, 0, (ph_hot ? 2.5f : 1.2f) * g.s);
       text(px + pw / 2, py + ph / 2, 15, C(kBrown), "Safe mode (X)", 1);
     }
     diamond(x + 66, y + h / 2, 46, C(0x8f8e90));
     aperture(x + 66, y + h / 2, 22, C(kCream));
-    text(x + 134, y + 44, 48, C(kBrown), "Play");
+    const int vs = verify_state();
+    text(x + 134, y + 44, 48, C(kBrown), vs == 0 ? "Checking" : vs == 2 ? "Fix folder" : "Play");
     std::string pl;
-    if (!in.profiles.empty()) {
+    if (vs == 0) {   // the game folder is being checked: a bar under the label, Play comes back by itself
+      const int n = in.verify ? in.verify->files.load() : 0;
+      pl = "Looking at your game files" + (n ? " (" + std::to_string(n) + ")" : std::string());
+      const double t = ImGui::GetTime();
+      const float bx = x + 134, bw = w - 168, by = y + 76;
+      rrect(bx, by, bw, 6, 3, C(0xe9c96a));
+      const float seg = bw * 0.28f, pos = (float)std::fmod(t * 0.8, 1.0) * (bw + seg) - seg;
+      rrect(bx + std::max(0.f, pos), by, std::min(bw, pos + seg) - std::max(0.f, pos), 6, 3, C(kOrange));
+    } else if (vs == 2) {
+      pl = "Press to pick the game folder again";
+    } else if (!in.profiles.empty()) {
       pl = g.profile_idx < in.profiles.size() ? in.profiles[g.profile_idx].name : "+ New profile";
       if (sel) pl = "<  " + pl + "  >";
     }
-    if (!pl.empty()) text_clip(x + 134, y + 86, 19, C(0x7a6440), pl.c_str(), w - 150);
+    if (!pl.empty()) text_clip(x + 134, y + (vs == 0 ? 96 : 86), 19, C(0x7a6440), pl.c_str(), w - 150);
   }
 
   // status chips
   std::vector<Chip> chips;
-  chips.push_back({in.game_ok ? "Game files ready" : "Game folder needs attention", in.game_ok ? 0x5aa070u : 0xc84a3au, in.game_ok ? 0x5f5f5fu : 0xc84a3au, 0xffffffu});
+  {
+    const int vs = verify_state();
+    const int n = in.verify ? in.verify->files.load() : 0;
+    if (vs == 0) chips.push_back({"Checking game files" + (n ? " (" + std::to_string(n) + ")" : std::string()), 0xe0a03au, 0x5f5f5fu, 0xffffffu});
+    else chips.push_back({vs == 1 ? "Game files ready" : "Game folder needs attention", vs == 1 ? 0x5aa070u : 0xc84a3au, vs == 1 ? 0x5f5f5fu : 0xc84a3au, 0xffffffu});
+  }
   bool prep_chip_click = false;   // the shader chip starts or stops the first-run preparation (host/shaderprep.cpp)
   {
     static const char* const names[3] = {"Shader cache missing", "Shader cache ready", "Shader cache building"};
@@ -1760,6 +1865,7 @@ void draw_home() {
     std::string t = std::string(names[g.cache_state]) + (g.cache_state ? " (" + size_text(g.cache_bytes) + ")" : "");
     unsigned dot = dots[g.cache_state];
     if (pp.state == 1) { t = "Preparing shaders " + std::to_string(pp.index) + " of " + std::to_string(pp.total) + " - press to stop"; dot = 0xe0733au; prep_chip_click = true; }
+    else if (pp.state == 2 && g.prep_stale) { t = "Settings changed - press to prepare shaders again"; dot = 0xe0a03au; prep_chip_click = true; }
     else if (pp.state == 2) t = "Shaders prepared (" + std::to_string(pp.pipelines) + " pipelines)";
     else if (pp.state == 3 || pp.state == 4) { t = std::string(pp.state == 3 ? "Shader preparation stopped" : "Shader preparation had problems") + " - press to retry"; dot = 0xe0a03au; prep_chip_click = true; }
     else { t += " - press to prepare"; prep_chip_click = true; }
@@ -1770,25 +1876,35 @@ void draw_home() {
   if (!g.gpu_name.empty()) chips.push_back({g.gpu_name + (g.gpu_rtx && file_exists("nvngx_dlss.dll") ? " - DLSS available" : ""), 0x3fa9a0u, 0x5f5f5fu, 0xffffffu});
   float cx = 84, cy = 246;
   int chip_rows = 1;
+  bool chip_hover = false;
   for (const Chip& c : chips) {
     std::string t = c.text;
     float tw = text_w(15, t.c_str());
     if (tw > 330) { t = c.text; while (t.size() > 4 && text_w(15, (t + "..").c_str()) > 330) t.pop_back(); t += ".."; tw = text_w(15, t.c_str()); }
     const float w = tw + 44;
     if (cx + w > 554 && cx > 84) { if (chip_rows >= 2) break; cx = 84; cy += 37; ++chip_rows; }   // two rows at most; the menu below needs the room
+    const bool verify_chip = &c == &chips[0];
+    const bool chip_hot = verify_chip && verify_state() != 0 && in.verify_again && hot(cx, cy, w, 30);   // click = check the files again
+    if (chip_hot) {
+      chip_hover = true;
+      if (ImGui::IsMouseClicked(0)) { in.verify_again(); g.toast = "Checking your game files again"; g.toast_until = ImGui::GetTime() + 2; }
+    }
     const bool prep_chip = &c == &chips[1] && prep_chip_click;
     const bool prep_hot = prep_chip && hot(cx, cy, w, 30);
-    if (prep_hot && ImGui::IsMouseClicked(0)) {
-      std::string perr;
-      if (g.prep.state == 1) { snap_shaderprep::request_stop(g.cache_dir); g.toast = "Stopping after this course"; }
-      else if (snap_shaderprep::start_detached(perr)) g.toast = "Preparing shaders in the background. You can keep using the launcher";
-      else g.toast = perr;
-      g.toast_until = ImGui::GetTime() + 3;
-      g.prep_at = 0;
+    if (prep_hot) {
+      chip_hover = true;
+      if (ImGui::IsMouseClicked(0)) {
+        std::string perr;
+        if (g.prep.state == 1) { snap_shaderprep::request_stop(g.cache_dir); g.toast = "Stopping after this course"; }
+        else if (snap_shaderprep::start_detached(perr)) g.toast = "Preparing shaders in the background. You can keep using the launcher";
+        else g.toast = perr;
+        g.toast_until = ImGui::GetTime() + 3;
+        g.prep_at = 0;
+      }
     }
     shadow(cx, cy, w, 30, 15);
     rrect(cx, cy, w, 30, 15, C(c.bg));
-    if (prep_hot) dl->AddRect(V(cx, cy), V(cx + w, cy + 30), C(kOrange), 15 * g.s, 0, 2.0f * g.s);
+    if (chip_hot || prep_hot) dl->AddRect(V(cx, cy), V(cx + w, cy + 30), C(kOrange), 15 * g.s, 0, 2.0f * g.s);
     dl->AddCircleFilled(V(cx + 16, cy + 15), 5 * g.s, C(c.dot), 12);
     text(cx + 30, cy + 15, 15, C(c.fg), t.c_str());
     cx += w + 8;
@@ -1798,7 +1914,7 @@ void draw_home() {
   float y = cy + 30 + 12;
   for (int i = H_SETTINGS; i < kHomeN; ++i) {
     const bool sel = i == g.home_sel;
-    const float x = 84, w = 470, h = 40;
+    const float x = 84, w = 470, h = 33;
     if (hot(x, y, w, h)) {
       if (mouse_moved) g.home_sel = i;
       if (ImGui::IsMouseClicked(0)) { g.home_sel = i; enter(); }
@@ -1806,16 +1922,19 @@ void draw_home() {
     shadow(x, y, w, h, 18);
     rrect(x, y, w, h, 18, C(sel ? kYellow : 0xffffff));
     if (sel) { pattern(x + 18, y, w - 36, h); dl->AddRect(V(x, y), V(x + w, y + h), C(kOrange), 18 * g.s, 0, 3.5f * g.s); }
-    text(x + 22, y + h / 2, sel ? 23 : 21, C(sel ? kBrown : 0x6a6561), kHome[i].label);
+    nav_icon(i, x + 36, y + h / 2, C(sel ? kBrown : 0x8a8683));
+    text(x + 62, y + h / 2, sel ? 23 : 21, C(sel ? kBrown : 0x6a6561), kHome[i].label);
     std::string sub;
     if (i == H_SETTINGS) sub = std::to_string(g.pages.size()) + " pages";
     else if (i == H_SAVES) sub = in.profiles.empty() ? "" : std::to_string(in.profiles.size()) + (in.profiles.size() == 1 ? " profile" : " profiles");
+    else if (i == H_ALBUM) sub = album_home_sub();
     else if (i == H_MODS) sub = g.mods.empty() ? "No packs yet" : std::to_string(mods_on()) + " of " + std::to_string(g.mods.size()) + " on";
     else if (i == H_STEAM) sub = g.steam_status == 0 ? "Steam not found" : g.steam_status == 2 ? "Added" : "Not added";
     else if (i == H_UPDATES) sub = in.update_available ? in.update_version + " ready" : in.version;
-    else if (i == H_FOLDER) sub = in.game_ok ? "Ready" : "Needs attention";
+    else if (i == H_BENCH) sub = "About 2 min";
+    else if (i == H_FOLDER) sub = verify_state() == 0 ? "Checking" : verify_state() == 1 ? "Ready" : "Needs attention";
     if (!sub.empty()) text(x + w - 22, y + h / 2, 15, C(sel ? 0x7a6440 : 0x9a9795), sub.c_str(), 2);
-    y += h + 5;
+    y += h + 3;
   }
 
   // TODO(hd light maps): add an "HD light maps" row to this loadout and a toggle on the HD textures page once the hdtex session defines a runtime
@@ -1875,7 +1994,7 @@ void draw_home() {
     text_clip(628, 592, 15, C(0x5f5f5f), d.c_str(), 340);
     text(1172, 592, 15, C(kGrey), "Change these in Settings", 2);
   }
-  help_bar(kHome[g.home_sel].help);
+  help_bar(chip_hover ? "Checks your game files again: the folder, and that it is the 2.0.1 game this build was made from." : kHome[g.home_sel].help);
   if (g.home_sel == H_PLAY) prompt(556, 180, 50, "A");
   if (ImGui::GetTime() < g.toast_until) {
     const float w = text_w(18, g.toast.c_str()) + 40;
@@ -2120,6 +2239,8 @@ void draw_mods() {
   if (click && hot(1186, 656, 94, 64)) g.view = G::HOME;
 }
 
+#include "launcher_album.inc"   // the Album page (draw_album, album_input, album_open, album_test_view)
+
 void draw_saves() {
   draw_home_bg();
   ImDrawList* dl = ImGui::GetForegroundDrawList();
@@ -2131,7 +2252,8 @@ void draw_saves() {
   const char* names[4] = {"Open save folder", "Import a save...", "Export the save...", "Restore a backup..."};
   const char* helps[4] = {"Opens the save folder of the selected profile in Explorer.",
                           "From a console backup (JKSV, Checkpoint) or an emulator. Your current save is kept as a backup.",
-                          "Copy your save out for a save manager or an emulator."};
+                          "Copy your save out for a save manager or an emulator.",
+                          "Put back one of the automatic backups (made at every start and before every import), listed with date and time."};
   float y = 160;
   for (int i = 0; i < 4; ++i) {
     const bool sel = i == g.row;
@@ -2147,7 +2269,7 @@ void draw_saves() {
     if (sel) prompt(x + w - 20, y + h / 2, 44, "A");
     y += h + 9;
   }
-  help_bar(helps[std::min(std::max(g.row, 0), 2)]);
+  help_bar(helps[std::min(std::max(g.row, 0), 3)]);
 }
 
 // ---------------------------------------------------------------------------------------------------------------- input
@@ -2178,7 +2300,7 @@ void handle_input() {
     if (up) g.home_sel = (g.home_sel + kHomeN - 1) % kHomeN;
     if (dn) g.home_sel = (g.home_sel + 1) % kHomeN;
     if (y && in.update_available) { g.result = UiResult::Updates; g.done = true; return; }
-    if (x && g.home_sel == H_PLAY) { g.result = UiResult::SafeMode; g.done = true; return; }
+    if (x && g.home_sel == H_PLAY) { go_play(true); return; }
     if (back) { g.result = UiResult::Quit; g.done = true; return; }
     if (g.home_sel == H_PLAY && !in.profiles.empty() && (lf || rt || ok)) {
       const int n = (int)in.profiles.size() + 1;   // the last slot is "New profile"
@@ -2195,7 +2317,7 @@ void handle_input() {
         }
         return;
       }
-      if (ok) { g.result = UiResult::Play; g.done = true; return; }
+      if (ok) { go_play(); return; }
       int i = (int)g.profile_idx + (lf ? -1 : 1);
       i = (i % n + n) % n;
       g.profile_idx = (size_t)i;
@@ -2204,9 +2326,10 @@ void handle_input() {
     }
     if (ok) {
       switch (g.home_sel) {
-        case H_PLAY: g.result = UiResult::Play; g.done = true; break;
+        case H_PLAY: go_play(); break;
         case H_SETTINGS: g.view = G::SETTINGS; g.row = 0; break;
         case H_SAVES: g.view = G::SAVES; g.row = 0; break;
+        case H_ALBUM: album_open(); g.view = G::ALBUM; break;
         case H_MODS: load_mods(); g.view = G::MODS; g.row = 0; g.mods_top = 0; break;
         case H_STEAM:
           refresh_steam_status();
@@ -2218,6 +2341,7 @@ void handle_input() {
     }
     return;
   }
+  if (g.view == G::ALBUM) { album_input(up, dn, lf, rt, ok, back, prev, next, x, y); return; }
   if (g.view == G::MODS) {
     if (back) { g.view = G::HOME; return; }
     const int n = (int)g.mods.size();
@@ -2300,12 +2424,96 @@ void destroy_device() {
   if (g.dev) { g.dev->Release(); g.dev = nullptr; }
 }
 
+// ---------------------------------------------------------------------------------------------------------------- title bar
+// The window has no system frame (WM_NCCALCSIZE gives it all to the client area), so the title bar is drawn here: the lens mark, the name, and
+// minimise / maximise / close at the right. Dragging, double-click to maximise and the resize edges are WM_NCHITTEST (wndproc). It is drawn in a
+// 34-unit-high space scaled to g.tb pixels, on top of everything.
+constexpr float kTbBtnW = 46;   // one caption button, in title-bar units
+float tb_scale() { return g.tb > 0 ? g.tb / 34.0f : 1.0f; }
+void draw_titlebar() {
+  if (g.tb <= 0) return;
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  const ImVec2 ds = ImGui::GetIO().DisplaySize;
+  const float os = g.s, ox = g.ox, oy = g.oy;
+  g.s = tb_scale(); g.ox = 0; g.oy = 0;
+  const float W = ds.x / g.s;
+  dl->AddRectFilled(V(0, 0), V(W, 34), C(kPanel));
+  dl->AddRectFilled(V(0, 33), V(W, 34), C(0x000000, 70));
+  diamond(21, 17, 11, C(0x9a9da7));
+  aperture(21, 17, 5.5f, C(kCream));
+  text(40, 17, 15, C(0xffffff), "Snap Recomp");
+  if (!g.info->version.empty()) text(40 + text_w(15, "Snap Recomp") + 10, 17, 13, C(0xd9dbe2), g.info->version.c_str());
+  const ImVec2 m = ImGui::GetIO().MousePos;
+  const bool zoomed = g.hwnd && IsZoomed(g.hwnd);
+  for (int i = 0; i < 3; ++i) {   // 0 minimise, 1 maximise / restore, 2 close
+    const float bx = W - kTbBtnW * (3 - i);
+    const bool over = m.x >= bx * g.s && m.x < (bx + kTbBtnW) * g.s && m.y >= 0 && m.y < g.tb;
+    if (over) rrect(bx, 0, kTbBtnW, 33, 0, i == 2 ? C(0xc42b1c) : C(0xffffff, 40));
+    const ImU32 ink = C(0xffffff);
+    const float cx = bx + kTbBtnW / 2, cy = 16.5f, th = 1.4f * g.s;
+    if (i == 0) dl->AddLine(V(cx - 5, cy), V(cx + 5, cy), ink, th);
+    else if (i == 1) {
+      if (zoomed) {
+        dl->AddRect(V(cx - 5, cy - 2), V(cx + 3, cy + 5), ink, 0, 0, th);
+        dl->AddLine(V(cx - 2, cy - 5), V(cx + 5, cy - 5), ink, th);
+        dl->AddLine(V(cx + 5, cy - 5), V(cx + 5, cy + 2), ink, th);
+      } else dl->AddRect(V(cx - 5, cy - 5), V(cx + 5, cy + 5), ink, 0, 0, th);
+    } else {
+      dl->AddLine(V(cx - 5, cy - 5), V(cx + 5, cy + 5), ink, th);
+      dl->AddLine(V(cx + 5, cy - 5), V(cx - 5, cy + 5), ink, th);
+    }
+    if (over && ImGui::IsMouseClicked(0) && g.hwnd) {
+      if (i == 0) ShowWindow(g.hwnd, SW_MINIMIZE);
+      else if (i == 1) ShowWindow(g.hwnd, zoomed ? SW_RESTORE : SW_MAXIMIZE);
+      else { g.result = UiResult::Quit; g.done = true; }
+    }
+  }
+  g.s = os; g.ox = ox; g.oy = oy;
+}
+
 LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
   if (ImGui_ImplWin32_WndProcHandler(h, m, w, l)) return TRUE;
   switch (m) {
     case WM_SIZE:
       if (g.dev && w != SIZE_MINIMIZED) { g.rw = LOWORD(l); g.rh = HIWORD(l); g.resize = true; }
       return 0;
+    case WM_NCCALCSIZE:
+      if (w && g.tb > 0) {   // no system frame: the client area is the whole window (a maximised window overhangs the screen by its frame, so pull it back)
+        if (IsZoomed(h)) {
+          using GetDpi = UINT(WINAPI*)(HWND);
+          GetDpi gd = (GetDpi)GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow");
+          const UINT dpi = gd ? gd(h) : 96;
+          using GetMetrics = int(WINAPI*)(int, UINT);
+          GetMetrics gm = (GetMetrics)GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetSystemMetricsForDpi");
+          const int fx = gm ? gm(SM_CXFRAME, dpi) + gm(SM_CXPADDEDBORDER, dpi) : GetSystemMetrics(SM_CXFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
+          const int fy = gm ? gm(SM_CYFRAME, dpi) + gm(SM_CXPADDEDBORDER, dpi) : GetSystemMetrics(SM_CYFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
+          RECT* rc = &((NCCALCSIZE_PARAMS*)l)->rgrc[0];
+          rc->left += fx; rc->right -= fx; rc->top += fy; rc->bottom -= fy;
+        }
+        return 0;
+      }
+      break;
+    case WM_NCHITTEST: {
+      if (g.tb <= 0) break;
+      POINT pt{(short)LOWORD(l), (short)HIWORD(l)};
+      RECT wr{};
+      GetWindowRect(h, &wr);
+      const int edge = std::max(6, (int)(g.tb * 0.2f));
+      const bool zoomed = IsZoomed(h) != 0;
+      if (!zoomed) {
+        const bool L = pt.x < wr.left + edge, R = pt.x >= wr.right - edge, T = pt.y < wr.top + edge, B = pt.y >= wr.bottom - edge;
+        if (T && L) return HTTOPLEFT;
+        if (T && R) return HTTOPRIGHT;
+        if (B && L) return HTBOTTOMLEFT;
+        if (B && R) return HTBOTTOMRIGHT;
+        if (L) return HTLEFT;
+        if (R) return HTRIGHT;
+        if (T) return HTTOP;
+        if (B) return HTBOTTOM;
+      }
+      if (pt.y < wr.top + (int)g.tb && pt.x < wr.right - (int)(3 * kTbBtnW * tb_scale())) return HTCAPTION;   // the three buttons stay client area
+      return HTCLIENT;
+    }
     case WM_GETMINMAXINFO: { MINMAXINFO* mm = (MINMAXINFO*)l; mm->ptMinTrackSize.x = 640; mm->ptMinTrackSize.y = 400; return 0; }
     case WM_SYSCOMMAND: if ((w & 0xfff0) == SC_KEYMENU) return 0; break;
     case WM_CLOSE: g.result = UiResult::Quit; g.done = true; return 0;
@@ -2356,6 +2564,7 @@ void apply_test_view(const std::string& v) {
     Item& it = g.pages[(size_t)g.tab].items[(size_t)g.row];
     g.pulldown = true; g.pd_sel = std::max(0, index_of(it, it.cur));
   } else if (v == "saves") { g.view = G::SAVES; g.row = 0; }
+  else if (v.rfind("album", 0) == 0) album_test_view(v);
   else if (v.rfind("mods", 0) == 0) { load_mods(); g.view = G::MODS; std::sscanf(v.c_str(), "mods:%d", &a); g.row = a; g.mods_top = 0; }
   else if (v == "steam" || v == "steam_run") {   // steam_run really does the job (against SNAP_STEAM_DIR) and shows the result
     refresh_steam_status(); g.steam_running = g.steam_status > 0 && steam_is_running(); g.steam_state = G::ST_ASK; g.view = G::STEAM;
@@ -2500,9 +2709,9 @@ UiResult show(UiInfo& info) {
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
     const ImVec2 ds = ImGui::GetIO().DisplaySize;
-    g.s = std::min(ds.x / 1280.0f, ds.y / 720.0f);
+    g.s = std::min(ds.x / 1280.0f, (ds.y - g.tb) / 720.0f);
     g.ox = (ds.x - 1280 * g.s) / 2;
-    g.oy = (ds.y - 720 * g.s) / 2;
+    g.oy = g.tb + (ds.y - g.tb - 720 * g.s) / 2;
     if (!shot) handle_input();
     if (g.done) { ImGui::EndFrame(); break; }
     if (g.view == G::HOME && ImGui::GetTime() - g.prep_at > 2.0) { g.prep_at = ImGui::GetTime(); refresh_cache(); }   // the shader chip follows a running preparation
@@ -2510,15 +2719,17 @@ UiResult show(UiInfo& info) {
     if (g.view == G::SETTINGS) draw_settings(&back);
     else if (g.view == G::SAVES) draw_saves();
     else if (g.view == G::MODS) draw_mods();
+    else if (g.view == G::ALBUM) draw_album();
     else if (g.view == G::STEAM) { g.block_hot = true; draw_home(); g.block_hot = false; draw_steam(); }
     else draw_home();
+    draw_titlebar();
     ImGui::Render();
     const float clear[4] = {0.96f, 0.95f, 0.94f, 1.0f};
     g.ctx->OMSetRenderTargets(1, &g.rtv, nullptr);
     g.ctx->ClearRenderTargetView(g.rtv, clear);
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
     ++frames;
-    if (shot && frames >= 5) {
+    if (shot && frames >= 5 && (verify_state() != 0 || std::getenv("SNAP_LAUNCHER_UI_CHECKING"))) {   // a test picture waits for the folder check
       const bool saved = save_bmp(shot);
       std::fprintf(stderr, "launcher ui: picture %s %s\n", shot, saved ? "saved" : "FAILED");
       g.result = UiResult::Quit;

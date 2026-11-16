@@ -6,12 +6,16 @@
 // published romfs check ("sentinels": SHA-256 of the lowercase relative path and the exact size of 32 files).
 // Test switches: SNAP_LAUNCHER_AUTOPLAY=1 skips the dialog; SNAP_BOOT_TRACE=<file> sets the boot trace file.
 #include <windows.h>
+#include "benchmark.h"
 #include <bcrypt.h>
 #include <shlobj.h>
 #include <shellapi.h>
 #include <commctrl.h>
 
 #include <algorithm>
+#include <atomic>
+#include <memory>
+#include <thread>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -24,11 +28,12 @@
 #include "hle/hle_config.h"
 #include "hle/profiles.h"
 #include "hle/json_lite.h"
+#include "hle/save_backup.h"
 #include "hle/save_port.h"
 #include "launcher.h"
 #include "mods/problem_report.h"
+#include "mods/install_check.h"
 #include "elf_check.h"
-#include "hle/save_backup.h"
 #include "launcher_ui.h"
 #include "loader.h"
 #include "ui_font.h"
@@ -84,16 +89,16 @@ std::string lower(std::string s) {
 
 }  // namespace
 
-namespace snap_launcher {
-
-// Returns an empty string when the romfs folder passes, else the message to show.
-std::string check_romfs(const std::string& root, const hle::Json& data) {
-  std::error_code ec;
-  if (!fs::is_directory(fs::u8path(root), ec))
 extern "C" void snap_crashlog_rotate(const wchar_t* logs_dir);   // host/mods/crashlog.cpp
 extern "C" void snap_crashlog_set_dir(const char* utf8_dir);
 extern "C" int snap_launchmark_check(char* why, int cap);   // host/mods/crashlog.cpp: 0 none, 1 the last start never reached the title screen, 2 and it was a safe-mode start
 
+namespace snap_launcher {
+
+// Returns an empty string when the romfs folder passes, else the message to show.
+std::string check_romfs(const std::string& root, const hle::Json& data, std::atomic<int>* files_seen = nullptr) {
+  std::error_code ec;
+  if (!fs::is_directory(fs::u8path(root), ec))
     return "The game folder cannot be found:\n" + root + "\n\nIs the drive or network share connected? Use \"Change game folder\" to pick it again.";
   const hle::Json* sents = data.get("sentinels");
   if (!sents || sents->a.empty()) return "";   // no published check shipped: nothing to compare
@@ -109,6 +114,7 @@ extern "C" int snap_launchmark_check(char* why, int cap);   // host/mods/crashlo
     std::error_code e2;
     if (!it->is_regular_file(e2)) continue;
     ++files;
+    if (files_seen && (files & 63) == 0) files_seen->store((int)files, std::memory_order_relaxed);
     std::string rel = lower(U8(fs::relative(it->path(), base, e2).generic_wstring()));
     auto f = want.find(sha256_hex(rel));
     if (f != want.end() && (long long)it->file_size(e2) == f->second) ++ok;
@@ -243,19 +249,13 @@ static void import_save_flow(const fs::path& cfg_path) {
   hle::saveport::Report r;
   std::string err;
   bool running = false;
+  { std::string be; if (!hle::savebackup::make(root, "import", nullptr, &be)) std::fprintf(stderr, "Backup before the import failed (%s); the import still keeps the current save as a backup generation.\n", be.c_str()); }
   bool ok = hle::saveport::import_save(path, root, hle::saveport::game_uid_dir(), &r, &err, &running);
   SetCursor(old);
   if (ok) message("Snap Recomp", hle::saveport::format_report(r, true), r.warnings.empty() ? MB_ICONINFORMATION : MB_ICONWARNING);
   else message("Snap Recomp", "The save was not imported.\n\n" + err, MB_ICONWARNING);
 }
 
-  { std::string be; if (!hle::savebackup::make(root, "import", nullptr, &be)) std::fprintf(stderr, "Backup before the import failed (%s); the import still keeps the current save as a backup generation.\n", be.c_str()); }
-static void export_save_flow(const fs::path& cfg_path) {
-  std::string root, label;
-  if (!save_target(cfg_path, &root, &label)) return;
-  int how = choose(L"Export the save", L"Both are the plain save files, named the way the game names them.",
-                   {L"To a folder...\nFor Checkpoint, or to copy into an emulator", L"To a .zip file...\nFor JKSV"});
-  if (how < 0) return;
 // "Restore a backup": the whole-save backups of runtime/hle/save_backup.h (one per start, one before each import or restore), newest first.
 static void restore_backup_flow(const fs::path& cfg_path) {
   std::string root, label;
@@ -287,6 +287,12 @@ static void restore_backup_flow(const fs::path& cfg_path) {
   else message("Snap Recomp", "The backup was not restored.\n\n" + err, MB_ICONWARNING);
 }
 
+static void export_save_flow(const fs::path& cfg_path) {
+  std::string root, label;
+  if (!save_target(cfg_path, &root, &label)) return;
+  int how = choose(L"Export the save", L"Both are the plain save files, named the way the game names them.",
+                   {L"To a folder...\nFor Checkpoint, or to copy into an emulator", L"To a .zip file...\nFor JKSV"});
+  if (how < 0) return;
   std::string dest = how == 0 ? pick_folder("", L"Pick the folder to export the save to") : pick_save_zip();
   if (dest.empty()) return;
   HCURSOR old = SetCursor(LoadCursor(nullptr, IDC_WAIT));
@@ -564,6 +570,107 @@ static bool hd_licenses(const hle::Json& cfg, const std::string& level) {
   return true;
 }
 
+// The HD build runs hidden; this dialog shows a real progress bar fed by the builder's --json lines ({"progress": {done, total, minutes_left}}) and
+// its last status line. Cancel stops the build (the textures finished so far are kept; the next run continues). Returns the exit code, or -1 when
+// it could not start, or 1223 (ERROR_CANCELLED) when the user cancelled.
+struct HdRun {
+  HANDLE proc = nullptr, job = nullptr;
+  fs::path out;
+  bool cancelled = false, finished = false, bar = false;
+  DWORD code = 1;
+  std::wstring instruction;
+};
+
+static void hd_scan(const fs::path& f, double& frac, std::wstring& status) {
+  frac = -1;
+  std::ifstream in(f, std::ios::binary);
+  if (!in) return;
+  in.seekg(0, std::ios::end);
+  const std::streamoff len = in.tellg();
+  in.seekg(len > 65536 ? len - 65536 : 0);
+  std::string line, last_text;
+  long long done = 0, total = 0, left = -1;
+  while (std::getline(in, line)) {
+    while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+    if (line.empty()) continue;
+    if (line[0] == '{') {
+      hle::Json j;
+      std::string err;
+      if (hle::json_parse(line, j, err) && j.type == hle::Json::Obj)
+        if (const hle::Json* p = j.get("progress")) {
+          done = p->get("done") ? (long long)p->get("done")->num() : 0;
+          total = p->get("total") ? (long long)p->get("total")->num() : 0;
+          left = p->get("minutes_left") ? (long long)p->get("minutes_left")->num() : -1;
+        }
+      continue;
+    }
+    last_text = line;   // the builder's own human line (stderr shares the file)
+  }
+  if (total > 0) {
+    frac = std::min(1.0, (double)done / (double)total);
+    status = std::to_wstring(done) + L" of " + std::to_wstring(total) + L" textures";
+    if (left >= 0) status += L", about " + std::to_wstring(left) + L" min left";
+  } else if (!last_text.empty()) {
+    status = W(last_text.size() > 140 ? last_text.substr(0, 140) + "..." : last_text);
+  }
+}
+
+static HRESULT CALLBACK hd_run_cb(HWND hwnd, UINT msg, WPARAM wp, LPARAM, LONG_PTR ref) {
+  HdRun* r = (HdRun*)ref;
+  if (msg == TDN_CREATED) SendMessageW(hwnd, TDM_SET_PROGRESS_BAR_MARQUEE, TRUE, 30);   // moving bar until the first count arrives
+  if (msg == TDN_TIMER) {
+    double frac;
+    std::wstring status;
+    hd_scan(r->out, frac, status);
+    if (frac >= 0) {
+      if (!r->bar) {
+        r->bar = true;
+        SendMessageW(hwnd, TDM_SET_MARQUEE_PROGRESS_BAR, FALSE, 0);
+        SendMessageW(hwnd, TDM_SET_PROGRESS_BAR_RANGE, 0, MAKELPARAM(0, 1000));
+      }
+      SendMessageW(hwnd, TDM_SET_PROGRESS_BAR_POS, (WPARAM)(frac * 1000), 0);
+    }
+    if (!status.empty()) SendMessageW(hwnd, TDM_SET_ELEMENT_TEXT, TDE_CONTENT, (LPARAM)status.c_str());
+    if (WaitForSingleObject(r->proc, 0) == WAIT_OBJECT_0) {
+      GetExitCodeProcess(r->proc, &r->code);
+      r->finished = true;
+      SendMessageW(hwnd, TDM_CLICK_BUTTON, IDCANCEL, 0);   // the dialog has only Cancel; r->finished makes the click harmless
+    }
+  }
+  if (msg == TDN_BUTTON_CLICKED && !r->finished && (int)wp == IDCANCEL) {
+    r->cancelled = true;
+    if (r->job) TerminateJobObject(r->job, 1223);   // the builder and the AI tools it started
+    else TerminateProcess(r->proc, 1223);
+  }
+  return S_OK;
+}
+
+static int hd_run_with_bar(const hle::Json& cfg, const std::wstring& args, const std::wstring& title, const std::wstring& first_line) {
+  HdRun r;
+  r.out = updates_dir() / L"hdtex_run.log";
+  r.instruction = title;
+  r.proc = spawn(builder_cmd(cfg, L"hdtex " + args + L" --json"), false, r.out);
+  if (!r.proc) return -1;
+  r.job = CreateJobObjectW(nullptr, nullptr);
+  if (r.job) AssignProcessToJobObject(r.job, r.proc);
+  TASKDIALOGCONFIG c{};
+  c.cbSize = sizeof c;
+  c.dwFlags = TDF_SHOW_MARQUEE_PROGRESS_BAR | TDF_CALLBACK_TIMER | TDF_ALLOW_DIALOG_CANCELLATION;
+  c.dwCommonButtons = TDCBF_CANCEL_BUTTON;
+  c.pszWindowTitle = L"Snap Recomp";
+  c.pszMainInstruction = title.c_str();
+  c.pszContent = first_line.c_str();
+  c.pfCallback = hd_run_cb;
+  c.lpCallbackData = (LONG_PTR)&r;
+  HRESULT hr = TaskDialogIndirect(&c, nullptr, nullptr, nullptr);
+  if (FAILED(hr) && !r.finished) WaitForSingleObject(r.proc, INFINITE);   // no task dialog (very old system): wait without a bar
+  if (!r.finished && !r.cancelled) { WaitForSingleObject(r.proc, INFINITE); GetExitCodeProcess(r.proc, &r.code); }
+  else if (r.cancelled) { WaitForSingleObject(r.proc, 5000); r.code = 1223; }
+  CloseHandle(r.proc);
+  if (r.job) CloseHandle(r.job);
+  return (int)r.code;
+}
+
 // TODO(hd light maps): add an "HD light maps" toggle to this flow once the hdtex session ships a runtime settings key for it. Today the light-map
 // level is builder-only (--set lighting.scale=), so there is nothing for the launcher to read or write.
 static void hd_textures_flow(const fs::path& exe_dir, const fs::path& cfg_path, hle::Json& cfg) {
@@ -643,15 +750,13 @@ static void hd_textures_flow(const fs::path& exe_dir, const fs::path& cfg_path, 
     q += L"\n\nThe AI tools and models are downloaded from their authors. A rebuild only redoes what changed.\n\nStart?";
     if (MessageBoxW(nullptr, q.c_str(), L"Snap Recomp", MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND) != IDYES) continue;
     if (!hd_licenses(cfg, level)) { message("Snap Recomp", "The HD pack was not built because a license was not accepted. The game is unchanged."); continue; }
-    HANDLE h = spawn(builder_cmd(cfg, L"hdtex --level " + W(level) + L" --yes"), true, fs::path());
-    if (!h) { message("Snap Recomp", "The HD build could not be started.", MB_ICONWARNING); continue; }
-    WaitForSingleObject(h, INFINITE);
-    DWORD code = 1;
-    GetExitCodeProcess(h, &code);
-    CloseHandle(h);
+    const int code = hd_run_with_bar(cfg, L"--level " + W(level) + L" --yes", L"Making the HD textures",
+                                    L"Starting. The first run downloads the AI tools and models from their authors. A rebuild only redoes what changed.");
+    if (code < 0) { message("Snap Recomp", "The HD build could not be started.", MB_ICONWARNING); continue; }
+    if (code == 1223) { message("Snap Recomp", "The HD build was cancelled. The textures finished so far are kept; pick the level again to continue."); continue; }
     if (code == 0) message("Snap Recomp", "The HD pack is ready and on. Press Play to use it. Pick Off here to turn it off.");
     else if (code == 3) message("Snap Recomp", "A license was not accepted, so nothing was built.", MB_ICONWARNING);
-    else message("Snap Recomp", "The HD build stopped before it finished (the build window shows why). The textures finished so far are kept; run it again to continue.", MB_ICONWARNING);
+    else message("Snap Recomp", "The HD build stopped before it finished. The textures finished so far are kept; run it again to continue. The details are in " + U8((updates_dir() / L"hdtex_run.log").wstring()) + ".", MB_ICONWARNING);
   }
 }
 
@@ -682,10 +787,23 @@ static int ask(const UpdateNotice& notice) {
 
 // The themed launcher window (host/launcher_ui.cpp). Returns the same codes as ask(), or -1 when the window could not be made (then the task dialog is used).
 // The window also owns the save-profile choice and writes the pre-launch settings to the files the game reads, so they apply at Play.
+// The game-folder check of the themed window: it runs on a worker thread so the window opens at once, and Play waits for it (the check only
+// compares the published file names and sizes, one directory pass). It is done once per folder; the chip on the home page starts it again.
+static std::shared_ptr<snap_launcher::UiVerify> s_verify;
+static std::string s_verify_root;
+
+static std::shared_ptr<snap_launcher::UiVerify> start_verify(const std::string& root, const hle::Json& data) {
+  auto v = std::make_shared<snap_launcher::UiVerify>();
+  hle::Json d = data;   // the worker outlives the caller's reference
+  std::thread([v, root, d]() {
+    v->msg = snap_launcher::check_romfs(root, d, &v->files);
+    v->state.store(v->msg.empty() ? 1 : 2, std::memory_order_release);
+  }).detach();
+  return v;
+}
+
 static int ask_themed(const UpdateNotice& notice, const fs::path& cfg_path, const fs::path& exe_dir, const std::string& romfs, const hle::Json& cfg, const hle::Json& data) {
   static std::string s_profile;                      // the choice survives going to a sub-flow and back
-  static std::string s_checked_root;                 // romfs check result, redone only when the folder changed
-  static std::string s_check_msg;
   hle::load_config(U8(cfg_path.wstring()));
   snap_launcher::UiInfo ui;
   auto env = [](const char* n) { const char* e = std::getenv(n); return std::string(e && *e ? e : ""); };
@@ -695,12 +813,17 @@ static int ask_themed(const UpdateNotice& notice, const fs::path& cfg_path, cons
   const bool explicit_save = !env("SNAP_SAVE_DIR").empty() || (cfg.get("save_root") && !cfg.get("save_root")->str().empty());
   const bool profiles_on = !env("SNAP_PROFILES_DIR").empty() || !explicit_save;
   ui.exe_dir = U8(exe_dir.wstring());
+  ui.romfs_root = romfs;
+  ui.main_elf = cfg.get("main_elf") ? cfg.get("main_elf")->str() : "";
+  ui.save_noprofile = save_folder(cfg);
   ui.version = cfg.get("builder_version") ? cfg.get("builder_version")->str() : "";
   ui.update_available = notice.available;
   ui.update_version = notice.latest;
-  if (romfs != s_checked_root) { s_check_msg = check_romfs(romfs, data); s_checked_root = romfs; }
-  ui.game_ok = s_check_msg.empty();
-  ui.game_msg = s_check_msg;
+  if (!s_verify || romfs != s_verify_root) { s_verify = start_verify(romfs, data); s_verify_root = romfs; }
+  ui.verify = s_verify;
+  ui.verify_again = [&ui, romfs, data]() { s_verify = start_verify(romfs, data); ui.verify = s_verify; };
+  ui.game_ok = s_verify->state.load() != 2;
+  ui.game_msg = s_verify->state.load() == 2 ? s_verify->msg : std::string();
   std::string root;
   if (profiles_on) {
     root = !env("SNAP_PROFILES_DIR").empty() ? env("SNAP_PROFILES_DIR") : data_root + "\\profiles";
@@ -744,7 +867,11 @@ static int ask_themed(const UpdateNotice& notice, const fs::path& cfg_path, cons
     case R::ExportSave: return 6;
     case R::Updates: return 7;
     case R::HdTextures: return 8;
+    case R::Benchmark: return 9;
     case R::ProblemReport: return 10;
+    case R::CheckInstall: return 11;
+    case R::RestoreBackup: return 12;
+    case R::SafeMode: return 13;
     default: return 0;
   }
 }
@@ -834,8 +961,15 @@ bool prepare(Result& r) {
       }
       continue;
     }
+    if (choice == 11) {   // host/mods/install_check.cpp: hashes the RomFS listing, the exe, DLLs and converted images; reads only
+      const snap_install::Report rep = snap_install::run(exe_dir);
+      message("Snap Recomp - Check install", snap_install::text(rep), rep.ok ? MB_ICONINFORMATION : MB_ICONWARNING);
+      continue;
+    }
+    if (choice == 9) { snap_benchmark::run_from_launcher(true); continue; }   // host/benchmark.cpp: plays the scripted ride in a second copy of the game
     if (choice == 4) { offer_upscalers(exe_dir, data, false); continue; }
     if (choice == 5) { import_save_flow(cfg_path); continue; }
+    if (choice == 12) { restore_backup_flow(cfg_path); continue; }
     if (choice == 6) { export_save_flow(cfg_path); continue; }
     if (choice == 3) {   // the active profile's save folder (the one the game would use), else the legacy folder
       std::string sf, label;
@@ -851,13 +985,17 @@ bool prepare(Result& r) {
       std::string bad = check_romfs(p, data);
       if (!bad.empty()) { message("Snap Recomp", bad, MB_ICONWARNING); continue; }
       cfg.set("romfs_root", hle::Json::string(p));
+      s_verify = std::make_shared<snap_launcher::UiVerify>();   // that folder was just checked: no second pass
+      s_verify->state.store(1);
+      s_verify_root = p;
       std::string text;
       hle::json_dump(cfg, text);
       std::ofstream f(cfg_path, std::ios::binary | std::ios::trunc);
       f << text << "\n";
       continue;
     }
-    std::string bad = check_romfs(romfs, data);
+    std::string bad;
+    if (!(s_verify && s_verify_root == romfs && s_verify->state.load() == 1)) bad = check_romfs(romfs, data);   // the themed window already passed this folder: not twice
     if (!bad.empty()) {
       if (autoplay) { std::fprintf(stderr, "launcher: %s\n", bad.c_str()); return true; }
       message("Snap Recomp", bad, MB_ICONWARNING);
@@ -888,18 +1026,15 @@ bool prepare(Result& r) {
   const fs::path logs = logs_dir();
   if (!logs.empty()) {
     fs::create_directories(logs, ec);
+    snap_crashlog_rotate(logs.c_str());   // host/mods/crashlog.cpp: last run's stderr.log and trace.log become *.prev
+    snap_crashlog_set_dir(U8(logs.wstring()).c_str());   // _crash.txt goes next to the log
     FILE* f = nullptr;
     if (_wfreopen_s(&f, (logs / L"stderr.log").c_str(), L"w", stderr) == 0 && f) setvbuf(stderr, nullptr, _IOLBF, 1 << 16);
     r.trace_file = std::getenv("SNAP_BOOT_TRACE") ? std::getenv("SNAP_BOOT_TRACE") : U8((logs / L"trace.log").wstring());
     DWORD pids[2];
-    if (GetConsoleProcessList(pids, 2) <= 1) FreeConsole();   // started by double-click: no console window
+    if (GetConsoleProcessList(pids, 2) <= 1) FreeConsole();   // a console-subsystem build (snap_boot.exe) started by double-click: no console window (SnapRecomp.exe is Windows-subsystem and has none)
   }
   return true;
 }
 
 }  // namespace snap_launcher
-    snap_crashlog_rotate(logs.c_str());   // host/mods/crashlog.cpp: last run's stderr.log and trace.log become *.prev
-    snap_crashlog_set_dir(U8(logs.wstring()).c_str());   // _crash.txt goes next to the log
-    case R::RestoreBackup: return 12;
-    case R::SafeMode: return 13;
-    if (choice == 12) { restore_backup_flow(cfg_path); continue; }

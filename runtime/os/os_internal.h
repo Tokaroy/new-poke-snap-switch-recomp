@@ -186,6 +186,7 @@ struct SchedSnap {   // os_kernel.cpp, under G
 };
 void state_sched_save(SchedSnap &s);
 void state_sched_restore(const SchedSnap &s);
+void state_thread_retire(Thread *t);   // save states, under G: drop a thread made since the save from the thread table (it stays parked for good)
 int64_t state_time_get();             // guest time base (QPC counts minus pauses)
 void state_time_set(int64_t v);       // the next os_ticks() continues from v
 struct SyncSnap {   // os_sync.cpp, under G

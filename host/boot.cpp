@@ -4,6 +4,7 @@
 // Run from the project root (the default ELF paths are relative to it). Output goes to stderr.
 #include <windows.h>
 #include "launcher.h"
+#include "benchmark.h"
 #include "shaderprep.h"
 #include <filesystem>
 #include <tlhelp32.h>
@@ -25,9 +26,9 @@
 #include "hle/hle.h"
 #include "hle/hle_config.h"
 #include "hle/input_core.h"
+#include "hle/save_backup.h"
 #include "hle/save_port.h"
 #include "audio/audio_out.h"
-#include "hle/save_backup.h"
 #include "nvn/nvn_host.h"
 #include "window_opts.h"
 
@@ -126,15 +127,15 @@ static void crash_host_stack(const CONTEXT *src) {
         if (WaitForSingleObject(g_sym_done, 3000) != WAIT_OBJECT_0) fprintf(stderr, "    (symbolizer timed out; use the raw offsets)\n");
     }
 }
+extern "C" void snap_crashlog_seh(EXCEPTION_POINTERS *ep, const char *guest, int stage);   // host/mods/crashlog.cpp: _crash.txt (stage 1 early, 2 after the stack was printed)
 static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep) {
     Cpu *g_cpu_dbg = g_tls_cpu ? g_tls_cpu : ::g_cpu_dbg;
-extern "C" void snap_crashlog_seh(EXCEPTION_POINTERS *ep, const char *guest, int stage);   // host/mods/crashlog.cpp: _crash.txt (stage 1 early, 2 after the stack was printed)
-    fprintf(stderr, "CRASH on guest thread type %#llx (tid %lu)\n", (unsigned long long)os_current_thread_type(), GetCurrentThreadId());
-    fprintf(stderr, "HOST CRASH code=%#lx at host %p, accessed %p\n", ep->ExceptionRecord->ExceptionCode,
     char crash_guest[400] = "";
     if (g_cpu_dbg) snprintf(crash_guest, sizeof crash_guest, "thread type %#llx, x0=%#llx x1=%#llx sp=%#llx", (unsigned long long)os_current_thread_type(), (unsigned long long)g_cpu_dbg->x[0], (unsigned long long)g_cpu_dbg->x[1], (unsigned long long)g_cpu_dbg->sp);
     snap_crashlog_seh(ep, crash_guest, 1);   // first report before anything that can fail (symbolize); the stage 2 call below has x30 too
     if (g_cpu_dbg) { const size_t n = strlen(crash_guest); snprintf(crash_guest + n, sizeof crash_guest - n, " x30=%s", symbolize(g_cpu_dbg->x[30]).c_str()); }
+    fprintf(stderr, "CRASH on guest thread type %#llx (tid %lu)\n", (unsigned long long)os_current_thread_type(), GetCurrentThreadId());
+    fprintf(stderr, "HOST CRASH code=%#lx at host %p, accessed %p\n", ep->ExceptionRecord->ExceptionCode,
             ep->ExceptionRecord->ExceptionAddress,
             ep->ExceptionRecord->NumberParameters > 1 ? (void *)ep->ExceptionRecord->ExceptionInformation[1] : nullptr);
     fprintf(stderr, "  host image base %p, rip offset %#llx; guest cpu x0=%#llx x1=%#llx x30=%s sp=%#llx\n", (void *)GetModuleHandleA(nullptr),
@@ -175,9 +176,9 @@ extern "C" void snap_crashlog_seh(EXCEPTION_POINTERS *ep, const char *guest, int
         fprintf(stderr, "  last initializer started: %s[%d] %s\n", r.module, r.index, symbolize(r.fn).c_str());
     }
     fflush(stderr);
+    snap_crashlog_seh(ep, crash_guest, 2);
     return EXCEPTION_EXECUTE_HANDLER;
 }
-    snap_crashlog_seh(ep, crash_guest, 2);
 
 // ---------------------------------------------------------------------------------------------------- test (a): C++ exceptions
 
@@ -468,16 +469,18 @@ static void bind_codec_stubs() {
 // Frame counters from the NVN hooks (presented frames and submitted command lists), traced every 30 presents.
 static std::atomic<uint64_t> g_presents{0}, g_submits{0};
 extern "C" void snap_highfps_on_present(uint64_t n);
-static void hook_present(void *, int slot, int w, int h) {
-    snap_window_on_present();   // blocks here while the window is paused (focus lost)
+extern "C" void snap_benchmark_on_present(uint64_t n);
 extern "C" void snap_crashlog_test_tick(unsigned long long n);   // host/mods/crashlog.cpp (SNAP_CRASH_TEST)
 extern "C" void snap_crashlog_install();                            // host/mods/crashlog.cpp: abort() and terminate write _crash.txt
+static void hook_present(void *, int slot, int w, int h) {
+    snap_window_on_present();   // blocks here while the window is paused (focus lost)
     uint64_t n = ++g_presents;
     snap_highfps_on_present(n);   // host/mods/highfps.cpp (SNAP_FPS); returns at once when unused
+    snap_benchmark_on_present(n);   // host/benchmark.cpp (SNAP_BENCH_INFO); returns at once when unused
+    snap_crashlog_test_tick(n);   // host/mods/crashlog.cpp: SNAP_CRASH_TEST forced crash (test aid); one cached getenv otherwise
     if (n <= 3 || n % 30 == 0) trace("nvn: present #%llu slot %d %dx%d (submits %llu)", (unsigned long long)n, slot, w, h, (unsigned long long)g_submits.load());
 }
 static void hook_submit(void *, int, int) { ++g_submits; }
-    snap_crashlog_test_tick(n);   // host/mods/crashlog.cpp: SNAP_CRASH_TEST forced crash (test aid); one cached getenv otherwise
 extern "C" uint64_t snap_present_count() { return g_presents.load(std::memory_order_relaxed); }   // host/mods/lodanim.cpp (SNAP_DRAW_DISTANCE_AB)
 // The game window. nn::vi::GetNativeWindow must hand the NVN layer a real HWND (nvnWindowBuilderSetNativeWindow -> Vulkan Win32
 // surface); the HLE vi layer only returns a token. A dedicated UI thread owns the window and pumps its messages; closing the
@@ -513,14 +516,47 @@ static void snap_capture_window(HWND h) {
 }
 
 extern "C" void snap_fs_drain_for_exit(int ms);   // runtime/hle/fs.cpp
+extern "C" void snap_audio_log_checks(void);       // runtime/audio/audio_out.cpp: one "[audio] checks:" line (rejected-call and underrun counters)
 extern "C" void nvnHostShotDrain(int ms);   // runtime/nvn/nvn_shot.cpp
 extern "C" void snap_modhooks_install();   // host/mods/modhooks.cpp (mod hooks, docs/mod-hooks.md)
 extern "C" void snap_launchmark_begin(int safe);   // host/mods/crashlog.cpp: launch marker (docs/safe-mode.md)
 extern "C" void snap_launchmark_clear();
+
+// "After the game closes: back to the launcher" (Display page of the launcher, settings key return_to_launcher, env SNAP_RETURN_TO_LAUNCHER).
+// Launcher mode only. The launcher is started again from the environment this process began with, so what the game set for itself (settings
+// turned into SNAP_* variables, the profile) does not leak into the next launcher window. Called on both ways out: the window close and
+// the game's own exit.
+static std::wstring g_start_env;           // the environment block at start (each "NAME=value" ends in NUL, one more NUL at the end)
+static bool g_return_to_launcher = false;  // set when the launcher window opened this run
+static void snapshot_start_env() {
+    if (LPWCH e = GetEnvironmentStringsW()) {
+        const wchar_t* p = e;
+        while (*p) p += wcslen(p) + 1;
+        g_start_env.assign(e, (size_t)(p - e) + 1);
+        FreeEnvironmentStringsW(e);
+    }
+}
+static void maybe_return_to_launcher() {
+    static bool done = false;
+    if (!g_return_to_launcher || done) return;
+    done = true;
+    const char* e = getenv("SNAP_RETURN_TO_LAUNCHER");
+    if (!e || !(e[0] == '1' || _stricmp(e, "on") == 0)) return;
+    wchar_t mp[MAX_PATH * 2] = {};
+    GetModuleFileNameW(nullptr, mp, (DWORD)(sizeof mp / sizeof mp[0]));
+    std::wstring cmd = L"\"" + std::wstring(mp) + L"\"";
+    std::wstring dir = std::filesystem::path(mp).parent_path().wstring();
+    STARTUPINFOW si{};
+    si.cb = sizeof si;
+    PROCESS_INFORMATION pi{};
+    if (CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_UNICODE_ENVIRONMENT, g_start_env.empty() ? nullptr : (LPVOID)g_start_env.data(), dir.c_str(), &si, &pi)) {
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    }
+}
 static LRESULT CALLBACK game_wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
     { LRESULT wr = 0; if (snap_window_proc(h, m, w, l, &wr)) return wr; }   // host/window_opts.cpp: F11, focus, mute, remembered placement
     if (m == WM_CLOSE || m == WM_DESTROY) { snap_audio_log_checks(); snap_launchmark_clear(); fflush(stderr); nvnHostShotDrain(5000); snap_fs_drain_for_exit(5000); maybe_return_to_launcher(); ExitProcess(0); }   // waits (5 s) for a save commit in progress
-extern "C" void snap_audio_log_checks(void);       // runtime/audio/audio_out.cpp: one "[audio] checks:" line (rejected-call and underrun counters)
     if (m == WM_TIMER) { snap_capture_window(h); return 0; }
     return DefWindowProcW(h, m, w, l);
 }
@@ -566,6 +602,8 @@ static void bind_host_layers() {
     hle::init_trace_from_env();
     hle::load_config("");
     hle::activate_profiles();   // save profile picker / selection (runtime/hle/profiles.h); before the save mounts
+    hle::savebackup::backup_at_launch();   // runtime/hle/save_backup.h: copy of the save into the profile's backup folder, newest 10 kept
+    hle::savebackup::apply_queued_restore();   // a restore picked in the F1 menu of the last run (docs/save-backups.md)
     hle::bind_all(hle_bind_one, nullptr);
     int na = snap_bind_audio();
     snap_bind_nvn();
@@ -603,8 +641,6 @@ static void tp_init_hook(Cpu *c, Thunk *) {
 }
 static void tp_destroy_hook(Cpu *c, Thunk *) {
     uint64_t tp = *(uint64_t *)(c->tpidrro + 0x1f0);
-    hle::savebackup::backup_at_launch();   // runtime/hle/save_backup.h: copy of the save into the profile's backup folder, newest 10 kept
-    hle::savebackup::apply_queued_restore();   // a restore picked in the F1 menu of the last run (docs/save-backups.md)
     if (tp) VirtualFree((void *)(tp - 0x8000), 0, MEM_RELEASE);
 }
 
@@ -862,6 +898,7 @@ static void stress_arena() {
 }
 static DWORD WINAPI run_thread(LPVOID) {
     SetUnhandledExceptionFilter(crash_filter);
+    snap_crashlog_install();
     start_symbolizer();
     snap_nvn_guest_chain = nvn_guest_chain;
     snap_nvn_on_buffer_init = stress_arena;
@@ -900,7 +937,6 @@ static DWORD WINAPI run_thread(LPVOID) {
         if (oc.tp_init_var && !*(uint64_t *)oc.tp_init_var) *(uint64_t *)oc.tp_init_var = add_stub("tp_init", tp_init_hook)->addr;
         if (oc.tp_destroy_var && !*(uint64_t *)oc.tp_destroy_var) *(uint64_t *)oc.tp_destroy_var = add_stub("tp_destroy", tp_destroy_hook)->addr;
         trace("os_init: tp_init_var=%#llx (value %#llx) tp_destroy_var=%#llx", (unsigned long long)oc.tp_init_var, oc.tp_init_var ? (unsigned long long)*(uint64_t *)oc.tp_init_var : 0ull, (unsigned long long)oc.tp_destroy_var);
-    snap_crashlog_install();
     }
     if (full) {
         g_svc_handler = svc_dispatch;
@@ -963,7 +999,30 @@ static bool cpu_has_v3() {
     return ((r[1] >> 5) & 1) && ((r[1] >> 3) & 1) && ((r[1] >> 8) & 1);   // AVX2, BMI1, BMI2
 }
 
+// SnapRecomp.exe is a Windows-subsystem program (no console window blinks on double-click). Started from a terminal with no redirected
+// output it attaches to that terminal's console, so the command-line modes (--import-save, --export-save, ...) still print there.
+// A pipe or file given to the process is used as it is. A standard handle that is not one of those (none, or the terminal's own console
+// handle, which a process without a console cannot write to) is replaced by the attached console. A console-subsystem build (snap_boot.exe)
+// already has its console; AttachConsole fails there and nothing changes.
+static void attach_parent_console() {
+    auto redirected = [](DWORD id) {
+        HANDLE h = GetStdHandle(id);
+        if (!h || h == INVALID_HANDLE_VALUE) return false;
+        const DWORD t = GetFileType(h);
+        return t == FILE_TYPE_DISK || t == FILE_TYPE_PIPE;
+    };
+    const bool out = redirected(STD_OUTPUT_HANDLE), err = redirected(STD_ERROR_HANDLE), in = redirected(STD_INPUT_HANDLE);
+    if (out && err) return;
+    if (!AttachConsole(ATTACH_PARENT_PROCESS)) return;
+    FILE* f = nullptr;
+    if (!out && freopen_s(&f, "CONOUT$", "w", stdout) == 0) setvbuf(stdout, nullptr, _IONBF, 0);
+    if (!err && freopen_s(&f, "CONOUT$", "w", stderr) == 0) setvbuf(stderr, nullptr, _IONBF, 0);
+    if (!in) freopen_s(&f, "CONIN$", "r", stdin);
+}
+
 int main(int argc, char **argv) {
+    attach_parent_console();
+    snapshot_start_env();
     if (!cpu_has_v3()) { fprintf(stderr, "boot: this build needs an x86-64-v3 CPU (AVX2, BMI2, FMA); this CPU lacks it\n"); return 2; }
     static char errbuf[1 << 16];
     setvbuf(stderr, errbuf, _IOLBF, sizeof errbuf);   // MSVC stderr is unbuffered (one write per character when redirected): a log burst stalls the game threads
@@ -987,6 +1046,10 @@ int main(int argc, char **argv) {
             return hle::saveport::run_cli(cmd, path, profile);
         }
     }
+    if (snap_benchmark::wanted(argc, argv)) {   // ride benchmark (host/benchmark.cpp): runs the game as a child and shows the results
+        std::vector<std::string> args(argv + 1, argv + argc);
+        return snap_benchmark::run_cli(args);
+    }
     if (snap_shaderprep::wanted(argc, argv)) {   // shader preparation (host/shaderprep.cpp): plays one hidden ride per course to fill this PC's shader cache
         std::vector<std::string> args(argv + 1, argv + argc);
         return snap_shaderprep::run_cli(args);
@@ -997,6 +1060,7 @@ int main(int argc, char **argv) {
         if (plain && !strcmp(argc == 2 ? argv[1] : "", "--safe-mode")) _putenv_s("SNAP_SAFE_MODE", "1");
         if (plain && snap_launcher::prepare(lr)) {
             if (!lr.proceed) return lr.exit_code;
+            g_return_to_launcher = !getenv("SNAP_LAUNCHER_AUTOPLAY");
             g_o.main_elf = lr.main_elf; g_o.sdk_elf = lr.sdk_elf; g_o.cmd = "run"; g_o.trace_file = lr.trace_file;
             if (!getenv("SNAP_HLE_CONFIG")) _putenv_s("SNAP_HLE_CONFIG", lr.config_path.c_str());
         }
@@ -1034,5 +1098,6 @@ int main(int argc, char **argv) {
     }
     DWORD rc = 1;
     GetExitCodeThread(h, &rc);
+    maybe_return_to_launcher();
     return (int)rc;
 }

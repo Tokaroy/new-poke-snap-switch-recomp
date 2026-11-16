@@ -25,3 +25,6 @@ if (here / 'contact.frag').exists():
 if (here / 'lfx_ao.frag').exists():
     emit(here.parent / 'nvn_lighting_spv.h', 'lfx_ao.frag, lfx_resolve.frag, lfx_comp.frag',
          [('kLfxAoFrag', 'lfx_ao.frag', 'frag'), ('kLfxResolveFrag', 'lfx_resolve.frag', 'frag'), ('kLfxCompFrag', 'lfx_comp.frag', 'frag')])
+if (here / 'lfx_gi.frag').exists():
+    emit(here.parent / 'nvn_ssgi_spv.h', 'lfx_gi.frag, lfx_gires.frag, lfx_gicomp.frag',
+         [('kLfxGiFrag', 'lfx_gi.frag', 'frag'), ('kLfxGiResFrag', 'lfx_gires.frag', 'frag'), ('kLfxGiCompFrag', 'lfx_gicomp.frag', 'frag')])
