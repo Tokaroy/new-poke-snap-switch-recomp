@@ -42,6 +42,20 @@ static inline uint64_t mkkey(KeyKind k, uint64_t addr) { return addr | ((uint64_
 
 struct Fiber;
 
+// Host context of a guest fiber or of a thread's own stack (os_ctx.cpp). The first four fields are read by snap_ctx_switch.
+struct HostCtx {
+    void *sp;        // saved stack pointer while the context is not running
+    void *base;      // TIB StackBase
+    void *limit;     // TIB StackLimit
+    void *dealloc;   // TIB DeallocationStack
+    void *alloc;     // VirtualAlloc base of a fiber stack, null for a thread's own stack
+    size_t reserve;
+};
+HostCtx *ctx_new_thread();
+HostCtx *ctx_new_fiber(size_t reserve, void (*entry)(void *), void *arg);   // entry must not return
+void ctx_free(HostCtx *c);
+extern "C" void snap_ctx_switch(HostCtx *from, HostCtx *to);
+
 struct Thread {
     uint64_t tt = 0;                 // guest ThreadType
     uint32_t handle = 0;
@@ -83,7 +97,7 @@ struct Thread {
     std::atomic<int> started{0}, exited{0};
     void *host_thread = nullptr;
     // fibers (Win32 host fibers)
-    void *base_fiber = nullptr;
+    HostCtx *base_fiber = nullptr;           // host context of the thread's own stack
     uint64_t own_fiber = 0;                  // guest FiberType standing for the thread's own context
     Fiber *own_shadow = nullptr;
     Fiber *cur_fiber = nullptr;              // nullptr = own context
@@ -96,7 +110,7 @@ struct Thread {
 struct Fiber {
     uint64_t guest = 0;
     Cpu *cpu = nullptr;
-    void *host = nullptr;                    // Win32 fiber
+    HostCtx *host = nullptr;                 // host stack and saved registers (os_ctx.cpp)
     bool finished = false;                   // its function returned; needs InitializeFiber before reuse
     bool is_thread_ctx = false;              // stands for a thread's own context
     std::atomic<bool> running{false};        // claimed by a thread; released by the next context ("leaving")

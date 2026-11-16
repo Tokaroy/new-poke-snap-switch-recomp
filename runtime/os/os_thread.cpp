@@ -178,15 +178,12 @@ void ensure_own(Thread *t) {
         t->own_shadow->guest = t->own_fiber;
         t->own_shadow->running = true;
     }
-    if (!t->base_fiber) {
-        t->base_fiber = IsThreadAFiber() ? GetCurrentFiber() : ConvertThreadToFiberEx(nullptr, FIBER_FLAG_FLOAT_SWITCH);
-        if (!t->base_fiber) fatal("ConvertThreadToFiberEx failed (%lu)", GetLastError());
-    }
+    if (!t->base_fiber) t->base_fiber = ctx_new_thread();   // filled by the first switch away from the thread's own stack
     t->own_shadow->host = t->base_fiber;
     t->own_shadow->cpu = t->cpu;
 }
 
-void WINAPI fiber_proc(void *p);
+void fiber_proc(void *p);
 
 // SwitchToFiber semantics of sdk+0x33f780: target 0 = the thread's own context.
 void do_switch(Cpu *c, uint64_t target) {
@@ -237,11 +234,11 @@ void do_switch(Cpu *c, uint64_t target) {
     t->cur_fiber = to->is_thread_ctx ? nullptr : to;
     t->leaving = from;
     if (!to->host) {
-        to->host = CreateFiberEx(64 * 1024, g_cfg.fiber_host_stack, FIBER_FLAG_FLOAT_SWITCH, fiber_proc, to);
-        if (!to->host) fatal("CreateFiberEx failed (%lu)", GetLastError());
+        to->host = ctx_new_fiber(g_cfg.fiber_host_stack, fiber_proc, to);
+        if (!to->host) fatal("fiber host stack allocation failed (%lu)", GetLastError());
     }
     g_stats.fiber_switches++;
-    SwitchToFiber(to->host);
+    snap_ctx_switch(from->host, to->host);
     // resumed, possibly on another host thread
     Thread *t2 = self_fresh();
     release_leaving(t2);
@@ -253,7 +250,7 @@ void do_switch(Cpu *c, uint64_t target) {
     rt_fpcr_sync(c);
 }
 
-void WINAPI fiber_proc(void *p) {
+void fiber_proc(void *p) {
     Fiber *f = (Fiber *)p;
     release_leaving(self_fresh());
     Cpu *c = f->cpu;
@@ -282,7 +279,7 @@ void ov_InitializeFiber(Cpu *c) {
         f->cpu = alloc_cpu();
     } else {
         if (f->running) fatal("InitializeFiber(%#llx) on a running fiber", (unsigned long long)g);
-        if (f->host) DeleteFiber(f->host);
+        ctx_free(f->host);
         f->host = nullptr;
         memset(f->cpu, 0, sizeof(Cpu));
         f->cpu->excl_addr = ~0ull;
@@ -303,7 +300,7 @@ void ov_FinalizeFiber(Cpu *c) {
     }
     if (f) {
         if (f->running) fatal("FinalizeFiber(%#llx) on a running fiber", (unsigned long long)g);
-        if (f->host) DeleteFiber(f->host);
+        ctx_free(f->host);
         free_cpu(f->cpu);
         delete f;
     }
@@ -375,7 +372,7 @@ void tls_run_destructors(Thread *t) {   // InvokeTlsDestructors sdk+0x344fa0
 
 void fiber_thread_exit(Thread *t) {
     if (t->base_fiber) {
-        ConvertFiberToThread();
+        ctx_free(t->base_fiber);
         t->base_fiber = nullptr;
     }
     if (t->own_shadow) {
