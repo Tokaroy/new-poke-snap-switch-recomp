@@ -116,6 +116,7 @@ const struct { const char* key; const char* env; } kEnvKeys[] = {
     {"freecam", "SNAP_FREECAM"}, {"freecam_freeze", "SNAP_FREECAM_FREEZE"},   // free camera rows (host/mods/freecam.cpp, docs/freecam.md)
     {"skip_cutscenes", "SNAP_SKIP_CUTSCENES"},
     {"fps_target", "SNAP_FPS"},   // Frame rate target row (90 / 120 / 144; "default" = 60, the game's own); host/mods/highfps.cpp, uipace.cpp
+    {"game_language", "SNAP_GAME_LANGUAGE"},   // Game language row: ja | en | fr | de | it | es | ko | zh-hans | zh-hant, unset = Auto (Windows language, else English); docs/player-options.md
     {"gfx_bokeh_dof", "SNAP_BOKEH_DOF"}, {"gfx_motion_blur", "SNAP_MOTION_BLUR"},   // lens effect rows (runtime/nvn/nvn_lens_fx.cpp; strength, unset = off; restart)
     {"frame_generation", "SNAP_FRAMEGEN"},   // FSR frame generation row ("1" or unset = off; runtime/nvn/nvn_framegen.cpp; restart)
     {"access_cvd", "SNAP_ACCESS_CVD"}, {"access_cvd_strength", "SNAP_ACCESS_CVD_STRENGTH"}, {"access_ui_size", "SNAP_ACCESS_UI_SIZE"}, {"access_contrast", "SNAP_ACCESS_CONTRAST"},   // Accessibility rows (hle/access.h, docs/accessibility.md); live through hle::access::set
@@ -203,6 +204,12 @@ void apply(bool env) {
   fx.gyro_invert_y = get_bool("gyro_invert_y", false);
   fx.rumble_on = get_bool("rumble_on", true);
   fx.rumble_strength = get_float("rumble_strength", 1.0f);
+  {   // A/B swap (confirm and back on the controller; docs/player-options.md): SNAP_SWAP_AB (1 / 0) beats the swap_ab setting; neither set follows input.json "controller.swap_ab". Live; the prompts' icons follow.
+    const char* e = std::getenv("SNAP_SWAP_AB");
+    const std::string v = e && *e ? std::string(e) : get("swap_ab", "");
+    const int want = v.empty() || v == "default" ? -1 : (v == "0" || v == "off" ? 0 : 1);
+    if (input::pad_fx().swap_ab.exchange(want) != want) icons::set_mapping(input::hub().mapping());
+  }
   {   // button icon mod: live, the renderer reads it on its next draw; SNAP_BUTTON_ICONS (auto|switch|xbox|playstation) overrides the file for test runs
     const char* e = std::getenv("SNAP_BUTTON_ICONS");
     icons::set_style(icons::parse_style(e && *e ? std::string(e) : get("button_icons", "auto")));

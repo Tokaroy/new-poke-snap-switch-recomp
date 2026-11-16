@@ -107,6 +107,7 @@ int glyph_of_pad_button(int b) {
 
 int glyph_of_action(const input::Mapping& m, int action) {
   if (action < 0 || action >= input::kActionCount) return kGlyphCount;
+  if (input::swap_ab_effective(m) && (action == input::kA || action == input::kB)) action = action == input::kA ? input::kB : input::kA;   // the prompt for A shows the button that now presses A
   for (const input::Source& s : input::action_sources(m, action))
     if (s.kind == input::Source::Pad) {
       const int g = glyph_of_pad_button(s.id);

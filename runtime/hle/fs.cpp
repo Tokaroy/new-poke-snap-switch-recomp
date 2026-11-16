@@ -27,6 +27,8 @@
 void (*g_snap_fs_tap_open)(uint64_t id, const char* path) = nullptr;
 void (*g_snap_fs_tap_close)(uint64_t id) = nullptr;
 void (*g_snap_fs_tap_read)(uint64_t id, const void* buf, size_t n) = nullptr;
+// Discord Rich Presence (host/mods/discord_presence.cpp sets it at start-up): told every opened path so it can tell which course pack loaded. Null in tests.
+void (*g_snap_presence_open)(const char* path) = nullptr;
 
 namespace hle {
 namespace {
@@ -93,8 +95,21 @@ void fs_delete_file(Cpu* c) { ret(c, instance().delete_file(cstr(arg(c, 0)))); }
 void fs_open_file(Cpu* c) {  // Result OpenFile(FileHandle* out, const char* path, int mode)
   fs::FileId id = 0;
   std::string path = cstr(arg(c, 1));
-  uint32_t rc = instance().open_file(&id, path, (int)arg32(c, 2));
-  if (!rc) { store<uint64_t>(ptr<void>(arg(c, 0)), id); if (g_snap_fs_tap_open) g_snap_fs_tap_open(id, path.c_str()); }
+  // Game language (docs/player-options.md): the game asks for TextResource_en.drp whatever the system language says, so the Game language row
+  // swaps in the pack of the chosen language (jp, fr, ge, ...). A missing pack falls back to English.
+  uint32_t rc = 1;
+  {
+    const size_t at = path.find("/Text/master/TextResource_en.drp");
+    const char* sfx = at == std::string::npos ? nullptr : hle::game_text_suffix(hle::resolve_game_language());
+    if (sfx && std::strcmp(sfx, "en") != 0) {
+      std::string alt = path;
+      alt.replace(at + std::strlen("/Text/master/TextResource_"), 2, sfx);
+      rc = instance().open_file(&id, alt, (int)arg32(c, 2));
+      if (!rc) path = alt;
+    }
+  }
+  if (rc) rc = instance().open_file(&id, path, (int)arg32(c, 2));
+  if (!rc) { store<uint64_t>(ptr<void>(arg(c, 0)), id); if (g_snap_fs_tap_open) g_snap_fs_tap_open(id, path.c_str()); if (g_snap_presence_open) g_snap_presence_open(path.c_str()); }
   ret(c, rc);
 }
 void fs_close_file(Cpu* c) { if (g_snap_fs_tap_close) g_snap_fs_tap_close(arg(c, 0)); instance().close_file(arg(c, 0)); ret(c, 0); }  // void CloseFile(FileHandle)

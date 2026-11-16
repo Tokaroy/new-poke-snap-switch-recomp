@@ -240,6 +240,7 @@ Json Mapping::to_json() const {
   Json c = Json::object();
   c.set("face_layout", Json::string(face_layout == 1 ? "nintendo" : "position"));
   c.set("swap_sticks", Json::boolean_(swap_sticks));
+  c.set("swap_ab", Json::boolean_(swap_ab));
   c.set("zl_threshold", Json::number(zl_threshold));
   c.set("zr_threshold", Json::number(zr_threshold));
   c.set("stick_button_threshold", Json::number(stick_button_threshold));
@@ -316,6 +317,7 @@ bool Mapping::from_json(const Json& j, std::string* err) {
       m.face_layout = f == "nintendo" ? 1 : 0;
     }
     if (auto* v = c->get("swap_sticks")) m.swap_sticks = v->boolean(false);
+    if (auto* v = c->get("swap_ab")) m.swap_ab = v->boolean(false);
     if (auto* v = c->get("zl_threshold")) m.zl_threshold = clampf(v, 0.5, 0.05f, 1.0f);
     if (auto* v = c->get("zr_threshold")) m.zr_threshold = clampf(v, 0.5, 0.05f, 1.0f);
     if (auto* v = c->get("stick_button_threshold")) m.stick_button_threshold = clampf(v, 0.5, 0.1f, 0.95f);
@@ -412,7 +414,7 @@ void reset_device(Mapping& m, Device d) {
   }
   if (d == kDevController) {
     m.zl_threshold = def.zl_threshold; m.zr_threshold = def.zr_threshold; m.stick_button_threshold = def.stick_button_threshold;
-    m.swap_sticks = false; m.face_layout = 0;
+    m.swap_sticks = false; m.face_layout = 0; m.swap_ab = false;
     for (StickMap* s : {&m.left, &m.right}) { StickMap* ds = s == &m.left ? &def.left : &def.right; s->analog = ds->analog; s->deadzone = ds->deadzone; s->outer_deadzone = ds->outer_deadzone; s->invert_y = false; }
   } else if (d == kDevMouse) {
     m.mouse_touch = def.mouse_touch; m.mouse_look = false; m.mouse_sensitivity = def.mouse_sensitivity;
@@ -456,6 +458,10 @@ static bool any_down(const std::vector<Source>& v, const RawInput& in, float thr
 }
 
 PadFx& pad_fx() { static PadFx f; return f; }
+bool swap_ab_effective(const Mapping& m) {
+  const int o = pad_fx().swap_ab.load(std::memory_order_relaxed);
+  return o >= 0 ? o != 0 : m.swap_ab;
+}
 
 // Environment overrides (test and power-user switches): SNAP_RUMBLE=0..1.5 (0 = off), SNAP_RUMBLE_LOG=1, SNAP_GYRO=0/1,
 // SNAP_GYRO_SENS=<float>, SNAP_GYRO_FAKE=<yaw_dps>,<pitch_dps> (a pretend gyro on the pad, left/up positive like SDL).
@@ -525,12 +531,18 @@ PadSample map_pad(const Mapping& m, const RawInput& in) {
   RawInput eff = in;
   if (!in.focused) { eff.keys.reset(); eff.mouse_buttons = 0; }
   out.connected = in.pad_connected || in.focused;  // the keyboard is always a controller while the window has focus
+  const bool swap_ab = swap_ab_effective(m);
   for (int b = 0; b <= kDown; ++b) {
     float thr = b == kZR ? m.zr_threshold : m.zl_threshold;
+    const bool ab = swap_ab && (b == kA || b == kB);   // controller sources of A press B and the reverse; keyboard and mouse keep their button
     for (auto& s : m.buttons[(size_t)b]) {
       // the trigger threshold of the physical trigger, not of the Switch button it is bound to
       float t = s.kind == Source::Pad && s.id == kPadRTrigger ? m.zr_threshold : s.kind == Source::Pad && s.id == kPadLTrigger ? m.zl_threshold : thr;
-      if (source_down(s, eff, t)) { out.buttons |= 1ull << b; break; }
+      if (source_down(s, eff, t)) {
+        const int to = ab && s.kind == Source::Pad ? (b == kA ? kB : kA) : b;
+        out.buttons |= 1ull << to;
+        if (!ab) break;
+      }
     }
   }
   if (m.mouse_look && eff.focused && eff.in_ride) {   // mouse-look click bindings, ride only: menus keep the touch screen / pad flow

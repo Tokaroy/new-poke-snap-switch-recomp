@@ -300,7 +300,7 @@ bool load_config(const std::string& path_in) {
       if (auto* v = j.get("uid")) {
         if (!parse_uid(v->str(), c.uid)) log("config: \"uid\" must be 32 hex digits; keeping the default");
       }
-      if (auto* v = j.get("language")) c.language = (int)v->num(c.language);
+      if (auto* v = j.get("language")) { c.language = (int)v->num(c.language); c.language_explicit = true; }
       if (auto* v = j.get("region")) c.region = v->str(c.region);
       if (auto* v = j.get("docked")) c.docked = v->boolean(c.docked);
       if (auto* v = j.get("display_version")) c.display_version = v->str(c.display_version);
@@ -322,6 +322,81 @@ bool load_config(const std::string& path_in) {
   g_cfg_init = false;
   apply_defaults();
   return ok;
+}
+
+// ---- game language (the nn::settings::Language index the game is told; kLanguageCodes in services_sys.cpp)
+// The game ships ten text resources: ja (kana), ja (kanji), en, fr, de, it, es, ko, zh-Hans, zh-Hant. The Auto choice picks one from the Windows display language.
+int game_language_from_tag(const std::string& tag) {
+  std::string t;
+  for (char ch : tag) t += (char)std::tolower((unsigned char)ch);
+  if (t == "ja") return 0;
+  if (t == "en") return 1;
+  if (t == "fr") return 2;
+  if (t == "de") return 3;
+  if (t == "it") return 4;
+  if (t == "es") return 5;
+  if (t == "zh-hans") return 6;
+  if (t == "ko") return 7;
+  if (t == "zh-hant") return 11;
+  return -1;
+}
+
+static std::string tag_from_locale_name(const std::string& n) {   // "de-DE", "zh-Hant-TW", "pt-BR" -> game tag or ""
+  std::string t;
+  for (char ch : n) t += (char)std::tolower((unsigned char)ch);
+  const std::string lang = t.substr(0, t.find_first_of("-_"));
+  if (lang == "zh") {
+    if (t.find("hant") != std::string::npos || t.find("-tw") != std::string::npos || t.find("-hk") != std::string::npos || t.find("-mo") != std::string::npos) return "zh-hant";
+    return "zh-hans";
+  }
+  if (game_language_from_tag(lang) >= 0) return lang;
+  return "";
+}
+
+std::string windows_ui_language_tag() {
+#ifdef _WIN32
+  ULONG n = 0, len = 0;
+  if (GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &n, nullptr, &len) && len > 1) {
+    std::wstring buf(len, L' ');
+    if (GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &n, buf.data(), &len)) {
+      for (size_t i = 0; i < buf.size() && buf[i];) {   // a double-NUL-terminated list, most preferred first
+        std::wstring w(buf.c_str() + i);
+        i += w.size() + 1;
+        std::string a;
+        for (wchar_t ch : w) a += ch < 128 ? (char)ch : '?';
+        const std::string tag = tag_from_locale_name(a);
+        if (!tag.empty()) return tag;
+      }
+    }
+  }
+#endif
+  return "en";
+}
+
+const char* game_text_suffix(int lang) {
+  const char* j = std::getenv("SNAP_TEXT_JA");   // test switch: jp (kana) or jk (kanji) for Japanese
+  switch (lang) {
+    case 0: return j && *j ? j : "jk";
+    case 2: return "fr";
+    case 3: return "ge";
+    case 4: return "it";
+    case 5: return "sp";
+    case 6: return "si";
+    case 7: return "ko";
+    case 11: return "tr";
+    default: return "en";
+  }
+}
+
+int resolve_game_language() {
+  if (const char* e = std::getenv("SNAP_GAME_LANGUAGE")) {
+    const int v = game_language_from_tag(e);
+    if (v >= 0) return v;
+  }
+  const Config& c = config();
+  if (c.language_explicit) return c.language;
+  const int v = game_language_from_tag(windows_ui_language_tag());
+  return v >= 0 ? v : 1;
 }
 
 // Picker window (runtime/ui/ui_picker.cpp); the stub keeps builds without it (unit tests) linking.

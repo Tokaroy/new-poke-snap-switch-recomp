@@ -23,6 +23,7 @@ struct Config {
   uint64_t uid[2] = {0x534e415052454331ull, 0x0000000000000001ull};  // stable default; "uid": "<32 hex digits>"
   // ---- system
   int language = 1;                                    // nn::settings::Language: 1 = AmericanEnglish (en-US)
+  bool language_explicit = false;                      // hle.json has a numeric "language" (then Auto leaves it alone)
   std::string region = "US";
   bool docked = true;                                  // nn::oe::GetOperationMode: Console
   std::string display_version = "2.0.1";
@@ -37,6 +38,12 @@ Config& config();                                      // process-wide, filled b
 // Reads the JSON file at `path` (empty: the default path). Returns false and logs if the file exists but is invalid;
 // a missing file is fine (defaults). Applies env overrides afterwards and fills the derived paths.
 bool load_config(const std::string& path = "");
+// The language the game is told to use (nn::settings::Language index): env SNAP_GAME_LANGUAGE (the F1 / launcher "Game language" row; auto | ja | en | fr | de | it | es | ko |
+// zh-hans | zh-hant), else hle.json "language" when set, else Auto = the Windows display language mapped to the closest language the game ships, else English.
+const char* game_text_suffix(int lang);   // TextResource_<suffix>.drp of a game language index (0 ja, 1 en, 2 fr, 3 de, 4 it, 5 es, 6 zh-hans, 7 ko, 11 zh-hant); "en" for the rest
+int resolve_game_language();
+int game_language_from_tag(const std::string& tag);    // "fr" -> 2 ...; -1 when the tag is not one of the game's languages
+std::string windows_ui_language_tag();                 // the Windows display language mapped to a game tag ("en", "zh-hans" ...), "en" when none fits
 // Picks the save profile for this run and points save_root at it (profiles.h). Called once by the host after load_config; does nothing
 // when SNAP_SAVE_DIR or save_root is set (unless SNAP_PROFILES_DIR is set too).
 void activate_profiles();

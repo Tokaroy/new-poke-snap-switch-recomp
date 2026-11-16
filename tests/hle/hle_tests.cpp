@@ -1181,6 +1181,36 @@ static void test_input_mapping() {
   r = RawInput{}; r.pad.set(kPadSouth);
   CHECK(mapped(m, r).buttons & bit(kB));
 
+  // --- A/B swap (docs/player-options.md): controller sources of A and B trade places; the keyboard keeps its keys; the override beats input.json
+  m = Mapping::defaults();
+  r = RawInput{}; r.pad.set(kPadSouth);
+  CHECK(mapped(m, r).buttons & bit(kB));
+  m.swap_ab = true;
+  CHECK(swap_ab_effective(m));
+  CHECK(mapped(m, r).buttons & bit(kA));
+  CHECK(!(mapped(m, r).buttons & bit(kB)));
+  r = RawInput{}; r.pad.set(kPadEast);
+  CHECK(mapped(m, r).buttons & bit(kB));
+  CHECK(!(mapped(m, r).buttons & bit(kA)));
+  r = RawInput{}; r.pad.set(kPadNorth);
+  CHECK(mapped(m, r).buttons & bit(kX));             // other buttons are untouched
+  r = RawInput{}; r.keys.set((size_t)key_from_name("Enter"));
+  { const uint64_t with_swap = mapped(m, r).buttons; m.swap_ab = false; CHECK_EQ(with_swap, mapped(m, r).buttons); m.swap_ab = true; }   // keyboard: same either way
+  pad_fx().swap_ab = 0;
+  CHECK(!swap_ab_effective(m));                      // SNAP_SWAP_AB=0 beats input.json
+  pad_fx().swap_ab = 1;
+  m.swap_ab = false;
+  CHECK(swap_ab_effective(m));                       // SNAP_SWAP_AB=1 beats input.json
+  pad_fx().swap_ab = -1;
+  CHECK(!swap_ab_effective(m));
+  m.swap_ab = true;
+  { Mapping back = Mapping::defaults(); std::string err; Json j = m.to_json(); CHECK(back.from_json(j, &err)); CHECK(back.swap_ab); }
+  // Game language: tags and the text pack each language opens
+  CHECK_EQ(hle::game_language_from_tag("fr"), 2);
+  CHECK_EQ(hle::game_language_from_tag("ZH-Hant"), 11);
+  CHECK_EQ(hle::game_language_from_tag("nl"), -1);
+  CHECK(std::string(hle::game_text_suffix(3)) == "ge" && std::string(hle::game_text_suffix(5)) == "sp" && std::string(hle::game_text_suffix(1)) == "en");
+
   // --- trigger thresholds are per trigger
   m = Mapping::defaults();
   m.zl_threshold = 0.2f; m.zr_threshold = 0.9f;

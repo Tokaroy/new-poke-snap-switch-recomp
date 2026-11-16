@@ -180,7 +180,7 @@ void oe_set_performance_configuration(Cpu* c) {
   if (trace_flags & kTraceSvc) log("oe::SetPerformanceConfiguration(mode=%u, config=%#x)", arg32(c, 0), arg32(c, 1));
 }
 
-void oe_get_desired_language(Cpu* c) { ret(c, language_code(config().language)); }
+void oe_get_desired_language(Cpu* c) { ret(c, language_code(resolve_game_language())); }
 
 // Applet notification queue (nn::oe::Message values: 15 FocusStateChanged, 16 Resume, 30 OperationModeChanged). The host window code
 // (host/window_opts.cpp) posts here; the game polls TryPopNotificationMessage once per frame (its handler is at main+0x5dc3f0).

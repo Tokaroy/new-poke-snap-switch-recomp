@@ -78,6 +78,7 @@ struct PadFx {
   std::atomic<bool> gyro_invert_x{false}, gyro_invert_y{false};
   std::atomic<bool> rumble_on{true};
   std::atomic<float> rumble_strength{1.0f};      // 0..1.5 scale on both motors
+  std::atomic<int> swap_ab{-1};                  // A/B swap override from SNAP_SWAP_AB / the swap_ab setting: -1 follow input.json, 0 off, 1 on
 };
 PadFx& pad_fx();
 bool rumble_log_enabled();
@@ -137,6 +138,7 @@ struct Mapping {
   float stick_button_threshold = 0.5f;              // virtual StickLLeft..StickRDown bits
   bool swap_sticks = false;                         // the left stick's analog source is the physical right stick and vice versa
   int face_layout = 0;                              // 0 by position (Xbox B = Switch A), 1 Nintendo by label (Xbox A = Switch A)
+  bool swap_ab = false;                             // confirm and back swapped on the controller only (the A and B bindings trade their pad sources at run time; keyboard and mouse stay); see swap_ab_effective
   // mouse
   bool mouse_touch = true;                          // left mouse button drives the touch screen
   bool mouse_look = false;                          // mouse movement drives the right stick
@@ -164,6 +166,7 @@ void slot_clear(std::vector<Source>& v, Device d, int slot);
 std::vector<int> actions_using(const Mapping& m, const Source& s);              // action ids that use s (more than one is a conflict)
 void reset_device(Mapping& m, Device d);                                        // defaults for that device's bindings and settings only
 void set_face_layout(Mapping& m, int layout);                                   // swaps south/east and west/north in every controller binding
+bool swap_ab_effective(const Mapping& m);                                       // the override (pad_fx().swap_ab) when set, else m.swap_ab: controller sources of A press B and the reverse
 
 struct PadSample {
   uint64_t buttons = 0;
