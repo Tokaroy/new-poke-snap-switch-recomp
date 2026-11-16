@@ -34,7 +34,8 @@ bool EnvOn(const char* n, bool def = false) { const char* e = getenv(n); return 
 int EnvInt(const char* n, int def) { const char* e = getenv(n); return e && *e ? atoi(e) : def; }
 double Now() { LARGE_INTEGER f, t; QueryPerformanceFrequency(&f); QueryPerformanceCounter(&t); return (double)t.QuadPart * 1000.0 / (double)f.QuadPart; }
 
-bool g_on = false, g_capture = false, g_failed = false;
+bool g_on = false, g_capture = false, g_failed = false, g_reflFailed = false, g_giFailed = false;
+int g_reflOn = 1, g_giOn = 1;   // SNAP_RT_REFLECT live value (dev param), read by the render thread
 VkPhysicalDeviceAccelerationStructureFeaturesKHR g_fAs{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
 VkPhysicalDeviceRayQueryFeaturesKHR g_fRq{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
 VkPhysicalDeviceTransformFeedbackFeaturesEXT g_fTf{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT};
@@ -141,6 +142,7 @@ struct Entry {
   int64_t lastSeen = 0; uint32_t seen = 0; bool built = false;
   int64_t procFrame = 0;          // last frame this draw was processed at the tonemap draw (a gap means it was off screen: its BLAS is rebuilt)
   uint32_t calm = 0; bool isStatic = false;   // consecutive frames the converted vertices stayed within tolerance of the copy taken at the last BLAS build
+  uint32_t id = ~0u;              // stable instance custom index while the entry lives (the per-instance colour cache of the RT reflections is addressed by it)
 };
 struct FrameDraw { uint64_t key; uint32_t vcount; uint64_t arenaOff; float inv[16]; float eye[3]; };
 struct Dead { Entry entry; uint64_t token; };   // retired entry: its AS and allocator ranges are released when the queue timeline passes the retire stamp (RetireFn)
@@ -182,6 +184,11 @@ struct G {
   int keyCb = 1;   // SNAP_RT_KEYCB: the draw key includes the per-object vertex constants (default); 0 = mesh identity only
   std::unordered_set<uint64_t> curA, curB, prevA, prevB;   // per-frame key sets for both key forms (identity only / with constants)
   uint64_t kDraws = 0, kA = 0, kB = 0, kStA = 0, kStB = 0, kFrames = 0;
+  // RT reflections (ReflectionPass): per-instance colour cache. racc: accumulator (4 words per id), ravg: mean colour per id (vec4); both addressed by Entry::id.
+  Buf racc, ravg; VkDescriptorSetLayout rdsl = VK_NULL_HANDLE; VkPipelineLayout rpl = VK_NULL_HANDLE; VkPipeline rpipe = VK_NULL_HANDLE; VkShaderModule rmod = VK_NULL_HANDLE; bool rinit = false;
+  std::vector<uint32_t> freeIds; uint32_t nextId = 0; std::set<uint32_t> idReset;   // ids handed out; reused ids whose cached colour must be cleared before the next accumulation
+  bool tlasValid = false; uint32_t killsSinceBuild = 0;   // the TLAS was built from live entries and none of its BLASes has been released since
+  uint64_t rPasses = 0, rSkip = 0; int rDoneAt = -1; VkShaderModule gmod = VK_NULL_HANDLE;   // rDoneAt: the present the colour cache was last updated at (the reflection and bounce light passes share one update per frame)
 } g;
 
 // A slot's mapped words, descriptor set and query results belong to the GPU until its queue timeline reaches the stamp taken when the slot was recorded (g.mu held).
@@ -205,8 +212,10 @@ bool CreateFailed() { if (++g_createFails >= 3) { g_failed = true; NoteWhy("acce
 // Scene geometry capture (M1/M2: the debug overlay and the future AO / reflection passes). With SNAP_RT_SHADOWS set and neither SNAP_RT_DEBUG nor SNAP_RT_SCENE=1 only the
 // shadow casters are captured (small buffers, no scene BLAS work).
 bool ShadowsRequested() { static const bool r = [] { const char* e = getenv("SNAP_RT_SHADOWS"); return e && *e; }(); return r; }
+bool GiRequested() { static const bool r = [] { const char* e = getenv("SNAP_RT_GI"); return e && *e && atoi(e) != 0; }(); return r; }   // RT bounce light (nvn_lighting_fx.cpp, needs SNAP_SSGI=1): needs the scene capture
+bool ReflectRequested() { static const bool r = [] { const char* e = getenv("SNAP_RT_REFLECT"); return e && *e && atoi(e) != 0; }(); return r; }   // RT reflections (the water pass, nvn_ssr.cpp): needs the scene capture
 bool SceneCapture() {
-  static const bool v = [] { const char* e = getenv("SNAP_RT_SHADOWS"); return !(e && *e) || EnvInt("SNAP_RT_DEBUG", 0) != 0 || EnvOn("SNAP_RT_SCENE"); }();
+  static const bool v = [] { const char* e = getenv("SNAP_RT_SHADOWS"); return !(e && *e) || EnvInt("SNAP_RT_DEBUG", 0) != 0 || EnvOn("SNAP_RT_SCENE") || ReflectRequested() || GiRequested(); }();
   return v;
 }
 
@@ -317,6 +326,8 @@ void FreeRetired(Host* h, const Entry& e) {   // the GPU has finished with it (o
   if (e.blasBytes) g.blasR.Free(e.blasOff, e.blasBytes);
 }
 void KillEntry(Host* h, Entry& e) {   // the entry's AS and ranges may still be read by recorded or in-flight commands: they are released through the graveyard, which waits for the queue timelines
+  if (e.id != ~0u) { g.freeIds.push_back(e.id); g.idReset.insert(e.id); }
+  if (e.as) g.killsSinceBuild++;   // the last TLAS still names this BLAS: the reflection pass leaves it alone until the next build
   if (!e.as && !e.arenaBytes && !e.blasBytes) { e = Entry{}; return; }
   const uint64_t token = ++g.retireNext;
   g.dead.push_back({e, token});
@@ -362,7 +373,7 @@ namespace {
 std::mutex g_patchedMu; std::set<std::string> g_patched;   // first 12 hex digits of the vertex programs whose module carries the Xfb decorations
 bool IsPatched(const char* k) { if (!k) return false; std::lock_guard<std::mutex> lk(g_patchedMu); return g_patched.count(std::string(k, 12)) != 0; }
 }
-bool Wanted() { static const bool w = EnvOn("SNAP_RT") || ShadowsRequested(); return w; }
+bool Wanted() { static const bool w = EnvOn("SNAP_RT") || ShadowsRequested() || ReflectRequested() || GiRequested(); return w; }
 bool On() { return g_on; }
 bool Capture() { return g_on && g_capture && !g_failed; }
 
@@ -734,7 +745,14 @@ void DeviceShutdown(Host* h) {   // the device is idle here; also cleans a half-
   for (auto& x : g.dead) FreeRetired(h, x.entry);
   g.dead.clear();
   if (g.tlas) pDestroyAs(d, g.tlas, nullptr);
-  for (Buf* b : {&g.arena, &g.shadow, &g.flags, &g.blasStore, &g.scratch, &g.instStore, &g.tlasStore, &g.stats}) FreeBuf(h, *b);
+  for (Buf* b : {&g.arena, &g.shadow, &g.flags, &g.blasStore, &g.scratch, &g.instStore, &g.tlasStore, &g.stats, &g.racc, &g.ravg}) FreeBuf(h, *b);
+  if (g.rpipe) vkDestroyPipeline(d, g.rpipe, nullptr);
+  if (g.rpl) vkDestroyPipelineLayout(d, g.rpl, nullptr);
+  if (g.rdsl) vkDestroyDescriptorSetLayout(d, g.rdsl, nullptr);
+  if (g.rmod) vkDestroyShaderModule(d, g.rmod, nullptr);
+  if (g.gmod) vkDestroyShaderModule(d, g.gmod, nullptr);
+  g.gmod = VK_NULL_HANDLE;
+  g.rpipe = VK_NULL_HANDLE; g.rpl = VK_NULL_HANDLE; g.rdsl = VK_NULL_HANDLE; g.rmod = VK_NULL_HANDLE; g.rinit = false; g.tlasValid = false;
   if (g.qp) vkDestroyQueryPool(d, g.qp, nullptr);
   if (g.convPipe) vkDestroyPipeline(d, g.convPipe, nullptr);
   if (g.convPl) vkDestroyPipelineLayout(d, g.convPl, nullptr);
@@ -956,12 +974,17 @@ void OnTonemap(ReplayCtx& cx, const char*) {   // called by FxAfterDraw: tonemap
     if (mp) {
       auto* inst = reinterpret_cast<VkAccelerationStructureInstanceKHR*>(mp);
       for (auto& kv : g.entries) {
-        const Entry& e = kv.second;
+        Entry& e = kv.second;
         if (!e.built || !e.as || ninst >= kMaxInstances) continue;
+        if (e.id == ~0u) {   // a stable id (the colour cache key): a released one first, else the next unused
+          if (!g.freeIds.empty()) { e.id = g.freeIds.back(); g.freeIds.pop_back(); }
+          else if (g.nextId < kMaxInstances) e.id = g.nextId++;
+          if (e.id == ~0u) continue;
+        }
         VkAccelerationStructureInstanceKHR& I = inst[ninst];
         memset(&I, 0, sizeof I);
         I.transform.matrix[0][0] = I.transform.matrix[1][1] = I.transform.matrix[2][2] = 1.0f;
-        I.instanceCustomIndex = ninst; I.mask = 0xFF; I.instanceShaderBindingTableRecordOffset = 0;
+        I.instanceCustomIndex = e.id; I.mask = 0xFF; I.instanceShaderBindingTableRecordOffset = 0;
         I.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR | VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR;
         I.accelerationStructureReference = e.blasAddr;
         ninst++;
@@ -980,6 +1003,7 @@ void OnTonemap(ReplayCtx& cx, const char*) {   // called by FxAfterDraw: tonemap
     pCmdBuild(cb, 1, &bi, &rgp);
     Bar(cb);
   }
+  g.tlasValid = ninst != 0; g.killsSinceBuild = 0;   // every BLAS the new TLAS names is alive (the kills above happened before it was built)
   if (timed) vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, g.qp, slot * kQ + 2);   // end of the build phase
   g.st.blasReused += blasReused; g.st.blasBuilt += blasBuilt; g.st.blasTris += blasTris; g.st.instances += ninst; g.st.frames++;
   // 4. debug overlay (and its statistics)
@@ -1108,6 +1132,113 @@ void OnTonemap(ReplayCtx& cx, const char*) {   // called by FxAfterDraw: tonemap
   }
 }
 
+// ======================================== RT reflections ========================================
+// The water pass (nvn_ssr.cpp RunPass) calls ReflectionPass once per frame with the scene colour copy it already made. This records the per-instance colour cache update: a coarse
+// grid of primary rays into the captured scene TLAS (the one built at the previous frame's tonemap draw) adds the scene colour under each ray to the hit instance, and every
+// instance seen folds its mean into ravg. The water shader (RT_REFL variant) does its own reflection rays from the TLAS and reads that cache; both are passed by address.
+// Fallback: any failure here only turns the RT part of the reflections off (the water pass goes on with the screen-space march alone); SNAP_RT_FORCE_FAIL=reflect tests it.
+char g_reflWhy[160] = {};
+void ReflFail(const char* why) { g_reflFailed = true; snprintf(g_reflWhy, sizeof g_reflWhy, "%s", why); fprintf(stderr, "[rt] reflections fall back to screen-space: %s\n", why); }
+bool RSetup(Host* h) {   // g.mu held
+  if (g.rpipe) return true;
+  if (g_reflFailed) return false;
+  if (Forced("reflect")) { ReflFail("forced failure (SNAP_RT_FORCE_FAIL=reflect)"); return false; }
+  const VkBufferUsageFlags us = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+  if (!MakeBuf(h, (uint64_t)kMaxInstances * 16, us, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &g.racc, true) || !MakeBuf(h, (uint64_t)kMaxInstances * 16, us, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &g.ravg, true)) { ReflFail("buffer allocation failed"); return false; }
+  VkDescriptorSetLayoutBinding b{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+  VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO}; li.bindingCount = 1; li.pBindings = &b;
+  VkPushConstantRange pr{VK_SHADER_STAGE_COMPUTE_BIT, 0, 128};
+  VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO}; mi.codeSize = sizeof kRtAccSpv; mi.pCode = kRtAccSpv;
+  if (vkCreateDescriptorSetLayout(h->device, &li, nullptr, &g.rdsl) != VK_SUCCESS || vkCreateShaderModule(h->device, &mi, nullptr, &g.rmod) != VK_SUCCESS) { ReflFail("reflection pipeline objects"); return false; }
+  VkPipelineLayoutCreateInfo pl{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO}; pl.setLayoutCount = 1; pl.pSetLayouts = &g.rdsl; pl.pushConstantRangeCount = 1; pl.pPushConstantRanges = &pr;
+  VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+  if (vkCreatePipelineLayout(h->device, &pl, nullptr, &g.rpl) != VK_SUCCESS) { ReflFail("reflection pipeline layout"); return false; }
+  ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, g.rmod, "main", nullptr}; ci.layout = g.rpl;
+  if (vkCreateComputePipelines(h->device, h->pipelineCache, 1, &ci, nullptr, &g.rpipe) != VK_SUCCESS) { g.rpipe = VK_NULL_HANDLE; ReflFail("reflection pipeline"); return false; }
+  g.rinit = false;
+  return true;
+}
+
+bool ReflectOn() {
+  if (!ReflectRequested() || g_reflFailed || g_failed || !g_on) return false;
+  static bool reg = false;
+  if (!reg) { reg = true; g_reflOn = 1; dev_param_i("SNAP_RT_REFLECT", &g_reflOn, 0, 1, 1); }   // live (ab_capture -Effect SNAP_RT_REFLECT -Values 0,1): the capture stays on, only the pass and the shader path stop
+  return g_reflOn != 0;
+}
+const char* ReflectionNotice() { return ReflectRequested() && g_reflWhy[0] ? g_reflWhy : nullptr; }
+
+bool CachePass(ReplayCtx& cx, VkImageView col, VkSampler samp, const double vp[4][4], ReflInfo* out) {   // shared by ReflectionPass and GiPass
+  if (!col || !samp || FxIsPhotoFrame()) return false;
+  std::lock_guard<std::mutex> lk(g.mu);
+  if (!g.ready || !g.tlas || !Capture()) return false;
+  if (g.rDoneAt == g_presentCount) { out->tlas = g.tlasAddr; out->avg = g.ravg.addr; return true; }   // the other feature already updated the cache this frame
+  if (!g.tlasValid || g.killsSinceBuild) { g.rSkip++; return false; }   // no TLAS yet, or a BLAS it names was released since it was built
+  if (!RSetup(cx.h)) return false;
+  VkCommandBuffer cb = cx.cb;
+  // M = rows 0, 1 and 3 of the view-projection (clip.xyw = M * world + off); its inverse and the eye position for the shader
+  const double M[3][3] = {{vp[0][0], vp[0][1], vp[0][2]}, {vp[1][0], vp[1][1], vp[1][2]}, {vp[3][0], vp[3][1], vp[3][2]}};
+  const double off[3] = {vp[0][3], vp[1][3], vp[3][3]};
+  const double c00 = M[1][1] * M[2][2] - M[1][2] * M[2][1], c01 = M[1][2] * M[2][0] - M[1][0] * M[2][2], c02 = M[1][0] * M[2][1] - M[1][1] * M[2][0];
+  const double det = M[0][0] * c00 + M[0][1] * c01 + M[0][2] * c02;
+  if (!(std::fabs(det) > 1e-30)) return false;
+  const double id = 1.0 / det;
+  double I[3][3];   // inverse of M (row-major)
+  I[0][0] = c00 * id; I[1][0] = c01 * id; I[2][0] = c02 * id;
+  I[0][1] = (M[0][2] * M[2][1] - M[0][1] * M[2][2]) * id; I[1][1] = (M[0][0] * M[2][2] - M[0][2] * M[2][0]) * id; I[2][1] = (M[0][1] * M[2][0] - M[0][0] * M[2][1]) * id;
+  I[0][2] = (M[0][1] * M[1][2] - M[0][2] * M[1][1]) * id; I[1][2] = (M[0][2] * M[1][0] - M[0][0] * M[1][2]) * id; I[2][2] = (M[0][0] * M[1][1] - M[0][1] * M[1][0]) * id;
+  struct { uint64_t tlas, acc, avg, pad; float c0[4], c1[4], c2[4], off[4], eye[4]; uint32_t q[4]; } pc;
+  static_assert(sizeof pc == 128, "push block");
+  pc.tlas = g.tlasAddr; pc.acc = g.racc.addr; pc.avg = g.ravg.addr; pc.pad = 0;
+  for (int r = 0; r < 3; r++) { pc.c0[r] = (float)I[r][0]; pc.c1[r] = (float)I[r][1]; pc.c2[r] = (float)I[r][2]; pc.off[r] = (float)off[r]; }
+  pc.c0[3] = pc.c1[3] = pc.c2[3] = pc.off[3] = 0; pc.eye[3] = 0;
+  for (int r = 0; r < 3; r++) pc.eye[r] = (float)-(I[r][0] * off[0] + I[r][1] * off[1] + I[r][2] * off[2]);
+  VkDescriptorSet set = FxAllocSet(cx, g.rdsl);
+  if (!set) return false;
+  VkDescriptorImageInfo ii{samp, col, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+  VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; w.dstSet = set; w.dstBinding = 0; w.descriptorCount = 1; w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.pImageInfo = &ii;
+  vkUpdateDescriptorSets(cx.h->device, 1, &w, 0, nullptr);
+  // clear: everything on first use, later only the ids that were handed to a new draw
+  if (!g.rinit) { vkCmdFillBuffer(cb, g.racc.buf, 0, VK_WHOLE_SIZE, 0); vkCmdFillBuffer(cb, g.ravg.buf, 0, VK_WHOLE_SIZE, 0); g.rinit = true; g.idReset.clear(); }
+  for (uint32_t i : g.idReset) { vkCmdFillBuffer(cb, g.racc.buf, (VkDeviceSize)i * 16, 16, 0); vkCmdFillBuffer(cb, g.ravg.buf, (VkDeviceSize)i * 16, 16, 0); }
+  g.idReset.clear();
+  Bar(cb);
+  vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g.rpipe);
+  vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g.rpl, 0, 1, &set, 0, nullptr);
+  const uint32_t gw = 256, gh = 144;
+  pc.q[0] = 0; pc.q[1] = gw; pc.q[2] = gh; pc.q[3] = (uint32_t)g_presentCount;
+  vkCmdPushConstants(cb, g.rpl, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, &pc);
+  vkCmdDispatch(cb, (gw * gh + 63) / 64, 1, 1);
+  Bar(cb);
+  pc.q[0] = 1;
+  vkCmdPushConstants(cb, g.rpl, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, &pc);
+  vkCmdDispatch(cb, kMaxInstances / 64, 1, 1);
+  Bar(cb);   // the fragment reads of ravg and the next frame's accumulation
+  g.rPasses++; g.rDoneAt = g_presentCount;
+  out->tlas = g.tlasAddr; out->avg = g.ravg.addr;
+  return true;
+}
+bool ReflectionPass(ReplayCtx& cx, VkImageView col, VkSampler samp, const double vp[4][4], ReflInfo* out) { return ReflectOn() && CachePass(cx, col, samp, vp, out); }
+
+// ---- RT bounce light (SNAP_RT_GI): the ray traced gather of the bounce-light chain (nvn_lighting_fx.cpp). The gather shader (lfx_gi_rt.frag) is ours; the chain, the denoiser and the
+// composite are the lighting file's. Same fallback shape as the reflections: a failure only returns the chain to its screen-space gather.
+char g_giWhy[160] = {};
+void GiFail(const char* why) { g_giFailed = true; snprintf(g_giWhy, sizeof g_giWhy, "%s", why); fprintf(stderr, "[rt] bounce light falls back to screen-space: %s\n", why); }
+bool GiOn() {
+  if (!GiRequested() || g_giFailed || g_failed || !g_on) return false;
+  static bool reg = false;
+  if (!reg) { reg = true; g_giOn = 1; dev_param_i("SNAP_RT_GI", &g_giOn, 0, 1, 1); }
+  return g_giOn != 0;
+}
+const char* GiNotice() { return GiRequested() && g_giWhy[0] ? g_giWhy : nullptr; }
+VkShaderModule GiModule(Host* h) {
+  if (g.gmod) return g.gmod;
+  if (Forced("gi")) { GiFail("forced failure (SNAP_RT_FORCE_FAIL=gi)"); return VK_NULL_HANDLE; }
+  VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO}; mi.codeSize = sizeof kLfxGiRtSpv; mi.pCode = kLfxGiRtSpv;
+  if (vkCreateShaderModule(h->device, &mi, nullptr, &g.gmod) != VK_SUCCESS) { g.gmod = VK_NULL_HANDLE; GiFail("gather shader module"); }
+  return g.gmod;
+}
+bool GiPass(ReplayCtx& cx, VkImageView col, VkSampler samp, const double vp[4][4], ReflInfo* out) { return GiOn() && CachePass(cx, col, samp, vp, out); }
+
 void OnPresent() {
   if (!g.ready || g.logEvery <= 0 || g_presentCount - g.lastLogPresent < g.logEvery) return;
   g.lastLogPresent = g_presentCount;
@@ -1118,6 +1249,7 @@ void OnPresent() {
             (unsigned long long)S.noRecvM, (unsigned long long)S.skipped, S.sunL[0], S.sunL[1], S.sunL[2], S.tmax, S.recvRatio, Cfg().mode, Cfg().dbg, ShadowRays());
     S.frames = S.draws_n = S.tris = S.receivers = S.noRecvM = 0; S.gpuMs = 0; S.gpuN = 0;
   }
+  if ((ReflectRequested() || GiRequested()) && (g.rPasses || g.rSkip)) { fprintf(stderr, "[rt] p%d colour cache (reflections, bounce light): %llu passes, %llu skipped (no TLAS yet or a BLAS was released since it was built); %u instance ids in use, reflections %s, bounce light %s\n", g_presentCount, (unsigned long long)g.rPasses, (unsigned long long)g.rSkip, g.nextId - (uint32_t)g.freeIds.size(), !ReflectRequested() ? "not asked" : g_reflFailed ? "fell back" : g_reflOn ? "on" : "off (live)", !GiRequested() ? "not asked" : g_giFailed ? "fell back" : g_giOn ? "on" : "off (live)"); g.rPasses = g.rSkip = 0; }
   Stats& s = g.st;
   if (!s.frames) return;
   const double f = (double)s.frames;

@@ -78,6 +78,20 @@ struct DrawCapture {
   ~DrawCapture() { End(); }
 };
 
+// ---- RT reflections (SNAP_RT_REFLECT=1; the water pass, nvn_ssr.cpp + shaders/water_fx.frag RT_REFL, rt_acc.comp) ------------------------------------------------------
+bool ReflectOn();   // asked for (env, then the live dev param) and RT is up and has not failed
+const char* ReflectionNotice();   // non-null when the RT part of the reflections fell back to screen-space this session: a short reason for the F1 menu
+struct ReflInfo { uint64_t tlas = 0, avg = 0; };   // device addresses the water shader reads: the scene TLAS and the per-instance colour cache
+// Called by the water pass outside any render pass with the full-resolution scene colour copy it sampled (sampled layout) and the camera view-projection (row-major, clip = vp * (world, 1)).
+// Records the colour cache update. false = nothing to trace against this frame (no TLAS yet, a BLAS was released, photo frame, fallback): the water pass uses the screen-space march alone.
+bool ReflectionPass(nvn::ReplayCtx& cx, VkImageView col, VkSampler samp, const double vp[4][4], ReflInfo* out);
+// ---- RT bounce light (SNAP_RT_GI=1 together with SNAP_SSGI=1; the gather pass of nvn_lighting_fx.cpp, shaders/lfx_gi_rt.frag) ------------------------------------------------
+bool GiOn();   // asked for (env, then the live dev param), RT is up and nothing has failed
+const char* GiNotice();   // non-null when the RT gather fell back to the screen-space one this session: a short reason for the F1 menu
+VkShaderModule GiModule(nvn::Host* h);   // the RT gather fragment shader (push block: the lfx_gi.frag block plus tlas and avg addresses); null if it could not be made (fallback)
+// Same inputs and contract as ReflectionPass: updates the shared colour cache once per frame, returns the TLAS and cache addresses the gather shader needs.
+bool GiPass(nvn::ReplayCtx& cx, VkImageView col, VkSampler samp, const double vp[4][4], ReflInfo* out);
+
 // The game's tonemap draw has just been recorded (nvn_draw.cpp, next to AaAfterDraw): convert, build the BLAS/TLAS, draw the overlay.
 void OnTonemap(nvn::ReplayCtx& cx, const char* fsKey);
 void OnPresent();   // frame bookkeeping (nvn_vk.cpp present)

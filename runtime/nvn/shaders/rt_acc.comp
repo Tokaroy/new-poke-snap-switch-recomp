@@ -1,0 +1,60 @@
+#version 460
+// SPDX-License-Identifier: MIT
+// RT reflections, per-instance colour cache (nvn_rt.cpp ReflectionPass; project code, ours).
+//   mode 0: one primary ray per cell of a coarse grid into the captured scene TLAS; the scene colour under the ray adds into the hit instance's accumulator.
+//   mode 1: every instance that was hit this frame folds its mean colour into avg[] (temporal blend); the accumulator is cleared. Instances that are not on screen
+//           keep their last colour: that is what an off-screen object looks like in a reflection.
+// The TLAS, the accumulator and avg[] are passed by address (buffer device address); the instance custom index is the stable per-draw id (nvn_rt.cpp Entry::id).
+#extension GL_EXT_ray_query : require
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference_uvec2 : require
+layout(local_size_x = 64) in;
+layout(buffer_reference, std430) buffer AccBuf { uint v[]; };
+layout(buffer_reference, std430) buffer AvgBuf { vec4 v[]; };
+layout(set = 0, binding = 0) uniform sampler2D colTex;   // linear scene colour (HDR)
+layout(push_constant) uniform PC {
+  uvec2 tlas; uvec2 acc; uvec2 avg; uvec2 pad;
+  vec4 c0, c1, c2;   // columns of the inverse of the xyw part of the view-projection (clip.xyw = M * world + off)
+  vec4 off;          // xyz: the translation column (clip x, y, w); w unused
+  vec4 eye;          // xyz: camera position
+  uvec4 q;           // x: mode, y: grid width, z: grid height, w: frame number
+} pc;
+const uint kMaxId = 8192u;
+
+float hash(uvec2 p) { uint h = p.x * 374761393u + p.y * 668265263u; h = (h ^ (h >> 13)) * 1274126177u; return float(h ^ (h >> 16)) * (1.0 / 4294967296.0); }
+
+void main() {
+  const uint i = gl_GlobalInvocationID.x;
+  if (pc.q.x == 1u) {
+    if (i >= kMaxId) return;
+    AccBuf a = AccBuf(pc.acc); AvgBuf m = AvgBuf(pc.avg);
+    const uint n = a.v[i * 4u + 3u];
+    if (n == 0u) return;
+    const vec3 c = vec3(float(a.v[i * 4u]), float(a.v[i * 4u + 1u]), float(a.v[i * 4u + 2u])) / (1024.0 * float(n));
+    const vec4 o = m.v[i];
+    m.v[i] = o.w > 0.0 ? vec4(mix(o.rgb, c, 0.3), 1.0) : vec4(c, 1.0);
+    a.v[i * 4u] = 0u; a.v[i * 4u + 1u] = 0u; a.v[i * 4u + 2u] = 0u; a.v[i * 4u + 3u] = 0u;
+    return;
+  }
+  if (i >= pc.q.y * pc.q.z) return;
+  const uvec2 cell = uvec2(i % pc.q.y, i / pc.q.y);
+  const vec2 j = vec2(hash(cell + pc.q.w * 7u), hash(cell.yx + pc.q.w * 13u + 5u));
+  const vec2 uv = (vec2(cell) + j) / vec2(pc.q.yz);
+  const vec2 ndc = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+  const mat3 Minv = mat3(pc.c0.xyz, pc.c1.xyz, pc.c2.xyz);
+  const vec3 p1 = Minv * (vec3(ndc, 1.0) - pc.off.xyz);                       // world point at clip.w = 1
+  const vec3 p2 = Minv * (vec3(ndc * 2.0, 2.0) - pc.off.xyz);                 // and at clip.w = 2
+  const vec3 dir = normalize(p2 - p1);
+  rayQueryEXT rq;
+  rayQueryInitializeEXT(rq, accelerationStructureEXT(pc.tlas), gl_RayFlagsOpaqueEXT, 0xFF, pc.eye.xyz, 0.01, dir, 100000.0);
+  while (rayQueryProceedEXT(rq)) {}
+  if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT) return;
+  const uint id = rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true);
+  if (id >= kMaxId) return;
+  const vec3 c = clamp(textureLod(colTex, uv, 0.0).rgb, vec3(0.0), vec3(32.0));
+  AccBuf a = AccBuf(pc.acc);
+  atomicAdd(a.v[id * 4u], uint(c.r * 1024.0));
+  atomicAdd(a.v[id * 4u + 1u], uint(c.g * 1024.0));
+  atomicAdd(a.v[id * 4u + 2u], uint(c.b * 1024.0));
+  atomicAdd(a.v[id * 4u + 3u], 1u);
+}
