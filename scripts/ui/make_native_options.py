@@ -330,7 +330,7 @@ for _t in TABS:
         row('Shoreline foam', 'p', 'opt', 'water_foam', 'default', (('default', 'Off'), ('1', 'On')),
             'White foam where the water meets sand and rock. Photos are unchanged.'),
         row('Ocean waves', 'p', 'opt', 'water_ocean', 'default', (('default', 'Off'), ('1', 'On')),
-            'Rolling open-sea waves from a GPU wave simulation: reflections follow the swell, whitecaps on the crests. Photos are unchanged.'),
+            'Rolling sea waves from a GPU simulation: reflections follow the swell, whitecaps on crests. Photos unchanged.'),
     ]),
             assert _r['default'] in [c[0] for c in _r['choices']], (_r['label'], _r['default'])
 
