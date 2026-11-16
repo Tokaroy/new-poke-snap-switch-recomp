@@ -5,9 +5,11 @@
 #include "os_layout.h"
 #include <windows.h>
 #include <dbghelp.h>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <deque>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -209,33 +211,541 @@ void census_driver(int start_s, int rounds, int gap_s) {
 }
 }  // namespace
 
+// ======================================================================================================================
+// Save states, part 2 (M3): capture the parked threads and the runtime state, put it all back later.
+//
+// A parked thread stays inside gate_block (below) for the whole freeze. To save, each thread captures itself there: its callee-saved
+// registers (snap_capture) and the bytes of its current host stack from the capture point up (copy_out). To load, each thread moves to
+// a small side stack, lets go of G, waits for the coordinator to put the memory and the records back, copies its saved stack bytes
+// over its real stack, takes G again and resumes into the saved registers: it is back inside gate_block, as it was when saved.
+// ======================================================================================================================
+extern "C" {
+int snap_capture(void *regs) __attribute__((returns_twice));
+void snap_resume(void *regs) __attribute__((noreturn));
+void snap_call_on_stack(void (*fn)(void *), void *arg, void *top) __attribute__((noreturn));
+}
+// Regs layout (bytes): rbx 0, rbp 8, rdi 16, rsi 24, r12 32, r13 40, r14 48, r15 56, rsp 64 (after the return), return address 72,
+// mxcsr 80, x87 control word 84, xmm6-15 at 96 + 16 * i. Total 256.
+__asm__(
+    ".text\n"
+    ".globl snap_capture\n"
+    "snap_capture:\n"
+    "  movq %rbx, 0(%rcx)\n  movq %rbp, 8(%rcx)\n  movq %rdi, 16(%rcx)\n  movq %rsi, 24(%rcx)\n"
+    "  movq %r12, 32(%rcx)\n  movq %r13, 40(%rcx)\n  movq %r14, 48(%rcx)\n  movq %r15, 56(%rcx)\n"
+    "  leaq 8(%rsp), %rax\n  movq %rax, 64(%rcx)\n"
+    "  movq (%rsp), %rax\n  movq %rax, 72(%rcx)\n"
+    "  stmxcsr 80(%rcx)\n  fnstcw 84(%rcx)\n"
+    "  movups %xmm6, 96(%rcx)\n  movups %xmm7, 112(%rcx)\n  movups %xmm8, 128(%rcx)\n  movups %xmm9, 144(%rcx)\n  movups %xmm10, 160(%rcx)\n"
+    "  movups %xmm11, 176(%rcx)\n  movups %xmm12, 192(%rcx)\n  movups %xmm13, 208(%rcx)\n  movups %xmm14, 224(%rcx)\n  movups %xmm15, 240(%rcx)\n"
+    "  xorl %eax, %eax\n"
+    "  ret\n"
+    ".globl snap_resume\n"
+    "snap_resume:\n"
+    "  movq 0(%rcx), %rbx\n  movq 8(%rcx), %rbp\n  movq 16(%rcx), %rdi\n  movq 24(%rcx), %rsi\n"
+    "  movq 32(%rcx), %r12\n  movq 40(%rcx), %r13\n  movq 48(%rcx), %r14\n  movq 56(%rcx), %r15\n"
+    "  ldmxcsr 80(%rcx)\n  fldcw 84(%rcx)\n"
+    "  movups 96(%rcx), %xmm6\n  movups 112(%rcx), %xmm7\n  movups 128(%rcx), %xmm8\n  movups 144(%rcx), %xmm9\n  movups 160(%rcx), %xmm10\n"
+    "  movups 176(%rcx), %xmm11\n  movups 192(%rcx), %xmm12\n  movups 208(%rcx), %xmm13\n  movups 224(%rcx), %xmm14\n  movups 240(%rcx), %xmm15\n"
+    "  movq 72(%rcx), %rdx\n  movq 64(%rcx), %rsp\n  movl $1, %eax\n  jmpq *%rdx\n"
+    ".globl snap_call_on_stack\n"
+    "snap_call_on_stack:\n"
+    "  movq %rcx, %rax\n  movq %rdx, %rcx\n  movq %r8, %rsp\n  subq $32, %rsp\n  callq *%rax\n  int3\n");
+
+namespace {
+enum { PH_IDLE = 0, PH_DRAIN = 1, PH_CAPTURE = 2, PH_RESTORE = 3 };
+
+inline uint64_t gs_read(uint32_t off) {
+    uint64_t v;
+    __asm__ volatile("movq %%gs:(%1), %0" : "=r"(v) : "r"((uint64_t)off));
+    return v;
+}
+inline void gs_write(uint32_t off, uint64_t v) { __asm__ volatile("movq %0, %%gs:(%1)" ::"r"(v), "r"((uint64_t)off) : "memory"); }
+
+void *big_alloc(size_t n) { return VirtualAlloc(nullptr, n ? n : 1, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE); }
+void big_free(void *p) { if (p) VirtualFree(p, 0, MEM_RELEASE); }
+
+struct TRec {   // the scheduling and wait fields of a Thread (under G)
+    Cpu *cur = nullptr;
+    int block_depth = 0, base_prio = 0, eff_prio = 0, ideal = 0, core = -1, last_core = 0, joiners = 0, wkind = 0, unclean = 0;
+    uint64_t mask = 0, core_since = 0, ready_seq = 0, wkey = 0, waddr = 0, wseq = 0, own_fiber = 0;
+    uint32_t wtag = 0, wresult = 0;
+    bool waiting_core = false, core_kicked = false, woken = false, sgated = false;
+    Thread *lock_owner = nullptr;
+    std::vector<Thread *> lock_waiters;
+    HostCtx *base_fiber = nullptr;
+    uint64_t base_serial = 0;
+    Fiber *own_shadow = nullptr, *cur_fiber = nullptr, *leaving = nullptr;
+    void save(const Thread *t) {
+        cur = t->cur; block_depth = t->block_depth; base_prio = t->base_prio; eff_prio = t->eff_prio; ideal = t->ideal; core = t->core;
+        last_core = t->last_core; joiners = t->joiners; wkind = t->wkind; unclean = t->unclean; mask = t->mask; core_since = t->core_since;
+        ready_seq = t->ready_seq; wkey = t->wkey; waddr = t->waddr; wseq = t->wseq; own_fiber = t->own_fiber; wtag = t->wtag;
+        wresult = t->wresult; waiting_core = t->waiting_core; core_kicked = t->core_kicked; woken = t->woken; sgated = t->sgated;
+        lock_owner = t->lock_owner; lock_waiters = t->lock_waiters; base_fiber = t->base_fiber; base_serial = t->base_fiber ? t->base_fiber->serial : 0;
+        own_shadow = t->own_shadow; cur_fiber = t->cur_fiber; leaving = t->leaving;
+    }
+    void restore(Thread *t) const {
+        t->cur = cur; t->block_depth = block_depth; t->base_prio = base_prio; t->eff_prio = eff_prio; t->ideal = ideal; t->core = core;
+        t->last_core = last_core; t->joiners = joiners; t->wkind = wkind; t->unclean = unclean; t->mask = mask; t->core_since = core_since;
+        t->ready_seq = ready_seq; t->wkey = wkey; t->waddr = waddr; t->wseq = wseq; t->own_fiber = own_fiber; t->wtag = wtag;
+        t->wresult = wresult; t->waiting_core = waiting_core; t->core_kicked = core_kicked; t->woken = woken; t->sgated = sgated;
+        t->lock_owner = lock_owner; t->lock_waiters = lock_waiters;
+        if (t->base_fiber && t->base_fiber != base_fiber) ctx_free(t->base_fiber);   // created after the save: leave no stack behind
+        t->base_fiber = base_fiber;
+        t->own_shadow = own_shadow; t->cur_fiber = cur_fiber; t->leaving = leaving;
+        t->preempt.store(0);
+        t->core_wait_since = now_us();
+        t->humble_until = 0;
+    }
+};
+
+struct TState {   // one per guest thread in the saved state
+    Thread *t = nullptr;
+    uint64_t cap_gen = 0, rest_gen = 0;
+    alignas(16) uint8_t regs[256];
+    uint8_t *lo = nullptr;       // regs.rsp: the saved stack bytes belong at [lo, lo + n)
+    uint8_t *bytes = nullptr;
+    size_t n = 0, cap = 0;
+    uint64_t tib_base = 0, tib_limit = 0, tib_dealloc = 0;
+    uint8_t *side = nullptr;     // side stack for the restore
+    std::atomic<int> arrived{0}, copied{0}, resumed{0};
+    TRec rec;
+};
+
+struct FRec {   // a fiber, or a thread's own context, as far as the host stack is concerned
+    Fiber *f = nullptr;
+    uint64_t guest = 0;
+    Cpu *cpu = nullptr;
+    HostCtx *host = nullptr;
+    uint64_t serial = 0;
+    void *sp = nullptr;
+    bool finished = false, is_thread_ctx = false, running = false;
+    uint8_t *bytes = nullptr;    // [sp, base) while the context is suspended
+    size_t n = 0;
+};
+
+struct Rng { uint64_t base = 0, size = 0; uint8_t *buf = nullptr; };
+
+struct Slot {
+    bool valid = false;
+    std::deque<TState> ts;
+    std::unordered_map<Thread *, TState *> by_thread;
+    SchedSnap sched;
+    SyncSnap sync;
+    MemBook mem;
+    int64_t time = 0;
+    std::vector<Rng> ranges;
+    std::vector<FRec> frecs;
+    std::vector<std::pair<uint64_t, Fiber *>> fibers;
+    double save_ms = 0;
+    size_t bytes_mem = 0, bytes_stack = 0;
+};
+
+Slot g_slot;
+std::atomic<int> g_go1{0}, g_go2{0};
+uint64_t g_cap_gen = 0, g_rest_gen = 0;   // under G
+
+TState *ts_of(Thread *t) {   // under G
+    if (!g_slot.valid && g_slot.by_thread.empty()) return nullptr;
+    auto it = g_slot.by_thread.find(t);
+    return it == g_slot.by_thread.end() ? nullptr : it->second;
+}
+
+__attribute__((noinline)) void copy_out(TState *ts) {
+    uint8_t *lo = (uint8_t *)(uintptr_t) * (uint64_t *)(ts->regs + 64);
+    ts->tib_base = gs_read(8);
+    ts->tib_limit = gs_read(16);
+    ts->tib_dealloc = gs_read(0x1478);
+    const size_t n = (size_t)(ts->tib_base - (uint64_t)(uintptr_t)lo);
+    if (n > (64u << 20)) fatal("save state: thread %#llx host stack use %zu bytes", (unsigned long long)ts->t->id, n);
+    if (n > ts->cap) {
+        big_free(ts->bytes);
+        ts->bytes = (uint8_t *)big_alloc(n + 4096);
+        ts->cap = n + 4096;
+    }
+    memcpy(ts->bytes, lo, n);
+    ts->lo = lo;
+    ts->n = n;
+}
+
+__attribute__((noinline)) void capture_point(TState *ts) {
+    if (snap_capture(ts->regs) == 0) {
+        copy_out(ts);
+        ts->cap_gen = g_cap_gen;
+        g_coord.notify_all();
+    } else {   // back here after a load: the stack and registers are the saved ones, G is held
+        ts->resumed.fetch_add(1);
+        g_coord.notify_all();
+    }
+}
+
+void restore_stage(void *p) {   // runs on the side stack, G held on entry
+    TState *ts = (TState *)p;
+    ts->rest_gen = g_rest_gen;
+    G.unlock();
+    ts->arrived.store(1);
+    while (!g_go1.load()) Sleep(1);
+    memcpy(ts->lo, ts->bytes, ts->n);
+    ts->copied.store(1);
+    while (!g_go2.load()) Sleep(1);
+    G.lock();
+    gs_write(8, ts->tib_base);
+    gs_write(16, ts->tib_limit);
+    gs_write(0x1478, ts->tib_dealloc);
+    snap_resume(ts->regs);
+}
+
+void gate_block(Thread *t, Lock &lk, int site) {
+    note(t, site);
+    for (;;) {
+        const int ph = g_sphase.load();
+        if (ph == PH_IDLE) return;
+        if (ph == PH_CAPTURE || ph == PH_RESTORE) {
+            if (TState *ts = ts_of(t)) {
+                if (ph == PH_CAPTURE && ts->cap_gen != g_cap_gen) capture_point(ts);
+                else if (ph == PH_RESTORE && ts->rest_gen != g_rest_gen) snap_call_on_stack(restore_stage, ts, ts->side + (64 << 10) - 64);
+            }
+        }
+        t->cv.wait(lk);
+    }
+}
+
+// ---- memory ranges
+bool writable(DWORD prot) {
+    if (prot & (PAGE_GUARD | PAGE_NOACCESS)) return false;
+    return prot & (PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY);
+}
+void add_committed(std::vector<Rng> &out, uint64_t lo, uint64_t hi) {   // the committed writable pages inside [lo, hi)
+    uint64_t a = lo;
+    while (a < hi) {
+        MEMORY_BASIC_INFORMATION mi;
+        if (!VirtualQuery((void *)(uintptr_t)a, &mi, sizeof mi)) break;
+        const uint64_t b = (uint64_t)(uintptr_t)mi.BaseAddress, e = std::min<uint64_t>(b + mi.RegionSize, hi);
+        if (mi.State == MEM_COMMIT && writable(mi.Protect)) out.push_back(Rng{(std::max)(a, b), e - (std::max)(a, b), nullptr});
+        if (e <= a) break;
+        a = e;
+    }
+}
+void add_exact(std::vector<Rng> &out, uint64_t a, uint64_t n) {   // a small host object: only if it sits in committed writable memory
+    if (!a || !n) return;
+    MEMORY_BASIC_INFORMATION mi;
+    if (VirtualQuery((void *)(uintptr_t)a, &mi, sizeof mi) && mi.State == MEM_COMMIT && writable(mi.Protect) && a + n <= (uint64_t)(uintptr_t)mi.BaseAddress + mi.RegionSize)
+        out.push_back(Rng{a, n, nullptr});
+}
+void merge(std::vector<Rng> &v) {
+    std::sort(v.begin(), v.end(), [](const Rng &a, const Rng &b) { return a.base < b.base; });
+    std::vector<Rng> o;
+    for (const Rng &r : v) {
+        if (!o.empty() && r.base <= o.back().base + o.back().size) o.back().size = (std::max)(o.back().base + o.back().size, r.base + r.size) - o.back().base;
+        else o.push_back(r);
+    }
+    v.swap(o);
+}
+
+std::vector<Rng> enumerate(const MemBook &mem, const std::vector<Thread *> &threads, const std::vector<std::pair<uint64_t, Fiber *>> &fibers) {
+    std::vector<Rng> v;
+    if (mem.heap_base) add_committed(v, mem.heap_base, mem.heap_base + mem.heap_size);
+    for (auto &kv : mem.regions) add_committed(v, kv.first, kv.first + kv.second.first);
+    add_committed(v, 0x7100000000ull, 0x7100000000ull + 0x4000000);   // main module (host/loader.h GUEST_MAIN_BASE)
+    add_committed(v, 0x7110000000ull, 0x7110000000ull + 0x2000000);   // sdk module
+    for (Thread *t : threads) {
+        add_exact(v, (uint64_t)(uintptr_t)t->tlr, TLR_SIZE);
+        add_exact(v, t->tt, TT_SIZE);
+        add_exact(v, t->own_fiber, FB_SIZE);
+        add_exact(v, (uint64_t)(uintptr_t)t->cpu, sizeof(Cpu));
+        const uint64_t st = gld<uint64_t>(t->tt + TT_STACK), ss = gld<uint64_t>(t->tt + TT_STACK_SIZE);   // the loader's main thread owns its stack and TLS
+        if (st && ss && ss < (1ull << 30)) add_committed(v, st, st + ss);
+        if (t->cpu && t->cpu->tpidr) {
+            const uint64_t tls = t->cpu->tpidr - 0x8000;
+            MEMORY_BASIC_INFORMATION mi;
+            if (VirtualQuery((void *)(uintptr_t)tls, &mi, sizeof mi) && (uint64_t)(uintptr_t)mi.AllocationBase == tls && mi.RegionSize == 0x10000)
+                add_committed(v, tls, tls + 0x10000);
+        }
+    }
+    for (auto &fk : fibers) add_exact(v, (uint64_t)(uintptr_t)fk.second->cpu, sizeof(Cpu));
+    merge(v);
+    return v;
+}
+
+std::vector<uint64_t> g_tts;   // all_thread_types() takes G itself: read it before locking, use it under G
+
+std::vector<Thread *> guest_threads() {   // under G: started, not exited, not a host helper
+    std::vector<Thread *> out;
+    for (uint64_t tt : g_tts) {
+        Thread *t = find_tt(tt);
+        if (t && !t->is_host && t->started && !t->exited) out.push_back(t);
+    }
+    return out;
+}
+std::vector<Thread *> every_thread() {   // under G: guest threads and host helpers, for their guest-visible objects
+    std::vector<Thread *> out;
+    for (uint64_t tt : g_tts)
+        if (Thread *t = find_tt(tt)) out.push_back(t);
+    return out;
+}
+
+void slot_free() {
+    for (Rng &r : g_slot.ranges) big_free(r.buf);
+    for (FRec &f : g_slot.frecs) big_free(f.bytes);
+    for (TState &s : g_slot.ts) { big_free(s.bytes); big_free(s.side); }
+    g_slot.ranges.clear();
+    g_slot.frecs.clear();
+    g_slot.ts.clear();
+    g_slot.by_thread.clear();
+    g_slot.valid = false;
+}
+
+void copy_suspended(FRec &r) {
+    if (!r.host || r.running || !r.host->sp) return;
+    const uint8_t *lo = (const uint8_t *)r.host->sp, *hi = (const uint8_t *)r.host->base;
+    if (hi <= lo || (size_t)(hi - lo) > (64u << 20)) fatal("save state: suspended context %#llx has sp %p base %p", (unsigned long long)r.guest, r.host->sp, r.host->base);
+    r.n = (size_t)(hi - lo);
+    r.bytes = (uint8_t *)big_alloc(r.n);
+    memcpy(r.bytes, lo, r.n);
+}
+
+bool do_save(std::string &why) {
+    const uint64_t t0 = now_us();
+    std::vector<Row> rows;
+    double dms = 0;
+    std::string last;
+    if (!drain(2000, rows, dms, last)) { why = "drain timed out waiting for " + last; release_all(); return false; }
+    g_tts = all_thread_types();
+    Lock lk(G);
+    slot_free();
+    std::vector<Thread *> gt = guest_threads();
+    for (Thread *t : gt) {
+        if (t->block_depth > 0 || t->core >= 0) { why = "a thread still holds a core or a host block"; g_sphase.store(PH_IDLE); for (Thread *x : every_thread()) x->cv.notify_all(); return false; }
+        g_slot.ts.emplace_back();
+        TState &s = g_slot.ts.back();
+        s.t = t;
+        s.side = (uint8_t *)big_alloc(64 << 10);
+        g_slot.by_thread[t] = &s;
+    }
+    g_cap_gen++;
+    g_sphase.store(PH_CAPTURE);
+    for (Thread *t : every_thread()) t->cv.notify_all();
+    const uint64_t t1 = now_us();
+    for (;;) {
+        bool all = true;
+        for (TState &s : g_slot.ts)
+            if (s.cap_gen != g_cap_gen) all = false;
+        if (all) break;
+        if (now_us() - t1 > 3000000) { why = "capture timed out"; break; }
+        for (Thread *t : every_thread()) t->cv.notify_all();
+        g_coord.wait_for(lk, std::chrono::milliseconds(2));
+    }
+    bool ok = why.empty();
+    if (ok) {
+        std::vector<Thread *> all_t = every_thread();
+        for (TState &s : g_slot.ts) { s.rec.save(s.t); g_slot.bytes_stack += s.n; }
+        state_sched_save(g_slot.sched);
+        state_sync_save(g_slot.sync);
+        state_mem_save(g_slot.mem);
+        g_slot.fibers = state_fibers();
+        auto add_f = [&](Fiber *f) {
+            FRec r;
+            r.f = f; r.guest = f->guest; r.cpu = f->cpu; r.host = f->host; r.serial = f->host ? f->host->serial : 0; r.sp = f->host ? f->host->sp : nullptr;
+            r.finished = f->finished; r.is_thread_ctx = f->is_thread_ctx; r.running = f->running.load();
+            copy_suspended(r);
+            g_slot.bytes_stack += r.n;
+            g_slot.frecs.push_back(r);
+        };
+        for (auto &fk : g_slot.fibers) add_f(fk.second);
+        for (Thread *t : all_t)
+            if (t->own_shadow) add_f(t->own_shadow);
+        g_slot.ranges = enumerate(g_slot.mem, all_t, g_slot.fibers);
+        for (Rng &r : g_slot.ranges) {
+            r.buf = (uint8_t *)big_alloc(r.size);
+            memcpy(r.buf, (const void *)(uintptr_t)r.base, r.size);
+            g_slot.bytes_mem += r.size;
+        }
+        g_slot.time = state_time_get();
+        g_slot.valid = true;
+    }
+    g_sphase.store(PH_IDLE);
+    for (Thread *t : every_thread()) t->cv.notify_all();
+    g_slot.save_ms = (now_us() - t0) / 1000.0;
+    if (!ok) slot_free();
+    return ok;
+}
+
+bool writable_now(const Rng &r) {
+    uint64_t a = r.base;
+    while (a < r.base + r.size) {
+        MEMORY_BASIC_INFORMATION mi;
+        if (!VirtualQuery((void *)(uintptr_t)a, &mi, sizeof mi) || mi.State != MEM_COMMIT || !writable(mi.Protect)) return false;
+        a = (uint64_t)(uintptr_t)mi.BaseAddress + mi.RegionSize;
+    }
+    return true;
+}
+
+// Checks, under G with every thread parked, that what the save saw is still there. Returns an empty string when a load can go ahead.
+std::string load_refusal() {
+    if (!g_slot.valid) return "no saved state";
+    std::vector<Thread *> gt = guest_threads();
+    if (gt.size() != g_slot.ts.size()) return "thread count changed (" + std::to_string(g_slot.ts.size()) + " -> " + std::to_string(gt.size()) + ")";
+    for (Thread *t : gt)
+        if (!g_slot.by_thread.count(t)) return "a thread was created since the save";
+    for (TState &s : g_slot.ts)
+        if (s.t->exited || !s.t->started) return "a thread exited since the save";
+    SchedSnap now;
+    state_sched_save(now);
+    if (now.by_tt.size() != g_slot.sched.by_tt.size()) return "thread table changed";
+    if (state_fibers() != g_slot.fibers) return "the fiber set changed";
+    for (FRec &r : g_slot.frecs) {
+        const uint64_t cur = r.f->host ? r.f->host->serial : 0;
+        if (r.host && cur != r.serial) return "a fiber stack was re-created";
+    }
+    std::string m = state_mem_check(g_slot.mem);   // regions made since the save are released by the load; regions released since must have free addresses
+    if (!m.empty()) return m;
+    MemBook now_mem;
+    state_mem_save(now_mem);
+    for (Rng &r : g_slot.ranges) {
+        if (writable_now(r)) continue;
+        bool released = false;   // inside a VAMM region that was released since: the load re-reserves and recommits it
+        for (auto &kv : g_slot.mem.regions)
+            if (r.base >= kv.first && r.base + r.size <= kv.first + kv.second.first && !now_mem.regions.count(kv.first)) released = true;
+        if (!released) return "memory at " + std::to_string(r.base) + " is no longer committed";
+    }
+    return "";
+}
+
+bool do_load(std::string &why) {
+    const uint64_t t0 = now_us();
+    if (!g_slot.valid) { why = "no saved state"; return false; }
+    std::vector<Row> rows;
+    double dms = 0;
+    std::string last;
+    if (!drain(2000, rows, dms, last)) { why = "drain timed out waiting for " + last; release_all(); return false; }
+    g_tts = all_thread_types();
+    {
+        Lock lk(G);
+        why = load_refusal();
+        if (!why.empty()) {
+            g_sphase.store(PH_IDLE);
+            for (Thread *t : every_thread()) t->cv.notify_all();
+            return false;
+        }
+        for (TState &s : g_slot.ts) { s.arrived = 0; s.copied = 0; s.resumed = 0; }
+        g_go1 = 0;
+        g_go2 = 0;
+        g_rest_gen++;
+        g_sphase.store(PH_RESTORE);
+        for (Thread *t : every_thread()) t->cv.notify_all();
+    }
+    const uint64_t t1 = now_us();
+    auto all_flag = [&](std::atomic<int> TState::*m) {
+        for (TState &s : g_slot.ts)
+            if (!(s.*m).load()) return false;
+        return true;
+    };
+    while (!all_flag(&TState::arrived)) {
+        if (now_us() - t1 > 5000000) fatal("load state: threads did not reach the side stacks (%llu ms)", (unsigned long long)((now_us() - t1) / 1000));
+        Sleep(0);
+        Lock lk(G);
+        for (Thread *t : every_thread()) t->cv.notify_all();
+        lk.unlock();
+        Sleep(1);
+    }
+    {
+        Lock lk(G);   // every guest thread is on a side stack with G released; put the world back
+        const std::string mr = state_mem_restore(g_slot.mem);
+        if (!mr.empty()) fatal("load state: %s", mr.c_str());   // load_refusal checked the addresses; the threads are already on side stacks
+        for (Rng &r : g_slot.ranges) {
+            if (!writable_now(r) && !VirtualAlloc((void *)(uintptr_t)r.base, r.size, MEM_COMMIT, PAGE_READWRITE))
+                fatal("load state: cannot recommit %llu bytes at %llx", (unsigned long long)r.size, (unsigned long long)r.base);
+            memcpy((void *)(uintptr_t)r.base, r.buf, r.size);
+        }
+        state_sched_restore(g_slot.sched);
+        state_sync_restore(g_slot.sync);
+        for (TState &s : g_slot.ts) s.rec.restore(s.t);
+        for (FRec &r : g_slot.frecs) {
+            Fiber *f = r.f;
+            f->host = r.host;
+            f->finished = r.finished;
+            f->running.store(r.running);
+            if (r.host) r.host->sp = r.sp;
+            if (r.bytes) memcpy(r.host->sp, r.bytes, r.n);
+        }
+        state_time_set(g_slot.time);
+        g_go1 = 1;
+    }
+    while (!all_flag(&TState::copied)) Sleep(1);
+    g_go2 = 1;
+    while (!all_flag(&TState::resumed)) {
+        if (now_us() - t1 > 15000000) fatal("load state: threads did not resume");
+        Sleep(1);
+    }
+    release_all();
+    why = std::to_string((now_us() - t0) / 1000.0);
+    return true;
+}
+
+size_t private_mib() {
+    struct PMC { DWORD cb, faults; SIZE_T peakws, ws, qpp, qp, qpnp, qnp, pagefile, peakpagefile; } m = {};
+    m.cb = sizeof m;
+    static auto fn = (BOOL(WINAPI *)(HANDLE, void *, DWORD))GetProcAddress(GetModuleHandleA("kernel32.dll"), "K32GetProcessMemoryInfo");
+    if (!fn || !fn(GetCurrentProcess(), &m, sizeof m)) return 0;
+    return m.pagefile >> 20;
+}
+
+struct TestPlan { int save_s = -1, load_s = -1, loops = 1, lgap = 3; };
+
+void save_load_driver(TestPlan p) {
+    Sleep(p.save_s * 1000);
+    std::string why;
+    bool ok = do_save(why);
+    log("state save: %s in %.0f ms: %zu threads, %zu MiB guest memory in %zu ranges, %zu KiB host stack; process commit %zu MiB%s%s", ok ? "ok" : "REFUSED", g_slot.save_ms,
+        g_slot.ts.size(), g_slot.bytes_mem >> 20, g_slot.ranges.size(), g_slot.bytes_stack >> 10, private_mib(), ok ? "" : ": ", ok ? "" : why.c_str());
+    if (!ok || p.load_s < 0) return;
+    Sleep((std::max)(0, p.load_s - p.save_s) * 1000);
+    for (int i = 0; i < p.loops; i++) {
+        if (i) Sleep(p.lgap * 1000);
+        std::string w;
+        const uint64_t a = now_us();
+        bool lok = do_load(w);
+        log("state load %d/%d: %s %s ms%s; process commit %zu MiB", i + 1, p.loops, lok ? "ok" : "REFUSED", lok ? w.c_str() : "-", lok ? "" : (": " + w).c_str(), private_mib());
+        (void)a;
+    }
+}
+}  // namespace
+
 void state_gate_wait(Thread *t, Lock &lk) {
-    (void)lk;
-    if (g_sphase.load(std::memory_order_relaxed) == 1) note(t, SITE_WAIT);
+    if (g_sphase.load(std::memory_order_relaxed) == 0) return;
+    gate_block(t, lk, SITE_WAIT);
 }
 
 bool state_gate_acq(Thread *t, Lock &lk) {
-    if (g_sphase.load(std::memory_order_relaxed) != 1) return false;
+    const int ph = g_sphase.load(std::memory_order_relaxed);
+    if (ph == 0) return false;
     if (t->is_host || t->free_core) return false;
-    if (t->unclean > 0) {   // host frames above may own heap objects: grant once, the thread parks at its next check-in
+    if (t->unclean > 0 && ph == PH_DRAIN) {   // host frames above may own heap objects: grant once, the thread parks at its next check-in
         g_unclean_grants++;
         return false;
     }
-    note(t, SITE_ACQ);
     t->sgated = true;
     state_kick_cores();   // a thread that waits for a core after an unclean grant may have been blocked by this waiter
-    t->cv.wait(lk);
+    gate_block(t, lk, SITE_ACQ);
     t->sgated = false;
     return true;
 }
 
 void state_init() {
     const char *e = getenv("SNAP_STATE_TEST");
-    if (!e || strncmp(e, "census@t", 8) != 0) return;
-    int start = atoi(e + 8), rounds = 5, gap = 2;
-    if (const char *p = strstr(e, ",n")) rounds = atoi(p + 2);
-    if (const char *p = strstr(e, ",gap")) gap = atoi(p + 4);
-    std::thread(census_driver, start, rounds, gap).detach();
+    if (!e) return;
+    if (strncmp(e, "census@t", 8) == 0) {
+        int start = atoi(e + 8), rounds = 5, gap = 2;
+        if (const char *p = strstr(e, ",n")) rounds = atoi(p + 2);
+        if (const char *p = strstr(e, ",gap")) gap = atoi(p + 4);
+        std::thread(census_driver, start, rounds, gap).detach();
+    } else if (strncmp(e, "save@t", 6) == 0) {   // save@t<s>[,load@t<s>][,loops<n>][,lgap<s>]
+        TestPlan p;
+        p.save_s = atoi(e + 6);
+        if (const char *q = strstr(e, ",load@t")) p.load_s = atoi(q + 7);
+        if (const char *q = strstr(e, ",loops")) p.loops = atoi(q + 6);
+        if (const char *q = strstr(e, ",lgap")) p.lgap = atoi(q + 5);
+        std::thread(save_load_driver, p).detach();
+    }
 }
 
 }  // namespace osk

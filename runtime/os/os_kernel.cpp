@@ -370,7 +370,10 @@ static void snap_core_holders(Thread *t);
 
 static bool wait_woken_raw(Thread *t, Lock &lk, Deadline d) {
     while (!t->woken) {
-        if (__builtin_expect(g_sphase.load(std::memory_order_relaxed) != 0, 0)) state_gate_wait(t, lk);
+        if (__builtin_expect(g_sphase.load(std::memory_order_relaxed) != 0, 0)) {
+            state_gate_wait(t, lk);   // blocks until the freeze ends; a wake that came meanwhile consumed the notify, so re-check
+            continue;
+        }
         if (is_infinite(d)) {
             t->cv.wait(lk);
         } else if (t->cv.wait_until(lk, d) == std::cv_status::timeout) {
@@ -464,6 +467,21 @@ static void kick_free_cores() {
             if (migration_victim(w)) w->cv.notify_one();
 }
 void state_kick_cores() { kick_free_cores(); }
+void state_sched_save(SchedSnap &s) {
+    s.keyq = g_keyq;
+    s.cores = g_cores;
+    s.core_wait = g_core_wait;
+    s.by_tt = g_by_tt;
+    s.overflow = g_overflow;
+    s.seq = g_seq;
+}
+void state_sched_restore(const SchedSnap &s) {
+    g_keyq = s.keyq;
+    g_cores = s.cores;
+    g_core_wait = s.core_wait;
+    g_overflow = s.overflow;
+    g_seq = s.seq;
+}
 static void take_core(Thread *t, int c) {   // t has already left g_core_wait
     t->core = c;
     if (c < ncores()) {
@@ -1164,6 +1182,23 @@ extern "C" uint64_t os_ticks(void) {
     uint64_t f = (uint64_t)qpc_freq();   // split so no 128-bit division (__udivti3) is needed; (d % f) * 19.2e6 < 2^63
     return g_cfg.tick_base + d / f * OS_TICK_FREQUENCY + d % f * OS_TICK_FREQUENCY / f;
 }
+namespace osk {
+// save states: the guest clock is QPC minus the paused span; a load sets the span so the clock continues from the saved reading
+int64_t state_time_get() {
+    LARGE_INTEGER n;
+    std::lock_guard<std::mutex> lk(g_pause_mu);
+    QueryPerformanceCounter(&n);
+    if (g_pause_start) n.QuadPart = g_pause_start;
+    return (int64_t)n.QuadPart - g_paused_total;
+}
+void state_time_set(int64_t v) {
+    LARGE_INTEGER n;
+    std::lock_guard<std::mutex> lk(g_pause_mu);
+    QueryPerformanceCounter(&n);
+    if (g_pause_start) g_pause_start = n.QuadPart;
+    g_paused_total = (int64_t)n.QuadPart - v;
+}
+}  // namespace osk
 
 extern "C" void os_init(const OsConfig *in) {
     Config c;

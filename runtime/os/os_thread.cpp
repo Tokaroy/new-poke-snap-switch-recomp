@@ -10,6 +10,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <algorithm>
 
 #include "os_internal.h"
 
@@ -440,5 +441,12 @@ const OsOverride g_thread_overrides[] = {
     {"_ZN2nn2os6detail13ThreadManager13DestroyThreadEPNS0_10ThreadTypeE", member<ov_DestroyThread>},
 };
 const size_t g_thread_override_count = sizeof g_thread_overrides / sizeof g_thread_overrides[0];
+
+std::vector<std::pair<uint64_t, Fiber *>> state_fibers() {   // save states
+    std::lock_guard<std::mutex> lk(g_fmu);
+    std::vector<std::pair<uint64_t, Fiber *>> v(g_fibers.begin(), g_fibers.end());
+    std::sort(v.begin(), v.end());
+    return v;
+}
 
 }  // namespace osk

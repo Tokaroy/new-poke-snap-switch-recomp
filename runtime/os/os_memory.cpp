@@ -412,4 +412,47 @@ const OsOverride g_memory_overrides[] = {
     {"_ZN2nn2os15FreeMemoryBlockEmm", ov_FreeMemoryBlock},
 };
 const size_t g_memory_override_count = sizeof g_memory_overrides / sizeof g_memory_overrides[0];
+
+void state_mem_save(MemBook &m) {   // save states
+    std::lock_guard<std::mutex> lk(g_mm);
+    for (auto &kv : g_regions) m.regions[kv.first] = {kv.second.size, kv.second.committed};
+    m.reserved = g_reserved_total;
+    m.committed = g_committed_total;
+    m.heap_base = g_heap_base;
+    m.heap_size = g_heap_size;
+    m.blocks = g_heap_blocks;
+}
+std::string state_mem_check(const MemBook &m) {
+    std::lock_guard<std::mutex> lk(g_mm);
+    if (g_heap_base != m.heap_base || g_heap_size != m.heap_size) return "the memory heap size changed";
+    for (auto &kv : m.regions) {
+        auto it = g_regions.find(kv.first);
+        if (it != g_regions.end()) {
+            if (it->second.size != kv.second.first) return "a VAMM region changed size";
+            continue;
+        }
+        for (uint64_t a = kv.first; a < kv.first + kv.second.first;) {   // released since the save: its addresses must still be free
+            MEMORY_BASIC_INFORMATION mi;
+            if (!VirtualQuery((void *)(uintptr_t)a, &mi, sizeof mi) || mi.State != MEM_FREE) return "the address of a released VAMM region is in use";
+            a = (uint64_t)(uintptr_t)mi.BaseAddress + mi.RegionSize;
+        }
+    }
+    return "";
+}
+std::string state_mem_restore(const MemBook &m) {
+    std::lock_guard<std::mutex> lk(g_mm);
+    for (auto &kv : g_regions)   // made since the save: the restored world does not know them
+        if (!m.regions.count(kv.first)) VirtualFree((void *)(uintptr_t)kv.first, 0, MEM_RELEASE);
+    for (auto &kv : m.regions) {
+        if (g_regions.count(kv.first)) continue;
+        if (!VirtualAlloc((void *)(uintptr_t)kv.first, kv.second.first, MEM_RESERVE | ww_flag(), PAGE_NOACCESS))
+            return "cannot re-reserve a released VAMM region";
+    }
+    g_regions.clear();
+    for (auto &kv : m.regions) g_regions[kv.first] = Region{kv.second.first, kv.second.second};
+    g_reserved_total = m.reserved;
+    g_committed_total = m.committed;
+    g_heap_blocks = m.blocks;
+    return "";
+}
 }  // namespace osk

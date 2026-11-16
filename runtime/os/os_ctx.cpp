@@ -7,6 +7,7 @@
 #define NOMINMAX
 #include <windows.h>
 
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 
@@ -46,9 +47,12 @@ extern "C" void snap_ctx_tramp(void);
 
 namespace osk {
 
+static std::atomic<uint64_t> g_serial{1};
+
 HostCtx *ctx_new_thread() {
     HostCtx *c = new HostCtx;
     memset(c, 0, sizeof *c);
+    c->serial = g_serial++;
     return c;   // filled by the first switch away from the thread's own stack
 }
 
@@ -77,6 +81,7 @@ HostCtx *ctx_new_fiber(size_t reserve, void (*entry)(void *), void *arg) {
     c->dealloc = base;
     c->alloc = base;
     c->reserve = reserve;
+    c->serial = g_serial++;
     return c;
 }
 

@@ -970,6 +970,17 @@ const OsOverride g_sync_overrides[] = {
 };
 const size_t g_sync_override_count = sizeof g_sync_overrides / sizeof g_sync_overrides[0];
 
+void state_sync_save(SyncSnap &s) {   // save states: under G
+    s.mw = g_mw;
+    s.obj_holders = g_obj_holders;
+    s.handle_events = g_handle_events;
+}
+void state_sync_restore(const SyncSnap &s) {
+    g_mw = s.mw;
+    g_obj_holders = s.obj_holders;
+    g_handle_events = s.handle_events;
+}
+
 }  // namespace osk
 
 // ---- C interface for HLE services

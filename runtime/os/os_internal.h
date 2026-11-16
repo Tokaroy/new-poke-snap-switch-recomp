@@ -8,7 +8,9 @@
 #include <condition_variable>
 #include <cstdint>
 #include <cstring>
+#include <map>
 #include <mutex>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -50,6 +52,7 @@ struct HostCtx {
     void *dealloc;   // TIB DeallocationStack
     void *alloc;     // VirtualAlloc base of a fiber stack, null for a thread's own stack
     size_t reserve;
+    uint64_t serial; // unique per context: tells a re-created fiber stack from the one a save state saw
 };
 HostCtx *ctx_new_thread();
 HostCtx *ctx_new_fiber(size_t reserve, void (*entry)(void *), void *arg);   // entry must not return
@@ -172,6 +175,34 @@ void state_gate_wait(Thread *t, Lock &lk);   // top of the keyed-wait loop (wait
 bool state_gate_acq(Thread *t, Lock &lk);    // top of the core-wait loop (acquire_core_raw): true = the thread waited, re-check
 void state_kick_cores();                     // under G: re-run the free-core handoff (os_kernel.cpp)
 void state_init();                        // os_init: starts the SNAP_STATE_TEST driver thread when asked
+
+// Containers and counters a save state copies by value (accessors live next to the statics they read).
+struct SchedSnap {   // os_kernel.cpp, under G
+    std::unordered_map<uint64_t, std::vector<Thread *>> keyq;
+    std::vector<Thread *> cores, core_wait;
+    std::unordered_map<uint64_t, Thread *> by_tt;
+    int overflow = 0;
+    uint64_t seq = 0;
+};
+void state_sched_save(SchedSnap &s);
+void state_sched_restore(const SchedSnap &s);
+int64_t state_time_get();             // guest time base (QPC counts minus pauses)
+void state_time_set(int64_t v);       // the next os_ticks() continues from v
+struct SyncSnap {   // os_sync.cpp, under G
+    std::unordered_map<uint64_t, std::vector<uint64_t>> mw, obj_holders;
+    std::unordered_map<uint32_t, std::vector<uint64_t>> handle_events;
+};
+void state_sync_save(SyncSnap &s);
+void state_sync_restore(const SyncSnap &s);
+std::vector<std::pair<uint64_t, Fiber *>> state_fibers();   // os_thread.cpp: the fiber table, sorted by guest address
+struct MemBook {   // os_memory.cpp: the VAMM and heap bookkeeping
+    std::map<uint64_t, std::pair<uint64_t, uint64_t>> regions;   // base -> {size, committed}
+    uint64_t reserved = 0, committed = 0, heap_base = 0, heap_size = 0;
+    std::map<uint64_t, uint64_t> blocks;
+};
+void state_mem_save(MemBook &m);
+std::string state_mem_check(const MemBook &saved);     // dry run: "" when a load can put the VAMM and heap back, else why not
+std::string state_mem_restore(const MemBook &saved);   // releases regions made since the save, re-reserves released ones, restores the bookkeeping
 
 // virtual cores (under G)
 void acquire_core(Thread *t, Lock &lk);
