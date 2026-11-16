@@ -1565,6 +1565,39 @@ static void test_input_hub() {
   CHECK(!(h.pad().buttons & bit(kZR)));
   h.set_mapping(Mapping::defaults());
 
+  // --- accessibility: any button can toggle (input.json accessibility.toggle_buttons), the list parser, the JSON round trip
+  {
+    CHECK(parse_toggle_list("ZL,y a") == ((1u << kZL) | (1u << kY) | (1u << kA)));
+    CHECK(parse_toggle_list("off") == 0 && parse_toggle_list("") == 0 && parse_toggle_list("Plus,Minus,bogus") == 0);   // only A B X Y L R ZL ZR can toggle
+    Mapping tm = Mapping::defaults();
+    tm.buttons[(size_t)kY] = {SRC("key:T")};
+    tm.toggle_buttons = 1u << kY;
+    CHECK(toggle_mask_effective(tm) == (1u << kY));
+    tm.toggle_zr = true;
+    CHECK(toggle_mask_effective(tm) == ((1u << kY) | (1u << kZR)));
+    {
+      std::string t2, e2;
+      Json j2;
+      Mapping b2;
+      json_dump(tm.to_json(), t2);
+      CHECK(json_parse(t2, j2, e2) && b2.from_json(j2, &e2) && b2.toggle_buttons == tm.toggle_buttons && b2.toggle_zr);
+    }
+    h.set_mapping(tm);
+    raw.keys.set((size_t)key_from_name("T"));
+    poll();
+    CHECK(h.pad().buttons & bit(kY));
+    raw.keys.reset();
+    poll();
+    CHECK(h.pad().buttons & bit(kY));       // stays after the release
+    raw.keys.set((size_t)key_from_name("T"));
+    poll();
+    CHECK(!(h.pad().buttons & bit(kY)));    // the second press flips it off
+    raw.keys.reset();
+    poll();
+    CHECK(!(h.pad().buttons & bit(kY)));
+    h.set_mapping(Mapping::defaults());
+  }
+
   // --- menu open: the game sees an idle pad, the mapped state stays in preview()
   raw = RawInput{};
   raw.keys.set((size_t)key_from_name("L"));

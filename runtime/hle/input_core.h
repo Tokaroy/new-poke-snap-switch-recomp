@@ -147,6 +147,7 @@ struct Mapping {
   bool lock_cursor = true;                          // confine the cursor to the window while playing (not while the menu is open)
   // accessibility
   bool toggle_zl = false, toggle_zr = false;        // a press flips the trigger on or off instead of holding it
+  uint32_t toggle_buttons = 0;                      // the same for any other button: bit (1 << Button) for A B X Y L R (input.json accessibility.toggle_buttons, SNAP_ACCESS_TOGGLE adds more)
   float ui_scale = 1.0f;
   static Mapping defaults();
   Json to_json() const;
@@ -172,6 +173,8 @@ struct PadSample {
 struct TouchPoint { int32_t x, y; };                // 1280x720 panel coordinates
 struct TouchSample { int count = 0; TouchPoint pt[1]; };
 
+uint32_t parse_toggle_list(const std::string& list);       // "ZL,Y a" -> bit mask of Buttons that can toggle (A B X Y L R ZL ZR); unknown names ignored
+uint32_t toggle_mask_effective(const Mapping& m);          // m.toggle_zl / toggle_zr / toggle_buttons plus the SNAP_ACCESS_TOGGLE list
 PadSample map_pad(const Mapping& m, const RawInput& in);   // stateless (no toggle mode): what the Hub computes before suppression
 bool source_down(const Source& s, const RawInput& in, float trigger_threshold = 0.5f);
 TouchSample map_touch(const Mapping& m, const RawInput& in);
@@ -227,7 +230,7 @@ class Hub {
   std::string path_, message_;
   uint64_t message_serial_ = 0;
   std::atomic<bool> menu_open_{false}, cursor_hidden_{false}, toggle_req_{false}, capturing_{false};
-  bool tog_state_[2] = {false, false}, tog_prev_[2] = {false, false};   // toggle-mode triggers
+  uint64_t tog_state_ = 0, tog_prev_ = 0;   // toggle-mode buttons (one bit per Button: ZL, ZR and the accessibility.toggle_buttons list)
   struct MSample { uint64_t t; float dx, dy; };
   std::vector<MSample> msamples_;                                       // mouse-look velocity window
   uint64_t chord_since_ns_ = 0;                                         // Back+Start

@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -36,6 +37,29 @@ const char* button_name(int b) { return b >= 0 && b < kButtonCount ? kButtonName
 int button_from_name(const std::string& n) {
   for (int i = 0; i < kButtonCount; ++i) if (n == kButtonNames[i]) return i;
   return -1;
+}
+
+uint32_t parse_toggle_list(const std::string& list) {
+  uint32_t m = 0;
+  std::string tok;
+  for (size_t i = 0; i <= list.size(); ++i) {
+    const char c = i < list.size() ? list[i] : ',';
+    if (c == ',' || c == ' ' || c == ';' || c == '+') {
+      std::string u;
+      for (char ch : tok) u += (char)std::toupper((unsigned char)ch);
+      tok.clear();
+      for (const char* n : {"A", "B", "X", "Y", "L", "R", "ZL", "ZR"})
+        if (u == n) m |= 1u << button_from_name(n);
+    } else tok += c;
+  }
+  return m;
+}
+uint32_t toggle_mask_effective(const Mapping& m) {
+  static const uint32_t env = [] { const char* e = std::getenv("SNAP_ACCESS_TOGGLE"); return e && *e ? parse_toggle_list(e) : 0u; }();
+  uint32_t r = m.toggle_buttons | env;
+  if (m.toggle_zl) r |= 1u << kZL;
+  if (m.toggle_zr) r |= 1u << kZR;
+  return r;
 }
 
 static const char* kPadNames[kPadCount] = {"south", "east", "west", "north", "back", "guide", "start", "lstick", "rstick",
@@ -234,6 +258,11 @@ Json Mapping::to_json() const {
   Json acc = Json::object();
   acc.set("toggle_zl", Json::boolean_(toggle_zl));
   acc.set("toggle_zr", Json::boolean_(toggle_zr));
+  if (toggle_buttons) {
+    Json tb = Json::array();
+    for (int i = 0; i < kButtonCount; ++i) if ((toggle_buttons >> i) & 1u) tb.a.push_back(Json::string(button_name(i)));
+    acc.set("toggle_buttons", tb);
+  }
   acc.set("ui_scale", Json::number(ui_scale));
   j.set("accessibility", acc);
   Json b = Json::object();
@@ -311,6 +340,10 @@ bool Mapping::from_json(const Json& j, std::string* err) {
     if (v->type != Json::Obj) { *err = "\"accessibility\" must be an object"; return false; }
     if (auto* t = v->get("toggle_zl")) m.toggle_zl = t->boolean(false);
     if (auto* t = v->get("toggle_zr")) m.toggle_zr = t->boolean(false);
+    if (auto* t = v->get("toggle_buttons")) {   // ["A","Y","L"...]: other held buttons that toggle (ZL and ZR have their own switches above)
+      m.toggle_buttons = 0;
+      if (t->type == Json::Arr) for (auto& e : t->a) { const int b = button_from_name(e.str()); if (b >= kA && b <= kZR && b != kStickL && b != kStickR) m.toggle_buttons |= 1u << b; }
+    }
     if (auto* t = v->get("ui_scale")) m.ui_scale = clampf(t, 1.0, 0.5f, 3.0f);
   }
   if (auto* b = j.get("buttons")) {
@@ -1113,7 +1146,7 @@ void Hub::set_menu_open(bool open) {
   std::lock_guard<std::mutex> g(mu_);
   if (open == menu_open_.load()) return;
   menu_open_ = open;
-  tog_state_[0] = tog_state_[1] = false;
+  tog_state_ = 0;
   chord_fired_ = true;   // the chord that opened the menu must be released before it can fire again
   chord_since_ns_ = 0;
   if (!open) { capturing_ = false; cap_have_ = false; }
@@ -1227,15 +1260,14 @@ void Hub::poll(int min_interval_ms) {
     }
   }
   PadSample p = map_pad(map_, r);
-  // toggle mode: a ZL / ZR press flips the trigger instead of holding it
-  const bool tg[2] = {map_.toggle_zl, map_.toggle_zr};
-  const int bits[2] = {kZL, kZR};
-  for (int i = 0; i < 2; ++i) {
-    if (!tg[i]) { tog_state_[i] = false; tog_prev_[i] = false; continue; }
-    bool down = (p.buttons >> bits[i]) & 1;
-    if (down && !tog_prev_[i]) tog_state_[i] = !tog_state_[i];
-    tog_prev_[i] = down;
-    if (tog_state_[i]) p.buttons |= 1ull << bits[i]; else p.buttons &= ~(1ull << bits[i]);
+  // toggle mode: a press of a toggle button (ZL / ZR switches, the accessibility.toggle_buttons list, SNAP_ACCESS_TOGGLE) flips it on or off instead of holding it
+  const uint64_t tmask = toggle_mask_effective(map_);
+  tog_state_ &= tmask; tog_prev_ &= tmask;
+  if (tmask) {
+    const uint64_t down = p.buttons & tmask;
+    tog_state_ ^= down & ~tog_prev_;
+    tog_prev_ = down;
+    p.buttons = (p.buttons & ~tmask) | tog_state_;
   }
   preview_ = p;
   pad_ = p;
