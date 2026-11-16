@@ -21,7 +21,9 @@
 #include <vector>
 
 #include "hle/hle.h"
+#include "hle/hle_config.h"
 #include "hle/profiles.h"
+#include "hle/save_backup.h"
 #include "hle/settings.h"
 #include "ui_internal.h"
 
@@ -48,6 +50,7 @@ struct SavesState {
   enum Confirm { None, Clear, Delete } confirm = None;
   bool restart_needed = false;
   int last_sel = -1;
+  int backup_sel = -1;   // the "Restore a backup" list
   std::vector<std::string> fixtures;
   double fixtures_at = -100;
   // folder dialog result (filled by a worker thread)
@@ -405,6 +408,38 @@ void tab_saves() {
       if (ImGui::Button(label.c_str())) {
         std::string e, name = import_fixture(st, f, &e);
         if (!name.empty()) { say("Imported \"" + name + "\" into a new profile.", false); reload(); } else say(e, true);
+      }
+    }
+    ImGui::TreePop();
+  }
+
+  // ---- backups of the running save (runtime/hle/save_backup.h, docs/save-backups.md): the same list as the launcher's "Restore a backup..."
+  if (ImGui::TreeNode("Restore a backup")) {
+    const std::string sroot = hle::config().save_root;
+    const std::string waiting = hle::savebackup::queued_restore(sroot);
+    ImGui::TextWrapped("The game copies your save at every start and before every import or restore (newest 10 of each kept). The game is running, so a restore "
+                       "happens at the next start: it puts the backup back as a new generation and keeps the current save as an older one.");
+    if (!waiting.empty()) {
+      ImGui::TextColored(t.conflict, "Waiting for the next start: %s", waiting.c_str());
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Cancel")) hle::savebackup::cancel_queued_restore(sroot);
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Restart now")) restart_now(act.on ? act.name : "");
+    }
+    const auto backups = hle::savebackup::list(sroot);
+    if (backups.empty()) ImGui::TextDisabled("No backups yet. The first one is made at the next start.");
+    const hle::savebackup::Entry* picked = nullptr;
+    for (size_t i = 0; i < backups.size() && i < 8; ++i) {
+      ImGui::PushID((int)(1000 + i));
+      if (ImGui::Selectable(hle::savebackup::describe(backups[i]).c_str(), Z.backup_sel == (int)i, 0, ImVec2(0, lh * 0.9f))) Z.backup_sel = (int)i;
+      if (Z.backup_sel == (int)i) picked = &backups[i];
+      ImGui::PopID();
+    }
+    if (picked) {
+      if (hold_button("Hold to restore this backup at the next start", 1.5f, t.error)) {
+        std::string e;
+        if (hle::savebackup::queue_restore(sroot, picked->folder, &e)) { say("Queued. Use Restart now (unsaved progress in the running game is lost).", false); Z.restart_needed = true; }
+        else say(e, true);
       }
     }
     ImGui::TreePop();

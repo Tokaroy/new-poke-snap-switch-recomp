@@ -92,6 +92,7 @@ std::string check_romfs(const std::string& root, const hle::Json& data) {
   if (!fs::is_directory(fs::u8path(root), ec))
 extern "C" void snap_crashlog_rotate(const wchar_t* logs_dir);   // host/mods/crashlog.cpp
 extern "C" void snap_crashlog_set_dir(const char* utf8_dir);
+extern "C" int snap_launchmark_check(char* why, int cap);   // host/mods/crashlog.cpp: 0 none, 1 the last start never reached the title screen, 2 and it was a safe-mode start
 
     return "The game folder cannot be found:\n" + root + "\n\nIs the drive or network share connected? Use \"Change game folder\" to pick it again.";
   const hle::Json* sents = data.get("sentinels");
@@ -748,6 +749,16 @@ static int ask_themed(const UpdateNotice& notice, const fs::path& cfg_path, cons
   }
 }
 
+// %LOCALAPPDATA%\SnapRecomp\logs (the LOCALAPPDATA variable first: the folder the shader cache uses, which a test run can redirect)
+static fs::path logs_dir() {
+  wchar_t* la = nullptr;
+  fs::path logs;
+  wchar_t env_la[MAX_PATH] = {};
+  if (GetEnvironmentVariableW(L"LOCALAPPDATA", env_la, MAX_PATH) && env_la[0]) logs = fs::path(env_la) / L"SnapRecomp" / L"logs";
+  else if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &la))) { logs = fs::path(la) / L"SnapRecomp" / L"logs"; CoTaskMemFree(la); }
+  return logs;
+}
+
 bool prepare(Result& r) {
   wchar_t mp[MAX_PATH * 2] = {};
   GetModuleFileNameW(nullptr, mp, (DWORD)(sizeof mp / sizeof mp[0]));
@@ -778,13 +789,38 @@ bool prepare(Result& r) {
   // a test run never checks unless SNAP_LAUNCHER_UPDATE_CHECK is set). Play is never delayed by it.
   UpdateNotice notice = load_notice();
   if (!autoplay || std::getenv("SNAP_LAUNCHER_UPDATE_CHECK")) start_background_check(cfg, cfg_path);
+  // Safe mode (docs/safe-mode.md): --safe-mode, the launcher's button, or an offer after a start that never reached the title screen.
+  bool safe = [] { const char* e = std::getenv("SNAP_SAFE_MODE"); return e && e[0] == '1'; }();
+  bool play_now = false;   // the offer was accepted: skip the launcher window once
+  {
+    const fs::path lg = logs_dir();
+    if (!lg.empty()) {
+      std::error_code lec;
+      fs::create_directories(lg, lec);
+      snap_crashlog_set_dir(U8(lg.wstring()).c_str());   // the launch marker and _crash.txt live in this folder
+    }
+    char why[400] = {};
+    const int last = safe ? 0 : snap_launchmark_check(why, (int)sizeof why);
+    if (last) {
+      if (autoplay) {   // a test run: the answer comes from SNAP_LAUNCHER_SAFE_ANSWER (yes | no), and the offer is logged
+        std::fprintf(stderr, "launcher: safe mode offered: %s\n", why);
+        if (const char* a = std::getenv("SNAP_LAUNCHER_SAFE_ANSWER")) safe = play_now = (a[0] == 'y' || a[0] == 'Y');
+      } else {
+        const std::string q = std::string(why) + "\n\nStart in safe mode? Mods, HD packs, enhanced effects, frame generation, ray tracing and the shader cache are switched off for this one start. "
+                              "Your saved settings and your save are not changed.";
+        if (MessageBoxW(nullptr, W(q).c_str(), L"Snap Recomp - safe mode", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON1 | MB_SETFOREGROUND) == IDYES) safe = play_now = true;
+      }
+    }
+  }
   for (;;) {
     std::string romfs = cfg.get("romfs_root") ? cfg.get("romfs_root")->str() : "";
     int choice = 1;
-    if (!autoplay) {
+    if (play_now) play_now = false;   // straight to the game-folder check and the start
+    else if (!autoplay) {
       choice = std::getenv("SNAP_LAUNCHER_CLASSIC") ? -1 : ask_themed(notice, cfg_path, exe_dir, romfs, cfg, data);   // -1: no themed window, use the task dialog
       if (choice < 0) choice = ask(notice);
     }
+    if (choice == 13) { safe = true; choice = 1; }   // the launcher's "Start in safe mode" button: the same as Play, with safe mode on for this start
     if (choice == 0) return true;   // quit
     if (choice == 7) { if (updates_flow(cfg_path, cfg, notice)) return true; continue; }
     if (choice == 8) { hd_textures_flow(exe_dir, cfg_path, cfg); continue; }
@@ -847,12 +883,9 @@ bool prepare(Result& r) {
   if (!autoplay) loader::g_fatal_hook = [](const char* m) { message("Snap Recomp", std::string(m), MB_ICONERROR); };   // a failure while loading shows the same way
   r.config_path = U8(cfg_path.wstring());
   r.proceed = true;
+  if (safe) _putenv_s("SNAP_SAFE_MODE", "1");   // read by settings (trimmed copy, no writes), mods (no packs), the shader cache (own folder) and the banner
   // logs: %LOCALAPPDATA%\SnapRecomp\logs (stderr to a file; the trace file for the boot log)
-  wchar_t* la = nullptr;
-  fs::path logs;
-  wchar_t env_la[MAX_PATH] = {};   // the LOCALAPPDATA variable first (the same folder the shader cache uses; a test run can redirect it)
-  if (GetEnvironmentVariableW(L"LOCALAPPDATA", env_la, MAX_PATH) && env_la[0]) logs = fs::path(env_la) / L"SnapRecomp" / L"logs";
-  else if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &la))) { logs = fs::path(la) / L"SnapRecomp" / L"logs"; CoTaskMemFree(la); }
+  const fs::path logs = logs_dir();
   if (!logs.empty()) {
     fs::create_directories(logs, ec);
     FILE* f = nullptr;
@@ -868,4 +901,5 @@ bool prepare(Result& r) {
     snap_crashlog_rotate(logs.c_str());   // host/mods/crashlog.cpp: last run's stderr.log and trace.log become *.prev
     snap_crashlog_set_dir(U8(logs.wstring()).c_str());   // _crash.txt goes next to the log
     case R::RestoreBackup: return 12;
+    case R::SafeMode: return 13;
     if (choice == 12) { restore_backup_flow(cfg_path); continue; }

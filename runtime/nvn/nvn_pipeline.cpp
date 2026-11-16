@@ -145,6 +145,7 @@ std::string Dir() {
     d = (n ? std::string(buf) : std::string(".")) + "\\SnapRecomp\\shadercache";
   }
   if (const char* r = getenv("SNAP_XLATE_REV"); r && *r && strcmp(r, "0")) d += std::string("_r") + r;   // translator revision: its own pipeline keys and VkPipelineCache
+  if (const char* sm = getenv("SNAP_SAFE_MODE"); sm && sm[0] == '1') d += "_safe";   // safe mode: a separate cache folder, so the real one is neither read nor changed (docs/safe-mode.md)
   for (size_t i = 3; i < d.size(); i++)
     if (d[i] == '\\' || d[i] == '/') CreateDirectoryA(d.substr(0, i).c_str(), nullptr);
   CreateDirectoryA(d.c_str(), nullptr);

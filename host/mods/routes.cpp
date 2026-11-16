@@ -24,6 +24,8 @@
 
 #include "loader.h"
 
+extern "C" void snap_launchmark_clear();   // host/mods/crashlog.cpp: the start reached the title screen (docs/safe-mode.md)
+
 namespace hle::input {   // runtime/hle/input_core.cpp
 bool route_on();
 void route_ui(uint64_t player, const char* scene, const char* state, int event, const char* elem, uint64_t lr);
@@ -65,7 +67,20 @@ void player_name(uint64_t player, char* nm, size_t cap) {
 
 }  // namespace
 
+// the first time a "title" (or "main_menu", for a start that skips the title) scene opens: the start is past the point where a crash means "could not start"
+static void launchmark_watch(Cpu* c) {
+    static bool done = false;
+    if (done) return;
+    uint64_t pe = c->x[1], pp = c->x[2];
+    if (!pe || !pp || IsBadReadPtr((void*)pe, 4) || IsBadReadPtr((void*)pp, 8)) return;
+    if (*(const int*)pe != 2) return;   // 2 = scene opened
+    char nm[40];
+    player_name(*(const uint64_t*)pp, nm, sizeof nm);
+    if (!strcmp(nm, "title") || !strcmp(nm, "main_menu")) { done = true; snap_launchmark_clear(); }
+}
+
 extern "C" void rt_gm_route_ui_event(Cpu* c) {
+    launchmark_watch(c);
     if (!hle::input::route_on()) return;
     uint64_t pe = c->x[1], pp = c->x[2];
     if (!pe || !pp || IsBadReadPtr((void*)pe, 4) || IsBadReadPtr((void*)pp, 8)) return;

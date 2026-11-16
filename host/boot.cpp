@@ -513,9 +513,11 @@ static void snap_capture_window(HWND h) {
 
 extern "C" void snap_fs_drain_for_exit(int ms);   // runtime/hle/fs.cpp
 extern "C" void nvnHostShotDrain(int ms);   // runtime/nvn/nvn_shot.cpp
+extern "C" void snap_launchmark_begin(int safe);   // host/mods/crashlog.cpp: launch marker (docs/safe-mode.md)
+extern "C" void snap_launchmark_clear();
 static LRESULT CALLBACK game_wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
     { LRESULT wr = 0; if (snap_window_proc(h, m, w, l, &wr)) return wr; }   // host/window_opts.cpp: F11, focus, mute, remembered placement
-    if (m == WM_CLOSE || m == WM_DESTROY) { snap_audio_log_checks(); fflush(stderr); nvnHostShotDrain(5000); snap_fs_drain_for_exit(5000); maybe_return_to_launcher(); ExitProcess(0); }   // waits (5 s) for a save commit in progress
+    if (m == WM_CLOSE || m == WM_DESTROY) { snap_audio_log_checks(); snap_launchmark_clear(); fflush(stderr); nvnHostShotDrain(5000); snap_fs_drain_for_exit(5000); maybe_return_to_launcher(); ExitProcess(0); }   // waits (5 s) for a save commit in progress
 extern "C" void snap_audio_log_checks(void);       // runtime/audio/audio_out.cpp: one "[audio] checks:" line (rejected-call and underrun counters)
     if (m == WM_TIMER) { snap_capture_window(h); return 0; }
     return DefWindowProcW(h, m, w, l);
@@ -555,6 +557,10 @@ static void bind_window() {
     add_override("_ZN2nn2vi15GetNativeWindowEPPvPNS0_5LayerE", vi_get_native_window_host);
 }
 static void bind_host_layers() {
+    const char *sm = getenv("SNAP_SAFE_MODE");
+    const bool safe = sm && sm[0] == '1';
+    snap_launchmark_begin(safe ? 1 : 0);   // removed when the title screen opens or the run ends cleanly; a leftover one makes the launcher offer safe mode
+    if (safe) fprintf(stderr, "[safe-mode] ON for this run: mods, HD packs, enhanced effects, frame generation, ray tracing and the shader cache are off (docs/safe-mode.md)\n");
     hle::init_trace_from_env();
     hle::load_config("");
     hle::activate_profiles();   // save profile picker / selection (runtime/hle/profiles.h); before the save mounts
@@ -596,6 +602,7 @@ static void tp_init_hook(Cpu *c, Thunk *) {
 static void tp_destroy_hook(Cpu *c, Thunk *) {
     uint64_t tp = *(uint64_t *)(c->tpidrro + 0x1f0);
     hle::savebackup::backup_at_launch();   // runtime/hle/save_backup.h: copy of the save into the profile's backup folder, newest 10 kept
+    hle::savebackup::apply_queued_restore();   // a restore picked in the F1 menu of the last run (docs/save-backups.md)
     if (tp) VirtualFree((void *)(tp - 0x8000), 0, MEM_RELEASE);
 }
 
@@ -979,7 +986,9 @@ int main(int argc, char **argv) {
     }
     {   // launcher mode (builder release): no arguments and a config.json next to the exe (host/launcher.cpp)
         snap_launcher::Result lr;
-        if (argc == 1 && snap_launcher::prepare(lr)) {
+        const bool plain = argc == 1 || (argc == 2 && !strcmp(argv[1], "--safe-mode"));   // --safe-mode alone still opens the launcher
+        if (plain && !strcmp(argc == 2 ? argv[1] : "", "--safe-mode")) _putenv_s("SNAP_SAFE_MODE", "1");
+        if (plain && snap_launcher::prepare(lr)) {
             if (!lr.proceed) return lr.exit_code;
             g_o.main_elf = lr.main_elf; g_o.sdk_elf = lr.sdk_elf; g_o.cmd = "run"; g_o.trace_file = lr.trace_file;
             if (!getenv("SNAP_HLE_CONFIG")) _putenv_s("SNAP_HLE_CONFIG", lr.config_path.c_str());
@@ -987,7 +996,8 @@ int main(int argc, char **argv) {
     }
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
-        if (a == "--main" && i + 1 < argc) g_o.main_elf = argv[++i];
+        if (a == "--safe-mode") _putenv_s("SNAP_SAFE_MODE", "1");   // docs/safe-mode.md: mods, HD packs, enhanced effects, frame generation, RT and the shader cache off for this run
+        else if (a == "--main" && i + 1 < argc) g_o.main_elf = argv[++i];
         else if (a == "--sdk" && i + 1 < argc) g_o.sdk_elf = argv[++i];
         else if (a == "--probe" && i + 1 < argc) g_o.probe = atoi(argv[++i]);
         else if (a == "--iters" && i + 1 < argc) g_o.iters = atoi(argv[++i]);
@@ -1009,6 +1019,8 @@ int main(int argc, char **argv) {
     DWORD wait_ms = g_o.timeout_s.empty() ? INFINITE : (DWORD)(atoi(g_o.timeout_s.c_str()) * 1000);
     if (WaitForSingleObject(h, wait_ms) == WAIT_TIMEOUT) {
         fprintf(stderr, "boot: timeout after %s s, exiting\n", g_o.timeout_s.c_str());
+        snap_audio_log_checks();
+        snap_launchmark_clear();
         fflush(stderr);
         snap_sampler_flush();   // final SNAP_SAMPLE profile (no-op when off)
         TerminateProcess(GetCurrentProcess(), 4);
@@ -1017,4 +1029,3 @@ int main(int argc, char **argv) {
     GetExitCodeThread(h, &rc);
     return (int)rc;
 }
-        snap_audio_log_checks();

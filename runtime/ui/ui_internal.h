@@ -33,6 +33,8 @@ void fps_overlay_set(const std::string& v);      // live, stores the key
 void fps_overlay_set_corner(const std::string& v);
 void fps_overlay_cycle();                        // F3: Off -> FPS -> Detailed -> Off
 bool fps_overlay_hotkey_free();                  // F3 is not bound to a game button
+bool safe_banner_on();                           // safe mode run (SNAP_SAFE_MODE=1): the one-line banner is drawn every frame (ui_fps.cpp, docs/safe-mode.md)
+void draw_safe_banner(ImVec2 size);
 bool fps_overlay_tick();                         // once per present; true when the overlay draws this frame
 void draw_fps_overlay(ImVec2 size);
 // Developer loop UI (runtime/ui/ui_tune.cpp; SNAP_DEV=1 only, see runtime/nvn/nvn_dev.h): F1 "Tuning" tab, GPU cost overlay (F4), shader compile errors.

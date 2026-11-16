@@ -1645,6 +1645,14 @@ void draw_home() {
     rrect(x, y, w, h, 26, C(kYellow));
     pattern(x + 22, y, w - 44, h);
     dl->AddRect(V(x, y), V(x + w, y + h), C(kOrange), 26 * g.s, 0, (sel ? 5.0f : 2.5f) * g.s);
+    {   // "Safe mode" pill (also the X key while Play is selected): the same start with mods, HD packs, enhanced effects, frame generation, RT and the shader cache off
+      const float px = x + w - 138, py = y + 14, pw = 116, ph = 28;
+      const bool ph_hot = hot(px, py, pw, ph);
+      if (ph_hot && ImGui::IsMouseClicked(0)) { g.result = UiResult::SafeMode; g.done = true; }   // docs/safe-mode.md
+      rrect(px, py, pw, ph, 14, C(ph_hot ? 0xfff3c4 : 0xfbe28a));
+      dl->AddRect(V(px, py), V(px + pw, py + ph), C(kOrange), 14 * g.s, 0, (ph_hot ? 2.5f : 1.2f) * g.s);
+      text(px + pw / 2, py + ph / 2, 15, C(kBrown), "Safe mode (X)", 1);
+    }
     diamond(x + 66, y + h / 2, 46, C(0x8f8e90));
     aperture(x + 66, y + h / 2, 22, C(kCream));
     text(x + 134, y + 44, 48, C(kBrown), "Play");
@@ -2066,6 +2074,7 @@ void handle_input() {
     if (up) g.home_sel = (g.home_sel + kHomeN - 1) % kHomeN;
     if (dn) g.home_sel = (g.home_sel + 1) % kHomeN;
     if (y && in.update_available) { g.result = UiResult::Updates; g.done = true; return; }
+    if (x && g.home_sel == H_PLAY) { g.result = UiResult::SafeMode; g.done = true; return; }
     if (back) { g.result = UiResult::Quit; g.done = true; return; }
     if (g.home_sel == H_PLAY && !in.profiles.empty() && (lf || rt || ok)) {
       const int n = (int)in.profiles.size() + 1;   // the last slot is "New profile"

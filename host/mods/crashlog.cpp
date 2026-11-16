@@ -194,6 +194,7 @@ void write_report(const char* kind, const char* detail, uint64_t fault, uint64_t
   const char* q = snap_quirks_applied_line();
   append(out, sizeof out, at, "Driver quirks off: %s\r\n", q && *q ? q : "none");
   append(out, sizeof out, at, "\r\nLast %d log lines:\r\n", kTailLines);
+  if (full) snap_audio_log_checks();   // the audio counters (rejected calls, underruns) land in the log and so in the tail below; once, on the full write
   fflush(stderr);
   log_tail(out, sizeof out, at);
   HANDLE f = CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -315,6 +316,89 @@ void snap_crashlog_seh(EXCEPTION_POINTERS* ep, const char* guest, int stage) {
 void snap_crashlog_fatal(const char* kind, const char* detail) {
   if (!claim()) return;
   write_report(kind, detail, 0, 0, nullptr, true, true);
+}
+
+// ---- launch marker (docs/safe-mode.md): <crash dir>\launch.marker is written when a start begins and removed when the title screen opens or the run
+// ends cleanly. A marker left behind with a dead owner means the last start never got to the title screen: the launcher then offers safe mode.
+static bool marker_path(wchar_t* out, size_t cap, wchar_t* crash_file, size_t crash_cap) {
+  wchar_t p[MAX_PATH * 2];
+  if (!crash_path(p, MAX_PATH * 2)) return false;
+  wchar_t* s = wcsrchr(p, L'\\');
+  if (!s) return false;
+  if (crash_file) _snwprintf_s(crash_file, crash_cap, _TRUNCATE, L"%s", p);
+  *s = 0;
+  _snwprintf_s(out, cap, _TRUNCATE, L"%s\\launch.marker", p);
+  return true;
+}
+static unsigned long long proc_start(DWORD pid) {   // creation time of a running process (FILETIME as a number); 0 when it is gone or cannot be opened
+  HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+  if (!h) return 0;
+  FILETIME c{}, e{}, k{}, u{};
+  unsigned long long r = 0;
+  DWORD code = 0;
+  if (GetExitCodeProcess(h, &code) && code == STILL_ACTIVE && GetProcessTimes(h, &c, &e, &k, &u)) r = ((unsigned long long)c.dwHighDateTime << 32) | c.dwLowDateTime;
+  CloseHandle(h);
+  return r;
+}
+static unsigned long long file_time(const wchar_t* p) {
+  WIN32_FILE_ATTRIBUTE_DATA d{};
+  if (!GetFileAttributesExW(p, GetFileExInfoStandard, &d)) return 0;
+  return ((unsigned long long)d.ftLastWriteTime.dwHighDateTime << 32) | d.ftLastWriteTime.dwLowDateTime;
+}
+
+// A start begins (`safe` = it is a safe-mode start).
+void snap_launchmark_begin(int safe) {
+  wchar_t m[MAX_PATH * 2];
+  if (!marker_path(m, MAX_PATH * 2, nullptr, 0)) return;
+  char t[160];
+  const int n = _snprintf_s(t, sizeof t, _TRUNCATE, "pid=%lu\r\nstart=%llu\r\nsafe=%d\r\n", GetCurrentProcessId(), proc_start(GetCurrentProcessId()), safe ? 1 : 0);
+  HANDLE f = CreateFileW(m, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (f == INVALID_HANDLE_VALUE) return;
+  DWORD w = 0;
+  WriteFile(f, t, (DWORD)(n > 0 ? n : 0), &w, nullptr);
+  CloseHandle(f);
+}
+
+// The title screen opened, or the run ends cleanly. Only the process that wrote the marker removes it.
+void snap_launchmark_clear() {
+  wchar_t m[MAX_PATH * 2];
+  if (!marker_path(m, MAX_PATH * 2, nullptr, 0)) return;
+  char b[200] = {};
+  HANDLE f = CreateFileW(m, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (f == INVALID_HANDLE_VALUE) return;
+  DWORD n = 0;
+  ReadFile(f, b, sizeof b - 1, &n, nullptr);
+  CloseHandle(f);
+  const char* p = strstr(b, "pid=");
+  if (p && (DWORD)strtoul(p + 4, nullptr, 10) != GetCurrentProcessId()) return;   // another start's marker
+  DeleteFileW(m);
+}
+
+// 0 = nothing to report; 1 = the last start never reached the title screen; 2 = the same, and that start was already a safe-mode one.
+// `why` gets one plain sentence ("... crashed ..." when _crash.txt was written after the marker, else "... stopped ...").
+int snap_launchmark_check(char* why, int cap) {
+  if (why && cap > 0) why[0] = 0;
+  wchar_t m[MAX_PATH * 2], cf[MAX_PATH * 2];
+  if (!marker_path(m, MAX_PATH * 2, cf, MAX_PATH * 2)) return 0;
+  char b[200] = {};
+  HANDLE f = CreateFileW(m, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (f == INVALID_HANDLE_VALUE) return 0;
+  DWORD n = 0;
+  ReadFile(f, b, sizeof b - 1, &n, nullptr);
+  CloseHandle(f);
+  const char* pp = strstr(b, "pid=");
+  const char* ps = strstr(b, "start=");
+  const char* sf = strstr(b, "safe=");
+  const DWORD pid = pp ? (DWORD)strtoul(pp + 4, nullptr, 10) : 0;
+  const unsigned long long start = ps ? strtoull(ps + 6, nullptr, 10) : 0;
+  if (pid == GetCurrentProcessId()) return 0;
+  if (pid) { const unsigned long long cur = proc_start(pid); if (cur && cur == start) return 0; }   // that start is still running (a second copy): not a crash
+  const bool crashed = file_time(cf) >= file_time(m);
+  const bool was_safe = sf && sf[5] == '1';
+  if (why && cap > 0)
+    _snprintf_s(why, cap, _TRUNCATE, "%s %s before the title screen%s.", was_safe ? "The last start, already in safe mode," : "The last start", crashed ? "crashed" : "stopped",
+                crashed ? " (the details are in logs\\_crash.txt)" : "");
+  return was_safe ? 2 : 1;
 }
 
 // SNAP_CRASH_TEST=<kind> (test aid, off unless set): "av" dereferences null on the calling thread, "abort" calls abort(), "gpu" takes the GPU-loss

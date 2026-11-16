@@ -33,6 +33,7 @@ std::mutex g_mu;
 std::map<std::string, std::string> g_kv;
 std::string g_path;
 std::vector<std::string> g_exported;   // env vars this layer set (so a restart does not pass them on as if the user had set them)
+bool g_readonly = false;               // safe mode: the file on disk is never rewritten from the trimmed in-memory copy
 
 fs::path P(const std::string& s) { return fs::u8path(s); }
 std::string path_str(const fs::path& p) { auto u = p.u8string(); return std::string(u.begin(), u.end()); }
@@ -67,7 +68,7 @@ void read_file() {
 }
 
 void write_file() {
-  if (g_path.empty()) return;
+  if (g_path.empty() || g_readonly) return;
   std::error_code ec;
   fs::create_directories(P(g_path).parent_path(), ec);
   std::string tmp = g_path + ".tmp";
@@ -151,6 +152,32 @@ void use_path_for_test(const std::string& path) {
   apply(false);
 }
 
+bool safe_mode() {
+  static const bool on = [] { const char* e = std::getenv("SNAP_SAFE_MODE"); return e && e[0] == '1'; }();
+  return on;
+}
+
+namespace {
+// Safe mode keeps only settings that do not change what is drawn or loaded: language, accessibility, input feel, HUD size, window size.
+bool safe_keeps(const std::string& k) {
+  static const char* const kKeep[] = {"game_language", "return_to_launcher", "hud_scale", "gfx_ui_font", "swap_ab", "button_icons", "win_size",
+                                      "gyro_on", "gyro_sens", "gyro_invert_x", "gyro_invert_y", "rumble_on", "rumble_strength"};
+  if (k.compare(0, 7, "access_") == 0) return true;
+  for (const char* n : kKeep) if (k == n) return true;
+  return false;
+}
+
+// Safe mode: the feature switches that could also arrive from the environment (set by hand or by a script) are cleared too, so the run really is plain.
+void safe_clear_env() {
+  static const char* const kExtra[] = {"SNAP_RT", "SNAP_RT_SHADOWS", "SNAP_LOOK", "SNAP_PASS_OFF", "SNAP_SHINY", "SNAP_SHINY_ODDS", "SNAP_FRAMEGEN", "SNAP_UPSCALER",
+                                       "SNAP_MODEL_REFINE", "SNAP_MODS_AB", "SNAP_MODEL_AB", "SNAP_SPAWN_RAND", "SNAP_INPUT_SCRIPT_MODS"};
+  for (auto& m : kEnvKeys) if (!safe_keeps(m.key)) _putenv_s(m.env, "");
+  for (const char* n : kExtra) _putenv_s(n, "");
+  _putenv_s("SNAP_VISUALS", "original");    // every visual row that is unset follows the original column
+  _putenv_s("SNAP_PIPELINE_SEED", "0");     // no seeded shader keys (the shader cache folder itself is swapped in nvn_pipeline.cpp)
+}
+}  // namespace
+
 void load() {
   {
     std::lock_guard<std::mutex> g(g_mu);
@@ -158,7 +185,12 @@ void load() {
     if (a.on && !a.id.empty()) g_path = path_str(fs::path(P(a.root)) / a.id / "settings.cfg");
     else g_path = path_str(P(config().data_root) / "settings.cfg");
     read_file();
+    if (safe_mode()) {   // keep a trimmed copy in memory; the file on disk stays as it was
+      for (auto it = g_kv.begin(); it != g_kv.end();) it = safe_keeps(it->first) ? std::next(it) : g_kv.erase(it);
+      g_readonly = true;
+    }
   }
+  if (safe_mode()) safe_clear_env();
   apply(true);
 }
 

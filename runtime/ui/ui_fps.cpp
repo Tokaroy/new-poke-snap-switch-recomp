@@ -154,6 +154,22 @@ bool fps_overlay_tick() {
   return true;
 }
 
+bool safe_banner_on() { return st::safe_mode(); }
+
+// One line at the top centre, drawn by the host overlay (never in the game's photos).
+void draw_safe_banner(ImVec2 size) {
+  const float k = std::max(0.75f, size.y / 1080.0f);
+  ImFont* font = ImGui::GetFont();
+  const float fs = 16.0f * k, pad = 7.0f * k;
+  const char* t = "SAFE MODE: mods, HD packs, enhanced effects, frame generation, ray tracing and the shader cache are off for this run";
+  const ImVec2 ts = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, t);
+  const float x = (size.x - ts.x) * 0.5f, y = 8.0f * k;
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  dl->AddRectFilled(ImVec2(x - pad * 1.5f, y), ImVec2(x + ts.x + pad * 1.5f, y + ts.y + pad * 2), IM_COL32(20, 20, 24, 200), 6.0f * k);
+  dl->AddRect(ImVec2(x - pad * 1.5f, y), ImVec2(x + ts.x + pad * 1.5f, y + ts.y + pad * 2), IM_COL32(242, 168, 38, 230), 6.0f * k, 0, 1.5f);
+  dl->AddText(font, fs, ImVec2(x, y + pad), IM_COL32(255, 232, 170, 255), t);
+}
+
 void draw_fps_overlay(ImVec2 size) {
   const int mode = fps_overlay_mode();
   if (mode == 0) return;

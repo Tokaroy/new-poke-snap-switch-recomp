@@ -32,4 +32,6 @@ Game code compiled from the guest has no unwind data, so Windows cannot walk the
 
 ## Test aid
 
-`SNAP_CRASH_TEST=av|abort|gpu|terminate` forces that failure at present 120 (`SNAP_CRASH_TEST_AT=<n>` changes it). Off unless set.
+`SNAP_CRASH_TEST=av|abort|gpu|terminate` forces that failure at present 120 (`SNAP_CRASH_TEST_AT=<n>` changes it). Off unless set. A forced crash at present 120 happens before the title screen, so it also leaves `launch.marker`, which makes the launcher offer safe mode (`docs/safe-mode.md`).
+
+The audio counters line (`[audio] checks: ...`, `docs/audio.md`) is printed on every crash path (host exception, `abort()`, `std::terminate`, the GPU-loss and loader exits) before the last log lines are taken, so it is also in `_crash.txt`.

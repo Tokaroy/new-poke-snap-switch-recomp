@@ -8,6 +8,7 @@
 namespace hle::settings {
 
 void load();                                   // after profiles::startup: picks the file, reads it, calls apply(true)
+bool safe_mode();                              // SNAP_SAFE_MODE=1 (--safe-mode, the launcher's safe-mode button, docs/safe-mode.md): the saved settings are ignored and never rewritten for this run
 void apply(bool env = false);                  // live input settings; with env also the env-var mods (only when unset), at startup only
 void forget_exported_env();                    // restart: drop the env vars this layer exported
 std::string get(const std::string& key, const std::string& def = "");

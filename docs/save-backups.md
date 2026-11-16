@@ -38,5 +38,7 @@ backs up the current save as a `restore` copy, then writes the chosen backup bac
 current stays on disk as an older generation, so the restore itself can be undone. A running game holds the save folder and
 the restore is refused with a message; close the game first.
 
+In the game, F1 > Saves > **Restore a backup** shows the same list for the running profile. The running game holds the save folder, so the pick is queued (`restore.pending` in the backup folder) and applied at the next start, before the game opens the save; **Restart now** does that at once. The queued request can be cancelled from the same list.
+
 Code: `runtime/hle/save_backup.{h,cpp}`. Tests: `savebackup.*` in `tests/hle/hle_tests.cpp`
 (`tests/hle/save_backup_tests.h`).

@@ -47,6 +47,11 @@ void summary() {
 }
 
 void init() {
+  if (const char* sm = getenv("SNAP_SAFE_MODE"); sm && sm[0] == '1') {   // safe mode (docs/safe-mode.md): no mod packs, no HD packs, nothing replaced
+    fprintf(stderr, "[mods] safe mode: no packs loaded\n");
+    g_state = 1;
+    return;
+  }
   std::string root = mods::default_root();
   std::vector<std::string> warn;
   mods::load(root, g_index, warn);

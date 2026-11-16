@@ -39,6 +39,13 @@ std::vector<Entry> list(const std::string& save_root);     // newest first
 bool restore(const std::string& save_root, const std::string& folder, saveport::Report* rep, std::string* err, bool* refused_running = nullptr);
 std::string describe(const Entry& e);                      // "2026-11-15 23:10 (at start)"
 
+// Restore from inside a running game (F1 > Saves): the running game holds the save folder, so the pick is queued in <backup root>\restore.pending and
+// applied at the next start (apply_queued_restore, right after backup_at_launch). The restart is the caller's.
+bool queue_restore(const std::string& save_root, const std::string& folder, std::string* err);
+std::string queued_restore(const std::string& save_root);       // the folder name waiting for the next start, or ""
+void cancel_queued_restore(const std::string& save_root);
+void apply_queued_restore();                                    // at start; logs one line; a failed restore never blocks the game
+
 // Called once at start, after the save profile is chosen and before the save mounts. Logs one line. Does nothing for a test run
 // that sets SNAP_SAVE_DIR unless SNAP_SAVE_BACKUP=1.
 void backup_at_launch();

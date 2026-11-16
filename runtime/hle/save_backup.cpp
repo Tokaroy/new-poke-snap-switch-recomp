@@ -8,7 +8,14 @@
 #include <cstdlib>
 #include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <set>
+
+#ifdef _WIN32
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 
 #include "hle.h"
 #include "hle_config.h"
@@ -188,6 +195,53 @@ bool restore(const std::string& save_root, const std::string& folder, saveport::
     if (rep) *rep = r;
   }
   return all;
+}
+
+static fs::path pending_file(const std::string& save_root) { return P(backup_root(save_root)) / "restore.pending"; }
+
+bool queue_restore(const std::string& save_root, const std::string& folder, std::string* err) {
+  std::string e2;
+  std::string& E = err ? *err : e2;
+  if (folder.find_first_of("/\\") != std::string::npos || !parse_name(folder, nullptr, nullptr)) { E = "That is not one of the backups."; return false; }
+  std::error_code ec;
+  if (!fs::is_directory(P(backup_root(save_root)) / folder, ec)) { E = "That backup is gone."; return false; }
+  fs::create_directories(P(backup_root(save_root)), ec);
+  const fs::path tmp = pending_file(save_root).string() + ".tmp";
+  { std::ofstream f(tmp, std::ios::binary | std::ios::trunc); f << folder << "\n"; f.flush(); if (!f.good()) { E = "Could not write the restore request."; return false; } }
+  fs::rename(tmp, pending_file(save_root), ec);
+  if (ec) { fs::remove(tmp, ec); E = "Could not write the restore request."; return false; }
+  return true;
+}
+
+std::string queued_restore(const std::string& save_root) {
+  std::ifstream f(pending_file(save_root), std::ios::binary);
+  std::string s;
+  if (!f || !std::getline(f, s)) return "";
+  while (!s.empty() && (s.back() == '\r' || s.back() == ' ')) s.pop_back();
+  return s;
+}
+
+void cancel_queued_restore(const std::string& save_root) { std::error_code ec; fs::remove(pending_file(save_root), ec); }
+
+void apply_queued_restore() {
+  const std::string root = config().save_root;
+  const std::string name = queued_restore(root);
+  if (name.empty()) return;
+  cancel_queued_restore(root);   // one try: a restore that fails must not run again at every start
+  std::string err;
+  bool running = false;
+  saveport::Report rep;
+  bool ok = false;
+  for (int i = 0; i < 12; i++) {   // the game that asked for the restart may still be closing: wait up to ~6 s for its save lock
+    running = false;
+    ok = restore(root, name, &rep, &err, &running);
+    if (ok || !running) break;
+#ifdef _WIN32
+    Sleep(500);
+#endif
+  }
+  if (ok) log("save restore: %s put back as a new generation (the previous save is kept as an older generation and as a restore backup)", name.c_str());
+  else log("save restore: FAILED for %s: %s (the save was not changed)", name.c_str(), err.c_str());
 }
 
 void backup_at_launch() {
