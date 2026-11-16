@@ -1,0 +1,62 @@
+# fixture: post_tutorial
+# Save state ON the end-of-course Evaluation (docs/save-states.md): save on the score screen, play to the end of the Evaluation, load: the game is back on
+# the score screen and plays through to the end again. Shorter than savestate_eval_across (one pass through the course).
+# Run: powershell -File host\run_boot.ps1 -Route savestate_eval_on -Timeout 600 -ShotAt 280 -ShotEvery 6 -ShotMax 8
+# Pass: boot_stderr.log has "state save ... ok", "state load ... ok" and "end of route reached" (exit code 0).
+# 1) Slow A taps: title, lab hub "Research", Lental Map (Florio is the only open course), course start.
+repeat @f300 @f30000 120 8 A
+wait ui=map_select timeout=240
+repeat @f60 @f30000 120 8 A
+wait ride timeout=240
+# 2) Riding: fast shutter taps with a slow right-stick yaw wobble and a ZL zoom now and then, until the 72 shots are used up
+#    (the ride itself goes on to the end of the rail, progress about 116).
+repeat @f0 @f30000 24 4 A
+repeat @f0 @f6000 600 200 ZL
+repeat @f0 @f30000 400 60 rx=0.25
+repeat @f200 @f30000 400 60 rx=-0.25
+wait film<=0 timeout=300
+# 3) Rest of the ride, course end and the professor's lines: slow A taps until photo select shows its subject folders.
+repeat @f120 @f60000 90 8 A
+wait ui=photo_submit:FolderSelect timeout=400
+# 4) Photo select. Folder 1 (Wurmple) is refused as not clearly visible, so: Right to the next folder, A opens it, A picks the
+#    shown photo (the screen goes back to the folders by itself); then the same for the next folder.
+@f150 8 Right
+@f230 8 A
+wait ui=photo_submit:PhotoSubmit timeout=30
+# A picks the shown photo (back to the folders within ~15 presents). A refused photo ("not clearly visible") keeps the folder
+# open with a notice: then A again and Right to the next photo, every 240 presents, six photos; then B back to the folders
+# (run 1-20261113_160836 timed out on a refused Pichu photo).
+repeat @f60 @f1440 240 8 A
+repeat @f180 @f1440 240 8 A
+repeat @f240 @f1440 240 8 Right
+@f1500 8 B
+wait ui=photo_submit:FolderSelect timeout=90
+@f60 8 Right
+@f140 8 A
+wait ui=photo_submit:PhotoSubmit timeout=30
+# A picks the shown photo (back to the folders within ~15 presents). A refused photo ("not clearly visible") keeps the folder
+# open with a notice: then A again and Right to the next photo, every 240 presents, six photos; then B back to the folders
+# (run 1-20261113_160836 timed out on a refused Pichu photo).
+repeat @f60 @f1440 240 8 A
+repeat @f180 @f1440 240 8 A
+repeat @f240 @f1440 240 8 Right
+@f1500 8 B
+wait ui=photo_submit:FolderSelect timeout=90
+# 5) Plus (Evaluate Photos), Up (Yes in "Is this all you want to show?"; the default is No), A.
+@f60 8 Plus
+@f140 8 Up
+@f220 8 A
+wait ui=evaluation timeout=60
+# 6) Evaluation (states Start, then per photo EvaluationNew, Comment, Score, Announce, PhotoRegister; End): A taps through it.
+repeat @f240 @f60000 90 8 A
+wait ui=evaluation:Score timeout=120
+@f60 8 save=ev
+wait state=saves>=1 timeout=60
+repeat @f60 @f60000 90 8 A
+wait ui=evaluation:End timeout=240
+@f60 8 load=ev
+wait state=loads>=1 timeout=60
+wait ui=evaluation:Score timeout=60
+repeat @f60 @f60000 90 8 A
+wait ui=evaluation:End timeout=240
+end @f300

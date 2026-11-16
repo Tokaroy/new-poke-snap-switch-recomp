@@ -3,6 +3,7 @@
 # (the game must be back in the ride, then play on to a second Evaluation of the same photos); (2) a state saved ON the Evaluation score screen is loaded
 # back at the Evaluation end. Threads the course end creates are parked for good by the load; memory regions the game frees stay reserved while a state exists.
 # Run: powershell -File host\run_boot.ps1 -Route savestate_eval_across -Timeout 600 -ShotAt 280 -ShotEvery 6 -ShotMax 8
+# About 9 minutes on an idle PC: on a busy one the run cap (600 s) can end it before the second Evaluation. Shorter: savestate_eval_on.
 # Pass: boot_stderr.log has two "state load ... ok", "wait 'ui=evaluation:End' met" three times, and "end of route reached" (exit code 0).
 # 1) Slow A taps: title, lab hub "Research", Lental Map (Florio is the only open course), course start.
 repeat @f300 @f30000 120 8 A

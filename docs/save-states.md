@@ -86,8 +86,8 @@ Two kinds of host fields have to be told apart:
 ### 2.1 Rules
 
 1. One or two slots, in RAM, freed at exit. Nothing goes to disk.
-2. A load is refused if the scene changed since the save (a scene epoch counter, bumped by course loads and bulk texture teardown), if a guest thread was created or exited since the save, or if a save commit ran since the save.
-3. Save and load are refused during photo select, evaluation and the score screen: while any shader write-back is pending (`PoolImpl::wbPending`, `nvn_internal.h:156`) or an evaluation program drew in the last 30 presents.
+2. A load is refused if the scene changed since the save (a scene epoch counter, bumped by course loads and bulk texture teardown), if a guest thread was created or exited since the save, or if a save commit ran since the save.   *(As built, a guest thread made since the save does not refuse a load any more: section 9.)*
+3. *(Planned; as built, both work during photo select and the Evaluation, section 9.)* Save and load are refused during photo select, evaluation and the score screen: while any shader write-back is pending (`PoolImpl::wbPending`, `nvn_internal.h:156`) or an evaluation program drew in the last 30 presents.
 4. If any step times out, the state is dropped and the game continues untouched.
 
 ### 2.2 Quiesce point
@@ -255,7 +255,7 @@ If condition 1 fails, the fallback is "not yet": revisit after the CPU-side stal
 
 ## 6. Using it in test runs (stage 2, built)
 
-One in-RAM slot per process. A save drains every guest thread (about 0.5 to 1 s, 2.5 GiB copied), a load takes about 0.3 to 0.4 s. A load is refused, with the reason in the log, when the thread, queue or window sets changed since the save. Both run on a worker thread, so a script never blocks on them.
+One in-RAM slot per process. A save drains every guest thread (about 0.5 to 1 s, 2.5 GiB copied), a load takes about 0.3 to 0.4 s. A load is refused, with the reason in the log, when a thread of the saved state is gone or the queue or window sets changed since the save (threads, VAMM regions and freed pages made since the save are fine: section 9). Both run on a worker thread, so a script never blocks on them.
 
 - Route tokens (`runtime/hle/input_core.cpp`): `@f10 8 save=<name>` and `@f10 8 load=<name>` fire once when their line starts.
 - Wait on counters, not on idle: `wait state=saves>=<n>`, `wait state=loads>=<n>`, `wait state=done>=<n>` (finished requests, refused ones included). `wait state=idle` also exists but can miss a request that finished between two polls.
@@ -271,3 +271,33 @@ One in-RAM slot per process. A save drains every guest thread (about 0.5 to 1 s,
 - A refused load or save shows the reason in the same note (for example a window or queue set changed since the save) and the game goes on unchanged.
 - A load rewinds the game, not your files: the game's save data and album stay as they are on disk, and the physical pad reads idle for 150 ms so a held button does not carry over. Audio fades in over 50 ms; the temporal upscaler and frame generation start a new history, so there is no ghosting from the moment that was left.
 - The note is a host overlay: it is never part of the game's own photos or of F12 screenshots.
+
+## 8. Automatic ring for "retry photo": measured, not built
+
+Measured on Florio with the stage 1 to 3 code (12 saves, runs of 2026-11-16): one save stalls every guest thread for 418 to 1231 ms (median about 700 ms) and holds 2.25 to 2.55 GiB (guest memory plus host stacks). A load takes 265 to 530 ms. Process commit is about 9.3 to 9.7 GiB with one slot.
+
+- Frame time: the stall is one frame of 0.4 to 1.2 s, then normal frames. Every 10 s that is 40 to 120 ms per second, about 0.7 to 2 ms per frame averaged at 60 fps, which passes an average-cost bar but is a visible freeze six times a minute; every 30 s is a freeze every half minute. Neither is acceptable in a ride while the player lines up a photo.
+- Memory: every extra state costs another 2.3 to 2.5 GiB; a ring of 3 adds about 7 GiB to a process that already commits 9.5 GiB.
+- The single-slot code also keeps one set of host-object journals (NVN, audio, files), so a ring needs those multiplied as well: zombies must stay alive while any ring state names them, and a load of state k must free the objects only newer states keep.
+
+So the ring is not built. What would make it viable: copy only guest pages written since the previous state (write watch on the guest ranges, `GetWriteWatch`) so a periodic save copies tens of MiB instead of 2.5 GiB, and keep the full copy only for the oldest state. That is a separate piece of work (about the size of stage 1), after the allocator that backs the guest ranges is checked for `MEM_WRITE_WATCH`.
+
+## 9. Across the end-of-course Evaluation (built)
+
+A load used to be refused once the course end had started threads ("thread count changed 42 -> 47"). Now both directions work, proven on Florio with the full photo run:
+
+- **Save before photo select, load after the Evaluation** (route `host/routes/access_samephoto.txt`, and the first half of `savestate_eval_across.txt`): load ok in 358 and 411 ms (runs `1-20261116_103324` and `1-20261116_105215`), the ride is back (rail progress 23), and the second pass reaches a second Evaluation Score screen.
+- **Save ON the Evaluation score screen, load at its end** (`host/routes/savestate_eval_on.txt`, run `1-20261116_141643`): save ok in 723 ms (47 threads, 2.7 GiB), load ok in 476 ms, the game is on the score screen again and plays to the end of the Evaluation a second time (exit 0, no validation messages).
+
+What the load does about what the Evaluation changed (`runtime/os/os_state.cpp`, `os_memory.cpp`, `os_kernel.cpp`):
+
+1. **Threads made since the save** (the Evaluation starts five) are retired: they stay parked in `gate_block` for good and are dropped from the thread table (`state_thread_retire`), so a new thread that is handed their guest address does not collide with them. Their guest memory goes back with the load, so they never run again. Their `Thread` objects are never freed. A load is still refused if a thread of the saved state is gone or its table entry changed; a host helper thread that exited since the save is fine (`g_slot.helpers`).
+2. **VAMM regions the game frees stay reserved while a state exists** (`g_limbo` in `os_memory.cpp`, armed by the save): the pages are decommitted but the address stays ours. Before this, the host heap took a freed 2 MiB address within seconds and the load had to be refused ("the address of a released VAMM region is in use"). A load takes the region back at the same address; regions made and freed since the save are released for real; the next save lets go of the old state's regions.
+3. **Pages freed since the save** (VAMM regions, the memory heap) are recommitted run by run from the saved copy instead of refusing the load; only saved host memory outside the VAMM regions and the heap (thread objects, fiber contexts) must still be committed.
+
+Measured: a state saved on the Evaluation is a normal state (47 threads instead of 42, 2.7 GiB, 723 ms). Four loads across the Evaluation from the pre-select state all passed (358 to 622 ms; the slowest on a busy PC).
+
+Open points:
+
+- **The chain is not proven end to end.** In one two-pass run (`savestate_eval_across`, `1-20261116_105215`; build before the helper-thread change and with a 64 GiB cap on kept regions) the ride resumed after the first load and the second Evaluation was reached and saved (5.1 GiB, 231 ranges, 47 threads: about twice the usual size, cause not found); the load of that second state was refused with "the address of a released VAMM region is in use". The refusal text now carries the region, what sits there and how many regions are being kept, and the cap is gone, so the next occurrence says why. Later runs of that route did not get that far: `0-20261116_111852` was refused at the first load with "thread table changed" (a host helper thread had exited; allowed now), `2-20261116_143128` loaded fine and then hit the 600 s cap on a loaded PC before the second Evaluation. The route needs about 9 minutes on an idle PC. The two halves on their own pass.
+- Not tested: loading an Evaluation state after the game has left for the lab or the map.

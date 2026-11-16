@@ -364,6 +364,7 @@ struct Slot {
     bool valid = false;
     std::deque<TState> ts;
     std::unordered_map<Thread *, TState *> by_thread;
+    std::unordered_set<Thread *> helpers;   // host helper threads in the thread table at the save (they may come and go)
     SchedSnap sched;
     SyncSnap sync;
     MemBook mem;
@@ -526,6 +527,7 @@ void slot_free() {
     g_slot.frecs.clear();
     g_slot.ts.clear();
     g_slot.by_thread.clear();
+    g_slot.helpers.clear();
     g_slot.valid = false;
 }
 
@@ -575,6 +577,8 @@ bool do_save(std::string &why) {
         std::vector<Thread *> all_t = every_thread();
         for (TState &s : g_slot.ts) { s.rec.save(s.t); g_slot.bytes_stack += s.n; }
         state_sched_save(g_slot.sched);
+        for (auto &kv : g_slot.sched.by_tt)
+            if (kv.second->is_host) g_slot.helpers.insert(kv.second);
         state_sync_save(g_slot.sync);
         state_mem_save(g_slot.mem);
         state_mem_arm();
@@ -621,6 +625,13 @@ std::vector<Thread *> g_extras;   // load_refusal's result: guest threads made s
 // Checks, under G with every thread parked, that what the save saw is still there. Returns an empty string when a load can go ahead.
 std::string load_refusal() {
     if (!g_slot.valid) return "no saved state";
+    SchedSnap now;
+    state_sched_save(now);
+    for (auto &kv : g_slot.sched.by_tt) {   // every guest thread of the saved state is still in the table (ones made since may sit beside them); a host helper may have gone
+        auto it = now.by_tt.find(kv.first);
+        if (it != now.by_tt.end() && it->second == kv.second) continue;
+        if (!g_slot.helpers.count(kv.second)) return "thread table changed";
+    }
     std::vector<Thread *> gt = guest_threads();
     for (TState &s : g_slot.ts)
         if (s.t->exited || !s.t->started) return "a thread exited since the save";
@@ -628,12 +639,6 @@ std::string load_refusal() {
     for (Thread *t : gt)
         if (!g_slot.by_thread.count(t)) g_extras.push_back(t);
     if (gt.size() != g_slot.ts.size() + g_extras.size()) return "a thread of the saved state is gone (" + std::to_string(g_slot.ts.size()) + " saved, " + std::to_string(gt.size() - g_extras.size()) + " left)";
-    SchedSnap now;
-    state_sched_save(now);
-    for (auto &kv : g_slot.sched.by_tt) {   // every thread of the saved state is still in the table; ones made since may sit beside them
-        auto it = now.by_tt.find(kv.first);
-        if (it == now.by_tt.end() || it->second != kv.second) return "thread table changed";
-    }
     if (state_fibers() != g_slot.fibers) return "the fiber set changed";
     for (FRec &r : g_slot.frecs) {
         const uint64_t cur = r.f->host ? r.f->host->serial : 0;
