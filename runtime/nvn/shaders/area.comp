@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: MIT
+// Present downscale (project code, ours): exact area-weighted box filter from the supersampled window texture to a
+// window-size image. Each output pixel averages every source texel its footprint covers, weighted by the covered area,
+// so a non-integer step (5760 -> 3840 is 1.5x) uses every sample instead of the 4 a bilinear blit reads.
+// Values are filtered as the sampler returns them (sRGB formats decode to linear first, as vkCmdBlitImage does) and stored
+// in RGBA16F; the caller then blits 1:1 to the swapchain, which converts to its format like the old blit did.
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(set = 0, binding = 0) uniform sampler2D srcTex;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D dstImg;
+layout(push_constant) uniform P { ivec2 srcOff; ivec2 srcSize; ivec2 dstSize; } pc;
+
+void main() {
+  ivec2 d = ivec2(gl_GlobalInvocationID.xy);
+  if (any(greaterThanEqual(d, pc.dstSize))) return;
+  vec2 sc = vec2(pc.srcSize) / vec2(pc.dstSize);
+  vec2 a = vec2(d) * sc, b = a + sc;
+  ivec2 i0 = ivec2(floor(a)), i1 = min(ivec2(ceil(b)), pc.srcSize);
+  vec4 acc = vec4(0.0);
+  float wsum = 0.0;
+  for (int y = i0.y; y < i1.y; y++) {
+    float wy = min(b.y, float(y + 1)) - max(a.y, float(y));
+    for (int x = i0.x; x < i1.x; x++) {
+      float wx = min(b.x, float(x + 1)) - max(a.x, float(x));
+      float wgt = wx * wy;
+      acc += wgt * texelFetch(srcTex, pc.srcOff + ivec2(x, y), 0);
+      wsum += wgt;
+    }
+  }
+  imageStore(dstImg, d, acc / max(wsum, 1e-6));
+}

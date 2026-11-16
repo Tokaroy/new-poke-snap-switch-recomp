@@ -17,6 +17,7 @@
 #include "nvn_btnicon.h"   // BtnIconForget
 #include "nvn_fx.h"   // [fx]
 #include "nvn_hdr.h"   // HDR10 output (SNAP_HDR=1)
+#include "nvn_downsample.h"   // [area] present downscale
 #include "nvn_rt.h"   // [rt] SNAP_RT=1 ray tracing track
 #include "nvn_pace.h"   // [pace] frame clock for the limiter and the guest vsync (SNAP_PACE=legacy restores the old limiter)
 #include "upscale/upscale_nvn.h"   // [upscale] DLSS / FSR / XeSS (SNAP_UPSCALER)
@@ -1935,6 +1936,15 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
   blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
   blit.dstOffsets[0] = {dx, dy, 0}; blit.dstOffsets[1] = {dx + dw, dy + dh, 1};
   const bool same = (sw == dw && sh == dh);
+  // [area] The window texture is larger than the window (supersampling): a compute box filter shrinks it into a window-size image, which is
+  // then blitted 1:1. The bilinear blit skipped texels on non-integer steps (5760 -> 3840) and thin edges shimmered. nvn_downsample.cpp.
+  VkImage areaImg = VK_NULL_HANDLE;
+  if (!same && sw >= dw && sh >= dh && blitSrc == src->image) {
+    PerfMark(h, cb, "present area");
+    areaImg = AreaDownsample(h, q, cb, src, sx, sy, sw, sh, dw, dh);
+  }
+  if (areaImg) { blit.srcOffsets[0] = {0, 0, 0}; blit.srcOffsets[1] = {dw, dh, 1}; }
+  const VkFilter blitFilter = (same || areaImg) ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
   PerfMark(h, cb, "present blit");   // [perf pass 20] splits the clear from the blit in the SNAP_GPU_PASSES rows
   if (w->hdr) {
     // HDR path: the scene is blitted into an SDR scratch image so SNAP_LOOK and the F1 overlay (SDR code) keep working; the overlay draws into a
@@ -1943,7 +1953,7 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
     if (snap_hdr::PrepScratch(cb, h->phys, h->device, w->scExtent, &sc)) {
       VkImageBlit sb = blit;
       sb.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-      if (sc.dbg != 1) vkCmdBlitImage(cb, src->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, sc.sdr, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &sb, same ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
+      if (sc.dbg != 1) vkCmdBlitImage(cb, areaImg ? areaImg : src->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, sc.sdr, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &sb, blitFilter);
       imgBarrier(sc.sdr, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
       SnapUiFrame uf{h->instance, h->phys, h->device, h->queue, h->family, cb, sc.sdr, sc.sdrFmt, w->scExtent, w->swapchain, (uint32_t)w->scImages.size(), w->hwnd};
       snap_look_present(&uf);
@@ -1959,8 +1969,8 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
       LogError("HDR pass failed; the next frame recreates an SDR swapchain");
     }
   }
-  if (!w->hdr && !hdrDone) vkCmdBlitImage(cb, blitSrc, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
-                 same ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
+  if (!w->hdr && !hdrDone) vkCmdBlitImage(cb, areaImg ? areaImg : blitSrc, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
+                 blitFilter);
   PerfMark(h, cb, "present look+ui");
   { SnapUiFrame uf{h->instance, h->phys, h->device, h->queue, h->family, cb, dst, w->scFormat, w->scExtent, w->swapchain, (uint32_t)w->scImages.size(), w->hwnd}; if (!hdrDone) { snap_look_present(&uf); snap_ui_present(&uf); } }
   if (fdBuf && fdPost) {   // NVN_FRAME_DUMP_POST: copy the finished swapchain image (TRANSFER_DST after the overlay)
