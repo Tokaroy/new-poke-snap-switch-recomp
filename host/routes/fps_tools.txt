@@ -1,0 +1,21 @@
+# fixture: unlock_all
+# frame-rate audit (worker fpsaudit): Florio Day, ride tools on wall seconds after rail>=6 (same seconds at 60 and 144).
+# Single uses first (Y orb, B fruit, X scan, ZL zoom), then held/repeated presses that run into each cooldown.
+wait ui=title timeout=200
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=300
+@f90 6 A
+wait ui=map_select:CourseSelect timeout=60
+@f180 6 A
+wait ride timeout=300
+wait rail>=6 timeout=150
+2.0 0.1 Y
+6.0 0.1 B
+10.0 1.6 X
+16.0 2.0 ZL
+22.0 0.1 Y
+repeat 26.0 36.0 0.1 0.05 Y
+repeat 40.0 50.0 0.1 0.05 B
+repeat 54.0 74.0 0.1 0.05 X
+80.0 3.0 ZL
+end 86
