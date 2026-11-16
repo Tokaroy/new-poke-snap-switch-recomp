@@ -261,6 +261,7 @@ def _footer_only(foot, size):
 SPEED = {'nomos2-plksr': 0.16, 'pbrify-plksr': 0.21, 'pbrify-dat': 3.45, 'nomos2': 0.24, 'texture-dat2': 1.75, 'gtav-rgts': 1.82, 'aomr2': 0.25, 'dejpg': 1.4,
          'spanimation2': 0.12, 'ultrasharp2': 1.4, 'x4plus': 0.5, 'x4plus-anime': 0.4, '': 0.0}   # dejpg per INPUT Mpx; 2x models per pass; x4plus/anime include ncnn start-up
 FILTER_S_PER_MPX = 0.35   # resize, mips, encode
+SHADOW_S_PER_MPX = 0.19  # sun-shadow maps: 203 maps, 210 Mpx: 36 s (2026-11-16)
 LIGHT_S_PER_MPX = 2.0     # light maps: fill, gate, energy match and the BC6H encode (611 maps, 120 Mpx: 280 s, 2026-11-15)
 
 
@@ -278,7 +279,7 @@ def estimate(items, speed=SPEED, probe=1.0):
     vr, vo = {}, {}
     for it in items:
         mpx = it.out_w * it.out_h / 1e6
-        sec = (LIGHT_S_PER_MPX if it.cat == 'lightmap' else FILTER_S_PER_MPX) * mpx
+        sec = (LIGHT_S_PER_MPX if it.cat == 'lightmap' else SHADOW_S_PER_MPX if it.cat == 'shadow' else FILTER_S_PER_MPX) * mpx
         if it.model:
             sec += speed.get(it.model, 1.0) * mpx * probe
             if it.denoise:
