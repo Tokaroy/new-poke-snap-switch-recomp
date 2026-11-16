@@ -361,6 +361,20 @@ GuestFn lookup_fn(uint64_t pc) {
     return nullptr;
 }
 
+// Mod hooks (runtime/hle/modhooks.h): the dispatch-table cell of the lifted function at pc, or null. Writing it redirects every call that goes
+// through rt_dispatch (indirect calls, vtables, function pointers); a direct lifted call (`f_<addr>(c)`) does not read the table.
+GuestFn *dtab_cell(uint64_t pc) {
+    GuestModule *m = pc - g_main.base - g_main.text_off < g_main.text_size ? &g_main : pc - g_sdk.base - g_sdk.text_off < g_sdk.text_size ? &g_sdk : nullptr;
+    if (!m || (pc & 3)) return nullptr;
+    GuestFn *p = &m->dtab[(pc - m->base - m->text_off) >> 2];
+    return *p ? p : nullptr;
+}
+
+// After a dtab_cell write: main's PLT stubs cache the lifted target of each import (g_main_import_fn), so refresh them.
+void refresh_import_fns() {
+    for (size_t i = 0; i < g_main_import_fn.size(); i++) g_main_import_fn[i] = lookup_fn(g_main_import_target[i]);
+}
+
 GuestFn lookup_fn_bsearch(uint64_t pc) {
     const uint64_t *a; const GuestFn *p; uint64_t n;
     if (pc - g_main.base < g_main.span) { a = main_fn_addrs; p = main_fn_ptrs; n = main_fn_count; }

@@ -139,6 +139,10 @@ code indexes by the original length) must keep its size.
 - Tests: `tests\mods\run_tests.ps1` (path mapping, index priority, size override, zip packs, conflicts) and
   `python -I tests\mods\test_make_override.py`.
 
+## Code hooks
+
+Packs replace data only. Host code that runs before or after a named game function (for example to log UI page changes or read the ride camera) is a separate, off-by-default mechanism with its own manifest, `<mods root>\hooks.json`: see `docs/mod-hooks.md`.
+
 ## Ideas from RT64 texture packs (not built yet)
 
 RT64's `TEXTURE-PACKS.md` (MIT) describes N64 texture packs. Its packs are keyed by texture hash because N64 textures

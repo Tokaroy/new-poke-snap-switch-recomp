@@ -26,6 +26,7 @@
 #include "../../runtime/hle/access.h"
 #include "../../runtime/hle/btn_icons.h"
 #include "../../runtime/hle/freecam.h"
+#include "../../runtime/hle/modhooks.h"
 #include "../../runtime/hle/fs_core.h"
 #include "../../runtime/hle/hle.h"
 #include "../../runtime/hle/hle_config.h"
@@ -2131,6 +2132,130 @@ static void test_freecam() {
   hle::freecam::script_begin();   // clear the script state for the tests after this one
 }
 
+// ---- mod hooks core (runtime/hle/modhooks.cpp): manifest enable, before / after order, crash guard, zero cost when off
+static std::vector<std::string> g_mh_log;
+static void mh_orig(Cpu* c) { g_mh_log.push_back("orig"); c->x[0] += 100; }
+static void mh_orig_resume(Cpu* c) { g_mh_log.push_back("orig"); c->resuming = 1; }
+static void mh_before_a(Cpu* c, void*) { g_mh_log.push_back("before-a"); c->x[1] = 7; }
+static void mh_before_b(Cpu*, void*) { g_mh_log.push_back("before-b"); }
+static void mh_after_a(Cpu* c, void*) { g_mh_log.push_back("after-a"); c->x[0] += 1000; }
+static void mh_clobber_crash(Cpu* c, void*) { c->x[3] = 0xdead; c->sp = 0x1234; volatile int* p = nullptr; *p = 1; }
+static void mh_throw(Cpu*, void*) { throw std::runtime_error("boom"); }
+static std::string mh_joined() {
+  std::string s;
+  for (auto& e : g_mh_log) s += (s.empty() ? "" : ",") + e;
+  return s;
+}
+static void test_modhooks() {
+  g_test = "modhooks";
+  namespace mh = hle::modhooks;
+  static Cpu c;
+  auto fresh = [&]() { memset(&c, 0, sizeof c); c.sp = 0x8000; c.x[3] = 3; g_mh_log.clear(); };
+  const char* names[] = {"P.One", "P.Two"};
+  auto hook = [](const char* mod, const char* pt, mh::When w, mh::Fn fn, bool on = false) {
+    mh::Hook h;
+    h.mod = mod; h.point = pt; h.when = w; h.fn = fn; h.default_on = on;
+    return mh::add(h);
+  };
+  std::string err;
+
+  // nothing enabled: the cell is never touched, the function runs as before
+  mh::reset();
+  mh::init_points(names, 2);
+  CHECK(hook("mod-a", "P.One", mh::When::Before, mh_before_a));
+  CHECK(mh::configure("", nullptr, &err));
+  GuestFn cell = mh_orig;
+  CHECK(!mh::point_wanted(0));
+  CHECK(!mh::install(0, &cell));
+  CHECK(cell == mh_orig);
+  fresh(); cell(&c);
+  CHECK(mh_joined() == std::string("orig"));
+
+  // registration rules
+  CHECK(!hook("mod-a", "P.One", mh::When::After, mh_after_a));      // same mod and point twice
+  CHECK(!hook("mod-a", "No.Such", mh::When::After, mh_after_a));    // unknown point
+  CHECK(!hook("bad id", "P.One", mh::When::After, mh_after_a));     // mod id with a space
+  CHECK(!hook("mod-c", "P.One", mh::When::After, nullptr));         // no function
+  CHECK_EQ(mh::point_index("P.Two"), 1);
+  CHECK_EQ(mh::point_index("p.two"), -1);                           // names are case-sensitive
+
+  // manifest: a listed hook turns on; before, original, after run in order and see each other's register changes
+  CHECK(hook("mod-b", "P.One", mh::When::Before, mh_before_b));
+  CHECK(hook("mod-a2", "P.One", mh::When::After, mh_after_a));
+  CHECK(mh::configure("{ // comment\n \"hooks\": { \"mod-a/P.One\": true, \"mod-a2/P.One\": true, \"mod-b/P.One\": false } }", nullptr, &err));
+  CHECK_EQ(mh::enabled_count(0), (size_t)2);
+  CHECK(mh::install(0, &cell));
+  CHECK(cell != mh_orig);
+  CHECK(mh::installed(0));
+  CHECK(!mh::installed(1));
+  CHECK(!hook("mod-late", "P.One", mh::When::After, mh_after_a));   // the point is installed: no more hooks
+  fresh(); cell(&c);
+  CHECK(mh_joined() == std::string("before-a,orig,after-a"));
+  CHECK_EQ(c.x[1], 7ull);
+  CHECK_EQ(c.x[0], 1100ull);
+  auto rep = mh::report();
+  CHECK_EQ(rep.size(), (size_t)3);
+  CHECK_EQ(rep[0].stats.calls, 1ull);
+  CHECK(rep[0].stats.enabled);
+  CHECK(!rep[1].stats.enabled);   // mod-b stays off
+  CHECK_EQ(rep[1].stats.calls, 0ull);
+  mh::uninstall(0);
+  CHECK(cell == mh_orig);
+
+  // a bad manifest changes nothing; the environment list turns hooks on and off
+  mh::reset();
+  mh::init_points(names, 2);
+  CHECK(hook("mod-a", "P.One", mh::When::Before, mh_before_a));
+  CHECK(hook("mod-b", "P.One", mh::When::Before, mh_before_b, true));   // default on
+  CHECK(!mh::configure("{ \"hooks\": { \"mod-a/P.One\": 1 } }", nullptr, &err));
+  CHECK(!err.empty());
+  CHECK(!mh::configure("[1,2]", nullptr, &err));
+  CHECK_EQ(mh::enabled_count(0), (size_t)1);                            // only the default-on hook
+  CHECK(mh::configure("", "mod-a/P.One, -mod-b/P.One", &err));
+  CHECK_EQ(mh::enabled_count(0), (size_t)1);                            // a on, b off
+  CHECK(mh::configure("", "*", &err));
+  CHECK_EQ(mh::enabled_count(0), (size_t)2);
+
+  // crash guard: a faulting hook is switched off, its register changes are undone, the original still runs, later calls skip it
+  mh::reset();
+  mh::init_points(names, 2);
+  CHECK(hook("mod-crash", "P.Two", mh::When::Before, mh_clobber_crash));
+  CHECK(hook("mod-throw", "P.Two", mh::When::After, mh_throw));
+  CHECK(hook("mod-ok", "P.Two", mh::When::After, mh_after_a));
+  CHECK(mh::configure("", "*", &err));
+  GuestFn cell2 = mh_orig;
+  CHECK(mh::install(1, &cell2));
+  fresh(); cell2(&c);
+  CHECK_EQ(c.x[3], 3ull);        // the crashed hook's write to x3 is gone
+  CHECK_EQ(c.sp, 0x8000ull);
+  CHECK(mh_joined() == std::string("orig,after-a"));   // original ran, the throwing hook was skipped over, the next after hook ran
+  CHECK_EQ(c.x[0], 1100ull);
+  rep = mh::report();
+  CHECK(rep[0].stats.dead);
+  CHECK(rep[0].stats.error.find("access violation") != std::string::npos);
+  CHECK(rep[1].stats.dead);
+  CHECK(rep[1].stats.error.find("boom") != std::string::npos);
+  CHECK(!rep[2].stats.dead);
+  fresh(); cell2(&c);
+  CHECK(mh_joined() == std::string("orig,after-a"));
+  rep = mh::report();
+  CHECK_EQ(rep[0].stats.calls, 1ull);   // not run again
+  CHECK_EQ(rep[2].stats.calls, 2ull);
+  mh::uninstall(1);
+
+  // an exception or longjmp passing through the function: the after hooks do not run
+  mh::reset();
+  mh::init_points(names, 2);
+  CHECK(hook("mod-a", "P.One", mh::When::Before, mh_before_a));
+  CHECK(hook("mod-a2", "P.One", mh::When::After, mh_after_a));
+  CHECK(mh::configure("", "*", &err));
+  GuestFn cell3 = mh_orig_resume;
+  CHECK(mh::install(0, &cell3));
+  fresh(); cell3(&c);
+  CHECK(mh_joined() == std::string("before-a,orig"));
+  mh::reset();
+}
+
 // ---- gyro aim, rumble and per-profile settings (fake sensor feed: the owner has no gyro controller)
 static void test_padfx() {
   g_test = "padfx";
@@ -2667,6 +2792,7 @@ int main(int argc, char** argv) {
 #endif
       {"padfx", test_padfx},
       {"freecam", test_freecam},
+      {"modhooks", test_modhooks},
       {"services", test_services},
   };
   int before_failed;

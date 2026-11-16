@@ -513,6 +513,7 @@ static void snap_capture_window(HWND h) {
 
 extern "C" void snap_fs_drain_for_exit(int ms);   // runtime/hle/fs.cpp
 extern "C" void nvnHostShotDrain(int ms);   // runtime/nvn/nvn_shot.cpp
+extern "C" void snap_modhooks_install();   // host/mods/modhooks.cpp (mod hooks, docs/mod-hooks.md)
 extern "C" void snap_launchmark_begin(int safe);   // host/mods/crashlog.cpp: launch marker (docs/safe-mode.md)
 extern "C" void snap_launchmark_clear();
 static LRESULT CALLBACK game_wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
@@ -886,6 +887,7 @@ static DWORD WINAPI run_thread(LPVOID) {
     if (!load(g_o.main_elf.c_str(), g_o.sdk_elf.c_str())) return 2;
     report_load();
     report_unbound();
+    snap_modhooks_install();   // mod hooks: nothing is touched unless hooks.json or SNAP_MOD_HOOKS enables one
     const bool cmd_uses_os = g_o.cmd == "eh" || g_o.cmd == "lua" || g_o.cmd == "bench" || g_o.cmd == "all";
     if (full || cmd_uses_os) {
         // item 1 of runtime/os/PROPOSED_SHARED_CHANGES.md: os_init after load(), with the musl thread-pointer hook variables

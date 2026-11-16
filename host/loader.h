@@ -144,6 +144,10 @@ void add_probe_stub(const std::string &sym);
 // Dispatch statistics and benchmark helpers.
 GuestFn lookup_fn(uint64_t addr);   // lifted function starting at addr (dispatch table), or null
 GuestFn lookup_fn_bsearch(uint64_t addr);   // the same by binary search of the sorted generated table (baseline)
+// Mod hooks (docs/mod-hooks.md): the dispatch-table cell of the lifted function starting at addr (null if none). Redirects calls that go through
+// rt_dispatch only; call refresh_import_fns() after writing a cell.
+GuestFn *dtab_cell(uint64_t addr);
+void refresh_import_fns();
 
 void install_libc_overrides();      // malloc family and a few exact libc leaves, backed by the host CRT
 }  // namespace loader
