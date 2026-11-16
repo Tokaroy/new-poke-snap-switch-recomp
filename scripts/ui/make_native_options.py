@@ -69,6 +69,11 @@ AA_CHOICES = (('default', 'Follows Look'), ('off', 'Original (FXAA)'), ('smaa', 
 
 TABS = [
     ('Quality', 'Picture quality for this PC version.', [
+        # Graphics preset (docs/presets.md, runtime/hle/presets.h): one row over the rows of this and the next tabs; worked out from them, never stored, so
+        # changing any single row shows Custom. It took the slot of the older "Quality preset" row (still in the F1 menu), since this tab holds six rows.
+        row('Graphics preset', 'p', 'opt', 'gfx_profile', 'enhanced',
+            (('original', 'Original'), ('balanced', 'Balanced'), ('enhanced', 'Enhanced'), ('max', 'Max'), ('custom', 'Custom')),
+            'Sets the picture rows together. Enhanced is the new-install look. Max needs a fast GPU.' + R),
         # Look: Enhanced / Original (owner 2026-11-15). One row flips anti-aliasing, sharpening, filtering, menu text, PNG copies and HD photos
         # together (ui_options.cpp set_look); Restore Default Settings sets it back to Enhanced. Lighting v2 joins it later (visual_defaults.h hook).
         row('Look', 'c', 'opt', 'gfx_look', 'enhanced', (('enhanced', 'Enhanced'), ('original', 'Original')),
@@ -89,10 +94,6 @@ TABS = [
         row('Performance scaling', 'p', 'opt', 'gfx_upscale_quality', 'off',
             (('off', 'Off'), ('quality', 'Quality'), ('balanced', 'Balanced'), ('performance', 'Performance')),
             'Draws fewer pixels, then an upscaler enlarges them. Needs DLSS, FSR or XeSS.' + R),
-        row('Quality preset', 'p', 'opt', 'gfx_preset', 'normal',
-            (('verylow', 'Very Low'), ('low', 'Low'), ('normal', 'Default'), ('high', 'High'), ('ultra', 'Ultra'),
-             ('maximum', 'Maximum'), ('custom', 'Custom')),
-            'Sets this tab and the next together. Default follows the Look. Maximum needs a fast GPU.' + R),
     ]),
     ('Textures', 'Texture, shadow and shading detail.', [
         row('Texture filtering', 'p', 'opt', 'gfx_aniso', '0',

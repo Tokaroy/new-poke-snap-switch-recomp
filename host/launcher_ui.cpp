@@ -29,6 +29,7 @@
 #include "imgui_impl_win32.h"
 #include "hle/json_lite.h"
 #include "hle/picture_rows.h"
+#include "hle/presets.h"
 #include "hle/visual_defaults.h"
 #include "mods/mods_core.h"
 
@@ -118,7 +119,7 @@ struct JsonFile {
 
 // ---------------------------------------------------------------------------------------------------------------- settings model
 enum Store { S_CFG, S_WIN, S_AUD };
-enum Kind { K_CHOICE, K_PRESET, K_ACTION, K_LOOK, K_PACING, K_AA, K_PERF };   // K_PRESET / K_LOOK / K_PACING / K_AA / K_PERF are worked out from or write several stored values
+enum Kind { K_CHOICE, K_PRESET, K_ACTION, K_LOOK, K_PACING, K_AA, K_PERF, K_PROFILE };   // K_PRESET / K_LOOK / K_PACING / K_AA / K_PERF / K_PROFILE are worked out from or write several stored values
 enum Enc { E_STR, E_INT, E_VOL, E_BOOL };   // how a window.json / audio.json value is stored
 
 struct Ch {
@@ -482,7 +483,22 @@ void pic_store(const snappic::Cfg& c) {   // the three keys the AA and Performan
   g.cfg.save();
 }
 
+// The Graphics preset row (hle/presets.h): worked out from the stored rows, so changing any single row afterwards shows Custom.
+std::string get_profile() { return snappreset::current([](const std::string& k) { return g.cfg.get(k, ""); }); }
+void set_profile(const std::string& v) {
+  const int p = snappreset::from_id(v);
+  if (p < 0) return;
+  snappreset::apply(p, [](const std::string& k, const std::string& val) {
+    if (k == "gfx_look") set_look(val.empty() ? "enhanced" : val);   // clears the Look's own rows too
+    else if (val.empty()) g.cfg.erase(k);
+    else g.cfg.set(k, val);
+  }, pic_ctx());
+  g.cfg.save();
+  apply_look_to_defaults();
+}
+
 std::string read_value(const Item& it) {
+  if (it.kind == K_PROFILE) return get_profile();
   if (it.kind == K_AA) return snappic::aa_row(pic_cfg());
   if (it.kind == K_PERF) return snappic::perf_row(pic_cfg());
   if (it.kind == K_PRESET) return get_preset();
@@ -504,6 +520,7 @@ std::string read_value(const Item& it) {
 }
 
 void write_value(Item& it, const std::string& val) {
+  if (it.kind == K_PROFILE) { set_profile(val); return; }
   if (it.kind == K_AA) { pic_store(snappic::with_aa(pic_cfg(), val)); return; }
   if (it.kind == K_PERF) { pic_store(snappic::with_perf(pic_cfg(), val, pic_ctx())); return; }
   if (it.kind == K_PRESET) { set_preset(val); return; }
@@ -616,7 +633,7 @@ void choose(Item& it, int idx) {
     if (was_vrr) set_pacing("vrr");
     refresh_defaults();
   }
-  if (it.kind == K_LOOK || it.kind == K_AA || it.kind == K_PERF) refresh_defaults();
+  if (it.kind == K_LOOK || it.kind == K_AA || it.kind == K_PERF || it.kind == K_PROFILE) refresh_defaults();
   if (it.key.rfind("access_", 0) == 0) access_changed();
   // a preset, the Look, the pacing, the monitor and the render scale each change what other rows show
   refresh_values();
@@ -635,7 +652,7 @@ void cycle(Item& it, int dir) {
 
 void reset_page(Page& p) {
   for (Item& it : p.items) {
-    if (it.kind == K_ACTION) continue;
+    if (it.kind == K_ACTION || it.kind == K_PROFILE) continue;   // the Graphics preset is worked out from the rows reset below
     if (it.kind == K_PRESET) { set_preset("normal"); continue; }
     if (it.kind == K_AA) { g.cfg.erase("gfx_aa"); g.cfg.erase("gfx_upscaler"); g.cfg.erase("gfx_upscale_quality"); continue; }
     if (it.kind == K_PERF) { g.cfg.erase("gfx_upscale_quality"); if (g.cfg.get("gfx_upscaler", "") == "dlss") g.cfg.set("gfx_upscaler", "dlaa"); continue; }
@@ -717,6 +734,12 @@ void build_pages() {
   // with a one-line note when another row overrides it (hle/picture_rows.h)
   {
     Page p; p.name = "Picture";
+    Item gp = choice("Graphics preset", "", S_CFG, "enhanced",
+                     {{"original", "Original"}, {"balanced", "Balanced"}, {"enhanced", "Enhanced"}, {"max", "Max"}, {"custom", "Custom"}},
+                     "Sets the picture rows together. Original is the game as shipped, Balanced is lighter, Enhanced is the new-install look, Max needs a fast graphics card. Any single change shows Custom.");
+    gp.kind = K_PROFILE;
+    gp.ch[4].avail = false;   // "Custom" is only ever shown, never picked
+    p.items.push_back(gp);
     Item lk = choice("Look", "gfx_look", S_CFG, snapdef::kDefaultEnhanced ? "enhanced" : "original", {{"enhanced", "Enhanced"}, {"original", "Original"}},
                      "Enhanced is the look new installs start with: smoother edges, sharpening, 16x filtering, sharper menu text and a PNG file for every photo. Original is the game as it shipped. "
                      "Picking one sets all of those together; you can still change any row after. Photo scores are the same either way.");
@@ -746,7 +769,7 @@ void build_pages() {
     p.items.push_back(choice("Sharpening", "gfx_sharpen", S_CFG, snapdef::def("SNAP_SHARPEN"),
                              {{"0.00", "Off"}, {"0.15", "0.15"}, {"0.30", "0.30"}, {"0.50", "0.50"}, {"0.75", "0.75"}, {"1.00", "1.00"}},
                              "A gentle sharpening pass after anti-aliasing. Too much makes edges look hard."));
-    Item pr = choice("Quality preset", "", S_CFG, "normal",
+    Item pr = choice("Detail preset", "", S_CFG, "normal",
                      {{"verylow", "Very Low"}, {"low", "Low"}, {"normal", "Default"}, {"high", "High"}, {"ultra", "Ultra"}, {"maximum", "Maximum"}, {"custom", "Custom"}},
                      "Sets the picture rows and the Detail page together. Default follows the Look row. It leaves an upscaler alone. Higher presets are sharper and slower; Maximum needs a very fast graphics card.");
     pr.kind = K_PRESET;
@@ -1734,7 +1757,7 @@ void draw_home() {
       {"Frame pacing", [](const Item& it) { return it.kind == K_PACING; }},
       {"Resolution", [](const Item& it) { return it.key == "gfx_render_scale"; }},
       {"Anti-aliasing", [](const Item& it) { return it.kind == K_AA; }},
-      {"Quality", [](const Item& it) { return it.kind == K_PRESET; }},
+      {"Preset", [](const Item& it) { return it.kind == K_PROFILE; }},
       {"Sound", [](const Item& it) { return it.key == "master"; }},
   };
   for (int i = 0; i < 7; ++i) {

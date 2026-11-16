@@ -28,6 +28,7 @@
 #include "hle/hle.h"
 #include "hle/json_lite.h"
 #include "hle/picture_rows.h"   // the Internal resolution / Anti-aliasing / Performance scaling rules, shared with the launcher and the game's own Settings screen
+#include "hle/presets.h"        // the Original / Balanced / Enhanced / Max graphics presets (docs/presets.md), one table for the launcher, F1 and the game's Settings
 #include "nvn/nvn_aa.h"           // HostWindowHeight
 #include "nvn/nvn_rt.h"           // FallbackNotice
 namespace nvn { const char* FgNotice(); }   // nvn_framegen.cpp: why frame generation turned itself off (null while fine)
@@ -242,6 +243,20 @@ void set_preset(const std::string& v) {
     return;
   }
 }
+// ---- graphics presets (hle/presets.h): worked out from the stored rows, never stored; Custom after any single change. The Look is set through set_look so its own
+// keys are cleared and the defaults table refreshed; the other rows are plain keys.
+const Opt* find_opt(const std::string& key);   // below
+std::string get_profile() { return snappreset::current([](const std::string& k) { return st::get(k.c_str(), ""); }); }
+void set_profile(const std::string& v) {
+  const int p = snappreset::from_id(v);
+  if (p < 0) return;   // Custom is only ever shown
+  snappreset::apply(p, [](const std::string& k, const std::string& val) {
+    if (k == "gfx_look") set_look(val.empty() ? "enhanced" : val);
+    else if (k.rfind("water_", 0) == 0) { if (const Opt* o = find_opt(k); o && o->set) o->set(val.empty() ? o->def : val); }   // live rows: also change what is drawn now
+    else if (val.empty()) st::erase(k.c_str());
+    else st::set(k.c_str(), val);
+  }, pic_ctx());
+}
 std::string get_audio_out() {
   const int m = snap_audio_get_output_mode();
   return m == SNAP_AUDIO_OUT_SPEAKERS ? "speakers" : m == SNAP_AUDIO_OUT_SPATIAL ? "spatial" : "stereo";
@@ -280,12 +295,18 @@ Choices monitors() {
 std::vector<Opt>& graphics_opts() {
   static std::vector<Opt> v = {
       {"", "Picture quality", kSection, kLive, "", ""},
+      {"gfx_profile", "Graphics preset", kChoice, kRestart,
+       "Sets the picture rows below together. Original: the game as it shipped. Balanced: the Enhanced look made lighter (SMAA or your best installed upscaler at Quality, 8x filtering, medium SMAA). "
+       "Enhanced: what a new install runs (every row at its default). Max: DLAA when DLSS is installed (else 2x supersampling with SMAA), the Maximum lighting preset, Ultra SMAA and occlusion, "
+       "leaf and particle upgrades, light bokeh, the atmosphere and water effects, bounce light and 120 fps; it needs a fast graphics card and CPU. Changing any single row afterwards shows Custom. Draw distance, frame generation, "
+       "motion blur, HDR, color, the frame rate limit and vsync are not part of any preset.",
+       "enhanced", {{"original", "Original"}, {"balanced", "Balanced"}, {"enhanced", "Enhanced"}, {"max", "Max"}, {"custom", "Custom"}}, 0, 0, "", nullptr, get_profile, set_profile},
       {"gfx_look", "Look", kChoice, kRestart,
        "Enhanced is the look new installs start with: supersampling sized to your screen (2x at 1080p, 1.5x at 1440p, none extra at 4K) with SMAA, sharpening 0.30, 16x anisotropic filtering, sharper menu text, a PNG file for every photo and HD photos. "
        "Original is the game as it shipped (its own FXAA, no sharpening or filtering, no PNG files, no HD photos). Picking one sets all of those together and clears your own choices for them; "
        "you can still change any row afterwards. Photo scores are the same either way.",
        "enhanced", {{"enhanced", "Enhanced"}, {"original", "Original"}}, 0, 0, "", "SNAP_VISUALS", get_look, set_look},
-      {"gfx_preset", "Quality preset", kChoice, kRestart,
+      {"gfx_preset", "Detail preset", kChoice, kRestart,
        "Sets the picture-quality rows below together: render scale, anti-aliasing, sharpening, anisotropic filtering, texture sharpness, shadow resolution and distance, and ambient occlusion. "
        "Very Low: for really weak hardware (draws the 3D scene at half size, 960 x 540, then stretches it to the window; no anti-aliasing, no filtering, softer textures, 512 shadows, few occlusion samples). "
        "Low: for weak or older graphics cards (1920 x 1080, the game's own FXAA, 4x filtering, fewer occlusion samples). Default: the Look row's own settings (Enhanced, or the game's own look with Original). "
@@ -742,7 +763,7 @@ void step_focused_row(const Opt& o) {
     if (i < 0) i = d > 0 ? -1 : 0;
     const int n = (int)list.size();
     const std::string next = list[(size_t)(((i + d) % n + n) % n)].first;
-    if (std::strcmp(o.key, "gfx_preset") == 0 && next == "custom") return;   // Custom is only ever shown
+    if ((std::strcmp(o.key, "gfx_preset") == 0 || std::strcmp(o.key, "gfx_profile") == 0) && next == "custom") return;   // Custom is only ever shown
     set_of(o, next);
   } else return;
   ImGui::NavMoveRequestCancel();

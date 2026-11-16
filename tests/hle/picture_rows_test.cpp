@@ -2,9 +2,11 @@
 // Unit test for runtime/hle/picture_rows.h: the Internal resolution / Anti-aliasing / Performance scaling rows over the stored keys.
 // Build and run with tests\hle\run_picture_rows_test.ps1.
 #include <cstdio>
+#include <map>
 #include <string>
 
 #include "../../runtime/hle/picture_rows.h"
+#include "../../runtime/hle/presets.h"
 
 static int g_fail = 0;
 #define EXPECT(c) do { if (!(c)) { std::printf("FAIL line %d: %s\n", __LINE__, #c); ++g_fail; } } while (0)
@@ -68,6 +70,46 @@ int main() {
     c.aa = "off"; EXPECT(note_smaa(c, x).find("Not used: the game's own FXAA") == 0); c.aa = "none"; EXPECT(note_smaa(c, x).find("Not used: anti-aliasing is off") == 0);
     Ctx o = x; o.enhanced = false; EXPECT(note_smaa(Cfg{}, o).find("Not used: the game's own FXAA") == 0);                                  // the Original look's default is FXAA
     EXPECT(note_smaa(with_aa(Cfg{}, "dlaa"), x).find("Not used: an upscaler") == 0); }
+
+  // ---- graphics presets (runtime/hle/presets.h): derived from the stored rows, Custom after any single change
+  {
+    using namespace snappreset;
+    std::map<std::string, std::string> kv;
+    auto get = [&](const std::string& k) { auto it = kv.find(k); return it == kv.end() ? std::string() : it->second; };
+    auto put = [&](const std::string& k, const std::string& v) { if (v.empty()) kv.erase(k); else kv[k] = v; };
+    EXPECT(current(get) == "enhanced");                                  // a fresh install (nothing stored) is Enhanced
+    for (int p = 0; p < kCount; p++) {
+      for (int m = 0; m < 8; m++) {                                      // every set of installed upscalers
+        Ctx c; c.dlss = m & 1; c.fsr = m & 2; c.xess = m & 4;
+        kv.clear();
+        apply(p, put, c);
+        EXPECT(current(get) == id(p));                                   // every preset reads back as itself
+        int n = 0; const Row* t = rows(&n);
+        for (int i = 0; i < n; i++) {                                    // changing any single row shows Custom
+          if (std::string(t[i].key) == "gfx_look") continue;
+          std::map<std::string, std::string> saved = kv;
+          put(t[i].key, get(t[i].key).empty() ? "7" : "");
+          EXPECT(current(get) == "custom");
+          kv = saved;
+        }
+        { std::map<std::string, std::string> saved = kv; put("gfx_aa", get("gfx_aa") == "off" ? "none" : "off"); EXPECT(current(get) == "custom"); kv = saved; }
+        { std::map<std::string, std::string> saved = kv; put("gfx_upscaler", get("gfx_upscaler").empty() ? "fsr" : ""); EXPECT(current(get) == "custom"); kv = saved; }
+        { std::map<std::string, std::string> saved = kv; put("gfx_look", get("gfx_look").empty() ? "original" : "");
+          EXPECT(current(get) == (p == 0 ? "enhanced" : p == 2 ? "original" : "custom")); kv = saved; }   // the Look alone flips Original and Enhanced into each other
+      }
+    }
+    // the picture each preset picks
+    { Ctx c; EXPECT(picture_for(0, c).aa.empty() && picture_for(2, c).aa.empty() && picture_for(2, c).upscaler.empty()); }
+    { Ctx c; c.dlss = c.fsr = c.xess = false; EXPECT(picture_for(1, c).aa == "smaa" && picture_for(1, c).upscaler.empty()); EXPECT(picture_for(3, c).aa == "ssaa2,smaa"); }
+    { Ctx c; c.dlss = true; c.fsr = c.xess = false; const Cfg b = picture_for(1, c); EXPECT(b.upscaler == "dlss" && b.quality == "quality" && b.aa.empty()); EXPECT(picture_for(3, c).upscaler == "dlaa"); }
+    { Ctx c; c.dlss = false; c.fsr = true; c.xess = false; EXPECT(picture_for(1, c).upscaler == "fsr" && picture_for(3, c).aa == "ssaa2,smaa"); }
+    // a preset written before DLSS was installed still reads as that preset afterwards
+    { Ctx none; none.dlss = none.fsr = none.xess = false; kv.clear(); apply(3, put, none); EXPECT(current(get) == "max"); Ctx all; kv.clear(); apply(3, put, all); EXPECT(current(get) == "max"); }
+    // stored default spellings read as erased; numbers compare as numbers
+    { kv.clear(); apply(3, put, Ctx{}); kv["leaf_translucency"] = "0.50"; kv["gfx_upscaler"] = kv["gfx_upscaler"]; EXPECT(current(get) == "max");
+      kv.clear(); kv["gfx_lighting"] = "default"; kv["fps_target"] = "default"; kv["gfx_render_scale"] = "auto"; kv["gfx_smaa_quality"] = "high"; EXPECT(current(get) == "enhanced"); }
+    EXPECT(from_id("max") == 3 && from_id("custom") == -1 && std::string(label(0)) == "Original" && std::string(label(-1)) == "Custom");
+  }
 
   std::printf(g_fail ? "picture_rows_test: %d FAILED\n" : "picture_rows_test: all passed\n", g_fail);
   return g_fail ? 1 : 0;
