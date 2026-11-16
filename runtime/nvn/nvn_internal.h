@@ -677,6 +677,17 @@ extern std::atomic<uint64_t> g_lifeStat[LS_COUNT];
 inline void LifeCount(LifeStat s, uint64_t n = 1) { g_lifeStat[s].fetch_add(n, std::memory_order_relaxed); }
 void LifeStatsTick();                  // at present: SNAP_NVN_STATS=1 prints the counters every 300 presents
 
+// ---- save states, NVN side (nvn_state.cpp; docs/save-states.md 1.4, 2.6) --------------------------------------------------------------
+// A restored guest memory image points at the host objects that existed at the save, so every guest-visible object is tracked from creation
+// (StateMade) to the guest's finalize (StateGone). While a state exists, an object that was alive at the save is never freed (StateKeep
+// parks it as a zombie); a load frees the objects made since the save and puts the guest-API fields of the rest back.
+enum StateKind : uint8_t { SK_TEXTURE, SK_SAMPLER, SK_POOL, SK_TEXPOOL, SK_SAMPPOOL, SK_PROGRAM, SK_SYNC, SK_BUFFER, SK_CB, SK_QUEUE, SK_WINDOW, SK_COUNT };
+void StateMade(StateKind k, void* p);
+void StateGone(StateKind k, void* p);
+bool StateKeep(StateKind k, void* p);                    // true = do not destroy now (a saved state may need it back)
+void GraveRevive(const std::unordered_set<const void*>& alive);   // nvn_life.cpp: objects the restored guest names are no longer waiting to be destroyed
+void StateIdleAll();                                      // nvn_life.cpp: every queue finished, readbacks landed in guest memory
+
 // SNAP_GPU_PASSES=<csv path> (with SNAP_PERF or SNAP_PERF_SHARED): per-pass GPU timing. PerfMark writes a GPU timestamp into the command
 // buffer that PerfGpuBegin opened; the time up to the next mark (or the command buffer's end) is booked to this label. Draws are counted
 // with g_perfDraws. nvn_perf.cpp writes one row per segment at the present that collects the command buffer.

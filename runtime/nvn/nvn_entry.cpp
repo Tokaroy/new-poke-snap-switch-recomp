@@ -178,6 +178,7 @@ Boolean MemoryPoolInitialize(void* pool, const void* b) {
   h->RegisterPool(p);
   Log("MemoryPoolInitialize pool=%p storage=%p size=0x%llx flags=0x%x", pool, pb->storage, (unsigned long long)pb->size, pb->flags);
   Bind(pool, MAGIC_POOL, p);
+  StateMade(SK_POOL, p);
   return 1;
 }
 void MemoryPoolSetDebugLabel(void*, const char*) {}
@@ -283,6 +284,7 @@ Boolean TextureInitialize(void* tex, const void* b) {
     t->arenaSlot = ArenaAcct(pp, tb->poolOffset, t->arenaBytes, 1);
   }
   Bind(tex, MAGIC_TEXTURE, t);
+  StateMade(SK_TEXTURE, t);
   TexPrefetch(t);   // [perf] deswizzle static data off the replay thread (SNAP_UPLOAD_PREFETCH_MB=0: off)
   return 1;  // the VkImage is created lazily (first use as render target / present source)
 }
@@ -316,10 +318,14 @@ Boolean SyncInitialize(void* sync, void* dev) {
   auto* s = new SyncImpl();
   s->host = h;
   Bind(sync, MAGIC_SYNC, s);
+  StateMade(SK_SYNC, s);
   return 1;
 }
 void SyncFinalize(void* sync) {
-  delete Impl<SyncImpl>(sync, MAGIC_SYNC);
+  if (auto* s = Impl<SyncImpl>(sync, MAGIC_SYNC)) {
+    StateGone(SK_SYNC, s);
+    if (!StateKeep(SK_SYNC, s)) delete s;   // a saved state keeps it until the state is dropped
+  }
   Unbind(sync);
 }
 int SyncWait(const void* sync, uint64_t timeoutNs) {  // [CALL 0x985820 / 0x98ccxx]: timeout -1 or 0
@@ -343,10 +349,11 @@ Boolean QueueInitialize(void* queue, const void* b) {
   q->flags = reinterpret_cast<const QueueBuilder*>(b)->flags;
   if (!InitQueue(q)) { DestroyQueue(q); return 0; }
   Bind(queue, MAGIC_QUEUE, q);
+  StateMade(SK_QUEUE, q);
   return 1;
 }
 void QueueFinalize(void* queue) {
-  if (auto* q = Impl<QueueImpl>(queue, MAGIC_QUEUE)) DestroyQueue(q);
+  if (auto* q = Impl<QueueImpl>(queue, MAGIC_QUEUE)) { StateGone(SK_QUEUE, q); DestroyQueue(q); }
   Unbind(queue);
 }
 void QueueSubmitCommands(void* queue, int n, const CommandHandle* handles) {  // [CALL 0x903e8c]: (q, count, handle*)
@@ -400,10 +407,11 @@ Boolean WindowInitialize(void* window, const void* b) {
   if (!w->Recreate()) { vkDestroySurfaceKHR(h->instance, w->surface, nullptr); delete w; return 0; }
   h->windows.push_back(w);
   Bind(window, MAGIC_WINDOW, w);
+  StateMade(SK_WINDOW, w);
   return 1;
 }
 void WindowFinalize(void* window) {
-  if (auto* w = Impl<WindowImpl>(window, MAGIC_WINDOW)) DestroyWindow(w);
+  if (auto* w = Impl<WindowImpl>(window, MAGIC_WINDOW)) { StateGone(SK_WINDOW, w); DestroyWindow(w); }
   Unbind(window);
 }
 int WindowAcquireTexture(void* window, void* sync, int* index) {  // [CALL 0x985800]: (window, sync, int*)
@@ -440,12 +448,16 @@ Boolean CommandBufferInitialize(void* cb, void* dev) {
   auto* c = new CommandBufferImpl();
   c->host = h;
   Bind(cb, MAGIC_CB, c);
+  StateMade(SK_CB, c);
   return 1;
 }
 void CommandBufferFinalize(void* cb) {
   if (auto* c = Impl<CommandBufferImpl>(cb, MAGIC_CB)) {
-    ListRecorderGone(c, c->ctlBase, c->ctlBase + c->ctlSize);   // [audit F5] recordings made without control memory end, and (2026-11-14) so do this buffer's in its control range
-    CmdVecGive(c->cmds); delete c;   // [cpuprof] hand the vector back to the recycle pool
+    StateGone(SK_CB, c);
+    if (!StateKeep(SK_CB, c)) {   // a saved state keeps it (and its recordings) until the state is dropped
+      ListRecorderGone(c, c->ctlBase, c->ctlBase + c->ctlSize);   // [audit F5] recordings made without control memory end, and (2026-11-14) so do this buffer's in its control range
+      CmdVecGive(c->cmds); delete c;   // [cpuprof] hand the vector back to the recycle pool
+    }
   }
   Unbind(cb);
 }

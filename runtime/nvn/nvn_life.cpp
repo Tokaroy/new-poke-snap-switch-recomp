@@ -279,6 +279,7 @@ void ScrubSlots(const std::unordered_set<const void*>& deadTex, const std::unord
 
 void Retire(GraveKind k, void* obj) {
   if (!obj) return;
+  if (k != GK_FN) StateGone((StateKind)k, obj);   // the guest's last reference ends here (the first six kinds match StateKind)
   std::lock_guard<std::mutex> lk(g_graveMu2);
   g_graves.push_back({k, obj, nullptr});
   LifeCount(LS_RETIRED);
@@ -310,6 +311,12 @@ void GraveReap(QueueImpl* q) {   // under Host::queueMutex: no queue submits or 
     }
     g_graves.resize(keep);
   }
+  {   // a saved state may need these back: parked as zombies, neither scrubbed nor destroyed
+    size_t keep = 0;
+    for (auto& g : dead)
+      if (!(g.k != GK_FN && StateKeep((StateKind)g.k, g.obj))) dead[keep++] = g;
+    dead.resize(keep);
+  }
   if (dead.empty()) return;
   std::unordered_set<const void*> all, deadTex, deadSamp;
   for (auto& g : dead) {
@@ -320,6 +327,21 @@ void GraveReap(QueueImpl* q) {   // under Host::queueMutex: no queue submits or 
   ScrubSlots(deadTex, deadSamp);
   for (auto& r : g_queues) PersistScrub(r.q, all);   // [audit F4] every queue's persistent draw state, not only the presenting one
   for (auto& g : dead) DestroyNow(g);
+}
+
+void GraveRevive(const std::unordered_set<const void*>& alive) {   // a load: the restored guest names these again
+  std::lock_guard<std::mutex> lk(g_graveMu2);
+  size_t keep = 0;
+  for (auto& g : g_graves)
+    if (g.k == GK_FN || !alive.count(g.obj)) g_graves[keep++] = g;
+  g_graves.resize(keep);
+}
+
+void StateIdleAll() {
+  std::vector<QueueImpl*> qs;
+  { std::lock_guard<std::mutex> lk(g_qMu); for (auto& r : g_queues) qs.push_back(r.q); }
+  for (QueueImpl* q : qs) QueueFinishImpl(q);
+  if (g_host) { FlushReadbacks(g_host, true); if (g_host->device) vkDeviceWaitIdle(g_host->device); }
 }
 
 void GraveDrain(Host* h) {   // Host::Shutdown after vkDeviceWaitIdle: nothing is in flight any more

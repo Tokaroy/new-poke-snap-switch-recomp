@@ -43,6 +43,7 @@ Boolean ProgramInitialize(void* prog, void* dev) {   // [CALL]: (NVNprogram*, NV
   auto* p = new ProgramImpl();
   p->host = h;
   Bind(prog, MAGIC_PROGRAM, p);
+  StateMade(SK_PROGRAM, p);
   return 1;
 }
 void ProgramFinalize(void* prog) {
@@ -61,6 +62,7 @@ Boolean TexturePoolInitialize(void* tp, const void* /*pool*/, ptrdiff_t /*offset
   auto* p = new TexPoolImpl();
   p->host = g_host;
   Bind(tp, MAGIC_TEXPOOL, p);
+  StateMade(SK_TEXPOOL, p);
   TexPoolLive(p, true);   // [nvnfix] slots naming a freed texture are nulled (nvn_life.cpp)
   return 1;
 }
@@ -102,6 +104,7 @@ Boolean SamplerPoolInitialize(void* sp, const void* /*pool*/, ptrdiff_t /*offset
   auto* p = new SampPoolImpl();
   p->host = g_host;
   Bind(sp, MAGIC_SAMPPOOL, p);
+  StateMade(SK_SAMPPOOL, p);
   SampPoolLive(p, true);   // [nvnfix]
   return 1;
 }
@@ -172,6 +175,7 @@ Boolean BufferInitialize(void* buf, const void* builder) {
         auto* i = new BufferImpl();
         i->pool = fp; i->offset = 0; i->size = b->size; i->ownPool = true;
         Bind(buf, MAGIC_BUFFER, i);
+        StateMade(SK_BUFFER, i);
         static std::atomic<int> n{0};
         const int k = ++n;
         if (k <= 8 || k % 100 == 0) LogError("BufferInitialize: no memory pool (game arena full), size 0x%llx: private host storage (%d so far)", (unsigned long long)b->size, k);
@@ -187,6 +191,7 @@ Boolean BufferInitialize(void* buf, const void* builder) {
   if (ArenaAcctOn()) { i->arenaSlot = ArenaAcct(p, i->offset, (int64_t)i->size, 0); i->arenaBorn = (int)g_presentCount; }
   ArenaPoolCheck();
   Bind(buf, MAGIC_BUFFER, i);
+  StateMade(SK_BUFFER, i);
   if (ShinyActive()) ShinyBufferInit(p->va + (uint64_t)b->offset, (uint64_t)b->size);   // shiny mod: buffer creation record
   return 1;
 }
@@ -195,8 +200,11 @@ void BufferFinalize(void* buf) {
   if (i && i->acctVa) PoolAcct(i->pool, i->acctVa, -(int64_t)i->size);
   if (i && i->arenaSlot >= 0) ArenaUnacct(i->arenaSlot, (int64_t)i->size, i->arenaBorn);
   if (i && ShinyActive()) ShinyBufferFinalize(i->pool->va + (uint64_t)i->offset, (uint64_t)i->size);   // shiny mod: end of an instance's buffer
-  if (i && i->ownPool) OwnPoolRetire(i->pool);   // private storage from the null-pool fallback above: freed once the GPU is past it
-  delete i;
+  if (i) StateGone(SK_BUFFER, i);
+  if (!i || !StateKeep(SK_BUFFER, i)) {   // a saved state keeps it (and its private storage) until the state is dropped
+    if (i && i->ownPool) OwnPoolRetire(i->pool);   // private storage from the null-pool fallback above: freed once the GPU is past it
+    delete i;
+  }
   Unbind(buf);
 }
 void* BufferMap(const void* buf) {
@@ -324,6 +332,7 @@ Boolean SamplerInitialize(void* samp, const void* builder) {
   if (vkCreateSampler(h->device, &ci, nullptr, &s->sampler) != VK_SUCCESS) { delete s; LogError("vkCreateSampler failed"); return 0; }
   DebugSamplerNote((void*)s->sampler, *b);   // no-op unless NVN_DRAW_LOG is set
   Bind(samp, MAGIC_SAMPLER, s);
+  StateMade(SK_SAMPLER, s);
   return 1;
 }
 void SamplerFinalize(void* samp) {

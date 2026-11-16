@@ -17,6 +17,18 @@
 
 extern "C" void snap_os_mem_stats(uint64_t *out);
 
+// Host objects the OS layer cannot see (the NVN layer registers these from runtime/nvn/nvn_state.cpp; unset in the standalone OS test).
+extern "C" {
+struct SnapStateHooks {
+    void (*pre_save)();
+    int (*pre_load)(char *why, int cap);
+    void (*post_load)();
+    void (*shot)();   // test aid: request a screenshot
+};
+}
+static const SnapStateHooks *g_xh = nullptr;
+extern "C" void snap_state_set_hooks(const SnapStateHooks *h) { g_xh = h; }
+
 using namespace oslay;
 
 namespace osk {
@@ -521,6 +533,7 @@ bool do_save(std::string &why) {
         s.side = (uint8_t *)big_alloc(64 << 10);
         g_slot.by_thread[t] = &s;
     }
+    if (g_xh && g_xh->pre_save) g_xh->pre_save();   // GPU idle, readbacks landed in guest memory, NVN snapshot (before any memory is copied)
     g_cap_gen++;
     g_sphase.store(PH_CAPTURE);
     for (Thread *t : every_thread()) t->cv.notify_all();
@@ -617,6 +630,10 @@ bool do_load(std::string &why) {
     double dms = 0;
     std::string last;
     if (!drain(2000, rows, dms, last)) { why = "drain timed out waiting for " + last; release_all(); return false; }
+    if (g_xh && g_xh->pre_load) {   // GPU idle and readbacks landed BEFORE guest memory goes back, then the NVN object sets must still match
+        char buf[160] = {};
+        if (!g_xh->pre_load(buf, sizeof buf)) { why = buf; release_all(); return false; }
+    }
     g_tts = all_thread_types();
     {
         Lock lk(G);
@@ -668,6 +685,7 @@ bool do_load(std::string &why) {
             if (r.bytes) memcpy(r.host->sp, r.bytes, r.n);
         }
         state_time_set(g_slot.time);
+        if (g_xh && g_xh->post_load) g_xh->post_load();   // host objects made since the save go, zombies come back, guest-API fields are restored
         g_go1 = 1;
     }
     while (!all_flag(&TState::copied)) Sleep(1);
@@ -689,7 +707,12 @@ size_t private_mib() {
     return m.pagefile >> 20;
 }
 
-struct TestPlan { int save_s = -1, load_s = -1, loops = 1, lgap = 3; };
+// ",shots": a screenshot 1.5 s after the save and after every load, so the frames at the same guest moment can be compared (SNAP_SHOT_DIR)
+struct TestPlan { int save_s = -1, load_s = -1, loops = 1, lgap = 3; bool shots = false; };
+void take_shot() {
+    if (g_xh && g_xh->shot) g_xh->shot();
+    Sleep(500);
+}
 
 void save_load_driver(TestPlan p) {
     Sleep(p.save_s * 1000);
@@ -698,7 +721,9 @@ void save_load_driver(TestPlan p) {
     log("state save: %s in %.0f ms: %zu threads, %zu MiB guest memory in %zu ranges, %zu KiB host stack; process commit %zu MiB%s%s", ok ? "ok" : "REFUSED", g_slot.save_ms,
         g_slot.ts.size(), g_slot.bytes_mem >> 20, g_slot.ranges.size(), g_slot.bytes_stack >> 10, private_mib(), ok ? "" : ": ", ok ? "" : why.c_str());
     if (!ok || p.load_s < 0) return;
-    Sleep((std::max)(0, p.load_s - p.save_s) * 1000);
+    const uint64_t saved_at = now_us();
+    if (p.shots) { Sleep(1500); take_shot(); log("state shot A (save + 1.5 s)"); }
+    Sleep((std::max)(0, p.load_s - p.save_s) * 1000 - (int)((now_us() - saved_at) / 1000));
     for (int i = 0; i < p.loops; i++) {
         if (i) Sleep(p.lgap * 1000);
         std::string w;
@@ -706,6 +731,7 @@ void save_load_driver(TestPlan p) {
         bool lok = do_load(w);
         log("state load %d/%d: %s %s ms%s; process commit %zu MiB", i + 1, p.loops, lok ? "ok" : "REFUSED", lok ? w.c_str() : "-", lok ? "" : (": " + w).c_str(), private_mib());
         (void)a;
+        if (p.shots && lok) { Sleep(1500); take_shot(); log("state shot B%d (load + 1.5 s)", i + 1); }
     }
 }
 }  // namespace
@@ -744,6 +770,7 @@ void state_init() {
         if (const char *q = strstr(e, ",load@t")) p.load_s = atoi(q + 7);
         if (const char *q = strstr(e, ",loops")) p.loops = atoi(q + 6);
         if (const char *q = strstr(e, ",lgap")) p.lgap = atoi(q + 5);
+        p.shots = strstr(e, ",shots") != nullptr;
         std::thread(save_load_driver, p).detach();
     }
 }
