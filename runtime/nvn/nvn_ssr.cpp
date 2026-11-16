@@ -56,7 +56,7 @@ struct G {
 // Tunables in one struct (registered with the dev loop API: F1 Tuning page, ctl `set`, SNAP_DEV=1). Defaults come from the env vars (test aids).
 struct Tun {
   float ssrStrength = 1.f, ssrDist = 45.f, ripple = 0.02f, causticsStrength = 1.f, foamStrength = 1.f, oceanStrength = 1.f;
-  int debug = 0;   // 1 water mask, 2 water height above the floor, 3 depth classes, 4 view distances (R water pre, G water post, B depth), 5 reflection classes (red: screen-space hit, green: RT hit seen on screen, blue: RT hit from the colour cache, yellow: ray left the scene)
+  int debug = 0;   // 1 water mask, 2 water height above the floor, 3 depth classes, 4 view distances (R water pre, G water post, B depth), 6 ocean maps (R crest foam, G/B slope; needs the ocean on), 5 reflection classes (red: screen-space hit, green: RT hit seen on screen, blue: RT hit from the colour cache, yellow: ray left the scene)
 } tun;
 float EnvF(const char* n, float def) { const char* e = getenv(n); return e && *e ? (float)atof(e) : def; }
 void RegisterTunables() {
@@ -72,7 +72,7 @@ void RegisterTunables() {
   dev_param_f("SNAP_WATER_CAUSTICS_STRENGTH", &tun.causticsStrength, 0.f, 3.f, 1.f);
   dev_param_f("SNAP_WATER_FOAM_STRENGTH", &tun.foamStrength, 0.f, 2.f, 1.f);
   dev_param_f("SNAP_WATER_OCEAN_STRENGTH", &tun.oceanStrength, 0.f, 8.f, 1.f);
-  dev_param_i("SNAP_WATER_DEBUG", &tun.debug, 0, 5, 0);
+  dev_param_i("SNAP_WATER_DEBUG", &tun.debug, 0, 6, 0);
 }
 
 // per scene frame
@@ -318,7 +318,7 @@ void RunPass(ReplayCtx& cx, TextureImpl* c, TextureImpl* z) {
   const bool rt = (flags & 1) != 0 && g.pipeRt && snap_rt::ReflectionPass(cx, g.col.view, g.linear, cam->vp, &rinfo);
   if (rt) flags |= 256;
   const int dbg = tun.debug;
-  if (dbg == 1) flags = 8; else if (dbg == 2) flags = 16; else if (dbg == 3) flags = 32; else if (dbg == 4) flags = 64; else if (dbg == 5) flags = 128; else if (dbg == 5) flags = 1 | 512 | (rt ? 256 : 0);
+  if (dbg == 1) flags = 8; else if (dbg == 2) flags = 16; else if (dbg == 3) flags = 32; else if (dbg == 4) flags = 64; else if (dbg == 5) flags = 128; else if (dbg == 6) flags = 2048 | (ocean ? 1024 : 0);
   pc.tlas = rt ? rinfo.tlas : 0; pc.avg = rt ? rinfo.avg : 0;
   pc.k[0] = cam->nearZ; pc.k[1] = (float)g_presentCount / 60.0f; pc.k[2] = (float)flags; pc.k[3] = ocean ? tun.oceanStrength : tun.ripple;
   pc.s[0] = tun.ssrStrength; pc.s[1] = tun.causticsStrength; pc.s[2] = tun.foamStrength; pc.s[3] = tun.ssrDist;

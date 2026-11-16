@@ -66,6 +66,7 @@ bool OceanMaps(ReplayCtx& cx, VkImageView* normal, VkImageView* foam) {
     if (!o.gpu) {
       Host* h = cx.h;
       ocean_fft::CreateInfo ci;
+      ci.params.choppiness = 1.5f; ci.params.foam_threshold = 0.95f; ci.params.foam_gain = 3.f; ci.params.foam_decay = 1.2f;   // defaults make almost no foam (CPU stats: whitecaps on about 12% / 5% / 0% of the three cascades at these values)
       ci.physical = h->phys; ci.device = h->device;
       ci.storage_image_extended_formats_enabled = h->features.shaderStorageImageExtendedFormats == VK_TRUE;
       ci.init = Sp(kOceanInit, sizeof kOceanInit); ci.evolve = Sp(kOceanEvolve, sizeof kOceanEvolve); ci.ifft = Sp(kOceanIfft, sizeof kOceanIfft); ci.output = Sp(kOceanOutput, sizeof kOceanOutput);

@@ -25,7 +25,7 @@ layout(set = 0, binding = 5) uniform sampler2DArray oceanF; // FFT ocean: persis
 layout(push_constant) uniform P {
     mat4 vp;      // clip = vp * (world, 1)
     vec4 size;    // xy: render size in pixels, zw: scene viewport jitter in pixels
-    vec4 k;       // x: near, y: time (seconds), z: flags (1 ssr, 2 caustics, 4 foam, 8 debug mask, 16 debug h, 32 debug depth, 256 rt reflections, 512 debug rt classes, 1024 FFT ocean), w: ripple amount (ocean strength when flag 1024 is set)
+    vec4 k;       // x: near, y: time (seconds), z: flags (1 ssr, 2 caustics, 4 foam, 8 debug mask, 16 debug h, 32 debug depth, 256 rt reflections, 512 debug rt classes, 1024 FFT ocean, 2048 debug ocean maps), w: ripple amount (ocean strength when flag 1024 is set)
     vec4 s;       // x: ssr strength, y: caustics strength, z: foam strength, w: ssr max distance (world units)
     uvec2 tlas;   // RT_REFL: the scene TLAS (device address)
     uvec2 avg;    // RT_REFL: the per-instance colour cache (device address)
@@ -119,6 +119,11 @@ void main() {
     vec3 ndcP = ndcOf(vec2(p), dPost);
     vec3 Pw = worldAt(ndcP, wS);
     vec3 V = normalize(gEye - Pw);
+    if ((flags & 2048) != 0) {   // debug 6: the ocean maps at this pixel: R crest foam, G / B the summed slope (0.5 + 4 * slope)
+        vec2 sl = vec2(0.0);
+        for (int c = 0; c < 3; c++) { vec3 n = texture(oceanN, vec3(Pw.xz * OCEAN_INV_TILE[c], float(c))).xyz; sl += n.xz / max(n.y, 0.2); }
+        outCol = vec4(oceanFoam(Pw.xz), 0.5 + 4.0 * sl.x, 0.5 + 4.0 * sl.y, 0.0); return;
+    }
     float kS = 0.0, kF = 0.0, g = 1.0; vec3 ssr = vec3(0.0), foam = vec3(0.0);
     // height of the water surface above the geometry seen through it (infinite where nothing is behind)
     float h = 1e9;

@@ -48,7 +48,7 @@ Water pixel = `hdPost` differs from `hdPre`. The floor is the full-resolution de
 Plain environment variables; live parameters on the F1 Tuning page with `SNAP_DEV=1`.
 
 - `SNAP_WATER_SSR_STRENGTH` (1), `SNAP_WATER_SSR_DIST` (45 world units), `SNAP_WATER_RIPPLE` (0.02), `SNAP_WATER_CAUSTICS_STRENGTH` (1), `SNAP_WATER_FOAM_STRENGTH` (1, also scales the whitecaps), `SNAP_WATER_OCEAN_STRENGTH` (1, slope multiplier of the ocean normal).
-- Debug views: `SNAP_WATER_DEBUG=1` water mask, `2` water height above the floor, `3` mask terms, `4` view distance of the three depths, `5` world height of the depths. `SNAP_WATER_LOG=1` probe (distinct scene fragment keys, pass stats), `SNAP_WATER_LOG=2` one line per frame with the reason the hook did nothing, `SNAP_WATER_TIME=1` GPU ms of the copies and the pass.
+- Debug views: `SNAP_WATER_DEBUG=1` water mask, `2` water height above the floor, `3` mask terms, `4` view distance of the three depths, `5` world height of the depths, `6` the ocean maps (red foam, green and blue slope). `SNAP_WATER_LOG=1` probe (distinct scene fragment keys, pass stats), `SNAP_WATER_LOG=2` one line per frame with the reason the hook did nothing, `SNAP_WATER_TIME=1` GPU ms of the copies and the pass.
 - With `SNAP_DEV=1` the four switches are dev parameters too, so `ab_capture.ps1 -Effect SNAP_WATER_SSR -Values 0,1 -Set SNAP_WATER_SSR=1` flips only the water effect.
 
 ## Proof
@@ -63,13 +63,14 @@ Each strip has a JSON next to it with the pixel diff, the photo-frame check and 
 
 ## Cost at 3840x2160
 
-GPU time of the full-screen pass at 3840x2160 on the beach (`host\ab_capture.ps1` per-pass deltas, `SNAP_WATER_TIME=1`), measured while other jobs ran on the same GPU, so read them as upper bounds. An exclusive `-Bench` is still to do.
+GPU time of the full-screen pass at 3840x2160 on the beach (`host\ab_capture.ps1` per-pass deltas, `SNAP_WATER_TIME=1`), measured while other jobs ran on the same GPU, so read them as upper bounds. The exclusive bench did not run: it queued behind `build/heavy.priority` and never got all slots, and a non-exclusive repeat drifted 5.0 to 8.5 ms per frame with the ocean off, so it says nothing about the pass. Redo it as `-Exclusive` when no priority reservation is set.
 
 | Effect | Extra GPU time |
 |---|---|
 | Reflections | about 0.5 ms (pass) plus about 0.15 ms for the depth copies and the forced depth writes on the sea draws |
 | Caustics | about 0.08 ms |
 | Shoreline foam | about 0.07 ms |
+| Ocean waves | about 0.07 ms more pass time and 0.08 ms of copies with the reflections on, plus the three 128x128 FFT cascades (not timed on their own; they are 4 small compute dispatches per frame). Beach A/B: `analysis/water/ab_beach_ocean.png` |
 
 The copies and the pass run only while a water effect is on and the sea is on screen.
 
