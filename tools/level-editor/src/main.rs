@@ -22,6 +22,7 @@ mod headless;
 mod ground;
 mod grow;
 mod hide;
+mod shadow;
 mod import;
 mod import_pack;
 mod reskin;
@@ -1361,6 +1362,23 @@ fn main() {
                 std::process::exit(1);
             }
         }
+    }
+    // test aid: LE_SPAWN_DUMP=<file> writes every spawn (and the rail) as tab-separated lines, for planning shot routes
+    if let (Ok(out), Some(c)) = (std::env::var("LE_SPAWN_DUMP"), ed.loaded.as_ref()) {
+        let mut s = String::new();
+        for l in &c.levels {
+            if let Some(r) = l.rail.and_then(|e| l.paths.iter().find(|p| p.entity == e)) {
+                for p in r.segments.iter().flatten() {
+                    s += &format!("rail\t{}\t{}\t{}\n", p[0], p[1], p[2]);
+                }
+            }
+            for (i, sp) in l.spawns.iter().enumerate() {
+                let added = sp.pos_off.is_some_and(|o| o >= level::VBASE);
+                let path: Vec<String> = sp.path_idx.and_then(|k| l.paths.get(k)).map(|p| p.segments.iter().flatten().map(|q| format!("{:.1},{:.1},{:.1}", q[0], q[1], q[2])).collect()).unwrap_or_default();
+                s += &format!("spawn\t{}\t{i}\t{}\t{:.2}\t{:.2}\t{:.2}\t{}\t{}\t{}\t{}\n", l.name, sp.label, sp.pos[0], sp.pos[1], sp.pos[2], added as u8, sp.alive as u8, sp.pos_from_path as u8, path.join(" "));
+            }
+        }
+        let _ = std::fs::write(&out, s);
     }
     if let Some(t) = args.tool {
         ed.tool = t;

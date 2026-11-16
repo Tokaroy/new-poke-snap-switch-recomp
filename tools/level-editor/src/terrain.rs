@@ -480,6 +480,63 @@ impl NavTile {
         }
         best
     }
+
+    /// Switches off (flags 0, so Detour's query filter skips them) the ground polygons that an obstacle stands on: a
+    /// triangle of `tris` (tile space) whose xz footprint overlaps the polygon and whose low point is within the tile's
+    /// walkable height of the navmesh surface there. Canopy and other parts high above the ground keep the area open.
+    /// A polygon with a point of `keep` on it (a spawn point) stays open, so no Pokémon starts on a closed polygon.
+    /// Returns the polygons closed now and the ground polygons in all.
+    pub fn close_under(&self, b: &mut [u8], tris: &[[Vec3; 3]], keep: &[Vec3]) -> (usize, usize) {
+        let reach = self.walkable.0.max(1.0);
+        // obstacle triangles: low point near the surface under them
+        let low: Vec<&[Vec3; 3]> = tris
+            .iter()
+            .filter(|t| {
+                let lo = t.iter().map(|p| p.y).fold(f32::MAX, f32::min);
+                let c = (t[0] + t[1] + t[2]) / 3.0;
+                t.iter().chain(std::iter::once(&c)).any(|p| self.height_at(b, p.x, p.z, lo).is_some_and(|h| lo < h + reach && lo > h - 2.0 * reach))
+            })
+            .collect();
+        let (mut closed, mut ground) = (0, 0);
+        for p in 0..self.poly_count {
+            if !self.is_ground_poly(b, p) {
+                continue;
+            }
+            ground += 1;
+            let at = self.polys_at + POLY * p;
+            if u16_at(b, at + 28).unwrap_or(0) == 0 {
+                continue;
+            }
+            let (vs, ..) = self.poly(b, p);
+            let pv: Vec<Vec3> = vs.iter().map(|&v| self.vert(b, v)).collect();
+            let poly: Vec<(f32, f32)> = pv.iter().map(|v| (v.x, v.z)).collect();
+            let (ylo, yhi) = pv.iter().fold((f32::MAX, f32::MIN), |(l, h), v| (l.min(v.y), h.max(v.y)));
+            let kept = keep.iter().any(|k| k.y > ylo - 3.0 && k.y < yhi + 3.0 && xz_overlap(&poly, &[(k.x - 0.05, k.z - 0.05), (k.x + 0.05, k.z - 0.05), (k.x, k.z + 0.05)]));
+            if !kept && low.iter().any(|t| xz_overlap(&poly, &t.map(|v| (v.x, v.z)))) {
+                b[at + 28] = 0;
+                b[at + 29] = 0;
+                closed += 1;
+            }
+        }
+        (closed, ground)
+    }
+}
+
+/// Whether two convex xz polygons overlap (separating-axis test over both polygons' edges).
+fn xz_overlap(a: &[(f32, f32)], b: &[(f32, f32)]) -> bool {
+    let axes = |p: &[(f32, f32)]| -> Vec<(f32, f32)> { (0..p.len()).map(|i| (p[i], p[(i + 1) % p.len()])).map(|(u, v)| (u.1 - v.1, v.0 - u.0)).collect() };
+    let span = |p: &[(f32, f32)], n: (f32, f32)| p.iter().map(|q| q.0 * n.0 + q.1 * n.1).fold((f32::MAX, f32::MIN), |(lo, hi), d| (lo.min(d), hi.max(d)));
+    if a.len() < 3 || b.len() < 3 {
+        return false;
+    }
+    axes(a).into_iter().chain(axes(b)).all(|n| {
+        if n.0 == 0.0 && n.1 == 0.0 {
+            return true;
+        }
+        let (al, ah) = span(a, n);
+        let (bl, bh) = span(b, n);
+        ah > bl && bh > al
+    })
 }
 
 /// Height of triangle abc above (x, z) when (x, z) is inside its xz projection.
@@ -531,6 +588,18 @@ mod tests {
         b.extend_from_slice(&4u32.to_le_bytes());
         b.extend_from_slice(&0u32.to_le_bytes());
         b
+    }
+
+    #[test]
+    fn xz_overlap_finds_footprints_on_a_polygon() {
+        let sq = [(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)];
+        assert!(xz_overlap(&sq, &[(1.0, 1.0), (2.0, 1.0), (1.0, 2.0)]), "inside");
+        assert!(xz_overlap(&sq, &[(3.0, 3.0), (6.0, 3.0), (3.0, 6.0)]), "across a corner");
+        assert!(xz_overlap(&sq, &[(-1.0, -1.0), (9.0, -1.0), (-1.0, 9.0)]), "covering it");
+        assert!(!xz_overlap(&sq, &[(5.0, 5.0), (6.0, 5.0), (5.0, 6.0)]), "beside it");
+        assert!(!xz_overlap(&sq, &[(3.0, 5.0), (5.0, 3.0), (5.0, 5.0)]), "past the corner, inside the bounds of neither");
+        // a vertical wall seen from above is a segment
+        assert!(xz_overlap(&sq, &[(-1.0, 2.0), (5.0, 2.0), (5.0, 2.0)]), "a wall across it");
     }
 
     #[test]

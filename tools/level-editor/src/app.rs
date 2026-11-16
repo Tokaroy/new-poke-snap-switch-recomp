@@ -1032,9 +1032,134 @@ impl EditorApp {
                 shapes += k;
             }
         }
+        let shadows = match self.clear_ghost_shadows(&arch, &cor) {
+            Ok(s) => s,
+            Err(e) => format!("Shadows of the hidden scenery stay: {e}."),
+        };
         Ok(format!(
-            "Original scenery along the rail hidden: {objects} objects in {files} mesh files ({}); {shapes} rock collision shapes removed.",
+            "Original scenery along the rail hidden: {objects} objects in {files} mesh files ({}); {shapes} rock collision shapes removed. {shadows}",
             groups.join(", ")
+        ))
+    }
+
+    /// Clears the baked sun shadows of the scenery `hide_corridor` hides from the course's Shadow textures (see
+    /// `shadow.rs`), writing the changed textures into the pack beside the meshes. Reads the original files only.
+    fn clear_ghost_shadows(&self, arch: &std::path::Path, cor: &crate::hide::Corridor) -> Result<String, String> {
+        use ssbh_data::mesh_data::VectorData;
+        use ssbh_data::prelude::*;
+        let c = self.loaded.as_ref().ok_or("no course loaded")?;
+        let sun = crate::shadow::sun_for(&c.archive).ok_or("no sun direction known for this course")?;
+        let v3 = |d: &VectorData| -> Vec<Vec3> {
+            match d {
+                VectorData::Vector2(v) => v.iter().map(|a| Vec3::new(a.x, a.y, 0.0)).collect(),
+                VectorData::Vector3(v) => v.iter().map(|a| Vec3::new(a.x, a.y, a.z)).collect(),
+                VectorData::Vector4(v) => v.iter().map(|a| Vec3::new(a.x, a.y, a.z)).collect(),
+            }
+        };
+        struct Obj {
+            model: String,
+            name: String,
+            sub: u64,
+            pos: Vec<Vec3>,
+            uv: Vec<[f32; 2]>,
+            idx: Vec<u32>,
+            hidden: bool,
+        }
+        // every object that can cast or receive a sun shadow, in world space; hidden by the same rule as the meshes
+        let mut objs: Vec<Obj> = vec![];
+        let mut dir_of_course = None;
+        for m in &c.models {
+            let n = &m.inst.name;
+            if place::Site::kind_of_name(n) == place::SurfaceKind::Skip || n.contains("LightingModel") || n.contains("Water") || n.starts_with("SM_USR") {
+                continue;
+            }
+            let Some(src) = m.source.as_ref() else { continue };
+            let Some(dir) = src.parent() else { continue };
+            let ours = dir.to_string_lossy().replace('\\', "/").to_lowercase().ends_with(&c.archive.to_lowercase());
+            if ours && dir_of_course.is_none() {
+                dir_of_course = Some(dir.to_path_buf());
+            }
+            let Ok(modl) = ModlData::from_file(src) else { continue };
+            let Ok(mesh) = MeshData::from_file(dir.join(&modl.mesh_file_name)) else { continue };
+            let xf = ground::inst_xf(&m.inst);
+            let can_hide = ours && !ground::is_terrain_name(n);
+            for o in &mesh.objects {
+                let Some(p) = o.positions.first() else { continue };
+                let pos: Vec<Vec3> = v3(&p.data).into_iter().map(|q| xf.transform_point3(q)).collect();
+                if pos.is_empty() {
+                    continue;
+                }
+                let lo = pos.iter().fold(Vec3::splat(f32::MAX), |a, q| a.min(*q));
+                let hi = pos.iter().fold(Vec3::splat(f32::MIN), |a, q| a.max(*q));
+                let uv = o
+                    .texture_coordinates
+                    .last()
+                    .map(|t| v3(&t.data).into_iter().map(|q| [q.x, q.y]).collect::<Vec<_>>())
+                    .filter(|u| u.len() == pos.len())
+                    .unwrap_or_default();
+                let count = pos.len() as u32;
+                let mut idx: Vec<u32> = o.vertex_indices.iter().copied().filter(|&i| i < count).collect();
+                idx.truncate(idx.len() / 3 * 3);
+                objs.push(Obj { model: n.clone(), name: o.name.clone(), sub: o.subindex, pos, uv, idx, hidden: can_hide && cor.holds(lo, hi) });
+            }
+        }
+        let tris = |o: &Obj| -> Vec<[Vec3; 3]> { o.idx.chunks_exact(3).map(|t| [o.pos[t[0] as usize], o.pos[t[1] as usize], o.pos[t[2] as usize]]).collect() };
+        let hidden: Vec<[Vec3; 3]> = objs.iter().filter(|o| o.hidden).flat_map(|o| tris(o)).collect();
+        let Some(mut map) = crate::shadow::SunMap::new(sun, &hidden, 0.1, 2.0) else { return Ok(String::new()) };
+        for o in objs.iter().filter(|o| !o.hidden) {
+            for t in tris(o) {
+                map.draw(&t, false);
+            }
+        }
+        // the course's Shadow textures by (model, shape, subindex)
+        let dir = dir_of_course.ok_or("course folder not found")?;
+        let mut files = std::collections::HashMap::new();
+        for e in std::fs::read_dir(&dir).map_err(|e| e.to_string())?.flatten() {
+            let f = e.file_name().to_string_lossy().to_string();
+            let Some(stem) = f.strip_suffix("^Shadow.nutexb") else { continue };
+            let p: Vec<&str> = stem.split('^').collect();
+            if p.len() == 5 {
+                if let Ok(sub) = p[4].parse::<u64>() {
+                    files.insert((p[1].to_string(), p[3].to_string(), sub), f.clone());
+                }
+            }
+        }
+        let (mut textures, mut total) = (0, crate::shadow::Stats::default());
+        for o in objs.iter().filter(|o| !o.hidden && !o.uv.is_empty()) {
+            if !o.pos.iter().any(|p| map.covers(*p)) {
+                continue;
+            }
+            let Some(f) = files.get(&(o.model.clone(), o.name.clone(), o.sub)) else { continue };
+            let Ok(b) = std::fs::read(dir.join(f)) else { continue };
+            // only ground inside the rail strip: the strip plus the reach of a tall tree's shadow at this sun
+            let reach = cor.width + 20.0;
+            let idx: Vec<u32> = o
+                .idx
+                .chunks_exact(3)
+                .filter(|t| t.iter().any(|&i| cor.dist(glam::Vec2::new(o.pos[i as usize].x, o.pos[i as usize].z)) < reach))
+                .flatten()
+                .copied()
+                .collect();
+            if idx.is_empty() {
+                continue;
+            }
+            let (nb, st) = match crate::shadow::clear_texture(&b, &o.uv, &o.pos, &idx, &map, 0.3) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            total.shadowed += st.shadowed;
+            total.agree += st.agree;
+            if let Some(nb) = nb {
+                let out = arch.join(f);
+                std::fs::write(&out, nb).map_err(|e| format!("{}: {e}", out.display()))?;
+                textures += 1;
+                total.cleared += st.cleared;
+            }
+        }
+        Ok(format!(
+            "Their baked sun shadows cleared: {} texels in {textures} shadow textures (the sun map finds {:.0}% of the baked shadow it covers).",
+            total.cleared,
+            100.0 * total.agree as f32 / total.shadowed.max(1) as f32
         ))
     }
 

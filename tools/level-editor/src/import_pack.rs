@@ -184,6 +184,30 @@ pub fn import_into(data: &DataRoot, lc: &mut LoadedCourse, spec: &scenery::Spec,
     if !collided {
         rep.push("  collision: no ground collision under the model; it has none".into());
     }
+    // navmesh: switch off the ground polygons the model stands on, so walking Pokémon go around it
+    let world: Vec<[Vec3; 3]> = built.collision.1.iter().map(|t| t.map(|i| built.collision.0[i as usize])).collect();
+    let spawns: Vec<Vec3> = lc.levels.iter().flat_map(|l| l.spawns.iter().map(|s| Vec3::from(s.pos))).collect();
+    for m in lc.models.iter().filter(|m| ground::is_terrain_name(&m.inst.name)) {
+        let Some(msrc) = &m.source else { continue };
+        let fname = format!("{}.navmshb", m.inst.name);
+        let packed = arch_dir.join(&fname);
+        let path = if packed.exists() { packed.clone() } else { msrc.parent().ok_or("model without folder")?.join(&fname) };
+        let Ok(mut b) = std::fs::read(&path) else { continue };
+        let inv = ground::inst_xf(&m.inst).inverse();
+        let local: Vec<[Vec3; 3]> = world.iter().map(|t| t.map(|v| inv.transform_point3(v))).collect();
+        let keep: Vec<Vec3> = spawns.iter().map(|v| inv.transform_point3(*v)).collect();
+        let (mut closed, mut ground_polys) = (0, 0);
+        for t in terrain::find_tiles(&b) {
+            let (c, g) = t.close_under(&mut b, &local, &keep);
+            closed += c;
+            ground_polys += g;
+        }
+        if closed > 0 {
+            std::fs::create_dir_all(&arch_dir).map_err(|e| e.to_string())?;
+            std::fs::write(&packed, &b).map_err(|e| format!("{}: {e}", packed.display()))?;
+            rep.push(format!("  navmesh: {closed} of {ground_polys} walkable polygons of {} switched off under the model", m.inst.name));
+        }
+    }
     // write to a temporary name first: the source may be this very file (an earlier import)
     let tmp = rom_out.with_extension("drp.new");
     a.write(&built.chunks, &built.groups, &tmp)?;

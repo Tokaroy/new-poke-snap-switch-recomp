@@ -1,0 +1,113 @@
+# fixture: post_tutorial
+# Level editor generated-course check (2026-11-16): Florio leg 1 with a generated pack, from the lab hub through the whole ride to
+# the professor's score. Frame bursts at rail progress 6, 15, 30 (the same points as ride_florio.txt, for before/after pairs),
+# every 7 units from 37 to 65, every 2 units from 74 to 90 (where seed 17 puts Grookey and Scorbunny by its rocks) and at 100.
+# Shutter taps every 2.5 s up to rail 100 (a repeat lasts only until the next wait, so every ride segment has its own; about
+# 60 photos, short of the 72 that would end the ride). Photo select: subject folders follow the species number and the
+# generated species have the highest ones, so Left twice from the first folder (it wraps past "No Subject") opens the last
+# species folder, then Left once more the one before it; in each, A picks the shown photo (a refused photo gets A and Right until
+# one is taken), B goes back. Plus, Up, A evaluates; a burst every 5 s through the evaluation shows each photo's score.
+# Pass: "wait 'ui=evaluation:Score' met" and "end of route reached".
+# Run with SNAP_INPUT_SCRIPT set to this file and SNAP_MODS_DIR to the pack's folder:
+# powershell -File host\run_boot.ps1 -SaveFixture post_tutorial -ShotAt 99999 -ShotMax 120 -Timeout 590
+repeat @f300 @f30000 120 8 A
+wait ui=map_select timeout=240
+repeat @f60 @f30000 120 8 A
+wait ride timeout=240
+repeat @f0 @f60000 150 6 A
+wait ride>=6 timeout=60
+@f0 30 shot=10
+repeat @f40 @f60000 150 6 A
+wait ride>=15 timeout=60
+@f0 30 shot=10
+repeat @f40 @f60000 150 6 A
+wait ride>=30 timeout=60
+@f0 30 shot=10
+repeat @f40 @f60000 150 6 A
+wait ride>=37 timeout=60
+@f0 30 shot=10
+repeat @f40 @f60000 150 6 A
+wait ride>=44 timeout=60
+@f0 30 shot=10
+repeat @f40 @f60000 150 6 A
+wait ride>=51 timeout=60
+@f0 30 shot=10
+repeat @f40 @f60000 150 6 A
+wait ride>=58 timeout=60
+@f0 30 shot=10
+repeat @f40 @f60000 150 6 A
+wait ride>=65 timeout=60
+@f0 30 shot=10
+repeat @f40 @f60000 150 6 A
+wait ride>=74 timeout=60
+@f0 30 shot=10
+repeat @f40 @f60000 150 6 A
+wait ride>=76 timeout=60
+@f0 30 shot=10
+repeat @f40 @f60000 150 6 A
+wait ride>=78 timeout=60
+@f0 30 shot=10
+repeat @f40 @f60000 150 6 A
+wait ride>=80 timeout=60
+@f0 30 shot=10
+repeat @f40 @f60000 150 6 A
+wait ride>=82 timeout=60
+@f0 30 shot=10
+repeat @f40 @f60000 150 6 A
+wait ride>=84 timeout=60
+@f0 30 shot=10
+repeat @f40 @f60000 150 6 A
+wait ride>=86 timeout=60
+@f0 30 shot=10
+repeat @f40 @f60000 150 6 A
+wait ride>=88 timeout=60
+@f0 30 shot=10
+repeat @f40 @f60000 150 6 A
+wait ride>=90 timeout=60
+@f0 30 shot=10
+repeat @f40 @f60000 150 6 A
+wait ride>=100 timeout=200
+@f0 30 shot=10
+wait ride_end timeout=200
+repeat @f120 @f60000 90 8 A
+wait ui=photo_submit:FolderSelect timeout=300
+@f150 30 shot=10
+@f230 8 Left
+@f310 8 Left
+@f390 30 shot=10
+@f470 8 A
+wait ui=photo_submit:PhotoSubmit timeout=30
+@f40 30 shot=10
+repeat @f80 @f1440 240 8 A
+repeat @f180 @f1440 240 8 A
+repeat @f240 @f1440 240 8 Right
+@f1500 8 B
+wait ui=photo_submit:FolderSelect timeout=90
+@f60 8 Left
+@f140 30 shot=10
+@f220 8 A
+wait ui=photo_submit:PhotoSubmit timeout=30
+@f40 30 shot=10
+repeat @f80 @f1440 240 8 A
+repeat @f180 @f1440 240 8 A
+repeat @f240 @f1440 240 8 Right
+@f1500 8 B
+wait ui=photo_submit:FolderSelect timeout=90
+@f60 30 shot=10
+@f100 8 Plus
+@f180 8 Up
+@f260 8 A
+wait ui=evaluation timeout=60
+repeat @f240 @f60000 90 8 A
+@f300 30 shot=10
+@f600 30 shot=10
+@f900 30 shot=10
+@f1200 30 shot=10
+@f1500 30 shot=10
+@f1800 30 shot=10
+@f2100 30 shot=10
+@f2400 30 shot=10
+@f2700 30 shot=10
+@f3000 30 shot=10
+wait ui=evaluation:End timeout=240
+end @f300
