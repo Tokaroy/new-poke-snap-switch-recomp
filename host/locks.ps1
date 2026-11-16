@@ -1,114 +1,183 @@
-# Dot-source: . host\locks.ps1   (needs $root = project root, set by the caller or derived below)
-# Lock files hold "<owner> pid=<pid> <MM/dd/yyyy HH:mm:ss> <what>"; created atomically (CreateNew). Stale = pid dead or older than 20 min.
-#   build lock : build\heavy.lock              one build (host\build_snap.py, snap_build) at a time. Take-BuildLock / Release-Lock
-#   run slots  : build\slots\run0..run3.lock   up to 4 hidden test runs at once (host\run_boot.ps1 does this itself)
-#   priority   : while build\heavy.priority exists, run slot 0 is reserved for the run whose $env:SNAP_LOCK_OWNER equals its content
-#   exclusive  : -Bench / perf runs: build\slots\exclusive.lock (one exclusive at a time), then all 4 slots; new normal runs yield meanwhile
+# Dot-source: . host\locks.ps1 (caller may set $script:LockRoot for isolated tests).
+# Format: "<owner> pid=<pid> <MM/dd/yyyy HH:mm:ss> <what>"; CreateNew is atomic.
+# Stale = dead PID or older than 20 minutes; unfinished files get 12 seconds.
 if (-not $script:LockRoot) { $script:LockRoot = if ($root) { "$root" } else { (Resolve-Path (Join-Path $PSScriptRoot '..')).Path } }
-$script:LockMax = 4   # owner 2026-11-12: 4 hidden runs at once (was 6: CPU at 100%, runs crawled; was 3 before that)
-# owner 2026-11-12: "while i use the pc you can only have 1 instance". build\slots\max.txt (1..4) lowers the cap; delete it to go back to 4.
-$capFile = Join-Path $script:LockRoot 'build\slots\max.txt'
-if (Test-Path $capFile) { $cap = 0; if ([int]::TryParse(((Get-Content $capFile -TotalCount 1) -as [string]).Trim(), [ref]$cap) -and $cap -ge 1 -and $cap -lt $script:LockMax) { $script:LockMax = $cap } }
+$script:LockMax = 4
+if (-not $script:LockMutexWaitMs) { $script:LockMutexWaitMs = 10000 }
+if (-not $script:LockMutexName) { $script:LockMutexName = 'Global\SnapRecompLocks' }
 
 function Get-LockText([string]$Path) { try { (Get-Content -LiteralPath $Path -ErrorAction Stop) -join ' ' } catch { $null } }
+function Get-RunSlotCap {
+    $cap = 0
+    $text = Get-LockText (Join-Path $script:LockRoot 'build\slots\max.txt')
+    $script:LockMax = if ($null -ne $text -and [int]::TryParse($text.Trim(), [ref]$cap) -and $cap -ge 1 -and $cap -le 4) { $cap } else { 4 }
+    return $script:LockMax
+}
 
+# Production process guard unchanged, extracted so tests can replace it.
+function Test-SlotGameRunning([string]$SlotDir) {
+    return [bool]@(Get-Process snap_boot -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($SlotDir, [StringComparison]::OrdinalIgnoreCase) }).Count
+}
 function Test-LockStale([string]$Path) {
     $t = Get-LockText $Path
-    if ($null -eq $t) { return $false }                       # vanished or unreadable: not ours to remove
-    # A run slot whose game is still running is busy even if its run_boot died (a killed watcher leaves the hidden-desktop game alive);
-    # taking it then fails the exe copy with "could not copy a stable build\snap exe" (coordinator 2026-11-15)
+    if ($null -eq $t) { return $false }
     if ((Split-Path $Path -Leaf) -match '^run(\d+)\.lock$') {
         $slotDir = Join-Path $script:LockRoot "build\runs\slot$($Matches[1])\"
-        if (@(Get-Process snap_boot -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($slotDir, [StringComparison]::OrdinalIgnoreCase) }).Count) { return $false }
+        if (Test-SlotGameRunning $slotDir) { return $false }
     }
-    $age =((Get-Date) - (Get-Item -LiteralPath $Path -ErrorAction SilentlyContinue).LastWriteTime).TotalMinutes
+    $item = Get-Item -LiteralPath $Path -ErrorAction SilentlyContinue
+    if ($null -eq $item) { return $false }
+    $age = ([DateTime]::UtcNow - $item.LastWriteTimeUtc).TotalMinutes
     if ($age -gt 20) { return $true }
-    if ($t -match 'pid=(\d+)') { return -not [bool](Get-Process -Id ([int]$Matches[1]) -ErrorAction SilentlyContinue) }
-    return ($age -gt 0.2)                                      # no pid: a half-written file older than ~10 s
+    if ($t -match 'pid=(\d+)') {
+        $ownerPid = 0
+        if ([int]::TryParse($Matches[1], [ref]$ownerPid) -and $ownerPid -gt 0) { return -not [bool](Get-Process -Id $ownerPid -ErrorAction SilentlyContinue) }
+    }
+    return ($age -gt 0.2)
 }
 
-# Atomic create. Returns $true if we now own the lock. A machine-wide named mutex covers the stale check + removal + create, so two takers cannot both
-# judge a lock stale and delete each other's fresh lock.
+# A timed-out WaitOne does not grant ownership; an abandoned mutex does.
+function Invoke-LockMutex([scriptblock]$Action) {
+    $mx = New-Object System.Threading.Mutex($false, $script:LockMutexName)
+    $owns = $false
+    try {
+        try { $owns = $mx.WaitOne($script:LockMutexWaitMs) } catch [System.Threading.AbandonedMutexException] { $owns = $true }
+        if (-not $owns) { throw 'lock mutex timeout' }
+        & $Action
+    } finally { if ($owns) { $mx.ReleaseMutex() }; $mx.Dispose() }
+}
+function Write-LockRecord($Stream, [byte[]]$Bytes) { $Stream.Write($Bytes, 0, $Bytes.Length) }
 function Try-TakeLock([string]$Path, [string]$What) {
     New-Item -ItemType Directory -Force (Split-Path $Path) | Out-Null
-    $mx = New-Object System.Threading.Mutex($false, 'Global\SnapRecompLocks')
-    try { try { [void]$mx.WaitOne(10000) } catch [System.Threading.AbandonedMutexException] {}
-        if ((Test-Path -LiteralPath $Path) -and (Test-LockStale $Path)) { Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue }
-        try {
-            $owner = if ($env:SNAP_LOCK_OWNER) { $env:SNAP_LOCK_OWNER } else { 'run_boot' }
-            $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
-            $b = [System.Text.Encoding]::UTF8.GetBytes("$owner pid=$PID $(Get-Date -Format 'MM/dd/yyyy HH:mm:ss') $What")
-            $fs.Write($b, 0, $b.Length); $fs.Close()
-            return $true
-        } catch { return $false }
-    } finally { try { $mx.ReleaseMutex() } catch {}; $mx.Dispose() }
+    try {
+        Invoke-LockMutex {
+            if ((Test-Path -LiteralPath $Path) -and (Test-LockStale $Path)) { Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue }
+            $fs = $null
+            try {
+                $owner = if ($env:SNAP_LOCK_OWNER) { $env:SNAP_LOCK_OWNER } else { 'run_boot' }
+                $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
+                $b = [System.Text.Encoding]::UTF8.GetBytes("$owner pid=$PID $(Get-Date -Format 'MM/dd/yyyy HH:mm:ss') $What")
+                Write-LockRecord $fs $b
+                return $true
+            } catch {
+                # This attempt created the file and still holds the mutex. Do not
+                # leave an empty/partial lock when writing its record fails.
+                if ($fs) { $fs.Dispose(); $fs = $null; Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue }
+                return $false
+            } finally { if ($fs) { $fs.Dispose() } }
+        }
+    } catch { return $false }
 }
-function Release-Lock([string]$Path) { Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue }
-
-# Build lock: poll until taken (default 30 min). Returns $true/$false. Release with Release-Lock (Join-Path $LockRoot 'build\heavy.lock').
+function Release-Lock([string]$Path) {
+    try {
+        Invoke-LockMutex {
+            if ((Get-LockText $Path) -match "(?:^| )pid=$PID(?: |$)") { Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue }
+        }
+    } catch { } # Never delete an unverified lock after a mutex timeout.
+}
 function Take-BuildLock([string]$What = 'build', [int]$WaitSec = 1800) {
     $p = Join-Path $script:LockRoot 'build\heavy.lock'
-    for ($i = 0; $i -lt $WaitSec; $i++) { if (Try-TakeLock $p $What) { return $true }; Start-Sleep -Seconds 1 }
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    while ($timer.Elapsed.TotalSeconds -lt $WaitSec) { if (Try-TakeLock $p $What) { return $true }; Start-Sleep -Seconds 1 }
     return $false
 }
-
 function Get-SlotOwners {
-    (0..($script:LockMax - 1) | ForEach-Object { $f = Join-Path $script:LockRoot "build\slots\run$_.lock"; "run$_=" + $(if (Test-Path $f) { Get-LockText $f } else { 'free' }) }) -join ' | '
+    (0..3 | ForEach-Object { $f = Join-Path $script:LockRoot "build\slots\run$_.lock"; "run$_=" + $(if (Test-Path $f) { Get-LockText $f } else { 'free' }) }) -join ' | '
 }
 
-# Fair queue (coordinator 2026-11-15): back-to-back exclusive benches starved normal runs for over an hour. Each waiter drops a ticket
-# build\slots\q\<ticks>_<pid>_<x|n>.tkt. An exclusive run takes exclusive.lock only when no older live ticket exists; a normal run yields only to
-# an older exclusive ticket. Tickets of dead pids (or older than 3 h) are removed. Waiters on the old code ignore tickets until they finish.
+function Get-LiveQueueTickets([string]$QueueDir) {
+    foreach ($f in @(Get-ChildItem -LiteralPath $QueueDir -Filter '*.tkt' -ErrorAction SilentlyContinue | Sort-Object Name)) {
+        $ownerPid = 0; $stamp = 0L
+        $valid = $f.BaseName -match '^(\d{19})_(\d+)_(x|n)$'
+        if ($valid) { $valid = [long]::TryParse($Matches[1], [ref]$stamp) -and $stamp -lt [long]::MaxValue -and [int]::TryParse($Matches[2], [ref]$ownerPid) -and $ownerPid -gt 0 }
+        if (-not $valid -or -not (Get-Process -Id $ownerPid -ErrorAction SilentlyContinue) -or ([DateTime]::UtcNow - $f.LastWriteTimeUtc).TotalHours -gt 3) {
+            Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue
+        } else { $f }
+    }
+}
+# Same ticks_PID_kind format; sequence under the mutex survives wall-clock rollback.
 function New-QueueTicket([string]$Dir, [bool]$Excl) {
     $q = Join-Path $Dir 'q'; New-Item -ItemType Directory -Force $q | Out-Null
-    $t = Join-Path $q ('{0:D19}_{1}_{2}.tkt' -f (Get-Date).ToUniversalTime().Ticks, $PID, $(if ($Excl) { 'x' } else { 'n' }))
-    Set-Content -LiteralPath $t -Value $PID -Encoding ascii; return $t
+    Invoke-LockMutex {
+        $stamp = [DateTime]::UtcNow.Ticks
+        foreach ($f in @(Get-LiveQueueTickets $q)) {
+            $previous = [long](($f.BaseName -split '_')[0])
+            if ($previous -ge $stamp) { $stamp = $previous + 1 }
+        }
+        $t = Join-Path $q ('{0:D19}_{1}_{2}.tkt' -f $stamp, $PID, $(if ($Excl) { 'x' } else { 'n' }))
+        Set-Content -LiteralPath $t -Value $PID -Encoding ascii
+        return $t
+    }
 }
 function Test-QueueAhead([string]$Ticket, [bool]$ExclOnly) {
     $me = Split-Path $Ticket -Leaf
-    foreach ($f in @(Get-ChildItem -LiteralPath (Split-Path $Ticket) -Filter '*.tkt' -ErrorAction SilentlyContinue | Sort-Object Name)) {
-        if ($f.Name -ge $me) { break }
-        $parts = $f.BaseName -split '_'
-        $dead = -not (Get-Process -Id ([int]$parts[1]) -ErrorAction SilentlyContinue) -or (((Get-Date) - $f.LastWriteTime).TotalHours -gt 3)
-        if ($dead) { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue; continue }
-        if (-not $ExclOnly -or $parts[2] -eq 'x') { return $true }
+    foreach ($f in @(Get-LiveQueueTickets (Split-Path $Ticket))) {
+        if ([StringComparer]::Ordinal.Compare($f.Name, $me) -lt 0 -and (-not $ExclOnly -or $f.BaseName.EndsWith('_x'))) { return $true }
     }
     return $false
 }
 
-# Take one run slot (returns slot index) or, with -Exclusive, all slots (returns 0..2). $null on timeout. Release with Exit-RunSlots.
+# One slot (0..cap-1), or -Exclusive every slot except live above-cap pc-in-use
+# reservations. Return only indices actually acquired; $null on timeout.
+# Above-cap free slots are taken; any other live owner still blocks exclusivity.
 function Enter-RunSlots([string]$What, [switch]$Exclusive, [int]$WaitSec = 3600) {
+    if ($script:SlotsHeld -and @($script:SlotsHeld).Count -gt 0) { throw 'Exit-RunSlots before acquiring another run slot' }
     $dir = Join-Path $script:LockRoot 'build\slots'; New-Item -ItemType Directory -Force $dir | Out-Null
     $xl = Join-Path $dir 'exclusive.lock'; $prio = Join-Path $script:LockRoot 'build\heavy.priority'
-    $got = @(); $haveX = $false; $lastMsg = Get-Date '2000-01-01'; $tkt = New-QueueTicket $dir ([bool]$Exclusive)
+    $got = @(); $haveX = $false; $success = $false; $script:ExclusiveHeld = $false
+    $lastMsg = [DateTime]::MinValue; $tkt = $null; $timer = [Diagnostics.Stopwatch]::StartNew()
     try {
-        for ($i = 0; $i -lt ($WaitSec * 2); $i++) {
+        $tkt = New-QueueTicket $dir ([bool]$Exclusive)
+        while ($timer.Elapsed.TotalSeconds -lt $WaitSec) {
+            $cap = Get-RunSlotCap
+            $reserved = Get-LockText $prio
+            if ($reserved) { $reserved = $reserved.Trim() }
+            $isOwner = $reserved -and $env:SNAP_LOCK_OWNER -and ($env:SNAP_LOCK_OWNER.Trim() -eq $reserved)
             if ($Exclusive) {
-                if ($haveX -and -not (Test-Path $xl)) { $haveX = $false }   # lost to a stale clean-up: take it again
-                if (-not $haveX -and -not (Test-QueueAhead $tkt $false)) { $haveX = Try-TakeLock $xl "$What (exclusive)" }
-                if ($haveX) { foreach ($n in 0..($script:LockMax - 1)) { if ($got -notcontains $n -and (Try-TakeLock (Join-Path $dir "run$n.lock") "$What (exclusive)")) { $got += $n } } }
-                if ($got.Count -eq $script:LockMax) { $script:SlotsHeld = $got; return $got }
-            } elseif ((-not (Test-Path $xl) -or (Test-LockStale $xl)) -and -not (Test-QueueAhead $tkt $true)) {   # an exclusive run that holds the lock or queued earlier goes first
-                $reserved = $null
-                if (Test-Path $prio) { $reserved = ((Get-Content $prio -ErrorAction SilentlyContinue) -join '').Trim() }
-                $isOwner = $reserved -and $env:SNAP_LOCK_OWNER -and ($env:SNAP_LOCK_OWNER.Trim() -eq $reserved)
-                foreach ($n in 0..($script:LockMax - 1)) {
+                if ($haveX -and ((Get-LockText $xl) -notmatch "(?:^| )pid=$PID(?: |$)" -or ($reserved -and -not $isOwner))) {
+                    foreach ($n in $got) { Release-Lock (Join-Path $dir "run$n.lock") }
+                    Release-Lock $xl; $got = @(); $haveX = $false
+                }
+                if (-not ($reserved -and -not $isOwner)) {
+                    if (-not $haveX -and -not (Test-QueueAhead $tkt $false)) { $haveX = Try-TakeLock $xl "$What (exclusive)" }
+                    if ($haveX) {
+                        $got = @($got | Where-Object { (Get-LockText (Join-Path $dir "run$_.lock")) -match "(?:^| )pid=$PID(?: |$)" })
+                        $parked = @()
+                        foreach ($n in 0..3) {
+                            if ($got -contains $n) { continue }
+                            $path = Join-Path $dir "run$n.lock"
+                            if ($n -ge $cap -and (Get-LockText $path) -match '^pc-in-use pid=\d+(?: |$)' -and -not (Test-LockStale $path)) {
+                                $parked += $n
+                            } elseif (Try-TakeLock $path "$What (exclusive)") { $got += $n }
+                        }
+                        if ($got.Count + $parked.Count -eq 4 -and (Get-RunSlotCap) -eq $cap) {
+                            $script:SlotsHeld = $got; $script:ExclusiveHeld = $true; $success = $true; return $got
+                        }
+                    }
+                }
+            } elseif ((-not (Test-Path -LiteralPath $xl) -or (Test-LockStale $xl)) -and ($isOwner -or -not (Test-QueueAhead $tkt $true))) {
+                foreach ($n in 0..($cap - 1)) {
                     if ($n -eq 0 -and $reserved -and -not $isOwner) { continue }
-                    if (Try-TakeLock (Join-Path $dir "run$n.lock") $What) { $script:SlotsHeld = @($n); return @($n) }
+                    if ($n -ge (Get-RunSlotCap)) { break }
+                    if (Try-TakeLock (Join-Path $dir "run$n.lock") $What) {
+                        # The cap may have fallen while the mutex or stale check waited.
+                        if ($n -ge (Get-RunSlotCap)) { Release-Lock (Join-Path $dir "run$n.lock"); break }
+                        $script:SlotsHeld = @($n); $success = $true; return @($n)
+                    }
                 }
             }
-            if (((Get-Date) - $lastMsg).TotalSeconds -ge 30) { $lastMsg = Get-Date; Write-Host "waiting for run slot$(if ($Exclusive) { 's (exclusive)' }): $(Get-SlotOwners)" }
+            if (([DateTime]::UtcNow - $lastMsg).TotalSeconds -ge 30) { $lastMsg = [DateTime]::UtcNow; Write-Host "waiting for run slot$(if ($Exclusive) { 's (exclusive)' }): $(Get-SlotOwners)" }
             Start-Sleep -Milliseconds 500
         }
         return $null
     } finally {
         if ($tkt) { Remove-Item -LiteralPath $tkt -Force -ErrorAction SilentlyContinue }
-        if ($Exclusive -and -not ($script:SlotsHeld -and $script:SlotsHeld.Count -eq $script:LockMax)) { foreach ($n in $got) { Release-Lock (Join-Path $dir "run$n.lock") }; if ($haveX) { Release-Lock $xl } }
+        if (-not $success) { foreach ($n in $got) { Release-Lock (Join-Path $dir "run$n.lock") }; if ($haveX) { Release-Lock $xl } }
     }
 }
 function Exit-RunSlots {
     $dir = Join-Path $script:LockRoot 'build\slots'
     foreach ($n in @($script:SlotsHeld)) { Release-Lock (Join-Path $dir "run$n.lock") }
-    if (@($script:SlotsHeld).Count -gt 1) { $xl = Join-Path $dir 'exclusive.lock'; if ((Get-LockText $xl) -match "pid=$PID ") { Release-Lock $xl } }   # only our own exclusive.lock
-    $script:SlotsHeld = @()
+    if ($script:ExclusiveHeld) { Release-Lock (Join-Path $dir 'exclusive.lock') }
+    $script:SlotsHeld = @(); $script:ExclusiveHeld = $false
 }
