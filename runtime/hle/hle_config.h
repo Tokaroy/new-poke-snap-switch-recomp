@@ -16,6 +16,7 @@ struct Config {
   std::string data_root;                               // default %APPDATA%\SnapRecomp
   std::string save_root;                               // default <data_root>\save
   int save_backups = 5;                                // generations kept per user
+  int save_backup_keep = 10;                           // whole-save backups kept (runtime/hle/save_backup.h); 0 = off; hle.json "save_backup_keep", env SNAP_SAVE_BACKUP_KEEP
   int64_t save_data_size = 128ll << 20;                // reported by GetSaveDataSize (not seen in nacp: assumed)
   int64_t save_journal_size = 32ll << 20;
   // ---- user

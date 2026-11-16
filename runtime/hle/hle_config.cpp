@@ -294,6 +294,7 @@ bool load_config(const std::string& path_in) {
       if (auto* v = j.get("data_root")) c.data_root = v->str();
       if (auto* v = j.get("save_root")) c.save_root = v->str();
       if (auto* v = j.get("save_backups")) c.save_backups = (int)v->num(c.save_backups);
+      if (auto* v = j.get("save_backup_keep")) c.save_backup_keep = (int)v->num(c.save_backup_keep);
       if (auto* v = j.get("save_data_size")) c.save_data_size = (int64_t)v->num((double)c.save_data_size);
       if (auto* v = j.get("save_journal_size")) c.save_journal_size = (int64_t)v->num((double)c.save_journal_size);
       if (auto* v = j.get("user_name")) c.user_name = v->str(c.user_name);

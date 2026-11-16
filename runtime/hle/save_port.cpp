@@ -15,6 +15,7 @@
 #include <tuple>
 
 #include "hle_config.h"
+#include "save_backup.h"
 #include "save_gen.h"
 #include "zip_read.h"
 #ifdef _WIN32
@@ -614,6 +615,7 @@ int run_cli(const std::string& cmd, const std::string& path, const std::string& 
   if (cmd == "import") {
     bool running = false;
     std::fprintf(stdout, "Importing into %s (%s)\n", label.c_str(), root.c_str());
+    { std::string be; if (!savebackup::make(root, "import", nullptr, &be)) std::fprintf(stderr, "Backup before the import failed (%s); importing anyway, the import keeps the current save as a backup generation.\n", be.c_str()); }
     if (!import_save(path, root, game_uid_dir(), &r, &err, &running)) { std::fprintf(stderr, "Import failed: %s\n", err.c_str()); return running ? 2 : 1; }
     std::fprintf(stdout, "%s\n", format_report(r, true).c_str());
     return 0;

@@ -28,6 +28,7 @@
 #include "launcher.h"
 #include "mods/problem_report.h"
 #include "elf_check.h"
+#include "hle/save_backup.h"
 #include "launcher_ui.h"
 #include "loader.h"
 #include "ui_font.h"
@@ -247,12 +248,44 @@ static void import_save_flow(const fs::path& cfg_path) {
   else message("Snap Recomp", "The save was not imported.\n\n" + err, MB_ICONWARNING);
 }
 
+  { std::string be; if (!hle::savebackup::make(root, "import", nullptr, &be)) std::fprintf(stderr, "Backup before the import failed (%s); the import still keeps the current save as a backup generation.\n", be.c_str()); }
 static void export_save_flow(const fs::path& cfg_path) {
   std::string root, label;
   if (!save_target(cfg_path, &root, &label)) return;
   int how = choose(L"Export the save", L"Both are the plain save files, named the way the game names them.",
                    {L"To a folder...\nFor Checkpoint, or to copy into an emulator", L"To a .zip file...\nFor JKSV"});
   if (how < 0) return;
+// "Restore a backup": the whole-save backups of runtime/hle/save_backup.h (one per start, one before each import or restore), newest first.
+static void restore_backup_flow(const fs::path& cfg_path) {
+  std::string root, label;
+  if (!save_target(cfg_path, &root, &label)) return;
+  const auto backups = hle::savebackup::list(root);
+  if (backups.empty()) {
+    message("Snap Recomp", "There are no backups of " + label + " yet.\n\nA backup is made each time the game starts and before every import or restore.", MB_ICONINFORMATION);
+    return;
+  }
+  std::vector<std::wstring> links;
+  const size_t shown = std::min<size_t>(backups.size(), 8);
+  for (size_t i = 0; i < shown; ++i) {
+    char mb[40];
+    snprintf(mb, sizeof mb, "%.1f MB", (double)backups[i].bytes / (1024.0 * 1024.0));
+    links.push_back(W(hle::savebackup::describe(backups[i]) + "\n" + mb));
+  }
+  const int sel = choose(L"Restore a backup of " + W(label),
+                         L"Pick the backup to put back. Your current save is backed up first, and it stays available as an older generation.", links);
+  if (sel < 0 || (size_t)sel >= shown) return;
+  if (MessageBoxW(nullptr, W("Put back the backup from " + hle::savebackup::describe(backups[(size_t)sel]) + "?\n\nYour current save is backed up first.").c_str(), L"Snap Recomp",
+                  MB_YESNO | MB_ICONQUESTION) != IDYES) return;
+  HCURSOR old = SetCursor(LoadCursor(nullptr, IDC_WAIT));
+  hle::saveport::Report r;
+  std::string err;
+  bool running = false;
+  const bool ok = hle::savebackup::restore(root, backups[(size_t)sel].folder, &r, &err, &running);
+  SetCursor(old);
+  if (ok) message("Snap Recomp", "The backup was restored.\n\n" + hle::saveport::format_report(r, true), MB_ICONINFORMATION);
+  else message("Snap Recomp", "The backup was not restored.\n\n" + err, MB_ICONWARNING);
+}
+
   std::string dest = how == 0 ? pick_folder("", L"Pick the folder to export the save to") : pick_save_zip();
   if (dest.empty()) return;
   HCURSOR old = SetCursor(LoadCursor(nullptr, IDC_WAIT));
@@ -834,3 +867,5 @@ bool prepare(Result& r) {
 }  // namespace snap_launcher
     snap_crashlog_rotate(logs.c_str());   // host/mods/crashlog.cpp: last run's stderr.log and trace.log become *.prev
     snap_crashlog_set_dir(U8(logs.wstring()).c_str());   // _crash.txt goes next to the log
+    case R::RestoreBackup: return 12;
+    if (choice == 12) { restore_backup_flow(cfg_path); continue; }

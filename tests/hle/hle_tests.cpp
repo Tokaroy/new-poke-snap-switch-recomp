@@ -2605,6 +2605,7 @@ int main(int argc, char** argv) {
   else g_root = stdfs::path(__FILE__).parent_path().parent_path().parent_path();
   g_root = stdfs::absolute(g_root);
   g_tmp = stdfs::temp_directory_path() / ("snap_hle_test_" + std::to_string((unsigned long long)std::chrono::steady_clock::now().time_since_epoch().count()));
+#include "save_backup_tests.h"
   stdfs::create_directories(g_tmp);
   set_log_sink([](const char*, size_t) {});  // keep the output readable; failures print through printf
   apply_defaults();
@@ -2671,6 +2672,12 @@ int main(int argc, char** argv) {
   int before_failed;
   for (auto& t : tests) {
     before_failed = g_failed;
+#endif
+      {"savebackup.make", sb_test::test_make_and_list},
+      {"savebackup.prune", sb_test::test_prune_and_off},
+      {"savebackup.restore", sb_test::test_restore},
+#ifdef _WIN32
+      {"savebackup.running", sb_test::test_restore_refused_running},
     int before_checks = g_checks;
     try { t.fn(); }
     catch (const std::exception& e) { std::printf("  FAIL [%s] exception: %s\n", t.name, e.what()); ++g_failed; }

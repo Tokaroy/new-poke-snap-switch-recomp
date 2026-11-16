@@ -19,6 +19,9 @@
 #include "freecam.h"
 #include "hle.h"
 
+extern "C" void snap_audio_log_checks(void);   // runtime/audio/audio_out.cpp: the "[audio] checks:" counter line, printed before a route ends the run
+extern "C" void snap_audio_log_checks_none(void) {}   // test builds without the audio layer link this instead
+#pragma comment(linker, "/alternatename:snap_audio_log_checks=snap_audio_log_checks_none")
 namespace nvn { extern int g_presentCount; extern int g_fdBurst; }   // runtime/nvn/nvn_tex_vk.cpp: frame clock for '@f' script times; nvn_vk.cpp: NVN_FRAME_DUMP burst (script token shot=<n>)
 
 namespace hle::input {
@@ -1111,6 +1114,7 @@ void script_apply(uint64_t now_ns_v, PadSample& p) {
       std::_Exit(0);
     }
     for (const std::string& ft : en.fc) freecam::script_token(ft);
+      snap_audio_log_checks();
     cur |= en.buttons;
     p.buttons |= en.buttons;
     if (en.has_gyro) { g_script_gyro_on = true; g_script_gyro_yaw += en.gyro_yaw; g_script_gyro_pitch += en.gyro_pitch; }

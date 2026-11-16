@@ -26,6 +26,7 @@
 #include "hle/input_core.h"
 #include "hle/save_port.h"
 #include "audio/audio_out.h"
+#include "hle/save_backup.h"
 #include "nvn/nvn_host.h"
 #include "window_opts.h"
 
@@ -514,7 +515,8 @@ extern "C" void snap_fs_drain_for_exit(int ms);   // runtime/hle/fs.cpp
 extern "C" void nvnHostShotDrain(int ms);   // runtime/nvn/nvn_shot.cpp
 static LRESULT CALLBACK game_wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
     { LRESULT wr = 0; if (snap_window_proc(h, m, w, l, &wr)) return wr; }   // host/window_opts.cpp: F11, focus, mute, remembered placement
-    if (m == WM_CLOSE || m == WM_DESTROY) { fflush(stderr); nvnHostShotDrain(5000); snap_fs_drain_for_exit(5000); ExitProcess(0); }   // waits (5 s) for a save commit in progress
+    if (m == WM_CLOSE || m == WM_DESTROY) { snap_audio_log_checks(); fflush(stderr); nvnHostShotDrain(5000); snap_fs_drain_for_exit(5000); maybe_return_to_launcher(); ExitProcess(0); }   // waits (5 s) for a save commit in progress
+extern "C" void snap_audio_log_checks(void);       // runtime/audio/audio_out.cpp: one "[audio] checks:" line (rejected-call and underrun counters)
     if (m == WM_TIMER) { snap_capture_window(h); return 0; }
     return DefWindowProcW(h, m, w, l);
 }
@@ -593,6 +595,7 @@ static void tp_init_hook(Cpu *c, Thunk *) {
 }
 static void tp_destroy_hook(Cpu *c, Thunk *) {
     uint64_t tp = *(uint64_t *)(c->tpidrro + 0x1f0);
+    hle::savebackup::backup_at_launch();   // runtime/hle/save_backup.h: copy of the save into the profile's backup folder, newest 10 kept
     if (tp) VirtualFree((void *)(tp - 0x8000), 0, MEM_RELEASE);
 }
 
@@ -1014,3 +1017,4 @@ int main(int argc, char **argv) {
     GetExitCodeThread(h, &rc);
     return (int)rc;
 }
+        snap_audio_log_checks();

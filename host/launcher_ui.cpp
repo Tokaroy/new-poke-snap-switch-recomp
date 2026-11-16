@@ -2016,12 +2016,12 @@ void draw_saves() {
   aperture(122, 82, 26, C(kCream));
   text(180, 70, 42, C(0x6a6561), "Saves");
   text(182, 106, 17, C(kGrey), "Back up or move your save");
-  const char* names[3] = {"Open save folder", "Import a save...", "Export the save..."};
-  const char* helps[3] = {"Opens the save folder of the selected profile in Explorer.",
+  const char* names[4] = {"Open save folder", "Import a save...", "Export the save...", "Restore a backup..."};
+  const char* helps[4] = {"Opens the save folder of the selected profile in Explorer.",
                           "From a console backup (JKSV, Checkpoint) or an emulator. Your current save is kept as a backup.",
                           "Copy your save out for a save manager or an emulator."};
   float y = 160;
-  for (int i = 0; i < 3; ++i) {
+  for (int i = 0; i < 4; ++i) {
     const bool sel = i == g.row;
     const float h = sel ? 68 : 58, x = 84, w = 520;
     if (hot(x, y, w, h)) {
@@ -2117,9 +2117,9 @@ void handle_input() {
   }
   if (g.view == G::SAVES) {
     if (back) { g.view = G::HOME; return; }
-    if (up) g.row = (g.row + 2) % 3;
-    if (dn) g.row = (g.row + 1) % 3;
-    if (ok) { g.result = g.row == 0 ? UiResult::OpenSaves : g.row == 1 ? UiResult::ImportSave : UiResult::ExportSave; g.done = true; }
+    if (up) g.row = (g.row + 3) % 4;
+    if (dn) g.row = (g.row + 1) % 4;
+    if (ok) { g.result = g.row == 0 ? UiResult::OpenSaves : g.row == 1 ? UiResult::ImportSave : g.row == 2 ? UiResult::ExportSave : UiResult::RestoreBackup; g.done = true; }
     return;
   }
   // settings

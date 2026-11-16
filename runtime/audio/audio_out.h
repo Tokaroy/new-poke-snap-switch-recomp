@@ -119,7 +119,23 @@ struct SnapAudioStats {
   uint32_t guestChannels;      // channels the game was told to produce
 };
 SNAP_AUDIO_API void snap_audio_get_stats(SnapAudioStats* s);
-SNAP_AUDIO_API void snap_audio_reset_stats(void);
+SNAP_AUDIO_API void snap_audio_reset_stats(void);   // also clears the check counters and re-arms their one log line per kind
+// Parameter checks (docs/audio.md, "Checks"). Every out-of-range or inconsistent argument the guest or a backend hands to this
+// layer is rejected cleanly (no crash, nothing played from it) and counted here; the first one of each kind logs one line, the rest
+// only count. The game itself does not use nn::audio's audio renderer (audren): "voice" = the AudioOutBuffer a call submits,
+// "mix" = the device pull and the volume values, "sink" = the AudioOut open parameters and handle.
+struct SnapAudioChecks {
+  uint64_t badOpen;     // OpenDefaultAudioOut with null arguments, an unsupported rate or an unsupported channel count
+  uint64_t noSlot;      // OpenDefaultAudioOut with every AudioOut already open
+  uint64_t badHandle;   // a call on an AudioOut that is not open (never opened, closed, null, or not an AudioOut at all)
+  uint64_t badBuffer;   // AppendAudioOutBuffer with a null buffer or a size/offset that does not fit the buffer or the frame size
+  uint64_t queueFull;   // AppendAudioOutBuffer with the 64-deep submit queue full (the buffer is dropped)
+  uint64_t badVolume;   // a NaN or infinite volume, an unknown volume category or device name
+  uint64_t badPull;     // a device pull with a null destination, an absurd frame count or an unsupported channel count
+  uint64_t underruns;   // device pulls that found a started AudioOut short of data (same number as SnapAudioStats::underruns)
+};
+SNAP_AUDIO_API void snap_audio_get_checks(SnapAudioChecks* c);
+SNAP_AUDIO_API void snap_audio_log_checks(void);    // one summary line on stderr: "[audio] checks: ..."
 // Reads up to n interleaved float samples of the final mix (needs enableTap). Returns samples read.
 SNAP_AUDIO_API uint64_t snap_audio_tap_read(float* dst, uint64_t n);
 SNAP_AUDIO_API uint32_t snap_audio_tap_channels(void);

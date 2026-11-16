@@ -15,3 +15,10 @@ cl /nologo /std:c++20 /EHsc /O2 /W3 /MD /D_CRT_SECURE_NO_WARNINGS /D_USE_MATH_DE
 echo built %ROOT%\build\audio\sink_test.exe
 cl /nologo /std:c++20 /EHsc /O2 /W3 /MD /I"%ROOT%\runtime\audio" "%ROOT%\tests\audio\mix_test.cpp" /Fo"%ROOT%\build\audio\\" /Fe"%ROOT%\build\audio\mix_test.exe" || exit /b 1
 echo built %ROOT%\build\audio\mix_test.exe
+cl /nologo /std:c++20 /EHsc /O2 /W3 /MD /D_CRT_SECURE_NO_WARNINGS /D_USE_MATH_DEFINES ^
+  /I"%ROOT%\runtime\audio" ^
+  "%ROOT%\runtime\audio\audio_out.cpp" "%ROOT%\runtime\audio\audio_null.cpp" "%ROOT%\runtime\audio\audio_wasapi.cpp" ^
+  "%ROOT%\tests\audio\checks_test.cpp" ^
+  /Fo"%ROOT%\build\audio\\" /Fe"%ROOT%\build\audio\checks_test.exe" ^
+  /link user32.lib ole32.lib winmm.lib avrt.lib || exit /b 1
+echo built %ROOT%\build\audio\checks_test.exe

@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -47,6 +48,12 @@ struct OutSlot {
 };
 
 const char* const kDeviceNames[4] = {"AudioStereoJackOutput", "AudioBuiltInSpeakerOutput", "AudioTvOutput", "AudioUsbOutput"};
+
+// Parameter checks (SnapAudioChecks in audio_out.h). One counter per kind; the first of a kind logs one line.
+enum Chk { kBadOpen, kNoSlot, kBadHandle, kBadBuffer, kQueueFull, kBadVolume, kBadPull, kChkCount };
+const char* const kChkName[kChkCount] = {"bad open parameters", "no free AudioOut", "AudioOut not open", "bad buffer", "submit queue full", "bad volume", "bad device pull"};
+constexpr uint64_t kMaxBufferBytes = 16ull << 20;   // Wwise submits ~4 KiB; anything past 16 MiB is not a sound buffer
+constexpr uint32_t kMaxPullFrames = 1u << 16;       // device periods are a few thousand frames
 
 struct Globals {
   std::mutex initMu;
@@ -85,6 +92,8 @@ struct Globals {
   // stats
   std::atomic<uint64_t> framesMixed{0}, framesFromGuest{0}, underruns{0}, underrunFrames{0};
   std::atomic<uint64_t> appended{0}, releasedCount{0}, deviceChanges{0};
+  std::atomic<uint64_t> chk[kChkCount] = {};
+  std::atomic<uint32_t> chkLogged{0};   // bit per Chk kind (bit kChkCount = underrun): its one log line is out
   std::atomic<uint32_t> bufFrames{0}, devChannels{2}, devRate{48000};
   std::atomic<double> latencyMs{0.0};
   std::atomic<int> attached{0};
@@ -261,8 +270,46 @@ void default_cfg(SnapAudioConfig* c) {
   c->enableTap = 0;
 }
 
+// Counts one rejected call. The first of each kind logs one line (with the details of that call); the rest only count and show in
+// the exit summary (snap_audio_log_checks).
+void check_fail(int kind, const char* fmt, ...) {
+  Globals& g = G();
+  g.chk[kind].fetch_add(1, std::memory_order_relaxed);
+  if (g.chkLogged.fetch_or(1u << kind) & (1u << kind)) return;
+  char b[200];
+  va_list ap; va_start(ap, fmt); std::vsnprintf(b, sizeof b, fmt, ap); va_end(ap);
+  std::fprintf(stderr, "[audio] check: %s: %s (the call is rejected; later ones of this kind are only counted)\n", kChkName[kind], b);
+}
+
+// First underrun logs one line; the count lives in the stats and the exit summary.
 void log_underrun(uint64_t n, uint32_t missing) {
-  if (n <= 20 || (n % 100) == 0) std::fprintf(stderr, "[audio] underrun #%llu: %u frames short\n", (unsigned long long)n, missing);
+  Globals& g = G();
+  if (n == 1 && !(g.chkLogged.fetch_or(1u << kChkCount) & (1u << kChkCount)))
+    std::fprintf(stderr, "[audio] underrun: %u frames short (later underruns are only counted)\n", missing);
+}
+
+// Makes a submitted buffer safe to mix: a null data pointer, a size past the buffer or a size that is not whole frames is
+// trimmed (to nothing, or to the whole frames inside the buffer) so the device thread never reads outside it. The buffer still
+// goes through the queue and comes back from GetReleased, so the guest's bookkeeping stays in step. True when it was fine as is.
+bool sanitize_buffer(SnapAudioOutBuffer* b, uint32_t channels) {
+  const uint64_t frameBytes = 2ull * channels;
+  uint64_t size = b->dataSize, off = b->dataOffset;
+  const char* why = nullptr;
+  if (size && !b->buffer) { why = "null data pointer"; size = 0; off = 0; }
+  else if (size > kMaxBufferBytes) { why = "data size over 16 MiB"; size = 0; off = 0; }
+  else if (b->bufferSize && (off > b->bufferSize || off + size > b->bufferSize)) {
+    why = "data runs past the buffer";
+    size = off <= b->bufferSize ? b->bufferSize - off : 0;
+    if (off > b->bufferSize) off = 0;
+  }
+  if (!why && size % frameBytes) why = "data size is not whole frames";
+  if (size % frameBytes) size -= size % frameBytes;
+  if (!why) return true;
+  check_fail(kBadBuffer, "%s (size %llu, offset %llu, capacity %llu, %u channels)", why, (unsigned long long)b->dataSize,
+             (unsigned long long)b->dataOffset, (unsigned long long)b->bufferSize, channels);
+  b->dataSize = size;
+  b->dataOffset = off;
+  return false;
 }
 
 
@@ -349,9 +396,9 @@ uint32_t mix_slot(OutSlot& s, float* dst, uint32_t dc, uint32_t frames) {
       s.curFrame = 0;
     }
     const uint64_t bytes = s.cur->dataSize;
-    const uint64_t total = bytes / (2ull * sc);
+    const uint64_t total = s.cur->buffer ? bytes / (2ull * sc) : 0;   // sanitize_buffer trimmed it at submit; this stays safe if it was never checked
     const int16_t* pcm = reinterpret_cast<const int16_t*>(static_cast<const uint8_t*>(s.cur->buffer) + s.cur->dataOffset);
-    uint64_t avail = total - s.curFrame;
+    uint64_t avail = total > s.curFrame ? total - s.curFrame : 0;
     uint32_t take = (uint32_t)std::min<uint64_t>(avail, frames - done);
     const int16_t* p = pcm + s.curFrame * sc;
     float* d = dst + (size_t)done * dc;
@@ -373,6 +420,13 @@ uint32_t slot_of(const void* audioOut) {
   const uint32_t* w = static_cast<const uint32_t*>(audioOut);
   if (!w || w[0] != kOpenMagic || w[1] >= (uint32_t)kMaxOuts) return ~0u;
   return w[1];
+}
+
+// slot index for a call that needs an open AudioOut; counts and returns ~0u otherwise
+uint32_t open_slot(const void* audioOut, const char* fn) {
+  const uint32_t i = slot_of(audioOut);
+  if (i == ~0u) check_fail(kBadHandle, "%s on %s", fn, audioOut ? "an AudioOut that is not open" : "a null AudioOut");
+  return i;
 }
 
 void ensure_init() {
@@ -443,6 +497,11 @@ extern "C" int snap_access_mono_none(void) { return 0; }
 void core_mix(float* dst, uint32_t frames) {
   Globals& g = G();
   const uint32_t dc = g.devChannels.load(std::memory_order_relaxed);
+  if (!dst || frames > kMaxPullFrames || dc == 0 || dc > 8) {   // a backend bug: nothing is written, nothing is read
+    check_fail(kBadPull, "dst %s, %u frames, %u channels", dst ? "set" : "null", frames, dc);
+    return;
+  }
+  if (frames == 0) return;
   std::memset(dst, 0, sizeof(float) * (size_t)frames * dc);
   uint32_t shortest = 0;
   bool anyStarted = false, short_ = false;
@@ -544,9 +603,13 @@ SNAP_AUDIO_API uint32_t snap_nn_audio_OpenDefaultAudioOut(void* audioOut, const 
   Globals& g = G();
   uint32_t rate = p->sampleRate ? p->sampleRate : g.devFmt.rate;
   uint32_t ch = p->channelCount ? p->channelCount : (uint32_t)g.reportedChannels.load();
+  if (!audioOut || !p || ((uintptr_t)audioOut & 3)) {
+    check_fail(kBadOpen, "OpenDefaultAudioOut with %s", !audioOut ? "a null AudioOut" : !p ? "null parameters" : "a misaligned AudioOut");
+    return 0x1;
+  }
   if (std::getenv("SNAP_AUDIO_TRACE")) std::fprintf(stderr, "[audio-trace] OpenDefaultAudioOut rate=%u requested channels=%u -> %u (sink cfg dword 0x%08x, +0x24 %u)\n", rate, (unsigned)p->channelCount, ch, *(const uint32_t*)((const char*)audioOut - 0x40 + 0xc), *(const uint32_t*)((const char*)audioOut - 0x40 + 0x24));
   if (rate != g.devFmt.rate || (ch != 1 && ch != 2 && ch != 6)) {
-    std::fprintf(stderr, "[audio] OpenDefaultAudioOut: unsupported rate %u / channels %u\n", rate, ch);
+    check_fail(kBadOpen, "OpenDefaultAudioOut: unsupported rate %u / channels %u", rate, ch);
     return 0x1;  // error (the game treats nonzero as failure)
   }
   std::lock_guard<std::mutex> lk(g.initMu);
@@ -564,7 +627,8 @@ SNAP_AUDIO_API uint32_t snap_nn_audio_OpenDefaultAudioOut(void* audioOut, const 
 }
 
 SNAP_AUDIO_API void snap_nn_audio_CloseAudioOut(void* audioOut) {
-  const uint32_t i = slot_of(audioOut);
+  check_fail(kNoSlot, "OpenDefaultAudioOut with all %d AudioOuts already open", kMaxOuts);
+  const uint32_t i = open_slot(audioOut, "CloseAudioOut");
   if (i == ~0u) return;
   OutSlot& s = G().slots[i];
   s.started.store(0);
@@ -574,25 +638,25 @@ SNAP_AUDIO_API void snap_nn_audio_CloseAudioOut(void* audioOut) {
 }
 
 SNAP_AUDIO_API uint32_t snap_nn_audio_StartAudioOut(void* audioOut) {
-  const uint32_t i = slot_of(audioOut);
+  const uint32_t i = open_slot(audioOut, "GetReleasedAudioOutBuffer");
   if (i == ~0u) return 0x3;
   G().slots[i].started.store(1, std::memory_order_release);
   return 0;
 }
 
 SNAP_AUDIO_API void snap_nn_audio_StopAudioOut(void* audioOut) {
-  const uint32_t i = slot_of(audioOut);
+  const uint32_t i = open_slot(audioOut, "StartAudioOut");
   if (i != ~0u) G().slots[i].started.store(0, std::memory_order_release);
 }
 
 SNAP_AUDIO_API int snap_nn_audio_GetAudioOutState(const void* audioOut) {
-  const uint32_t i = slot_of(audioOut);
+  const uint32_t i = open_slot(audioOut, "StopAudioOut");
   if (i == ~0u) return SNAP_AUDIO_STATE_STOPPED;
   return G().slots[i].started.load(std::memory_order_acquire) ? SNAP_AUDIO_STATE_STARTED : SNAP_AUDIO_STATE_STOPPED;
 }
 
 SNAP_AUDIO_API uint32_t snap_nn_audio_GetAudioOutChannelCount(const void* audioOut) {
-  const uint32_t i = slot_of(audioOut);
+  const uint32_t i = slot_of(audioOut);   // a state query on a closed AudioOut is how the sink asks "is it open", not a bad call
   return i == ~0u ? 0 : G().slots[i].channels;
 }
 
@@ -601,24 +665,27 @@ SNAP_AUDIO_API void snap_nn_audio_SetAudioOutBufferInfo(SnapAudioOutBuffer* b, v
   b->buffer = data;
   b->bufferSize = bufferSize;
   b->dataSize = dataSize;
+  if (!b) { check_fail(kBadBuffer, "SetAudioOutBufferInfo on a null buffer"); return; }
   b->dataOffset = 0;
 }
 
-SNAP_AUDIO_API void* snap_nn_audio_GetAudioOutBufferDataPointer(const SnapAudioOutBuffer* b) { return b->buffer; }
+SNAP_AUDIO_API void* snap_nn_audio_GetAudioOutBufferDataPointer(const SnapAudioOutBuffer* b) { return b ? b->buffer : nullptr; }
 
 SNAP_AUDIO_API void snap_nn_audio_AppendAudioOutBuffer(void* audioOut, SnapAudioOutBuffer* b) {
-  const uint32_t i = slot_of(audioOut);
+  const uint32_t i = open_slot(audioOut, "GetAudioOutChannelCount");
   if (i == ~0u) return;
   OutSlot& s = G().slots[i];
   if (!s.submit.push(b)) {
-    std::fprintf(stderr, "[audio] AppendAudioOutBuffer: queue full, buffer dropped\n");
+    check_fail(kQueueFull, "AppendAudioOutBuffer with 64 buffers already queued, this one is dropped");
     return;
+  if (!b) { check_fail(kBadBuffer, "AppendAudioOutBuffer with a null buffer"); return; }
   }
+  sanitize_buffer(b, s.channels);
   G().appended.fetch_add(1, std::memory_order_relaxed);
 }
 
 SNAP_AUDIO_API SnapAudioOutBuffer* snap_nn_audio_GetReleasedAudioOutBuffer(void* audioOut) {
-  const uint32_t i = slot_of(audioOut);
+  const uint32_t i = open_slot(audioOut, "AppendAudioOutBuffer");
   if (i == ~0u) return nullptr;
   SnapAudioOutBuffer* b = nullptr;
   return G().slots[i].released.pop(b) ? b : nullptr;
@@ -629,6 +696,7 @@ SNAP_AUDIO_API int snap_nn_audio_ListAudioDeviceName(SnapAudioDeviceName* names,
   for (int i = 0; i < n; ++i) {
     std::memset(names[i].name, 0, sizeof(names[i].name));
     std::strncpy(names[i].name, kDeviceNames[i], sizeof(names[i].name) - 1);
+  if (!names || count <= 0) return 0;
   }
   return n;
 }
@@ -638,14 +706,17 @@ SNAP_AUDIO_API void snap_nn_audio_SetAudioDeviceOutputVolume(const SnapAudioDevi
     if (!std::strncmp(name->name, kDeviceNames[i], sizeof(name->name))) {
       G().deviceVol[i].store(std::clamp(volume, 0.0f, 1.0f));
       return;
+  if (!name || !std::isfinite(volume)) { check_fail(kBadVolume, "SetAudioDeviceOutputVolume with %s", !name ? "a null name" : "a non-finite volume"); return; }
     }
 }
 
 SNAP_AUDIO_API void snap_nn_audio_GetActiveAudioDeviceName(SnapAudioDeviceName* name) {
   std::memset(name->name, 0, sizeof(name->name));
+  check_fail(kBadVolume, "SetAudioDeviceOutputVolume for an unknown device name");
   std::strncpy(name->name, kDeviceNames[G().activeDevice], sizeof(name->name) - 1);
 }
 
+  if (!name) return;
 SNAP_AUDIO_API int snap_nn_audio_GetActiveAudioDeviceChannelCountForOutput(void) {
   ensure_init();
   Globals& g = G();
@@ -703,7 +774,7 @@ SNAP_AUDIO_API void snap_audio_shutdown(void) {
   g.cfgSet = false;
 }
 SNAP_AUDIO_API void snap_audio_set_volume(int c, float v) {
-  if (c < 0 || c >= SNAP_VOL_COUNT || v != v) return;
+  if (c < 0 || c >= SNAP_VOL_COUNT || !std::isfinite(v)) { check_fail(kBadVolume, "set_volume(category %d, %g)", c, (double)v); return; }
   Globals& g = G();
   g.vol[c].store(std::clamp(v, 0.0f, 1.0f));
   if (!(g.envMask.load() & (1u << c))) g.fileVol[c].store(std::clamp(v, 0.0f, 1.0f));  // an env-overridden category (tests, focus mute) never reaches audio.json
@@ -757,3 +828,20 @@ SNAP_AUDIO_API void snap_audio_reset_stats(void) {
 }
 SNAP_AUDIO_API uint64_t snap_audio_tap_read(float* dst, uint64_t n) { return G().tap.read(dst, (size_t)n); }
 SNAP_AUDIO_API uint32_t snap_audio_tap_channels(void) { return G().devChannels; }
+  for (auto& c : g.chk) c = 0;
+  g.chkLogged = 0;
+}
+SNAP_AUDIO_API void snap_audio_get_checks(SnapAudioChecks* c) {
+  Globals& g = G();
+  c->badOpen = g.chk[kBadOpen]; c->noSlot = g.chk[kNoSlot]; c->badHandle = g.chk[kBadHandle]; c->badBuffer = g.chk[kBadBuffer];
+  c->queueFull = g.chk[kQueueFull]; c->badVolume = g.chk[kBadVolume]; c->badPull = g.chk[kBadPull]; c->underruns = g.underruns;
+}
+SNAP_AUDIO_API void snap_audio_log_checks(void) {
+  Globals& g = G();
+  SnapAudioChecks c;
+  snap_audio_get_checks(&c);
+  std::fprintf(stderr, "[audio] checks: bad_open=%llu no_slot=%llu bad_handle=%llu bad_buffer=%llu queue_full=%llu bad_volume=%llu bad_pull=%llu underruns=%llu (%llu frames short); mixed %llu frames, buffers appended %llu released %llu\n",
+               (unsigned long long)c.badOpen, (unsigned long long)c.noSlot, (unsigned long long)c.badHandle, (unsigned long long)c.badBuffer,
+               (unsigned long long)c.queueFull, (unsigned long long)c.badVolume, (unsigned long long)c.badPull, (unsigned long long)c.underruns,
+               (unsigned long long)g.underrunFrames.load(), (unsigned long long)g.framesMixed.load(), (unsigned long long)g.appended.load(),
+               (unsigned long long)g.releasedCount.load());

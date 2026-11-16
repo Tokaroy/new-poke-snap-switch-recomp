@@ -64,8 +64,30 @@ Wwise sink thread (guest)            device thread (host)
 - **Channel mapping:** same count: copy. Mono: to L/R. Stereo into a 5.1 device: FL/FR. 5.1 into stereo:
   `L = (FL + 0.707 FC + 0.707 BL) / 1.707` (LFE dropped).
 - **Underruns:** a pull where a started AudioOut had less than the requested frames counts as an underrun (counter,
-  missing frames, stderr log). The device is fed silence for the gap.
+  missing frames; the first one logs a line, the rest only count). The device is fed silence for the gap.
 - **Stats/latency:** `snap_audio_get_stats`: frames mixed, appended, released, underruns, WASAPI buffer, latency.
+
+### Checks (bad parameters)
+
+The game does not use nn::audio's audio renderer (audren: voices, mix buffers, final mixes, sinks); it plays through the 16
+`nn::audio` AudioOut calls above, with Wwise doing the voice and mix work inside the guest. So the checks sit on the
+three places a bad value can enter this layer. Each rejected call leaves the audio intact (nothing is played from it, nothing
+crashes), bumps a counter, and the first one of each kind prints one `[audio] check: ...` line with that call's values.
+
+| Counter | Where | What is rejected | Result |
+| --- | --- | --- | --- |
+| `badOpen` | sink parameters | Open with a null AudioOut or parameters, a misaligned AudioOut, a rate other than 48000, a channel count other than 1, 2 or 6 | returns an error, the handle stays closed |
+| `noSlot` | sink parameters | Open while all 4 AudioOuts are open | returns an error |
+| `badHandle` | sink handle | Start, Stop, Append, GetReleased, GetChannelCount or Close on a null, never opened, closed or foreign AudioOut (state queries are not counted) | ignored, returns the error value |
+| `badBuffer` | voice buffer | Append of a null buffer, a null data pointer, a size over 16 MiB, data that runs past the buffer, a size that is not whole frames; SetAudioOutBufferInfo on a null buffer | trimmed to the whole frames that fit (to nothing if none), still queued and released, so the guest's bookkeeping stays in step |
+| `queueFull` | voice buffer | Append with 64 buffers already queued | buffer dropped |
+| `badVolume` | mix values | a NaN or infinite master or device volume, an unknown volume category or device name, a null name | ignored, the previous volume stays |
+| `badPull` | mix | a device pull with a null destination, over 65,536 frames, or a device channel count outside 1 to 8 | nothing is written |
+| `underruns` | device | see Underruns above | counted |
+
+`snap_audio_get_checks` reads the counters, `snap_audio_log_checks` prints them as one `[audio] checks: ...` line (the host
+prints it when the game window closes and when a `--timeout` run ends), and `snap_audio_reset_stats` clears them. Every
+counter should read 0 in a normal run, except underruns on a loaded PC. Test: `tests/audio/checks_test.cpp`.
 
 ### Backend: WASAPI shared mode (SDL3 is not vendored)
 
@@ -254,6 +276,10 @@ prefill buffers, Start, then poll/submit loop with the same float->s16 conversio
 every buffer accounted for, the captured final mix equals the submitted PCM sample for sample (null: max error 0;
 WASAPI at volume 0.05: 1e-9), downmix level, slot reuse. Result at the time of writing: null and WASAPI both pass
 (483,328 frames in, 0 underruns while feeding, 472 buffers appended and released). Capture: `analysis/audio/sink_test.wav`.
+
+`tests/audio/checks_test.cpp` (built by the same `build.bat`, `build\audio\checks_test.exe`, null backend, no sound) feeds
+bad open parameters, dead handles, broken buffers, a full queue, bad volumes and bad device pulls into the layer and
+expects a clean rejection, the right counters, one log line per kind, and a good AudioOut still playing afterwards (63 checks).
 
 Note: a normal-priority sink thread inside a BelowNormal process underran heavily when the machine was at 77% CPU;
 the test raises its own thread to HIGHEST (the process stays BelowNormal). The real sink thread needs the same care.
