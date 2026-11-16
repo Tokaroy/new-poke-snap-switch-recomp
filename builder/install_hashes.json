@@ -1,0 +1,33 @@
+{
+ "format": 1,
+ "game_version": "2.0.1 (v262144)",
+ "note": "Hashes only: no game data, keys or file contents. Read by 'snap_builder.py ... --install-check' and by the launcher's Check install button (copied into launcher_data.json at build time). Build IDs, the 2.0.1 romfs check files and the romfs file-list hash live in versions.json and are not repeated here.",
+ "image_hash": "SHA-256 over the decompressed text, rodata and data segments of the NSO, in order (the same as versions.json 'nso'); the same value for the compressed and the uncompressed dump of a file.",
+ "verified": "program_images were computed from one set of dumps made by the project owner from their own game copy (all five versions); the 2.0.1 main and sdk values equal versions.json. No second dump source has confirmed the 1.0.0, 1.1.0 and 1.2.0 values yet.",
+ "program_images": {
+  "1.0.0 (v0)": {
+   "main": "279dcbf1975145147d58cb47968a9501bb4e269133660bcd820c7d7101ab4b41",
+   "sdk": "5cb178e1c25699023db11f4a8e2ee3a63c86a7cfe9411b715d038f910f50e90c"
+  },
+  "1.1.0 (v65536)": {
+   "main": "f6ca45284423358634cad439c456f7922c6a57ae39781e7dcc6c140f98c9c9f9",
+   "sdk": "5cb178e1c25699023db11f4a8e2ee3a63c86a7cfe9411b715d038f910f50e90c"
+  },
+  "1.2.0 (v131072)": {
+   "main": "70f1ac77c447ca1b75de7d666ae9f274b14f865cf410bf8683d33340cf7c3c84",
+   "sdk": "5cb178e1c25699023db11f4a8e2ee3a63c86a7cfe9411b715d038f910f50e90c"
+  },
+  "2.0.0 (v196608)": {
+   "main": "98a8aec5b031b07211e06c675201021ba6019a87c2dab05505a586716e5c3be5",
+   "sdk": "5cb178e1c25699023db11f4a8e2ee3a63c86a7cfe9411b715d038f910f50e90c"
+  },
+  "2.0.1 (v262144)": {
+   "main": "98a8aec5b031b07211e06c675201021ba6019a87c2dab05505a586716e5c3be5",
+   "sdk": "5cb178e1c25699023db11f4a8e2ee3a63c86a7cfe9411b715d038f910f50e90c"
+  }
+ },
+ "runtime_files": {
+  "note": "Files that ship with the build and are the same on every PC: any listed hash is accepted for that name. The exe and the converted game images differ per PC; they are checked against install_record.json, which the builder writes next to the exe.",
+  "SDL3.dll": ["66844f10251cc1c10619ed5d8e4e3224f564900ee6d69ba87d63de782addae40"]
+ }
+}

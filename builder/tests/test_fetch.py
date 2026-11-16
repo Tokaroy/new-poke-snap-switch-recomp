@@ -53,6 +53,23 @@ def pin_for(name, data, **kw):
     return d
 
 
+fetch.WAITS = (0, 0)   # no real waiting between download tries in tests
+
+
+class FlakyNet:
+    """opener= replacement: the first `short` tries deliver only the first half of the file (a cut connection), later ones the whole file."""
+
+    def __init__(self, data, short, headers=None):
+        self.data, self.short, self.calls, self.headers = data, short, 0, headers
+
+    def __call__(self, url):
+        self.calls += 1
+        r = FakeResp(self.data[:len(self.data) // 2] if self.calls <= self.short else self.data)
+        if self.headers is not None:
+            r.headers = self.headers
+        return r
+
+
 class FetchTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -113,6 +130,40 @@ class FetchTests(unittest.TestCase):
         with self.assertRaises(fetch.FetchError):
             fetch.download('https://h/f.bin', self.d / 'f.bin', sha(b'abc'), opener=net, size_hint=99)
         self.assertEqual(list(self.d.iterdir()), [])
+
+    def test_short_download_is_retried_then_succeeds(self):
+        data = b'0123456789' * 100
+        net = FlakyNet(data, short=2)
+        said = []
+        got = fetch.download('https://h/f.bin', self.d / 'f.bin', sha(data), opener=net, size_hint=len(data), say=said.append)
+        self.assertEqual(got.read_bytes(), data)
+        self.assertEqual(net.calls, 3)
+        self.assertEqual(len(said), 2)
+        self.assertIn('incomplete', said[0])
+        self.assertIn('Trying again', said[0])
+
+    def test_short_download_fails_after_three_tries_in_plain_words(self):
+        data = b'0123456789' * 100
+        net = FlakyNet(data, short=99)
+        with self.assertRaises(fetch.FetchError) as cm:
+            fetch.download('https://h/f.bin', self.d / 'f.bin', sha(data), opener=net, size_hint=len(data))
+        self.assertEqual(net.calls, 3)
+        self.assertIn('3 times in a row', str(cm.exception))
+        self.assertIn('internet connection', str(cm.exception))
+        self.assertEqual(list(self.d.iterdir()), [])
+
+    def test_content_length_mismatch_is_retried(self):
+        data = b'abcdef' * 50
+        net = FlakyNet(data, short=1, headers={'Content-Length': str(len(data))})
+        # first try: half the bytes arrive but the server said the full length (no size_hint pinned)
+        fetch.download('https://h/f.bin', self.d / 'f.bin', sha(data), opener=net)
+        self.assertEqual(net.calls, 2)
+
+    def test_wrong_hash_of_a_full_size_file_is_not_retried(self):
+        net = FakeNet({'https://h/f.bin': b'tampered'})
+        with self.assertRaises(fetch.FetchError):
+            fetch.download('https://h/f.bin', self.d / 'f.bin', sha(b'original'), opener=net, size_hint=len(b'tampered'))
+        self.assertEqual(len(net.calls), 1)
 
     def test_download_refuses_http(self):
         net = FakeNet()

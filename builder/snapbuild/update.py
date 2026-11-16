@@ -361,7 +361,28 @@ def parse_sig(text):
     return d
 
 
-def download(rel, dest_dir, url_local_ok=False, progress=None):
+class ShortDownload(UpdateError):
+    """The zip arrived with fewer bytes than the release says, or the connection broke: worth trying again."""
+
+
+DOWNLOAD_TRIES = 3
+DOWNLOAD_WAITS = (2, 5)   # seconds before the 2nd and 3rd try
+
+
+def download(rel, dest_dir, url_local_ok=False, progress=None, tries=None, sleep=time.sleep):
+    """download_once with a retry: a short zip or a broken connection is tried again (3 tries, short waits) before it fails, in plain words.
+    A zip larger than the release says, or a wrong signature later on, is never retried."""
+    tries = tries or DOWNLOAD_TRIES
+    for i in range(tries):
+        try:
+            return download_once(rel, dest_dir, url_local_ok, progress)
+        except ShortDownload as e:
+            if i == tries - 1:
+                raise UpdateError(f'{e} It failed {tries} times in a row, so nothing was installed. Check your internet connection and try again.') from e
+            sleep(DOWNLOAD_WAITS[min(i, len(DOWNLOAD_WAITS) - 1)])
+
+
+def download_once(rel, dest_dir, url_local_ok=False, progress=None):
     """Download the zip and its signature into dest_dir. Returns (zip_path, sig_text). A failed or short download leaves nothing behind."""
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -375,7 +396,10 @@ def download(rel, dest_dir, url_local_ok=False, progress=None):
         done = 0
         with open_url(rel.zip_url, url_local_ok, timeout=60) as r, open(part, 'wb') as f:
             while True:
-                b = r.read(1 << 20)
+                try:
+                    b = r.read(1 << 20)
+                except OSError as e:   # the connection broke part-way (timeout, reset)
+                    raise ShortDownload(f'the connection broke after {done} of {rel.zip_size} bytes ({e}).') from e
                 if not b:
                     break
                 done += len(b)
@@ -385,7 +409,7 @@ def download(rel, dest_dir, url_local_ok=False, progress=None):
                 if progress:
                     progress(done, rel.zip_size)
         if done != rel.zip_size:
-            raise UpdateError(f'the download stopped early ({done} of {rel.zip_size} bytes)')
+            raise ShortDownload(f'the download stopped early ({done} of {rel.zip_size} bytes).')
         os.replace(part, zpath)
     except BaseException:
         part.unlink(missing_ok=True)

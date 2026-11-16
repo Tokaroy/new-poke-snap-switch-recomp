@@ -348,7 +348,7 @@ def ensure_tool(key, pin, tools_dir, offline_dirs, downloads_ok, on_bytes, say, 
         if not downloads_ok:
             raise StepError(f'{key} has to be downloaded and the download was not allowed. Run the setup again and allow the downloads.')
         say(f'Downloading {pin["filename"]} ({(pin.get("size") or 0) / MB:.0f} MB)')
-        have = fetch.download(pin['url'], dl / pin['filename'], pin['sha256'], opener=opener, progress=on_bytes, size_hint=pin.get('size'))
+        have = fetch.download(pin['url'], dl / pin['filename'], pin['sha256'], opener=opener, progress=on_bytes, size_hint=pin.get('size'), say=say)
     fetch.install_pin(key, pin, have, tools_dir, say)
     m = tool_marker(tools_dir, key, pin)
     m.parent.mkdir(parents=True, exist_ok=True)

@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import tarfile
+import time
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -88,8 +89,32 @@ def find_local(pin, folders):
     return None
 
 
-def download(url, dest, want_sha, opener=None, progress=None, size_hint=None):
-    """Stream url to dest (via dest.part), hashing as it goes. Deletes the partial file and raises FetchError on any mismatch."""
+class ShortDownload(FetchError):
+    """The file arrived with the wrong number of bytes, or the connection broke: worth trying again (a wrong hash is not)."""
+
+
+TRIES = 3
+WAITS = (2, 5)   # seconds before the 2nd and 3rd try
+
+
+def download(url, dest, want_sha, opener=None, progress=None, size_hint=None, tries=TRIES, sleep=time.sleep, say=None):
+    """download_once with a retry: a short file or a broken connection is tried again (up to `tries` times, with a short wait), and
+    the reason is said in plain words. A hash mismatch of a full-size file, or a non-https URL, fails at once."""
+    name = Path(dest).name
+    for i in range(tries):
+        try:
+            return download_once(url, dest, want_sha, opener, progress, size_hint)
+        except ShortDownload as e:
+            if i == tries - 1:
+                raise FetchError(f'{e} It failed {tries} times in a row, so nothing was installed. Check your internet connection and run it again.') from e
+            wait = WAITS[min(i, len(WAITS) - 1)]
+            (say or (lambda m: None))(f'{name}: the download was incomplete ({e}) Trying again in {wait} seconds (try {i + 2} of {tries}).')
+            sleep(wait)
+
+
+def download_once(url, dest, want_sha, opener=None, progress=None, size_hint=None):
+    """Stream url to dest (via dest.part), hashing as it goes. Deletes the partial file and raises FetchError on any mismatch.
+    The byte count is checked against Content-Length (when the server sent one) and against the pinned size."""
     if not url.startswith('https://'):
         raise FetchError(f'refusing a non-https download URL: {url}')
     opener = opener or urllib.request.urlopen
@@ -100,6 +125,10 @@ def download(url, dest, want_sha, opener=None, progress=None, size_hint=None):
     n = 0
     try:
         with opener(url) as r, open(part, 'wb') as f:
+            try:
+                cl = int(getattr(r, 'headers', {}).get('Content-Length', 0) or 0)
+            except (TypeError, ValueError, AttributeError):
+                cl = 0
             while True:
                 b = r.read(CHUNK)
                 if not b:
@@ -113,10 +142,12 @@ def download(url, dest, want_sha, opener=None, progress=None, size_hint=None):
         raise
     except Exception as e:
         part.unlink(missing_ok=True)
-        raise FetchError(f'download failed: {url}: {e}') from e
+        raise ShortDownload(f'download failed: {url}: {e}') from e
     try:
+        if cl and n != cl:
+            raise ShortDownload(f'{dest.name}: the server said {cl} bytes but {n} arrived. The partial file was deleted.')
         if size_hint and n != size_hint:
-            raise FetchError(f'{dest.name}: got {n} bytes, expected {size_hint}. The partial file was deleted.')
+            raise ShortDownload(f'{dest.name}: got {n} bytes, expected {size_hint}. The partial file was deleted.')
         if h.hexdigest() != want_sha.lower():
             raise FetchError(f'{dest.name}: SHA-256 mismatch. Expected {want_sha.lower()}, got {h.hexdigest()}. The file was deleted; nothing was installed.')
         os.replace(part, dest)
@@ -149,7 +180,7 @@ def fetch_pin(key, pin, download_dir, ask, offline_dirs=(), opener=None, say=pri
         if n - last[0] >= 64 * 2**20:
             last[0] = n
             say(f'{key}: {n / 2**20:.0f} MB')
-    dest = download(pin['url'], Path(download_dir) / pin['filename'], pin['sha256'], opener=opener, progress=prog, size_hint=pin.get('size'))
+    dest = download(pin['url'], Path(download_dir) / pin['filename'], pin['sha256'], opener=opener, progress=prog, size_hint=pin.get('size'), say=say)
     say(f'{key}: SHA-256 verified')
     return dest
 

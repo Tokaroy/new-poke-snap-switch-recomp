@@ -85,8 +85,13 @@ def run_update(a):
 def main(argv=None):
     ap = argparse.ArgumentParser(description='Builds SnapRecomp.exe from your own game files.')
     sub = ap.add_subparsers(dest='cmd', required=True)
-    c = sub.add_parser('check', help='only check that the files are the right game version')
-    add_inputs(c)
+    c = sub.add_parser('check', help='only check that the files are the right game version (--install-check: full install check)')
+    c.add_argument('--main', help='the "main" NSO file of the game (compressed or not)')
+    c.add_argument('--sdk', help='the "sdk" NSO file of the game')
+    c.add_argument('--romfs', help='folder with the extracted romfs of game version 2.0.1 (base game plus update)')
+    c.add_argument('--install-check', action='store_true', help='full install check in plain words: hashes your game files and the built program against the known-good lists (builder/install_hashes.json); each of --main, --sdk, --romfs, --install-dir is optional')
+    c.add_argument('--install-dir', help='--install-check: the folder with SnapRecomp.exe (the "out" folder of a build)')
+    c.add_argument('--write-record', action='store_true', help='--install-check: write install_record.json for --install-dir from what is there now (only after the check passed)')
     b = sub.add_parser('build', help='run the whole build')
     add_inputs(b)
     b.add_argument('--work', required=True, help='work folder (new and empty, or a previous work folder of this builder to resume)')
@@ -259,7 +264,21 @@ def main(argv=None):
             print('Stopped: ' + str(e))
             return 1
 
+    if a.cmd == 'check' and a.install_check:
+        from snapbuild import installcheck
+        table = versioncheck.load_table(pipeline.BUILDER / 'versions.json')
+        rep = installcheck.run(table, installcheck.load_hashes(pipeline.BUILDER), a.main, a.sdk, a.romfs, a.install_dir)
+        if a.write_record and a.install_dir and rep.ok:
+            ext = {k: p for k, p in (('main_nso', a.main), ('sdk_nso', a.sdk)) if p}
+            installcheck.write_record(a.install_dir, ext, pipeline.builder_version())
+            rep.notes.append(f'Wrote {installcheck.RECORD_NAME} in {a.install_dir}.')
+        for line in rep.lines():
+            print(line)
+        return 0 if rep.ok else 1
     if a.cmd == 'check':
+        if not (a.main and a.sdk and a.romfs):
+            print('check needs --main, --sdk and --romfs (or use --install-check, where each one is optional).')
+            return 2
         table = versioncheck.load_table(pipeline.BUILDER / 'versions.json')
         r = versioncheck.check_all(a.main, a.sdk, a.romfs, table)
         for n in r.notes:

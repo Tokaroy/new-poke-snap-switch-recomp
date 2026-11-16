@@ -73,6 +73,12 @@ A rebuild never touches a working `out/` until the new build is proven. The buil
 
 Each step records what it used. If you run the builder again with the same work folder, finished steps are skipped, and an interrupted compile resumes where it stopped.
 
+Full install check, in plain words (game files and the built program; every part is optional):
+
+```
+python builder/snap_builder.py check --install-check --main <main> --sdk <sdk> --romfs <romfs folder> --install-dir <out folder>
+```
+
 The function lists and the generated C are also kept in a private cache, `%LOCALAPPDATA%\SnapRecomp\cache` (`--cache-dir` moves it, `--no-cache` skips it). Entries are keyed on the hashes of your game files and the builder's own inputs, so a new work folder with the same game files restores them instead of running Ghidra or the lifter again. The cache holds game-derived files on your PC only. It refuses a folder it did not create, keeps two entries per kind and stays under 1 GiB.
 
 Binary patches are off in this release. If a `builder/patches/` folder ever holds patch files, the builder applies only those listed in `reviewed.json`, only to a module whose hash and build ID match, and only where the original bytes match.
@@ -163,3 +169,7 @@ The tests use fake inputs only.
 ## License
 
 MIT, like the rest of the project. Third-party notices are in `THIRD_PARTY_NOTICES.md`.
+## Install check
+
+2026-11-15: `check --install-check` hashes your main and sdk files, the RomFS and the built folder against `install_hashes.json` and `versions.json`, and names what is wrong: modified, a known older version, missing or a mixed update. It prints one summary line first and exits with 0 only when nothing is wrong. The launcher has the same check on the Gameplay page ("Check install...") and the problem report carries it as `install_check.txt`. The builder writes `install_record.json` next to the exe for that. Downloads now check the byte count and retry three times with a short wait before they fail.
+

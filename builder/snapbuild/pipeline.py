@@ -348,8 +348,16 @@ def build(opt, log):
         pass
     cfg.write_text(json.dumps(conf, indent=1), encoding='utf-8')
     # the launcher (the exe started without arguments) checks the romfs against the published sentinels at every start
+    # install check (builder/snapbuild/installcheck.py): the launcher's "Check install" button reads the hash lists from launcher_data.json
+    # and compares the exe, DLLs, converted game images and the program files against install_record.json written here
+    from . import installcheck as _ic
+    _ih = _ic.load_hashes(BUILDER)
     (stage / 'launcher_data.json').write_text(json.dumps({'sentinels': table['romfs']['sentinels'], 'file_count': table['romfs']['file_count'],
-                                                          'upscalers': table.get('upscalers', {})}), encoding='utf-8')
+                                                          'upscalers': table.get('upscalers', {}),
+                                                          'install': {'romfs_listing_sha256': table['romfs']['listing_sha256'],
+                                                                      'runtime_files': {k: v for k, v in _ih['runtime_files'].items() if isinstance(v, list)}}}), encoding='utf-8')
+    _ic.write_record(stage, {'main_elf': elf_dir / 'main.elf', 'sdk_elf': elf_dir / 'sdk.elf', 'main_nso': opt.main, 'sdk_nso': opt.sdk},
+                     builder_version(), names={'SnapRecomp.exe'} | {d['name'] for d in man.get('dlls', []) if d.get('path', 'bin/').startswith('bin/')})
     log.write(f'assembled {stage}')
     # Upscaler runtime files are never shipped by us: fetch what the user picked and accepted (a vendor license the user did not accept
     # is skipped, not an error: the game hides that upscaler). The launcher offers the same later.
