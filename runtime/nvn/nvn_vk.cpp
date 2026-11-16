@@ -23,6 +23,7 @@
 #include "nvn_pace.h"   // [pace] frame clock for the limiter and the guest vsync (SNAP_PACE=legacy restores the old limiter)
 #include "upscale/upscale_nvn.h"   // [upscale] DLSS / FSR / XeSS (SNAP_UPSCALER)
 #include "nvn_framegen.h"          // [framegen] FSR frame generation (SNAP_FRAMEGEN)
+#include "nvn_shot.h"              // screenshot key (F12)
 #include "os/perf.h"   // SNAP_PERF instrumentation (off unless the env var is set)
 // runtime/os: give the virtual core back while pacing. Standalone nvn builds (tests/nvn) have no os layer: the alternatename
 // pragmas bind the no-op fallbacks below when os_kernel.cpp is not linked.
@@ -1865,6 +1866,7 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
   if (fgPend && pass == 0) {
     if (VkImage gen = FgRecordGenerate(h, cb, src)) { blitSrc = gen; realPass = false; }
   }
+  if (realPass) ShotOnPresent(h, cb, src);   // screenshot key (nvn_shot.cpp): the window texture at render size, before the downscale
   static const double fdTo = getenv("NVN_FRAME_DUMP_TO") ? atof(getenv("NVN_FRAME_DUMP_TO")) : 1e9;
   static const double fdEvery = getenv("NVN_FRAME_DUMP_EVERY") ? atof(getenv("NVN_FRAME_DUMP_EVERY")) : 1.0;
   static const int fdMax = getenv("NVN_FRAME_DUMP_MAX") ? atoi(getenv("NVN_FRAME_DUMP_MAX")) : 60;
@@ -2032,6 +2034,7 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
     vkDestroyBuffer(h->device, fdBuf, nullptr); vkFreeMemory(h->device, fdMem, nullptr);
   }
 
+  ShotAfterSubmit(h, q->timeline, v);   // screenshot key (nvn_shot.cpp): the PNG is written on its own thread
   FcShotAfterSubmit(h, q->timeline, v);   // free camera clean shot (nvn_freecam.cpp): writes the PNG once the frame's copy is done
   VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
   pi.waitSemaphoreCount = 1; pi.pWaitSemaphores = &w->renderDone[idx];

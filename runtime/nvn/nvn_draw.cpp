@@ -40,6 +40,7 @@
 #include "nvn_state.h"
 #include "upscale/upscale_nvn.h"   // [upscale]
 #include "nvn_framegen.h"          // [framegen]
+#include "nvn_shot.h"              // screenshot key (F12)
 
 namespace nvn {
 
@@ -1429,6 +1430,7 @@ void DoDispatch(ReplayCtx& cx, const Cmd& c) {
   ScratchVec<TexWrite> twS;   // [cpuprof]
   std::vector<TexWrite>& tw = twS.get();
   FgAfterDraw(cx, p->st[1].key);   // [framegen] HUD-less copy of the finished 3D scene (nvn_framegen.cpp)
+  ShotAfterDraw(cx, p->st[1].key);   // screenshot key without the HUD (nvn_shot.cpp)
   if (!PrepareTextures(cx, d, p, tw, false)) return;
   std::string key = "CS" + std::to_string(p->id);
   VkPipeline pipe = VK_NULL_HANDLE;

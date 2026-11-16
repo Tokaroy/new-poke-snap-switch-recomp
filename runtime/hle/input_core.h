@@ -242,6 +242,9 @@ class Hub {
   void set_message_locked(const std::string& m);
 };
 Hub& hub();
+// Screenshot key (runtime/nvn/nvn_shot.cpp polls it once per present): true once per F12 press, View+R3 press on a controller
+// (read from the physical pad, never remapped) or route token "screenshot".
+bool consume_screenshot();
 // Window-thread entry for the mouse wheel (WM_MOUSEWHEEL delta in 1/120 notches); each notch becomes a 100 ms press of Wheel Up/Down.
 void post_wheel(int delta);
 // Raises a game event for SNAP_INPUT_SCRIPT "anchor" lines (no effect without a script).

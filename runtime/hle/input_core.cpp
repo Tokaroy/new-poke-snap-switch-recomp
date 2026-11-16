@@ -23,6 +23,8 @@ namespace nvn { extern int g_presentCount; extern int g_fdBurst; }   // runtime/
 namespace hle::input {
 std::atomic<uint64_t> g_inject_buttons{0};   // NpadButton bits a host mod holds down (see Hub::poll); 0 = none
 std::atomic<int64_t> g_inject_until_ns{0};   // steady_clock ns until which g_inject_buttons is held
+std::atomic<bool> g_shot_req{false};          // screenshot key (consume_screenshot)
+bool consume_screenshot() { return g_shot_req.exchange(false); }
 
 // ---------------------------------------------------------------------------------------------------------------
 // names
@@ -705,7 +707,7 @@ bool Hub::save(std::string* err) {
 // A token is a Switch button name (A B X Y L R ZL ZR Plus Minus Left Up Right Down StickL StickR ...) or an axis
 // lx=<f> ly=<f> rx=<f> ry=<f> with f in [-1, 1] (y up positive).
 namespace {
-struct ScriptEntry { double start, end, period, hold; uint64_t buttons; int32_t ax[4]; bool has_ax[4]; int seg; bool frames; float rumble_lo, rumble_hi; bool has_rumble; float gyro_yaw, gyro_pitch; bool has_gyro; bool is_end; int shot_n; std::string cond; std::vector<std::string> fc; };
+struct ScriptEntry { double start, end, period, hold; uint64_t buttons; int32_t ax[4]; bool has_ax[4]; int seg; bool frames; float rumble_lo, rumble_hi; bool has_rumble; float gyro_yaw, gyro_pitch; bool has_gyro; bool is_end; int shot_n; bool screenshot; std::string cond; std::vector<std::string> fc; };
 struct Script {
   bool loaded = false;
   uint64_t t0 = 0;
@@ -912,6 +914,7 @@ bool script_token(const std::string& t, ScriptEntry& en) {
     en.has_ax[i] = true;
     return true;
   }
+  if (t == "screenshot") { en.screenshot = true; return true; }   // screenshot: the F12 key once, when the entry starts (runtime/nvn/nvn_shot.cpp)
   int b = button_from_name(t);
   if (b < 0) return false;
   en.buttons |= 1ull << b;
@@ -1043,6 +1046,7 @@ void script_apply(uint64_t now_ns_v, PadSample& p) {
   const double now_t = (double)(now_ns_v - g_script.cur_t0.load()) * 1e-9;
   const double now_f = (double)(nvn::g_presentCount - g_script.cur_f0.load());
   double now = now_t;
+  bool shot_on = false;
   freecam::script_begin();
   for (const ScriptEntry& en : g_script.e) {
     if (en.seg != seg) continue;
@@ -1065,11 +1069,15 @@ void script_apply(uint64_t now_ns_v, PadSample& p) {
     cur |= en.buttons;
     p.buttons |= en.buttons;
     if (en.has_gyro) { g_script_gyro_on = true; g_script_gyro_yaw += en.gyro_yaw; g_script_gyro_pitch += en.gyro_pitch; }
+    if (en.screenshot) shot_on = true;
     if (en.shot_n > 0 && nvn::g_presentCount % en.shot_n == 0 && nvn::g_fdBurst <= 0) nvn::g_fdBurst = 4;   // `shot=<n>` token
     if (en.has_rumble) { g_script_rumble_lo = std::max(g_script_rumble_lo, en.rumble_lo); g_script_rumble_hi = std::max(g_script_rumble_hi, en.rumble_hi); }
     for (int i = 0; i < 4; ++i) if (en.has_ax[i]) (&p.lx)[i] = en.ax[i];
     p.connected = true;
   }
+  static bool shot_prev = false;
+  if (shot_on && !shot_prev) g_shot_req = true;
+  shot_prev = shot_on;
   if (const uint64_t ab = g_ab_buttons.load()) { cur |= ab; p.buttons |= ab; p.connected = true; }   // snap_input_force_buttons (A/B capture tool)
   freecam::script_end();
   if (cur != last) { last = cur; log("input script: seg %d t=%.2f buttons=%#llx", seg, now, (unsigned long long)cur); }
@@ -1195,6 +1203,13 @@ void Hub::poll(int min_interval_ms) {
   if (!chord) { chord_since_ns_ = 0; chord_fired_ = false; }
   else if (!chord_since_ns_) chord_since_ns_ = t;
   else if (!chord_fired_ && t - chord_since_ns_ >= 500000000ull) { chord_fired_ = true; toggle_req_ = true; }
+  {  // screenshot: F12, or View + R3 on the physical pad (edge-triggered; the game still sees the two buttons)
+    static const int kF12 = key_from_name("F12");
+    static bool prev = false;
+    const bool down = r.focused && ((kF12 > 0 && r.keys.test((size_t)kF12)) || (r.pad.test(kPadBack) && r.pad.test(kPadRStick)));
+    if (down && !prev) g_shot_req = true;
+    prev = down;
+  }
   // rebinding capture
   if (capturing_.load()) {
     for (size_t i = 0; i < cap_ignore_.size();) {   // forget held sources once released

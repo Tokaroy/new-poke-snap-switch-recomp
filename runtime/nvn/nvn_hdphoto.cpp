@@ -25,6 +25,8 @@
 #include "nvn_hdphoto.h"
 #include "nvn_capture.h"
 #include "hle/hle_config.h"
+#include "hle/settings.h"          // hires_photos
+#include "nvn_shot.h"              // PNG writer (full-size photo PNGs)
 
 #include <algorithm>
 #include <atomic>
@@ -56,6 +58,18 @@ constexpr size_t kMaxFiles = 1200;        // well above the album's own limit; o
 constexpr int kMiniW = 135, kMiniH = 90;   // 16x16 HD texels = 8x8 photo texels per cell
 constexpr float kMatchMax = 10.0f;        // mean abs difference (0..255) accepted as the same picture
 
+// Full-size photo PNGs (SNAP_HIRES_PHOTOS): the 1080x720 re-render's scene region at full height in the photo's 3:2 shape (sRGB-encoded), in a host buffer of
+// its own, written as a PNG on the screenshot writer thread (nvn_shot.cpp) to photos_hd\pending, then named <crc>.png when the
+// album JPEG's CRC ties to the capture. At most kHiLive buffers (~63 MB each at 4860x3240) at a time.
+constexpr int kHiLive = 3;
+std::atomic<int> g_hiLive{0};
+struct HiBuf {
+  VkDevice dev = VK_NULL_HANDLE; VkBuffer buf = VK_NULL_HANDLE; VkDeviceMemory mem = VK_NULL_HANDLE; void* map = nullptr;
+  uint32_t w = 0, h = 0;
+  HiBuf() { g_hiLive++; }
+  ~HiBuf() { if (buf) vkDestroyBuffer(dev, buf, nullptr); if (mem) vkFreeMemory(dev, mem, nullptr); g_hiLive--; }
+};
+
 struct Hd {
   uint64_t id = 0;
   int present = 0;
@@ -66,6 +80,11 @@ struct Hd {
   TextureImpl* gpu[2] = {};    // display textures: [0] RGBA8 UNORM, [1] RGBA8 SRGB (matches the replaced texture's encoding)
   uint64_t lastUse = 0;
   std::vector<uint8_t> mini;   // kMiniW x kMiniH RGB box average: finds the capture an album JPEG was made from
+  bool hiOn = false;               // a full-size PNG was taken of this capture
+  std::shared_ptr<HiBuf> hi;       // its GPU copy, until the capture's readback
+  std::string hiFile;              // the PNG once written (pending, then the first <crc>.png)
+  std::vector<uint32_t> hiCrcs;    // album photos that are this capture
+  size_t hiPlaced = 0;
 };
 using HdP = std::shared_ptr<Hd>;
 
@@ -287,7 +306,10 @@ void TrimDir() {
   FindClose(h);
   if (fs.size() <= kMaxFiles) return;
   std::sort(fs.begin(), fs.end(), [](const F& a, const F& b) { return CompareFileTime(&a.t, &b.t) > 0; });
-  for (size_t i = kMaxFiles; i < fs.size(); i++) DeleteFileA((Dir() + "\\" + fs[i].name).c_str());
+  for (size_t i = kMaxFiles; i < fs.size(); i++) {
+    DeleteFileA((Dir() + "\\" + fs[i].name).c_str());
+    DeleteFileA((Dir() + "\\" + fs[i].name.substr(0, 8) + ".png").c_str());   // its full-size PNG, if any
+  }
   fprintf(stderr, "[hdphoto] trimmed %zu old HD files (limit %zu)\n", fs.size() - kMaxFiles, kMaxFiles);
 }
 
@@ -302,6 +324,68 @@ void WriteIfReady(const HdP& hd) {   // g_mu held
     const std::string p = PathOf(crc);
     const bool ok = WriteAtomic(p, *data);
     fprintf(stderr, "[hdphoto] %s %s (%zu bytes)\n", ok ? "wrote" : "FAILED to write", p.c_str(), data->size());
+  });
+}
+
+// ---- full-size photo PNGs (SNAP_HIRES_PHOTOS) ----
+bool HiresOn() {
+  static const bool on = [] {
+    const char* e = getenv("SNAP_HIRES_PHOTOS");
+    const bool v = e && *e ? (*e == '1' || !_stricmp(e, "on") || !_stricmp(e, "true") || !_stricmp(e, "yes")) : hle::settings::get_bool("hires_photos", false);
+    if (v) fprintf(stderr, "[hdphoto] full-size photo PNGs on: <crc>.png in %s\n", Dir().c_str());
+    return v;
+  }();
+  return on;
+}
+std::string PendingDir() { return Dir() + "\\pending"; }
+
+// g_mu held. Names the written PNG <crc>.png for each album photo tied to this capture: the first by a rename, any later one
+// (a second JPEG of the same picture) by a copy on the writer thread.
+void PlaceHires(const HdP& hd) {
+  if (hd->hiFile.empty()) return;
+  for (; hd->hiPlaced < hd->hiCrcs.size(); hd->hiPlaced++) {
+    char n[32]; snprintf(n, sizeof n, "\\%08x.png", hd->hiCrcs[hd->hiPlaced]);
+    const std::string dst = Dir() + n;
+    if (hd->hiPlaced == 0) {
+      const bool ok = MoveFileExA(hd->hiFile.c_str(), dst.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
+      fprintf(stderr, "[hdphoto] full-size PNG %s %s (capture %llu)\n", ok ? "saved as" : "FAILED to name", dst.c_str(), (unsigned long long)hd->id);
+      if (ok) hd->hiFile = dst;
+      else return;
+    } else {
+      const std::string from = hd->hiFile;
+      ShotPost([from, dst] {
+        const bool ok = CopyFileA(from.c_str(), dst.c_str(), FALSE) != 0;
+        fprintf(stderr, "[hdphoto] full-size PNG %s %s\n", ok ? "copied to" : "FAILED to copy to", dst.c_str());
+      });
+    }
+  }
+}
+
+// g_mu held, at the capture's readback (the full-size copy was recorded in the same command buffer, so it is complete too).
+void PostHires(const HdP& hd) {
+  std::shared_ptr<HiBuf> hb = std::move(hd->hi);
+  hd->hi.reset();
+  ShotPost([hd, hb]() mutable {
+    static std::once_flag clean;   // PNGs of an earlier session that no album photo claimed
+    std::call_once(clean, [] {
+      WIN32_FIND_DATAA fd;
+      HANDLE h = FindFirstFileA((PendingDir() + "\\*").c_str(), &fd);
+      if (h == INVALID_HANDLE_VALUE) return;
+      do { if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) DeleteFileA((PendingDir() + "\\" + fd.cFileName).c_str()); } while (FindNextFileA(h, &fd));
+      FindClose(h);
+    });
+    CreateDirectoryA(Dir().c_str(), nullptr);
+    CreateDirectoryA(PendingDir().c_str(), nullptr);
+    char n[48]; snprintf(n, sizeof n, "\\capture%llu.png", (unsigned long long)hd->id);
+    const std::string p = PendingDir() + n;
+    const uint32_t w = hb->w, h = hb->h;
+    const bool ok = ShotWritePng(p, static_cast<const uint8_t*>(hb->map), w, h, false);
+    hb.reset();
+    std::lock_guard<std::mutex> g(g_mu);
+    if (!ok) { fprintf(stderr, "[hdphoto] full-size PNG of capture %llu FAILED (%ux%u)\n", (unsigned long long)hd->id, w, h); return; }
+    if (g_log) fprintf(stderr, "[hdphoto] full-size PNG of capture %llu written (%ux%u)\n", (unsigned long long)hd->id, w, h);
+    hd->hiFile = p;
+    PlaceHires(hd);
   });
 }
 
@@ -451,6 +535,11 @@ bool MatchPhoto(const Waiting& w, bool final) {
           w.crc, w.bytes, (unsigned long long)hd->id, raw, bd, second, bt.a[0], bt.b[0], bt.a[1], bt.b[1], bt.a[2], bt.b[2]);
   if (tone || (hd != best && hd->jpg.empty())) PostTone(best, hd, bt);   // re-toned, or the capture is still encoding
   else WriteIfReady(hd);
+  if (best->hiOn && std::find(best->hiCrcs.begin(), best->hiCrcs.end(), w.crc) == best->hiCrcs.end()) {   // its full-size PNG
+    if (tone) fprintf(stderr, "[hdphoto] album photo %08x: tone differs from the capture; the full-size PNG is the capture as rendered\n", w.crc);
+    best->hiCrcs.push_back(w.crc);
+    PlaceHires(best);
+  }
   return true;
 }
 
@@ -838,6 +927,61 @@ HdP Grab(ReplayCtx& cx, TextureImpl* src, int x0, int y0, int x1, int y1, bool s
   cx.readbacks->push_back(rb);
   return hd;
 }
+
+// Full-size photo PNG: host region (x0,y0)-(x1,y1) of src blitted into an RGBA8_SRGB image (the sRGB encode, as Grab) at the
+// photo's 3:2 shape and the region's full height (the game squeezes its 16:9 re-render into the 3:2 photo, so a 1:1 copy would
+// look stretched: 5760x3240 -> 4860x3240), copied into its own host buffer. Recorded right after Grab, so the capture's
+// readback means this copy is done too. Reads src only: the game's photo, its JPEG and everything scoring reads are untouched.
+void GrabHires(ReplayCtx& cx, TextureImpl* src, int x0, int y0, int x1, int y1, const HdP& hd) {
+  const uint32_t rw = (uint32_t)(x1 - x0), rh = (uint32_t)(y1 - y0);
+  uint32_t w = (uint32_t)(((uint64_t)rh * kW + kH / 2) / kH), h = rh;   // 3:2 at the region's height
+  if (w > rw) { w = rw; h = (uint32_t)(((uint64_t)rw * kH + kW / 2) / kW); }   // region narrower than 3:2: keep its width
+  VkFormatProperties fp{};
+  vkGetPhysicalDeviceFormatProperties(src->host->phys, src->fi->vk, &fp);
+  const VkFilter filter = (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+  if (g_hiLive.load() >= kHiLive) { fprintf(stderr, "[hdphoto] %d full-size PNGs still being written: none for capture %llu\n", kHiLive, (unsigned long long)hd->id); return; }
+  static std::map<uint64_t, TextureImpl*> imgs;   // by size (one or two sizes per session); render thread
+  const uint64_t key = (uint64_t)w << 32 | h;
+  auto it = imgs.find(key);
+  if (it == imgs.end()) {
+    if (imgs.size() >= 4) { static int n = 0; if (n++ < 2) fprintf(stderr, "[hdphoto] too many capture sizes: no full-size PNG\n"); return; }
+    auto* s = new TextureImpl();
+    s->host = src->host;
+    s->b = TextureBuilder{};
+    s->b.device = src->b.device; s->b.target = TT_2D; s->b.width = (int)w; s->b.height = (int)h; s->b.depth = 1; s->b.levels = 1;
+    s->b.format = FMT_RGBA8_SRGB; s->b.samples = 1;
+    if (!s->EnsureImage()) { delete s; static int n = 0; if (n++ < 2) fprintf(stderr, "[hdphoto] full-size image creation failed (%ux%u)\n", w, h); return; }
+    s->uploaded = true;
+    it = imgs.emplace(key, s).first;
+  }
+  TextureImpl* img = it->second;
+  auto hb = std::make_shared<HiBuf>();
+  hb->dev = cx.h->device; hb->w = w; hb->h = h;
+  if (!CreateHostBuffer(cx.h, (uint64_t)w * h * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, &hb->buf, &hb->mem, &hb->map)) {
+    fprintf(stderr, "[hdphoto] full-size buffer allocation failed (%ux%u)\n", w, h);
+    return;
+  }
+  EndRendering(cx);
+  const VkImageLayout before = src->layout;
+  Transition(cx.cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+  Transition(cx.cb, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+  VkImageBlit ib{};
+  ib.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  ib.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  ib.srcOffsets[0] = {x0, y0, 0}; ib.srcOffsets[1] = {x1, y1, 1};
+  ib.dstOffsets[0] = {0, 0, 0}; ib.dstOffsets[1] = {(int32_t)w, (int32_t)h, 1};
+  vkCmdBlitImage(cx.cb, src->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, img->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ib, filter);
+  Transition(cx.cb, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+  VkBufferImageCopy bc{};
+  bc.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  bc.imageExtent = {w, h, 1};
+  vkCmdCopyImageToBuffer(cx.cb, img->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, hb->buf, 1, &bc);
+  HostReadBarrier(cx.cb);
+  if (before != VK_IMAGE_LAYOUT_UNDEFINED) Transition(cx.cb, src, before);
+  std::lock_guard<std::mutex> g(g_mu);
+  hd->hiOn = true;
+  hd->hi = std::move(hb);
+}
 }  // namespace
 
 bool HdPhotoOn() {
@@ -897,6 +1041,7 @@ void HdPhotoCapture(ReplayCtx& cx, ProgramImpl* p, TextureImpl* src, TextureImpl
   }
   HdP hd = Grab(cx, src, x0, y0, x1, y1, true);
   if (!hd) return;
+  if (t1080 && HiresOn()) GrabHires(cx, src, x0, y0, x1, y1, hd);   // the re-render the album JPEG is made from: one per kept photo
   {
     std::lock_guard<std::mutex> g(g_mu);
     // The target shows this capture: the shutter's 360x240 thumbnail, or the 1080x720 photo the game re-renders for the score
@@ -932,6 +1077,7 @@ void HdPhotoReadback(uint64_t id, const uint8_t* map, uint64_t size) {
   HdP hd = it->second;
   g_pending.erase(it);
   if (size != kBytes) return;
+  if (hd->hi) PostHires(hd);
   hd->rgba.assign(map, map + size);
   Mini(hd->rgba.data(), kW, kH, (size_t)kW * 4, hd->mini);
   g_recent.push_back(hd);
