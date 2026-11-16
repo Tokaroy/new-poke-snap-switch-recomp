@@ -1,0 +1,160 @@
+# fixture: post_tutorial
+# Save-state leak check (docs/save-states.md): ride, save once, then 50 loads with about 2 s of ride between them. Read the 'process commit' figure of each
+# 'state load' line in boot_stderr.log: it must stay flat (analysis/savestate/proof_m5_leak.md has the numbers). Run: run_boot.ps1 -Route savestate_leak -Timeout 500
+repeat @f300 @f30000 120 8 A
+wait ui=map_select timeout=240
+repeat @f60 @f30000 120 8 A
+wait ride>=3 timeout=240
+@f10 8 save=ck
+wait state=saves>=1 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=1 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=2 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=3 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=4 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=5 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=6 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=7 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=8 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=9 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=10 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=11 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=12 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=13 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=14 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=15 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=16 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=17 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=18 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=19 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=20 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=21 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=22 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=23 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=24 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=25 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=26 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=27 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=28 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=29 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=30 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=31 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=32 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=33 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=34 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=35 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=36 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=37 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=38 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=39 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=40 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=41 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=42 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=43 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=44 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=45 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=46 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=47 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=48 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=49 timeout=60
+repeat @f0 @f30000 24 4 A
+@f120 8 load=ck
+wait state=loads>=50 timeout=60
+end @f60
