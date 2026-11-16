@@ -76,6 +76,7 @@ Kind is two-choice (c) or pulldown (p). "Widen" means the key already has a row;
 | Water | Water reflections (New, 2026-11-15) | c | Off, On | Off | `SNAP_WATER_SSR` / `water_ssr` | Live | The sea mirrors the shore, rocks and Pokémon around it. Photos are unchanged. | One full-screen pass plus a copy while the sea is on screen (see `docs/water-effects.md`) |
 | Water | Water caustics (New, 2026-11-15) | c | Off, On | Off | `SNAP_WATER_CAUSTICS` / `water_caustics` | Live | Rippling light patterns on shallow sea floors and rocks. Photos are unchanged. | Same pass as reflections; no extra pass |
 | Water | Shoreline foam (New, 2026-11-15) | c | Off, On | Off | `SNAP_WATER_FOAM` / `water_foam` | Live | White foam where the water meets sand and rock. Photos are unchanged. | Same pass as reflections; no extra pass |
+| Water | Ocean waves (New, 2026-11-16) | c | Off, On | Off | `SNAP_WATER_OCEAN` / `water_ocean` | Live | Rolling open-sea waves from a GPU wave simulation (FFT): the reflections follow the swell and whitecaps show on the crests. Best with Water reflections on. Photos are unchanged. | One compute update per frame (three 128x128 cascades) plus the same pass; see `docs/water-effects.md` |
 
 Notes on specific rows:
 

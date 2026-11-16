@@ -161,10 +161,10 @@ void set_contact(const std::string& v) {
   else st::erase("contact_shadows");
   snap_contact_shadows_set(v == "1");
 }
-// Water effects (nvn_ssr.cpp): live, remembered as water_ssr / water_caustics / water_foam ("default" = off, erased; exported as SNAP_WATER_*=1 at the next start)
+// Water effects (nvn_ssr.cpp): live, remembered as water_ssr / water_caustics / water_foam / water_ocean ("default" = off, erased; exported as SNAP_WATER_*=1 at the next start)
 template <int W> std::string get_water() { return snap_water_fx_get(W) ? "1" : "default"; }
 template <int W> void set_water(const std::string& v) {
-  static const char* const kKey[3] = {"water_ssr", "water_caustics", "water_foam"};
+  static const char* const kKey[4] = {"water_ssr", "water_caustics", "water_foam", "water_ocean"};
   if (v == "1") st::set(kKey[W], "1"); else st::erase(kKey[W]);
   snap_water_fx_set(W, v == "1");
 }
@@ -174,6 +174,8 @@ std::string get_water_caustics() { return get_water<1>(); }
 void set_water_caustics(const std::string& v) { set_water<1>(v); }
 std::string get_water_foam() { return get_water<2>(); }
 void set_water_foam(const std::string& v) { set_water<2>(v); }
+std::string get_water_ocean() { return get_water<3>(); }
+void set_water_ocean(const std::string& v) { set_water<3>(v); }
 // HUD scale: live, remembered as "hud_scale" (auto = erased; exported as SNAP_HUD_SCALE at the next start)
 std::string get_hud_scale() { return snap_hud_scale_get(); }
 void set_hud_scale(const std::string& v) {
@@ -510,6 +512,9 @@ std::vector<Opt>& graphics_opts() {
       {"water_foam", "Shoreline foam", kChoice, kLive,
        "White foam where the water meets sand and rock, found from how deep the water is at each pixel. Never in photos, so scores do not change.", "default",
        {{"default", "Off"}, {"1", "On"}}, 0, 0, "", "SNAP_WATER_FOAM", get_water_foam, set_water_foam},
+      {"water_ocean", "Ocean waves", kChoice, kLive,
+       "Rolling open-sea waves from a wave simulation on the GPU: the reflections follow the swell and whitecaps appear on the crests. Looks best with Water reflections on. Never in photos, so scores do not change.", "default",
+       {{"default", "Off"}, {"1", "On"}}, 0, 0, "", "SNAP_WATER_OCEAN", get_water_ocean, set_water_ocean},
       {"gfx_bounce", "Bounce light", kChoice, kRestart,
        "Colored light that bounces off nearby surfaces: green from the grass onto a Pokemon's flank, warm from a rock onto the ground beside it. Display only; the photo itself is never changed. Costs a little GPU time.", "default",
        {{"default", "Off"}, {"1", "On"}}, 0, 0, "", "SNAP_SSGI"},

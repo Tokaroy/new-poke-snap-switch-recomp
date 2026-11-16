@@ -321,14 +321,16 @@ for _t in TABS:
             'Warm glow toward the sun, pale horizon haze, deeper blue overhead. Photos are unchanged.' + R),
     ]),
     # Water effects (runtime/nvn/nvn_ssr.cpp, docs/water-effects.md), display only, off by default, never drawn in photos. Live through snap_water_fx_set.
-    # Keys water_ssr / water_caustics / water_foam -> SNAP_WATER_SSR / SNAP_WATER_CAUSTICS / SNAP_WATER_FOAM (settings.cpp kEnvKeys); stored "1" or erased.
-    ('Water', 'Sea reflections, caustics and foam. Photos are unchanged.', [
+    # Keys water_ssr / water_caustics / water_foam / water_ocean -> SNAP_WATER_SSR / SNAP_WATER_CAUSTICS / SNAP_WATER_FOAM / SNAP_WATER_OCEAN (settings.cpp kEnvKeys); stored "1" or erased.
+    ('Water', 'Sea reflections, caustics, foam and ocean waves. Photos are unchanged.', [
         row('Water reflections', 'p', 'opt', 'water_ssr', 'default', (('default', 'Off'), ('1', 'On')),
             'The sea mirrors the shore, rocks and Pokémon around it. Photos are unchanged.'),
         row('Water caustics', 'p', 'opt', 'water_caustics', 'default', (('default', 'Off'), ('1', 'On')),
             'Rippling light patterns on shallow sea floors and rocks. Photos are unchanged.'),
         row('Shoreline foam', 'p', 'opt', 'water_foam', 'default', (('default', 'Off'), ('1', 'On')),
             'White foam where the water meets sand and rock. Photos are unchanged.'),
+        row('Ocean waves', 'p', 'opt', 'water_ocean', 'default', (('default', 'Off'), ('1', 'On')),
+            'Rolling open-sea waves from a GPU wave simulation: reflections follow the swell, whitecaps on the crests. Photos are unchanged.'),
     ]),
             assert _r['default'] in [c[0] for c in _r['choices']], (_r['label'], _r['default'])
 

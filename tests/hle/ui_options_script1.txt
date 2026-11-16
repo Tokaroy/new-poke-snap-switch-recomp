@@ -123,6 +123,9 @@
 31.40957 expect_when water_foam live
 31.40958 opt water_foam 1
 31.40959 expect_opt water_foam 1
+31.409591 expect_when water_ocean live
+31.409592 opt water_ocean 1
+31.409593 expect_opt water_ocean 1
 # HUD scale: live (runtime/nvn/nvn_hud.cpp), stored as the percent; Skip course intro: restart row (host/mods/introskip.cpp)
 31.4096 expect_when hud_scale live
 31.4097 opt hud_scale 150

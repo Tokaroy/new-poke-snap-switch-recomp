@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Water effects
 
-Three display-only effects on the sea: screen-space reflections, caustics and shoreline foam. All three are off by default. Code: `runtime/nvn/nvn_ssr.cpp`, `runtime/nvn/shaders/water_fx.frag` (compiled by `make_water_spv.py` into `nvn_water_spv.h`).
+Four display-only effects on the sea: screen-space reflections, caustics, shoreline foam and FFT ocean waves. All are off by default. Code: `runtime/nvn/nvn_ssr.cpp`, `runtime/nvn/shaders/water_fx.frag` (compiled by `make_water_spv.py` into `nvn_water_spv.h`); the ocean also uses `runtime/nvn/nvn_ocean.cpp` and the module in `runtime/fx/ocean_fft`.
 
 ## Switches
 
@@ -10,6 +10,7 @@ Three display-only effects on the sea: screen-space reflections, caustics and sh
 | Water reflections | `SNAP_WATER_SSR=1` | Water reflections | `water_ssr` |
 | Water caustics | `SNAP_WATER_CAUSTICS=1` | Water caustics | `water_caustics` |
 | Shoreline foam | `SNAP_WATER_FOAM=1` | Shoreline foam | `water_foam` |
+| Ocean waves | `SNAP_WATER_OCEAN=1` | Ocean waves | `water_ocean` |
 
 The rows are live: no restart. Tab 11 had one free slot, so the rows live on a new tab 17 after Atmosphere.
 
@@ -40,14 +41,15 @@ Water pixel = `hdPost` differs from `hdPre`. The floor is the full-resolution de
 - **Reflections.** The reflected ray is marched through the full depth (steps that grow with distance, then a 5-step binary refine), so what is on screen reflects. A ripple term bends the normal. Fresnel weights it, and the weight fades to zero at the screen edge. A miss leaves the game's own cubemap reflection untouched (alpha 1, rgb 0).
 - **Caustics.** A bright net on what lies under the water, from the depth of water above the floor: strongest in shallows, gone below about 6 units and with distance.
 - **Foam.** A lace band where the water is thin (water surface height above the floor), pulsing with time and broken up with noise.
+- **Ocean waves.** `runtime/fx/ocean_fft` (a Phillips-spectrum FFT ocean, three 128x128 cascades with 256, 1024 and 4096 unit tiles) runs one compute update per frame from `RunPass` (`nvn_ocean.cpp`, outside any render pass, time = presents / 60). The pass reads its normal and foam maps at the world position of each water pixel. The normal replaces the small built-in ripple term in the reflection (so it needs Water reflections for the swell to show), and the persistent crest foam is drawn as whitecaps with the same foam colour as the shoreline foam. The game's sea mesh is not displaced: the waves are in the shading only, so the shoreline, the depth test and everything the game reads back stay as they were. The module needs `shaderStorageImageExtendedFormats` (the device enables every core feature the GPU has); if it is missing or the create fails, the row turns itself off for the run and the log says why.
 
 ## Tunables
 
 Plain environment variables; live parameters on the F1 Tuning page with `SNAP_DEV=1`.
 
-- `SNAP_WATER_SSR_STRENGTH` (1), `SNAP_WATER_SSR_DIST` (45 world units), `SNAP_WATER_RIPPLE` (0.02), `SNAP_WATER_CAUSTICS_STRENGTH` (1), `SNAP_WATER_FOAM_STRENGTH` (1).
+- `SNAP_WATER_SSR_STRENGTH` (1), `SNAP_WATER_SSR_DIST` (45 world units), `SNAP_WATER_RIPPLE` (0.02), `SNAP_WATER_CAUSTICS_STRENGTH` (1), `SNAP_WATER_FOAM_STRENGTH` (1, also scales the whitecaps), `SNAP_WATER_OCEAN_STRENGTH` (1, slope multiplier of the ocean normal).
 - Debug views: `SNAP_WATER_DEBUG=1` water mask, `2` water height above the floor, `3` mask terms, `4` view distance of the three depths, `5` world height of the depths. `SNAP_WATER_LOG=1` probe (distinct scene fragment keys, pass stats), `SNAP_WATER_LOG=2` one line per frame with the reason the hook did nothing, `SNAP_WATER_TIME=1` GPU ms of the copies and the pass.
-- With `SNAP_DEV=1` the three switches are dev parameters too, so `ab_capture.ps1 -Effect SNAP_WATER_SSR -Values 0,1 -Set SNAP_WATER_SSR=1` flips only the water effect.
+- With `SNAP_DEV=1` the four switches are dev parameters too, so `ab_capture.ps1 -Effect SNAP_WATER_SSR -Values 0,1 -Set SNAP_WATER_SSR=1` flips only the water effect.
 
 ## Proof
 

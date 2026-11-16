@@ -27,6 +27,7 @@
 #include "nvn_dev.h"
 #include "nvn_fx.h"
 #include "nvn_internal.h"
+#include "nvn_ocean.h"
 #include "nvn_rt.h"
 #include "nvn_ssr.h"
 #include "nvn_water_spv.h"
@@ -47,14 +48,14 @@ static_assert(sizeof(Pc) == 128, "push constants must fit the 128 byte guarantee
 struct G {
   bool failed = false, ready = false;
   VkDescriptorSetLayout dsl = VK_NULL_HANDLE; VkPipelineLayout pl = VK_NULL_HANDLE; VkShaderModule fs = VK_NULL_HANDLE;
-  VkSampler nearest = VK_NULL_HANDLE, linear = VK_NULL_HANDLE; VkPipeline pipe = VK_NULL_HANDLE, pipeRt = VK_NULL_HANDLE; VkShaderModule fsRt = VK_NULL_HANDLE; bool rtFailed = false; VkFormat fmt = VK_FORMAT_UNDEFINED;
+  VkSampler nearest = VK_NULL_HANDLE, linear = VK_NULL_HANDLE, repeat = VK_NULL_HANDLE; VkPipeline pipe = VK_NULL_HANDLE, pipeRt = VK_NULL_HANDLE; VkShaderModule fsRt = VK_NULL_HANDLE; bool rtFailed = false; VkFormat fmt = VK_FORMAT_UNDEFINED;
   Img col, hdPre, hdPost; uint32_t w = 0, h = 0, hw = 0, hh = 0; uint32_t seenSpv = 0;   // col: full-resolution scene colour copy; hdPre / hdPost: half-resolution depth copies
   std::unordered_set<std::string> keys;
 } g;
 
 // Tunables in one struct (registered with the dev loop API: F1 Tuning page, ctl `set`, SNAP_DEV=1). Defaults come from the env vars (test aids).
 struct Tun {
-  float ssrStrength = 1.f, ssrDist = 45.f, ripple = 0.02f, causticsStrength = 1.f, foamStrength = 1.f;
+  float ssrStrength = 1.f, ssrDist = 45.f, ripple = 0.02f, causticsStrength = 1.f, foamStrength = 1.f, oceanStrength = 1.f;
   int debug = 0;   // 1 water mask, 2 water height above the floor, 3 depth classes, 4 view distances (R water pre, G water post, B depth), 5 reflection classes (red: screen-space hit, green: RT hit seen on screen, blue: RT hit from the colour cache, yellow: ray left the scene)
 } tun;
 float EnvF(const char* n, float def) { const char* e = getenv(n); return e && *e ? (float)atof(e) : def; }
@@ -64,12 +65,13 @@ void RegisterTunables() {
   done = true;
   tun.ssrStrength = EnvF("SNAP_WATER_SSR_STRENGTH", tun.ssrStrength); tun.ssrDist = EnvF("SNAP_WATER_SSR_DIST", tun.ssrDist);
   tun.ripple = EnvF("SNAP_WATER_RIPPLE", tun.ripple); tun.causticsStrength = EnvF("SNAP_WATER_CAUSTICS_STRENGTH", tun.causticsStrength);
-  tun.foamStrength = EnvF("SNAP_WATER_FOAM_STRENGTH", tun.foamStrength); tun.debug = (int)EnvF("SNAP_WATER_DEBUG", 0.f);
+  tun.foamStrength = EnvF("SNAP_WATER_FOAM_STRENGTH", tun.foamStrength); tun.oceanStrength = EnvF("SNAP_WATER_OCEAN_STRENGTH", tun.oceanStrength); tun.debug = (int)EnvF("SNAP_WATER_DEBUG", 0.f);
   dev_param_f("SNAP_WATER_SSR_STRENGTH", &tun.ssrStrength, 0.f, 2.f, 1.f);
   dev_param_f("SNAP_WATER_SSR_DIST", &tun.ssrDist, 5.f, 200.f, 45.f);
   dev_param_f("SNAP_WATER_RIPPLE", &tun.ripple, 0.f, 0.2f, 0.02f);
   dev_param_f("SNAP_WATER_CAUSTICS_STRENGTH", &tun.causticsStrength, 0.f, 3.f, 1.f);
   dev_param_f("SNAP_WATER_FOAM_STRENGTH", &tun.foamStrength, 0.f, 2.f, 1.f);
+  dev_param_f("SNAP_WATER_OCEAN_STRENGTH", &tun.oceanStrength, 0.f, 8.f, 1.f);
   dev_param_i("SNAP_WATER_DEBUG", &tun.debug, 0, 5, 0);
 }
 
@@ -82,10 +84,10 @@ struct S {
   const char* why = "";   // SNAP_WATER_LOG=2: last reason the hook did nothing
 } st;
 
-// -1 = not read yet. bit order: 0 ssr, 1 caustics, 2 foam. Live: the options rows call snap_water_fx_set.
-std::atomic<int> g_on[3] = {{-1}, {-1}, {-1}};
-const char* const kEnvName[3] = {"SNAP_WATER_SSR", "SNAP_WATER_CAUSTICS", "SNAP_WATER_FOAM"};
-int g_dev[3] = {-1, -1, -1};   // SNAP_DEV=1: the switches as live parameters (ab_capture.ps1 -Effect SNAP_WATER_SSR -Values 0,1); -1 = not registered
+// -1 = not read yet. bit order: 0 ssr, 1 caustics, 2 foam, 3 ocean (FFT waves, nvn_ocean.cpp). Live: the options rows call snap_water_fx_set.
+std::atomic<int> g_on[4] = {{-1}, {-1}, {-1}, {-1}};
+const char* const kEnvName[4] = {"SNAP_WATER_SSR", "SNAP_WATER_CAUSTICS", "SNAP_WATER_FOAM", "SNAP_WATER_OCEAN"};
+int g_dev[4] = {-1, -1, -1, -1};   // SNAP_DEV=1: the switches as live parameters (ab_capture.ps1 -Effect SNAP_WATER_SSR -Values 0,1); -1 = not registered
 bool BaseOn(int i) {
   int v = g_on[i].load(std::memory_order_relaxed);
   if (v < 0) { const char* e = getenv(kEnvName[i]); v = e && *e && atoi(e) != 0 ? 1 : 0; int x = -1; g_on[i].compare_exchange_strong(x, v); v = g_on[i].load(); }
@@ -100,9 +102,9 @@ void RegisterSwitches() {   // after the tunables: the three switches as dev par
   static bool done = false;
   if (done) return;
   done = true;
-  if (dev_on()) for (int i = 0; i < 3; i++) { g_dev[i] = BaseOn(i) ? 1 : 0; dev_param_i(kEnvName[i], &g_dev[i], 0, 1, g_dev[i]); }
+  if (dev_on()) for (int i = 0; i < 4; i++) { g_dev[i] = BaseOn(i) ? 1 : 0; dev_param_i(kEnvName[i], &g_dev[i], 0, 1, g_dev[i]); }
 }
-bool AnyOn() { return !g.failed && (On(0) || On(1) || On(2)); }
+bool AnyOn() { return !g.failed && (On(0) || On(1) || On(2) || On(3)); }
 bool Enabled() { return AnyOn() && snaplight::ab_on((unsigned long long)g_presentCount); }   // SNAP_LIGHT_AB: same-view A/B
 bool Log2() { static const bool on = getenv("SNAP_WATER_LOG") && getenv("SNAP_WATER_LOG")[0] == '2'; return on; }
 bool Log() { static const bool on = getenv("SNAP_WATER_LOG") && getenv("SNAP_WATER_LOG")[0] != '0'; return on; }
@@ -222,9 +224,11 @@ bool Setup(Host* h, VkFormat fmt) {
     if (vkCreateSampler(h->device, &si, nullptr, &g.nearest) != VK_SUCCESS) return false;
     si.magFilter = si.minFilter = VK_FILTER_LINEAR;
     if (vkCreateSampler(h->device, &si, nullptr, &g.linear) != VK_SUCCESS) return false;
-    VkDescriptorSetLayoutBinding b[4];
-    for (uint32_t i = 0; i < 4; i++) b[i] = {i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
-    VkDescriptorSetLayoutCreateInfo dl{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO}; dl.bindingCount = 4; dl.pBindings = b;
+    si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;   // the ocean maps tile
+    if (vkCreateSampler(h->device, &si, nullptr, &g.repeat) != VK_SUCCESS) return false;
+    VkDescriptorSetLayoutBinding b[6];
+    for (uint32_t i = 0; i < 6; i++) b[i] = {i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    VkDescriptorSetLayoutCreateInfo dl{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO}; dl.bindingCount = 6; dl.pBindings = b;
     if (vkCreateDescriptorSetLayout(h->device, &dl, nullptr, &g.dsl) != VK_SUCCESS) return false;
     VkPushConstantRange pr{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(Pc)};
     VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO}; pli.setLayoutCount = 1; pli.pSetLayouts = &g.dsl; pli.pushConstantRangeCount = 1; pli.pPushConstantRanges = &pr;
@@ -301,28 +305,33 @@ void RunPass(ReplayCtx& cx, TextureImpl* c, TextureImpl* z) {
   if (!cam) return;
   TimeStamp(cx, 2);
   dev_pass_begin(cx.cb, "water fx");
+  VkImageView oceanN = VK_NULL_HANDLE, oceanF = VK_NULL_HANDLE;   // FFT ocean maps (nvn_ocean.cpp), or 1x1 dummies when the ocean is off
+  bool ocean = false;
+  if (On(3)) { EndRendering(cx); ocean = OceanMaps(cx, &oceanN, &oceanF); }
+  if (!ocean) OceanDummyViews(cx, &oceanN, &oceanF);
   Pc pc{};
   for (int r = 0; r < 4; r++) for (int k = 0; k < 4; k++) pc.vp[k * 4 + r] = (float)cam->vp[r][k];
   float jx, jy; FxJitter(&jx, &jy);
   pc.size[0] = (float)c->HW(); pc.size[1] = (float)c->HH(); pc.size[2] = jx; pc.size[3] = jy;
-  int flags = (On(0) ? 1 : 0) | (On(1) ? 2 : 0) | (On(2) ? 4 : 0);
+  int flags = (On(0) ? 1 : 0) | (On(1) ? 2 : 0) | (On(2) ? 4 : 0) | (ocean ? 1024 : 0);
   snap_rt::ReflInfo rinfo;   // RT reflections: the colour cache update is recorded here (outside any render pass), the shader traces the rays
   const bool rt = (flags & 1) != 0 && g.pipeRt && snap_rt::ReflectionPass(cx, g.col.view, g.linear, cam->vp, &rinfo);
   if (rt) flags |= 256;
   const int dbg = tun.debug;
   if (dbg == 1) flags = 8; else if (dbg == 2) flags = 16; else if (dbg == 3) flags = 32; else if (dbg == 4) flags = 64; else if (dbg == 5) flags = 128; else if (dbg == 5) flags = 1 | 512 | (rt ? 256 : 0);
   pc.tlas = rt ? rinfo.tlas : 0; pc.avg = rt ? rinfo.avg : 0;
-  pc.k[0] = cam->nearZ; pc.k[1] = (float)g_presentCount / 60.0f; pc.k[2] = (float)flags; pc.k[3] = tun.ripple;
+  pc.k[0] = cam->nearZ; pc.k[1] = (float)g_presentCount / 60.0f; pc.k[2] = (float)flags; pc.k[3] = ocean ? tun.oceanStrength : tun.ripple;
   pc.s[0] = tun.ssrStrength; pc.s[1] = tun.causticsStrength; pc.s[2] = tun.foamStrength; pc.s[3] = tun.ssrDist;
   VkImageLayout prev;
   VkImageView dv = FxDepthRead(cx, z, &prev);
   VkDescriptorSet set = FxAllocSet(cx, g.dsl);
-  if (set && dv) {
-    VkDescriptorImageInfo ii[4] = {{g.nearest, dv, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL}, {g.nearest, g.hdPost.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-                                   {g.linear, g.col.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}, {g.nearest, g.hdPre.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}};
-    VkWriteDescriptorSet w[4];
-    for (uint32_t i = 0; i < 4; i++) { w[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; w[i].dstSet = set; w[i].dstBinding = i; w[i].descriptorCount = 1; w[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[i].pImageInfo = &ii[i]; }
-    vkUpdateDescriptorSets(cx.h->device, 4, w, 0, nullptr);
+  if (set && dv && oceanN && oceanF) {
+    VkDescriptorImageInfo ii[6] = {{g.nearest, dv, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL}, {g.nearest, g.hdPost.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+                                   {g.linear, g.col.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}, {g.nearest, g.hdPre.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+                                   {g.repeat, oceanN, VK_IMAGE_LAYOUT_GENERAL}, {g.repeat, oceanF, VK_IMAGE_LAYOUT_GENERAL}};
+    VkWriteDescriptorSet w[6];
+    for (uint32_t i = 0; i < 6; i++) { w[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; w[i].dstSet = set; w[i].dstBinding = i; w[i].descriptorCount = 1; w[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[i].pImageInfo = &ii[i]; }
+    vkUpdateDescriptorSets(cx.h->device, 6, w, 0, nullptr);
     FxDrawFullscreen(cx, c, rt ? g.pipeRt : g.pipe, g.pl, set, &pc, sizeof pc);
     FxNoteRan();
     st.ranPasses++;
@@ -403,6 +412,7 @@ bool WaterBeforeDraw(ReplayCtx& cx, const char* fsKey, bool blend, bool depthWri
     TimeInit(cx);
     if (!Setup(cx.h, c->fi->vk) || !EnsureImages(cx.h, c->HW(), c->HH(), hz->HW(), hz->HH(), c->fi->vk)) { g.failed = true; fprintf(stderr, "water: setup failed, disabled\n"); return false; }
     EndRendering(cx);
+    { VkImageView dn, df; OceanDummyViews(cx, &dn, &df); }   // the 1x1 placeholder maps for the ocean bindings, made once (outside a render pass)
     TimeStamp(cx, 0);
     dev_pass_begin(cx.cb, "water copy");
     CopyDepthOut(cx, hz, g.hdPre);
@@ -434,8 +444,8 @@ bool WaterForceDepthWrite() { return g_forceDw; }
 }  // namespace nvn
 
 extern "C" void snap_water_fx_set(int which, int on) {
-  if (which < 0 || which > 2) return;
+  if (which < 0 || which > 3) return;
   nvn::g_on[which].store(on ? 1 : 0);
   fprintf(stderr, "water: %s %s (live)\n", nvn::kEnvName[which], on ? "on" : "off");
 }
-extern "C" int snap_water_fx_get(int which) { return which >= 0 && which <= 2 && nvn::On(which) ? 1 : 0; }
+extern "C" int snap_water_fx_get(int which) { return which >= 0 && which <= 3 && nvn::On(which) ? 1 : 0; }

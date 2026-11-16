@@ -20,10 +20,12 @@ layout(set = 0, binding = 0) uniform sampler2D depthFull;   // full-resolution s
 layout(set = 0, binding = 1) uniform sampler2D hdPost;      // half-resolution depth after the water draws (water surface where it changed)
 layout(set = 0, binding = 2) uniform sampler2D colPre;      // scene colour copy before the water is composited (what is reflected)
 layout(set = 0, binding = 3) uniform sampler2D hdPre;       // half-resolution depth before the first water draw
+layout(set = 0, binding = 4) uniform sampler2DArray oceanN; // FFT ocean (nvn_ocean.cpp, flag 1024): unit normals, one layer per cascade (tiles 256 / 1024 / 4096 world units)
+layout(set = 0, binding = 5) uniform sampler2DArray oceanF; // FFT ocean: persistent foam (R) and horizontal Jacobian (G)
 layout(push_constant) uniform P {
     mat4 vp;      // clip = vp * (world, 1)
     vec4 size;    // xy: render size in pixels, zw: scene viewport jitter in pixels
-    vec4 k;       // x: near, y: time (seconds), z: flags (1 ssr, 2 caustics, 4 foam, 8 debug mask, 16 debug h, 32 debug depth, 256 rt reflections, 512 debug rt classes), w: ripple amount
+    vec4 k;       // x: near, y: time (seconds), z: flags (1 ssr, 2 caustics, 4 foam, 8 debug mask, 16 debug h, 32 debug depth, 256 rt reflections, 512 debug rt classes, 1024 FFT ocean), w: ripple amount (ocean strength when flag 1024 is set)
     vec4 s;       // x: ssr strength, y: caustics strength, z: foam strength, w: ssr max distance (world units)
     uvec2 tlas;   // RT_REFL: the scene TLAS (device address)
     uvec2 avg;    // RT_REFL: the per-instance colour cache (device address)
@@ -72,6 +74,17 @@ float causticPattern(vec2 xz, float t) {
     float b = 1.0 - smoothstep(0.0, 0.28, cellGap(mat2(0.8, -0.6, 0.6, 0.8) * xz * 1.35 + vec2(3.7, t * -0.04), t * 1.1 + 2.0));
     return pow(a * 0.6 + b * 0.6, 1.6);
 }
+const vec3 OCEAN_INV_TILE = vec3(1.0 / 256.0, 1.0 / 1024.0, 1.0 / 4096.0);
+vec3 oceanNormal(vec2 xz, float amp, float dist) {   // the three cascades cover disjoint wavelength bands: add their slopes
+    vec2 s = vec2(0.0);
+    for (int c = 0; c < 3; c++) { vec3 n = texture(oceanN, vec3(xz * OCEAN_INV_TILE[c], float(c))).xyz; s += n.xz / max(n.y, 0.2); }
+    return normalize(vec3(s.x * amp, 1.0, s.y * amp) * vec3(mix(1.0, 0.35, smoothstep(40.0, 160.0, dist)), 1.0, mix(1.0, 0.35, smoothstep(40.0, 160.0, dist))));   // far waves alias without mips: flatten with distance
+}
+float oceanFoam(vec2 xz) {
+    float f = 0.0;
+    for (int c = 0; c < 3; c++) f = max(f, texture(oceanF, vec3(xz * OCEAN_INV_TILE[c], float(c))).r);
+    return f;
+}
 vec3 rippleNormal(vec2 xz, float t, float amp) {
     vec2 g = vec2(0.0);
     for (int i = 0; i < 4; i++) {
@@ -115,7 +128,7 @@ void main() {
     if ((flags & 16) != 0) { outCol = vec4(vec3(clamp(h, 0.0, 4.0) * 0.25), 0.0); return; }   // debug: water height above what is behind it, 0..4
 
     if ((flags & 1) != 0) {
-        vec3 N = rippleNormal(Pw.xz, time, pc.k.w);
+        vec3 N = (flags & 1024) != 0 ? oceanNormal(Pw.xz, pc.k.w, wS) : rippleNormal(Pw.xz, time, pc.k.w);
         vec3 R = reflect(-V, N);
         R.y = max(R.y, 0.03); R = normalize(R);
         float cosT = clamp(dot(V, vec3(0.0, 1.0, 0.0)), 0.0, 1.0);
@@ -215,6 +228,13 @@ void main() {
         kF = f * pc.s.z;
         const vec3 base = texelFetch(colPre, p, 0).rgb;   // the scene is HDR: foam has to be brighter than what is under it, not just 'white'
         foam = vec3(0.93, 0.96, 1.0) * (0.7 + 1.6 * dot(base, vec3(0.299, 0.587, 0.114)));
+    }
+    if ((flags & 1024) != 0) {   // whitecaps: the ocean's persistent crest foam (Jacobian), fading out with distance
+        float wc = smoothstep(0.15, 0.8, oceanFoam(Pw.xz)) * (1.0 - smoothstep(60.0, 160.0, wS)) * pc.s.z;
+        if (wc > kF) {
+            kF = wc;
+            foam = vec3(0.93, 0.96, 1.0) * (0.7 + 1.6 * dot(texelFetch(colPre, p, 0).rgb, vec3(0.299, 0.587, 0.114)));
+        }
     }
     if ((flags & 2) != 0 && h < 1e8 && h > 0.0) {
         float depthFade = exp(-h * 0.5) * (1.0 - smoothstep(2.5, 6.0, h));     // bright in shallows, gone in deep water

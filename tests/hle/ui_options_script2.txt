@@ -25,6 +25,7 @@
 20.9601 expect_opt water_ssr 1
 20.9602 expect_opt water_caustics 1
 20.9603 expect_opt water_foam 1
+20.96031 expect_opt water_ocean 1
 20.961 expect_opt foliage_aa 1
 20.962 expect_opt leaf_translucency 0.5
 20.963 expect_opt soft_particles 1

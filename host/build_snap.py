@@ -79,6 +79,7 @@ def main():
     for d in ('hle', 'audio', 'nvn', 'mods'):
         srcs += [(p, 20) for p in sorted((ROOT / 'runtime' / d).glob('*.cpp'))]
     srcs += [(p, 20) for p in sorted((ROOT / 'runtime' / 'nvn' / 'upscale').glob('*.cpp'))]   # temporal upscalers (SNAP_UPSCALER)
+    srcs += [(ROOT / 'runtime' / 'fx' / 'ocean_fft' / 'ocean_gpu.cpp', 20)]   # FFT ocean compute module (SNAP_WATER_OCEAN); the CPU reference and its tests are not part of the game
     # in-game controls overlay (runtime/ui): our files plus the vendored Dear ImGui core and its Vulkan / Win32 backends
     srcs += [(p, 20) for p in sorted((ROOT / 'runtime' / 'ui').glob('*.cpp'))]
     imgui = ROOT / 'runtime' / 'ui' / 'third_party' / 'imgui'
