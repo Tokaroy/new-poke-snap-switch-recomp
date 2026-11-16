@@ -23,6 +23,43 @@ fn native(archive: &str) -> String {
     archive.replace('/', std::path::MAIN_SEPARATOR_STR)
 }
 
+/// Every lightmapped mesh object has baked light textures of its own in the course pack, named
+/// `<level>^<model>^<node id>^<shape>^<n>^Shadow.nutexb` and `...^<n>^<k>^Lightmap.nutexb` (k = 0..3) and listed in the
+/// level's group. An object without them draws with ambient light only (dark). Each new shape gets copies of the
+/// template's first shape's textures: its lightmap UVs all point at that shape's most upward-facing (lit) texel
+/// (`scenery::lit_texel`) and the instance's lightmap entries are copies of that shape's entry, sizes included.
+#[allow(clippy::too_many_arguments)]
+fn lighting(built: &mut scenery::Built, a: &drp::Archive, unpacked: &Path, lvl: &str, template: &str, name: &str, tnode: u32, nnode: u32) -> Result<String, String> {
+    const KINDS: [&str; 5] = ["Shadow", "0^Lightmap", "1^Lightmap", "2^Lightmap", "3^Lightmap"];
+    let tshape = built.shapes.first().ok_or("model without shapes")?.clone();
+    let mut texs = vec![];
+    for k in KINDS {
+        let f = format!("{lvl}^{template}^{tnode}^{tshape}^0^{k}.nutexb");
+        if a.find_entry(&f).is_none() {
+            return Ok(format!("  lighting: the template has no {f}; the model draws dark"));
+        }
+        texs.push((k, std::fs::read(unpacked.join(&f)).map_err(|e| format!("{f}: {e}"))?));
+    }
+    let gi = a.find_group(&format!("{lvl}.drl")).ok_or_else(|| format!("no group {lvl}.drl"))?;
+    let gname = a.groups[gi].name.clone();
+    let gp = built.groups.iter().position(|g| g.name == gname).ok_or("level group missing from the new groups")?;
+    // the new entries go right after the level's last baked texture, where the game's own sit
+    let baked = |n: &str| n.ends_with("^Shadow.nutexb") || n.ends_with("^Lightmap.nutexb");
+    let gidx = &built.groups[gp].idx;
+    let mut at = gidx.iter().rposition(|i| a.entries.get(*i as usize).is_some_and(|e| baked(&e.name))).map(|p| p + 1).unwrap_or(gidx.len());
+    let mut n = 0;
+    for s in built.shapes.clone() {
+        for (k, b) in &texs {
+            let idx = (a.entries.len() + built.chunks.len()) as u32;
+            built.chunks.push((format!("{lvl}^{name}^{nnode}^{s}^0^{k}.nutexb"), b.clone()));
+            built.groups[gp].idx.insert(at, idx);
+            at += 1;
+            n += 1;
+        }
+    }
+    Ok(format!("  lighting: {n} baked light textures (copies of {tshape}'s) as {lvl}^{name}^{nnode}^..."))
+}
+
 /// Imports a model as a new scenery group of course `name` (leg `variant`) at `pos` (y = height above the surface
 /// under x, z) turned by `yaw` degrees, into the pack `<dir>/<pack>`. Returns report lines.
 #[allow(clippy::too_many_arguments)]
@@ -98,10 +135,17 @@ pub fn import_into(data: &DataRoot, lc: &mut LoadedCourse, spec: &scenery::Spec,
         // the instance lists one lightmap (s17) and one s23 entry per model entry, in model order
         lists: vec![(5, 17, built.shapes.clone()), (5, 23, built.shapes.clone())],
     };
+    let unpacked = data.root.join(&lc.archive);
     let l = &mut lc.levels[li];
     let (out, ids) = grow::grow(&l.data, std::slice::from_ref(&add))?;
     rep.push(format!("{}: {}", l.name, grow::verify(&l.data, &out, std::slice::from_ref(&add))?));
     rep.push(format!("  new entity {:08x}: instance at the origin, geometry around {pos:.1}", ids[0].hash));
+    let mut built = built;
+    let lvl = Path::new(&l.file).file_stem().and_then(|s| s.to_str()).unwrap_or(&l.name).to_string();
+    match (grow::node_id(&l.data, ei), ids[0].node_id) {
+        (Some(tn), Some(nn)) => rep.push(lighting(&mut built, &a, &unpacked, &lvl, &spec.template, &spec.name, tn, nn)?),
+        _ => rep.push("  lighting: the template instance has no node id; the model gets no baked light and draws dark".into()),
+    }
     let file = l.file.clone();
     *l = level::parse(&out, &file)?;
     l.dirty = true;

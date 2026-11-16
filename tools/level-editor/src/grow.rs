@@ -414,6 +414,14 @@ pub fn canon(schema: &Schema, t: &Table, ty: &str, limit: &[(usize, usize)], out
 
 /// Checks a grown file: everything the original holds is still there unchanged, and the new entities are clones of
 /// their sources apart from ids and the set floats. Returns a short report.
+/// The node id of entity `entity` (index in the root entity list): the number the course pack's baked Shadow and
+/// Lightmap textures of that instance carry in their names (`<level>^<model>^<node id>^<shape>^<n>^...`).
+pub fn node_id(bytes: &[u8], entity: usize) -> Option<u32> {
+    let root = Buf(bytes).root()?;
+    let h = root.tables(2).get(entity)?.u32(1)?;
+    root.tables(3).iter().find(|n| n.u32(2) == Some(h))?.u32(1)
+}
+
 pub fn verify(orig: &[u8], grown: &[u8], adds: &[Add]) -> Result<String, String> {
     let schema = Schema::levelb();
     let (ro, rg) = (Buf(orig).root().ok_or("orig")?, Buf(grown).root().ok_or("grown")?);

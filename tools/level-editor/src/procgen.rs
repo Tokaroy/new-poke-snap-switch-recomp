@@ -256,11 +256,16 @@ pub struct Opts {
     pub clearance: f32,
     pub max_props: usize,
     pub max_spawns: usize,
+    /// widen or narrow the swing (within the room it has) until rail part 0 is as long as before, so the ride takes as
+    /// long as the original
+    pub keep_length: bool,
+    /// hide the course's own scenery and Pokémon inside the band along the new rail
+    pub replace: bool,
 }
 
 impl Default for Opts {
     fn default() -> Self {
-        Opts { band: 10.0, swing: 3.5, relief: 4.0, path: 2.2, clearance: 1.6, max_props: 60, max_spawns: 12 }
+        Opts { band: 10.0, swing: 3.5, relief: 4.0, path: 2.2, clearance: 1.6, max_props: 60, max_spawns: 12, keep_length: true, replace: false }
     }
 }
 
@@ -273,7 +278,8 @@ pub struct PlacedProp {
 }
 
 pub struct PlacedSpawn {
-    pub air: bool,
+    /// the generator's habitat tag: grass, tree, air or water
+    pub habitat: String,
     pub pos: Vec2,
     /// heading toward the rail, radians
     pub yaw: f32,
@@ -292,6 +298,23 @@ pub struct Plan {
     /// height change of the rail: lowest, highest
     pub rail_relief: (f32, f32),
     pub swing: f32,
+    /// length of rail part 0: before, after
+    pub length: (f32, f32),
+    /// how far the swing was widened (above 1) or narrowed (below 1) to keep the length; negative when it was mirrored
+    pub stretch: f32,
+}
+
+fn polyline_len(p: &[Vec3]) -> f32 {
+    p.windows(2).map(|w| w[0].distance(w[1])).sum()
+}
+
+struct Laid {
+    new: Spine,
+    new_rail: Vec<Vec3>,
+    height: Vec<(usize, f32)>,
+    paint: Vec<(usize, f32)>,
+    relief: (f32, f32),
+    swing: f32,
 }
 
 /// Something in the way: distance along a ray (origin, unit direction, longest distance) to the first surface.
@@ -320,111 +343,164 @@ pub fn plan(g: &Gen, rail: &[Vec3], t: &Terrain, o: Opts, clear: Clear) -> Resul
 
     // 1. sideways swing of the rail (ends stay). The swing stops short of the course's own scenery and slopes: a ray at
     // ride height toward the new spot must stay clear for the swing plus `o.clearance`.
+    // The room is measured on both sides and out to MAX_K times the wanted swing, so the length search below can widen
+    // the swing or mirror it.
+    const MAX_K: f32 = 3.0;
     let mut want = vec![];
+    // room toward the wanted side, and toward the other side
     let mut room = vec![];
+    let mut room_mirror = vec![];
     for i in 0..rail.len() {
         let u = old.u_of(i);
         let (_, dir) = old.at(u);
         let raw = wander(u) * s;
         let v = o.swing * (raw / o.swing).tanh() * envelope(u);
-        let n = side(dir) * v.signum();
-        let n3 = Vec3::new(n.x, 0.0, n.y);
-        let mut r = v.abs();
-        // a fan of rays at three heights, so thin leaves and branches are found too
-        for h in [0.4, 1.2, 2.0] {
-            for a in [-0.6f32, -0.3, 0.0, 0.3, 0.6] {
-                let d3 = glam::Quat::from_rotation_y(a) * n3;
-                if let Some(d) = clear(rail[i] + Vec3::Y * h, d3, (v.abs() + o.clearance) / a.cos()) {
-                    r = r.min((d * a.cos() - o.clearance).max(0.0));
+        let reach = v.abs() * if o.keep_length { MAX_K } else { 1.0 };
+        let mut rs = [reach, reach];
+        for (k, sign) in [1.0f32, -1.0].into_iter().enumerate() {
+            if reach <= 0.0 || (k == 1 && !o.keep_length) {
+                continue;
+            }
+            let n = side(dir) * v.signum() * sign;
+            let n3 = Vec3::new(n.x, 0.0, n.y);
+            // a fan of rays at three heights, so thin leaves and branches are found too
+            for h in [0.4, 1.2, 2.0] {
+                for a in [-0.6f32, -0.3, 0.0, 0.3, 0.6] {
+                    let d3 = glam::Quat::from_rotation_y(a) * n3;
+                    if let Some(d) = clear(rail[i] + Vec3::Y * h, d3, (reach + o.clearance) / a.cos()) {
+                        rs[k] = rs[k].min((d * a.cos() - o.clearance).max(0.0));
+                    }
                 }
             }
         }
         want.push(v);
-        room.push(r);
+        room.push(rs[0]);
+        room_mirror.push(rs[1]);
     }
-    // a blocked point holds its neighbors back too, so the rail bends around instead of kinking
-    let mut v: Vec<f32> = (0..rail.len())
-        .map(|i| {
-            let lo = i.saturating_sub(2);
-            let hi = (i + 2).min(rail.len() - 1);
-            let r = room[lo..=hi].iter().cloned().fold(f32::MAX, f32::min);
-            want[i].signum() * want[i].abs().min(r)
-        })
-        .collect();
-    for _ in 0..2 {
-        let prev = v.clone();
-        for i in 1..v.len() - 1 {
-            let m = 0.25 * prev[i - 1] + 0.5 * prev[i] + 0.25 * prev[i + 1];
-            // smoothing never pushes a point further out than its room
-            v[i] = if m * want[i] < 0.0 { 0.0 } else { m.signum() * m.abs().min(room[i]) };
+    // a blocked point holds its neighbors back too, so the rail bends around instead of kinking. `k` widens (or
+    // narrows) the wanted swing, and a negative `k` mirrors it to the other side; the room limit stays.
+    let swing_of = |k: f32| -> Vec<f32> {
+        let rm = if k < 0.0 { &room_mirror } else { &room };
+        let w: Vec<f32> = want.iter().map(|v| v * k.signum()).collect();
+        let mut v: Vec<f32> = (0..rail.len())
+            .map(|i| {
+                let lo = i.saturating_sub(2);
+                let hi = (i + 2).min(rail.len() - 1);
+                let r = rm[lo..=hi].iter().cloned().fold(f32::MAX, f32::min);
+                w[i].signum() * (w[i].abs() * k.abs()).min(r)
+            })
+            .collect();
+        for _ in 0..2 {
+            let prev = v.clone();
+            for i in 1..v.len() - 1 {
+                let m = 0.25 * prev[i - 1] + 0.5 * prev[i] + 0.25 * prev[i + 1];
+                // smoothing never pushes a point further out than its room
+                v[i] = if m * w[i] < 0.0 { 0.0 } else { m.signum() * m.abs().min(rm[i]) };
+            }
         }
-    }
-    let mut xz: Vec<Vec2> = vec![];
-    let mut swing_max: f32 = 0.0;
-    for i in 0..rail.len() {
-        let (_, dir) = old.at(old.u_of(i));
-        swing_max = swing_max.max(v[i].abs());
-        xz.push(Vec2::new(rail[i].x, rail[i].z) + side(dir) * v[i]);
-    }
-    let new = Spine::new(xz.clone());
+        v
+    };
+    let lay = |v: &[f32]| -> Laid {
+        let mut xz: Vec<Vec2> = vec![];
+        let mut swing_max: f32 = 0.0;
+        for i in 0..rail.len() {
+            let (_, dir) = old.at(old.u_of(i));
+            swing_max = swing_max.max(v[i].abs());
+            xz.push(Vec2::new(rail[i].x, rail[i].z) + side(dir) * v[i]);
+        }
+        let new = Spine::new(xz.clone());
 
-    // 2. ground: generated relief in a band along the new rail
-    let mut delta = t.delta.clone();
-    let mut layer = t.layer.clone();
-    let mut height = vec![];
-    let mut paint = vec![];
-    for i in 0..t.base.len() {
-        if t.base[i].is_nan() {
-            continue;
+        // 2. ground: generated relief in a band along the new rail
+        let mut delta = t.delta.clone();
+        let mut height = vec![];
+        let mut paint = vec![];
+        for i in 0..t.base.len() {
+            if t.base[i].is_nan() {
+                continue;
+            }
+            let (x, z) = t.point(i);
+            let (u, d) = new.project(Vec2::new(x, z));
+            let env = envelope(u);
+            if d.abs() > o.band || env <= 0.0 {
+                continue;
+            }
+            let fall = smooth01((o.band - d.abs()) / (o.band * 0.4)) * env;
+            let (gp, gdir) = gen.at(u);
+            let gq = gp + side(gdir) * (d / s);
+            let h = relief(g.height(gq.x, gq.y));
+            let nd = t.delta[i] + h * fall;
+            delta[i] = nd;
+            height.push((i, nd));
+            // texture: dirt path under the rail, elsewhere grass or bare soil from the splat
+            let target = if d.abs() < o.path {
+                -1.0
+            } else if g.green(gq.x, gq.y) >= 0.35 {
+                1.0
+            } else {
+                -1.0
+            };
+            let w = if d.abs() < o.path { env } else { fall };
+            paint.push((i, (t.layer[i] + target * w).clamp(-1.0, 1.0)));
         }
-        let (x, z) = t.point(i);
-        let (u, d) = new.project(Vec2::new(x, z));
-        let env = envelope(u);
-        if d.abs() > o.band || env <= 0.0 {
-            continue;
+
+        // 3. rail height: the change follows the new ground and is lightly smoothed; the original rail's own rise and
+        // fall stays as it was (smoothing it too would shorten the ride)
+        let mut dys: Vec<f32> = vec![];
+        let mut lo = f32::MAX;
+        let mut hi = f32::MIN;
+        for i in 0..rail.len() {
+            let edit = t.sample(&delta, xz[i].x, xz[i].y) - t.sample(&t.delta, rail[i].x, rail[i].z);
+            // a sideways move onto a bank lifts the rail with it (up to 3 units); into a dip it drops at most 1
+            let bank = t.base_at(xz[i].x, xz[i].y) - t.base_at(rail[i].x, rail[i].z);
+            let bank = if bank.is_nan() { 0.0 } else { bank.clamp(-1.0, 3.0) };
+            let dy = edit + bank;
+            lo = lo.min(dy);
+            hi = hi.max(dy);
+            dys.push(dy);
         }
-        let fall = smooth01((o.band - d.abs()) / (o.band * 0.4)) * env;
-        let (gp, gdir) = gen.at(u);
-        let gq = gp + side(gdir) * (d / s);
-        let h = relief(g.height(gq.x, gq.y));
-        let nd = t.delta[i] + h * fall;
-        delta[i] = nd;
-        height.push((i, nd));
-        // texture: dirt path under the rail, elsewhere grass or bare soil from the splat
-        let target = if d.abs() < o.path {
-            -1.0
-        } else if g.green(gq.x, gq.y) >= 0.35 {
-            1.0
-        } else {
-            -1.0
+        for _ in 0..2 {
+            let prev = dys.clone();
+            for i in 1..dys.len() - 1 {
+                dys[i] = 0.25 * prev[i - 1] + 0.5 * prev[i] + 0.25 * prev[i + 1];
+            }
+        }
+        let new_rail: Vec<Vec3> =
+            (0..rail.len()).map(|i| if i == 0 || i == rail.len() - 1 { rail[i] } else { Vec3::new(xz[i].x, rail[i].y + dys[i], xz[i].y) }).collect();
+        Laid { new, new_rail, height, paint, relief: (lo, hi), swing: swing_max }
+    };
+    let target = polyline_len(rail);
+    let mut k = 1.0f32;
+    let mut laid = lay(&swing_of(k));
+    if o.keep_length && (polyline_len(&laid.new_rail) - target).abs() > 0.002 * target {
+        // swinging out on a bend lengthens the rail and swinging in shortens it, so the length is not monotonic in k:
+        // scan k from the mirrored swing (negative) through no swing to MAX_K times the wanted swing, then look closer
+        // around the best. Of the k that hit the length, the one whose swing is nearest the wanted size wins, and the
+        // wanted side beats the mirrored one.
+        let tol = 0.002 * target;
+        let score = |k: f32| {
+            let err = (polyline_len(&lay(&swing_of(k)).new_rail) - target).abs();
+            let off = (k.abs() - 1.0).abs() + if k < 0.0 { 0.25 } else { 0.0 };            if err <= tol { off * 1e-3 } else { err }
         };
-        let w = if d.abs() < o.path { env } else { fall };
-        let nl = (t.layer[i] + target * w).clamp(-1.0, 1.0);
-        layer[i] = nl;
-        paint.push((i, nl));
-    }
-
-    // 3. rail height: follows the new ground, keeps its clearance; lightly smoothed
-    let mut ys: Vec<f32> = vec![];
-    let mut lo = f32::MAX;
-    let mut hi = f32::MIN;
-    for i in 0..rail.len() {
-        let edit = t.sample(&delta, xz[i].x, xz[i].y) - t.sample(&t.delta, rail[i].x, rail[i].z);
-        // a sideways move onto a bank lifts the rail with it (up to 3 units); into a dip it drops at most 1
-        let bank = t.base_at(xz[i].x, xz[i].y) - t.base_at(rail[i].x, rail[i].z);
-        let bank = if bank.is_nan() { 0.0 } else { bank.clamp(-1.0, 3.0) };
-        let dy = edit + bank;
-        lo = lo.min(dy);
-        hi = hi.max(dy);
-        ys.push(rail[i].y + dy);
-    }
-    for _ in 0..2 {
-        let prev = ys.clone();
-        for i in 1..ys.len() - 1 {
-            ys[i] = 0.25 * prev[i - 1] + 0.5 * prev[i] + 0.25 * prev[i + 1];
+        let mut best = (score(1.0), 1.0f32);
+        for i in -30..=30 {
+            let m = i as f32 * 0.1;
+            let e = score(m);
+            if e < best.0 {
+                best = (e, m);
+            }
         }
+        let c = best.1;
+        for i in -10..=10 {
+            let m = (c + i as f32 * 0.01).clamp(-MAX_K, MAX_K);
+            let e = score(m);
+            if e < best.0 {
+                best = (e, m);
+            }
+        }
+        k = best.1;
+        laid = lay(&swing_of(k));
     }
-    let new_rail: Vec<Vec3> = (0..rail.len()).map(|i| if i == 0 || i == rail.len() - 1 { rail[i] } else { Vec3::new(xz[i].x, ys[i], xz[i].y) }).collect();
+    let Laid { new, new_rail, height, paint, relief: (lo, hi), swing: swing_max } = laid;
 
     // 4. scenery and spawns keep their place against the generated rail
     let map = |p: Vec3| -> (f32, f32, Vec2, Vec2) {
@@ -462,9 +538,10 @@ pub fn plan(g: &Gen, rail: &[Vec3], t: &Terrain, o: Opts, clear: Clear) -> Resul
         let d = d.signum() * d.abs().clamp(3.0, 9.0);
         let at = q + n * d;
         let to_rail = q - at;
-        spawns.push(PlacedSpawn { air: sp.habitat == "air", pos: at, yaw: to_rail.x.atan2(to_rail.y) });
+        spawns.push(PlacedSpawn { habitat: sp.habitat.clone(), pos: at, yaw: to_rail.x.atan2(to_rail.y) });
     }
-    Ok(Plan { scale: s, rail: new_rail, height, layer: paint, props, spawns, rail_relief: (lo, hi), swing: swing_max })
+    let length = (target, polyline_len(&new_rail));
+    Ok(Plan { scale: s, rail: new_rail, height, layer: paint, props, spawns, rail_relief: (lo, hi), swing: swing_max, length, stretch: k })
 }
 
 /// The course's own trees and rocks are baked groups at the origin, and the game culls a model by its stored bounds,
@@ -635,7 +712,10 @@ mod tests {
         let n = 20;
         let t = Terrain { x0: -20.0, z0: -5.0, cell: 1.0, nx: 41, nz: 31, base: vec![0.0; 41 * 31], delta: vec![0.0; 41 * 31], layer: vec![0.0; 41 * 31], models: vec![] };
         let rail: Vec<Vec3> = (0..n).map(|i| Vec3::new(0.0, 1.0, i as f32)).collect();
-        let p = plan(&g, &rail, &t, Opts::default(), &|_, _, _| None).unwrap();
+        // on a straight rail any swing makes it longer, so keeping the length flattens it back out
+        let kept = plan(&g, &rail, &t, Opts::default(), &|_, _, _| None).unwrap();
+        assert!((kept.length.1 - kept.length.0).abs() < 0.01 * kept.length.0, "{:?}", kept.length);
+        let p = plan(&g, &rail, &t, Opts { keep_length: false, ..Opts::default() }, &|_, _, _| None).unwrap();
         // a wall one unit to the side keeps the rail where it was
         let walled = plan(&g, &rail, &t, Opts::default(), &|_, _, _| Some(1.0)).unwrap();
         assert!(walled.rail.iter().zip(&rail).all(|(a, b)| (a.x - b.x).abs() < 1e-4 && (a.z - b.z).abs() < 1e-4));
@@ -647,7 +727,7 @@ mod tests {
         assert!(!p.height.is_empty() && !p.layer.is_empty());
         assert!(p.height.iter().any(|h| h.1.abs() > 0.1));
         assert_eq!(p.spawns.len(), 1);
-        assert!(p.spawns[0].air);
+        assert_eq!(p.spawns[0].habitat, "air");
     }
 
     #[test]

@@ -93,12 +93,14 @@ struct RandomForm {
     exe: String,
     seed: String,
     biome: String,
+    replace: bool,
+    keep_length: bool,
     msg: Option<(bool, String)>,
 }
 
 impl Default for RandomForm {
     fn default() -> Self {
-        RandomForm { json: String::new(), exe: String::new(), seed: "1".into(), biome: "forest".into(), msg: None }
+        RandomForm { json: String::new(), exe: String::new(), seed: "1".into(), biome: "forest".into(), replace: true, keep_length: true, msg: None }
     }
 }
 
@@ -197,6 +199,8 @@ pub struct EditorApp {
     import: ImportForm,
     /// built scenery of a random course, imported into the pack at the next export
     gen_scenery: Option<GenScenery>,
+    /// a random course that replaces the course's own content: scenery inside this corridor is hidden at export
+    gen_hide: Option<crate::hide::Corridor>,
     random: RandomForm,
     reskin: ReskinForm,
 }
@@ -260,6 +264,7 @@ impl EditorApp {
             gstroke: None,
             import: ImportForm::default(),
             gen_scenery: None,
+            gen_hide: None,
             random: RandomForm::default(),
             reskin: ReskinForm::default(),
         }
@@ -525,6 +530,17 @@ impl EditorApp {
                     ),
                     Err(e) => (false, e),
                 });
+                if matches!(self.export_msg, Some((true, _))) && self.gen_hide.is_some() {
+                    match self.hide_corridor(&root) {
+                        Ok(m) => {
+                            if let Some((_, msg)) = self.export_msg.as_mut() {
+                                msg.push('\n');
+                                msg.push_str(&m);
+                            }
+                        }
+                        Err(e) => self.export_msg = Some((false, format!("random course, hiding the original scenery: {e}"))),
+                    }
+                }
                 if matches!(self.export_msg, Some((true, _))) && self.gen_scenery.is_some() {
                     match self.import_gen_scenery(&root) {
                         Ok(m) => {
@@ -600,7 +616,8 @@ impl EditorApp {
                 } else {
                     PathBuf::from(f.json.trim().trim_matches('"'))
                 };
-                let r = self.generate_course(&json, procgen::Opts::default());
+                let o = procgen::Opts { replace: self.random.replace, keep_length: self.random.keep_length, ..procgen::Opts::default() };
+                let r = self.generate_course(&json, o);
                 self.random.msg = Some(match r {
                     Ok(m) => (true, format!("{m}\nSave as a mod pack to try it in the game (the trees, rocks and bushes are added then)."), ),
                     Err(e) => (false, e),
@@ -960,6 +977,67 @@ impl EditorApp {
         out.into_iter().map(|o| o.1).collect()
     }
 
+    /// Writes the course's own scenery meshes with every object inside the random course's corridor collapsed (drawing
+    /// nothing), and the ground collision with the rocks there collapsed, into the pack. Ground, water, sky, backdrops,
+    /// lighting helpers and imported models stay.
+    fn hide_corridor(&mut self, root: &std::path::Path) -> Result<String, String> {
+        let Some(cor) = self.gen_hide.clone() else { return Ok(String::new()) };
+        let c = self.loaded.as_ref().ok_or("no course loaded")?;
+        let arch = root.join(edit::sanitize_pack(&self.pack_name)).join(c.archive.replace('/', std::path::MAIN_SEPARATOR_STR));
+        std::fs::create_dir_all(&arch).map_err(|e| e.to_string())?;
+        let inside = |lo: Vec3, hi: Vec3| cor.holds(lo, hi);
+        let mut done = std::collections::BTreeSet::new();
+        let (mut objects, mut files, mut shapes) = (0, 0, 0);
+        let mut groups = vec![];
+        for m in &c.models {
+            let n = &m.inst.name;
+            let skip = ground::is_terrain_name(n)
+                || place::Site::kind_of_name(n) == place::SurfaceKind::Skip
+                || n.contains("LightingModel")
+                || n.contains("Water")
+                || n.starts_with("SM_USR");
+            let Some(src) = m.source.as_ref().filter(|_| !skip) else { continue };
+            let Some(dir) = src.parent() else { continue };
+            if !dir.to_string_lossy().replace('\\', "/").to_lowercase().ends_with(&c.archive.to_lowercase()) {
+                continue;
+            }
+            let Ok(modl) = ssbh_data::prelude::ModlData::from_file(src) else { continue };
+            let mut hid = 0;
+            for f in crate::hide::mesh_files(dir, &modl.mesh_file_name) {
+                if !done.insert(f.clone()) {
+                    continue;
+                }
+                if let Some((b, k)) = crate::hide::collapse_mesh(&f, ground::inst_xf(&m.inst), &inside)? {
+                    let out = arch.join(f.file_name().ok_or("bad file name")?);
+                    std::fs::write(&out, b).map_err(|e| format!("{}: {e}", out.display()))?;
+                    files += 1;
+                    hid = hid.max(k);
+                }
+            }
+            if hid > 0 {
+                objects += hid;
+                groups.push(format!("{n} {hid}"));
+            }
+        }
+        // rocks in the ground collision: build on the pack's copy (the terrain export wrote it)
+        for m in c.models.iter().filter(|m| ground::is_terrain_name(&m.inst.name)) {
+            let Some(src) = &m.source else { continue };
+            let fname = format!("{}.DC4A8177", m.inst.name);
+            let packed = arch.join(&fname);
+            let path = if packed.exists() { packed.clone() } else { src.parent().ok_or("model without folder")?.join(&fname) };
+            let Ok(b) = std::fs::read(&path) else { continue };
+            let (nb, k) = crate::hide::collapse_collision(&b, ground::inst_xf(&m.inst), &inside)?;
+            if k > 0 {
+                std::fs::write(&packed, nb).map_err(|e| format!("{}: {e}", packed.display()))?;
+                shapes += k;
+            }
+        }
+        Ok(format!(
+            "Original scenery along the rail hidden: {objects} objects in {files} mesh files ({}); {shapes} rock collision shapes removed.",
+            groups.join(", ")
+        ))
+    }
+
     /// Imports a random course's trees, rocks and bushes into the pack as one model with the course's materials. The
     /// level gains an instance, so the undo history starts over (as after an import).
     fn import_gen_scenery(&mut self, root: &std::path::Path) -> Result<String, String> {
@@ -1020,7 +1098,7 @@ impl EditorApp {
                 eprintln!("rail {i}: {a:?} -> {b:?}");
             }
         }
-        // Pokémon to copy: flyers (well above the ground) for air spawns, the rest for ground spawns
+        // Pokémon to copy: flyers (well above the ground) for air spawns, the rest for grass, tree and water spawns
         let (mut air, mut land) = (vec![], vec![]);
         for (_, s) in Self::species_sources(c) {
             let lift = self.src_height(s);
@@ -1081,20 +1159,72 @@ impl EditorApp {
         }
         placed.insert("flower".into(), flower_n);
         self.gen_scenery = (!built.is_empty()).then(|| GenScenery { seed: g.seed, props: built });
+        // generated spawn points, by habitat: air -> a flyer at its own height; tree -> a ground species at the foot of the
+        // nearest generated tree; grass and water -> a ground species on the ground. Each habitat walks through its
+        // species in turn, so neighbors differ.
+        let trees: Vec<Vec3> = self.gen_scenery.as_ref().map(|g| g.props.iter().filter(|p| p.class == "tree").map(|p| p.pos).collect()).unwrap_or_default();
         let mut pokemon = vec![];
-        for (k, sp) in plan.spawns.iter().enumerate() {
-            let list = if sp.air && !air.is_empty() { &air } else { &land };
+        let mut by_habitat = std::collections::BTreeMap::<String, (usize, Vec<String>)>::new();
+        for sp in plan.spawns.iter() {
+            let air_spawn = sp.habitat == "air" && !air.is_empty();
+            let list = if air_spawn { &air } else { &land };
             if list.is_empty() {
                 continue;
             }
-            let Some(y) = ground_y(self, sp.pos) else { continue };
-            let (src, lift) = list[(k + g.seed as usize) % list.len()];
+            let mut at = sp.pos;
+            if sp.habitat == "tree" {
+                if let Some(t) = trees.iter().map(|t| glam::Vec2::new(t.x, t.z)).filter(|t| t.distance(sp.pos) < 6.0).min_by(|a, b| a.distance(sp.pos).total_cmp(&b.distance(sp.pos))) {
+                    // beside the trunk, on the rail's side
+                    at = t + (sp.pos - t).normalize_or_zero() * 1.2;
+                }
+            }
+            let Some(y) = ground_y(self, at) else { continue };
+            let e = by_habitat.entry(sp.habitat.clone()).or_default();
+            let (src, lift) = list[(e.0 + g.seed as usize) % list.len()];
+            e.0 += 1;
             let c = self.loaded.as_mut().unwrap();
             let rot = edit::rot_of(c, src).map(|r| place::orient(r, Some(sp.yaw), Vec3::Y, false));
-            if let Ok((ns, w)) = edit::place_copy(c, src, Vec3::new(sp.pos.x, y + lift, sp.pos.y), rot, 1.0) {
+            if let Ok((ns, w)) = edit::place_copy(c, src, Vec3::new(at.x, y + lift, at.y), rot, 1.0) {
                 self.apply(label(), key, Ok(w));
-                pokemon.push(self.label(ns));
+                let name = self.label(ns);
+                by_habitat.get_mut(&sp.habitat).unwrap().1.push(name.clone());
+                pokemon.push(name);
             }
+        }
+        // 4. replace: the course's own Pokémon and props inside the corridor go 100 units under the ground (spawns
+        // cannot be deleted from the file); routes move whole. The scenery there is hidden at export.
+        let mut sunk = 0;
+        self.gen_hide = None;
+        if o.replace {
+            let cor = crate::hide::Corridor { rail: plan.rail.iter().map(|p| glam::Vec2::new(p.x, p.z)).collect(), width: o.band, max_size: 3.0 * o.band };
+            let c = self.loaded.as_ref().unwrap();
+            let mut moved_routes = std::collections::BTreeSet::new();
+            let mut w: edit::Writes = vec![];
+            for (li, l) in c.levels.iter().enumerate() {
+                for (si, sp) in l.spawns.iter().enumerate() {
+                    if sp.alive_off.is_some() || sp.pos == [0.0; 3] {
+                        continue;
+                    }
+                    let s = Sel::Spawn(li, si);
+                    let routed = sp.pos_from_path || sp.pos_off.is_none();
+                    if routed {
+                        let Some(pi) = sp.path_idx else { continue };
+                        let pts: Vec<Vec3> = l.paths[pi].segments.iter().flatten().map(|p| Vec3::from(*p)).collect();
+                        let inn = pts.iter().filter(|p| cor.has_point(**p)).count();
+                        if pts.is_empty() || inn * 2 < pts.len() || !moved_routes.insert((li, pi)) {
+                            continue;
+                        }
+                    } else if !cor.has_point(Vec3::from(sp.pos)) {
+                        continue;
+                    }
+                    if let Ok(mw) = edit::move_by(c, s, Vec3::new(0.0, -100.0, 0.0)) {
+                        w.extend(mw);
+                        sunk += 1;
+                    }
+                }
+            }
+            self.apply(label(), key, Ok(w));
+            self.gen_hide = Some(cor);
         }
         self.history.end_interaction();
         self.geo_dirty = true;
@@ -1104,20 +1234,30 @@ impl EditorApp {
         let st = edit::rail_stats(c).ok_or("no rail")?;
         let issues: Vec<String> = edit::checks(c, &self.ground).into_iter().filter(|i| matches!(i.sel, Sel::Rail(..))).map(|i| i.text).collect();
         let msg = format!(
-            "Random course seed {} ({}, rail {:.0} ft), {:.3} units per foot: ground reshaped at {} points, rail swings up to {:.1} units and moves {:+.1} to {:+.1} units in height; {}; scenery {:?} (trees, rocks and bushes are added as one model at export){}; {} Pokémon ({}); rail checks: {}",
+            "Random course seed {} ({}, rail {:.0} ft), {:.3} units per foot: ground reshaped at {} points, rail swings up to {:.1} units ({}, part 0 {:.1} -> {:.1} units) and moves {:+.1} to {:+.1} units in height; {}; scenery {:?} (trees, rocks and bushes are added as one model at export){}; {} Pokémon ({}); {}rail checks: {}",
             g.seed,
             g.biome,
             g.rail_length(),
             plan.scale,
             plan.height.len(),
             plan.swing,
+            if (plan.stretch - 1.0).abs() < 0.005 {
+                "the generated swing".to_string()
+            } else if plan.stretch < 0.0 {
+                format!("the generated swing mirrored at {:.0}% to keep the ride time", -plan.stretch * 100.0)
+            } else {
+                format!("{:.0}% of the generated swing to keep the ride time", plan.stretch * 100.0)
+            },
+            plan.length.0,
+            plan.length.1,
             plan.rail_relief.0,
             plan.rail_relief.1,
             st.summary(),
             placed,
             if skipped > 0 { format!(" ({skipped} spots had no matching model or ground)") } else { String::new() },
             pokemon.len(),
-            pokemon.join(", "),
+            by_habitat.iter().map(|(h, (_, v))| format!("{h}: {}", v.join(", "))).collect::<Vec<_>>().join("; "),
+            if o.replace { format!("original Pokémon and props moved under the ground: {sunk} (the scenery along the rail is hidden at export); ") } else { String::new() },
             if issues.is_empty() { "none".into() } else { issues.join("; ") }
         );
         self.status = msg.clone();
@@ -1947,6 +2087,10 @@ impl EditorApp {
                 ui.label("Course file");
                 ui.text_edit_singleline(&mut f.json).on_hover_text("Full path of a course .json written by snap-procgen (format 2)");
             });
+            ui.checkbox(&mut f.replace, "Replace the course's own scenery and Pokémon along the rail")
+                .on_hover_text("Hides the original trees, rocks, plants and Pokémon within 10 units of the new rail, so only the random course shows there. The scenery is hidden when you save the mod pack.");
+            ui.checkbox(&mut f.keep_length, "Keep the original ride time")
+                .on_hover_text("Widens, narrows or mirrors the rail's sideways swing until the ride is as long as the original. On some courses this leaves only a small swing; untick it to keep the course's full swing and accept a shorter or longer ride.");
             if ui.add_enabled(!f.json.trim().is_empty(), egui::Button::new("Lay this course over the leg")).on_disabled_hover_text("Fill in the course file first").clicked() {
                 acts.push(Action::Random { run_generator: false });
             }

@@ -21,6 +21,7 @@ mod gizmo;
 mod headless;
 mod ground;
 mod grow;
+mod hide;
 mod import;
 mod import_pack;
 mod reskin;
@@ -87,6 +88,10 @@ struct Args {
     procgen: Option<PathBuf>,
     /// --procgen-opts band,swing,relief,props,spawns
     procgen_opts: Option<procgen::Opts>,
+    /// --procgen-replace: hide the course's own scenery and Pokémon along the new rail
+    procgen_replace: bool,
+    /// --procgen-free-length: keep the generated swing even when the ride gets shorter or longer
+    procgen_free_length: bool,
     /// RomFS root holding the original archives (default: `romfs-v262144` beside the data root)
     romfs: Option<PathBuf>,
 }
@@ -359,6 +364,8 @@ fn parse_args() -> Result<Args, String> {
         reskin_info: false,
         procgen: None,
         procgen_opts: None,
+        procgen_replace: false,
+        procgen_free_length: false,
         romfs: None,
     };
     let mut it = std::env::args().skip(1);
@@ -523,6 +530,8 @@ fn parse_args() -> Result<Args, String> {
             }
             "--reskin-info" => a.reskin_info = true,
             "--procgen" => a.procgen = Some(PathBuf::from(val()?)),
+            "--procgen-replace" => a.procgen_replace = true,
+            "--procgen-free-length" => a.procgen_free_length = true,
             "--procgen-opts" => {
                 let v = val()?;
                 let f: Vec<f32> = v.split(',').map(|x| x.parse::<f32>()).collect::<Result<_, _>>().map_err(|_| "--procgen-opts: numbers expected")?;
@@ -536,7 +545,7 @@ fn parse_args() -> Result<Args, String> {
             "--export" => a.export = Some(val()?.into()),
             "--pack" => a.pack = Some(val()?),
             "-h" | "--help" => {
-                println!("level-editor [--data DIR] [--course LC_001_A] [--variant 1] [--select L:I] [--move L:I:dx,dy,dz] [--export DIR --pack NAME] [--procgen course.json [--procgen-opts band,swing,relief,props,spawns]] [--shot out.png] [--size WxH] [--advanced] [--summary] [--selftest]");
+                println!("level-editor [--data DIR] [--course LC_001_A] [--variant 1] [--select L:I] [--move L:I:dx,dy,dz] [--export DIR --pack NAME] [--procgen course.json [--procgen-opts band,swing,relief,props,spawns] [--procgen-replace] [--procgen-free-length]] [--shot out.png] [--size WxH] [--advanced] [--summary] [--selftest]");
                 std::process::exit(0);
             }
             _ => return Err(format!("unknown argument {k}")),
@@ -1344,7 +1353,8 @@ fn main() {
         }
     }
     if let Some(f) = &args.procgen {
-        match ed.generate_course(f, args.procgen_opts.unwrap_or_default()) {
+        let o = procgen::Opts { replace: args.procgen_replace, keep_length: !args.procgen_free_length, ..args.procgen_opts.unwrap_or_default() };
+        match ed.generate_course(f, o) {
             Ok(m) => println!("{m}"),
             Err(e) => {
                 eprintln!("random course: {e}");
