@@ -77,6 +77,16 @@ frames are not visibly different: the ground shadows here are mostly soft and co
 of the ground band is the same (19.76 against 19.76), so Stage A's gain shows up only on the hard-edged cut-outs, which are
 clearest in the texture crops (`cmp_stageA.png`). Stage B has to beat that before it is rolled out.
 
+Other courses, in game (2026-11-16): the same pair of runs for Jungle and Sands loaded the all-course pack without errors, but
+a matched Off and On frame was not obtained. The route's end-of-ride moment drifts with machine load (one capture landed on the
+pause menu, one on a different scene), so those frames cannot be compared pixel for pixel. Only the Florio pair above is a
+matched in-game view.
+
+Every course, from the files (2026-11-16, `scripts/hd/hdshadows_verify.py` on a seeded sample of 12 maps per pack, 326 maps over all 29 packs):
+each output shrunk back to the original size matches the original alpha, mean absolute difference 0.0032 overall (worst pack
+0.0093), at least 99.2% of pixels on the same side of 50% in every map, and the half-tone share stays close to the original
+(for example 4.9% to 5.1% on LC_001_A). Every sampled map is exactly 2x the original size. No size mismatches.
+
 Harness caveat: `SNAP_MODS_AB` (the same-frame mod swap) drops the ground shadows in the swapped frame even for a same-size
 re-encode of the original alpha, so it cannot judge Shadow textures. Use separate frozen-time runs as above. The photo
 check stays inconclusive on this route (it takes few shots to keep film).
@@ -111,6 +121,7 @@ Fitted by `calib` (azimuth, elevation in degrees, balanced accuracy against the 
 | Bake tool (Rust, ray query) | `tools/hd-shadows/` (`survey`, `calib`, `bake`), shader `shaders/bake.comp` |
 | Originals dump (calibration, sizes) | `scripts/hd/hdshadows_orig.py` |
 | Packer (BC3 and mips into a mod pack) | `scripts/hd/hdshadows_pack.py` |
+| Pack check (output shrunk to original size vs original alpha) | `scripts/hd/hdshadows_verify.py` |
 | Launcher row | "HD shadows": Off / On, Build now |
 
 Output only goes under the player's local data folder (`%APPDATA%\SnapRecomp\mods\hd-shadows` for the pack, a work folder
