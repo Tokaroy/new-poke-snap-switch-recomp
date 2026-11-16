@@ -44,6 +44,14 @@ A development build without `config.json` passes extra arguments on to the game 
 
 A missing stamp is not a wipe: an existing cache from an older build is adopted and stamped. After a wipe the chip goes back to "press to prepare".
 
+### At start
+
+- Nothing changed (same GPU, driver and build, driver cache loaded): the game starts at once. The key list is replayed in the background as cache hits (about 1,000 pipelines in under a second on the development PC); nothing compiles and no progress screen appears. The ride sweep never runs by itself.
+- GPU or driver updated: the driver cache is wiped, so the first start after the update rebuilds every known pipeline. In "compile at startup" mode the game waits on the progress screen while it does (about 3 seconds for 1,000 pipelines on the development PC, longer on a driver with no disk cache of its own). The launcher chip also reads "Graphics driver changed - press to prepare shaders again", and `--prepare-shaders` without `--force` runs the sweep again.
+- Game build or translator changed: the key list is gone as well, so the chip goes back to "press to prepare" and the sweep has to be run again.
+
+`NVN_LOG=1` prints the decision ("pipeline run: N known, N to build, mode, warm start or cold start" and "N pipelines built in X ms").
+
 `status.json` (rewritten with every cache save) lists pipelines known and ready, blob size and the two hashes.
 
 When a full sweep ends and the player has not chosen a precompile mode yet, it writes `mode.txt` as "now" (compile at startup). Everything is already in the driver cache then, so the startup pass takes seconds and the game starts with every known pipeline built.

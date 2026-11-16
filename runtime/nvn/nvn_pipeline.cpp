@@ -95,6 +95,7 @@ struct Svc {
   uint64_t translatorHash = 0, buildHash = 0;
   bool async = true;
   std::atomic<int> mode{SHADERPRECOMPILE_MODE_UNSET};
+  bool warm = false;   // the stamp matched and the driver cache loaded: the start-up replay is cache hits only, so it never holds the game
 
   // ready map
   std::mutex pm;
@@ -369,7 +370,8 @@ void RecordKey(const PipeDesc& pd) {
 // kept as it is: the file headers still reject whatever does not match. Writes <dir>\status.json for the launcher (key and ready counts).
 std::string HexBytes(const uint8_t* b, size_t n) { static const char* d = "0123456789abcdef"; std::string o; for (size_t i = 0; i < n; i++) { o += d[b[i] >> 4]; o += d[b[i] & 15]; } return o; }
 
-void CheckStamp(Host* h) {
+// Returns true when the folder was made for this GPU, driver and build (a missing stamp, a wipe or a new stamp all return false).
+bool CheckStamp(Host* h) {
   char gpu[200], bld[160];
   snprintf(gpu, sizeof gpu, "vendor=%u device=%u driver=%u uuid=%s", h->props.vendorID, h->props.deviceID, h->props.driverVersion, HexBytes(h->props.pipelineCacheUUID, 16).c_str());
   snprintf(bld, sizeof bld, "translator=%016llx game=%016llx desc=%u format=%u", (unsigned long long)S->translatorHash, (unsigned long long)S->buildHash, (unsigned)sizeof(PipeDesc), kFormatVersion);
@@ -391,10 +393,12 @@ void CheckStamp(Host* h) {
       rm("pipeline_cache.bin");
     }
   }
-  if (oldGpu != gpu || oldBld != bld) {
+  const bool same = !oldGpu.empty() && oldGpu == gpu && oldBld == bld;
+  if (!same) {
     std::ofstream f(path, std::ios::trunc);
     f << gpu << "\n" << bld << "\n";
   }
+  return same;
 }
 
 void WriteStatus() {
@@ -416,13 +420,13 @@ void WriteStatus() {
 }
 
 // ---- pipeline cache persistence ---------------------------------------------------------------------------------------------------
-void LoadCache(Host* h) {
+bool LoadCache(Host* h) {
   std::ifstream f(S->dir + "\\pipeline_cache.bin", std::ios::binary);
   FileHdr got{};
   const FileHdr want = MakeHdr(h, kMagicCache, true);
-  if (!f || !f.read((char*)&got, sizeof got) || !HdrMatches(got, want)) return;   // other driver / build / translator: the blob is useless
+  if (!f || !f.read((char*)&got, sizeof got) || !HdrMatches(got, want)) return false;   // other driver / build / translator: the blob is useless
   std::vector<char> data((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-  if (data.empty()) return;
+  if (data.empty()) return false;
   VkPipelineCacheCreateInfo ci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
   ci.initialDataSize = data.size(); ci.pInitialData = data.data();
   VkPipelineCache pc = VK_NULL_HANDLE;
@@ -430,7 +434,9 @@ void LoadCache(Host* h) {
     if (h->pipelineCache) vkDestroyPipelineCache(h->device, h->pipelineCache, nullptr);
     h->pipelineCache = pc;
     Log("pipeline cache loaded (%zu bytes)", data.size());
+    return true;
   }
+  return false;
 }
 void SaveCache(bool force) {
   Host* h = S->h;
@@ -516,6 +522,7 @@ void Worker() {
         const double wallMs = (double)(snap_perf::now_ns() - S->runStartNs.load()) / 1e6;
         char det[96]; snprintf(det, sizeof det, "%u pipelines", d);
         snap_perf::event("precompile_done", wallMs, det);
+        Log("pipeline run: %u pipelines built in %.0f ms", d, wallMs);
         if (d) S->avgMs = (double)S->busyNs.load() / 1e6 / d;
         SaveCache(true);
         std::ofstream st(S->dir + "\\stats.txt", std::ios::trunc);
@@ -569,6 +576,8 @@ int BeginRun() {
   S->done = 0; S->failed = 0; S->busyNs = 0;
   S->total = (uint32_t)todo.size();
   S->runStartNs = snap_perf::now_ns();
+  Log("pipeline run: %zu known, %zu to build, mode %d, %s", knownCopy.size(), todo.size(), S->mode.load(),
+      S->warm ? "warm start (same GPU, driver and build: the game is not held)" : "cold start");
   if (todo.empty()) { S->state = SHADERPRECOMPILE_DONE; return 0; }
   S->state = SHADERPRECOMPILE_RUNNING;
   EnsureWorkers(WorkerCountFor(S->mode.load()));
@@ -636,8 +645,9 @@ void PipelineServiceInit(Host* h) {
       FindClose(hf);
     }
   }
-  CheckStamp(h);
-  LoadCache(h);
+  const bool stampSame = CheckStamp(h);
+  const bool blobLoaded = LoadCache(h);
+  S->warm = stampSame && blobLoaded;
   LoadKeys();
   AddSeedKeys();
   S->lastSaveNs = snap_perf::now_ns();
@@ -763,7 +773,9 @@ VkPipeline PipelineAcquire(Host* h, const PipeDesc& pd, ProgramImpl* p, bool* pe
 }
 
 bool PipelineHoldGame() {
-  return S && S->up && S->mode.load() == SHADERPRECOMPILE_MODE_NOW && S->state.load() == SHADERPRECOMPILE_RUNNING && !S->cancel.load();
+  // A warm start (same GPU, driver and build, driver cache loaded) replays the key list as cache hits in under a second: the game is not held
+  // for it, and nothing compiles. Only a changed driver, GPU or build (or a first run) holds the game on the progress screen.
+  return S && S->up && S->mode.load() == SHADERPRECOMPILE_MODE_NOW && S->state.load() == SHADERPRECOMPILE_RUNNING && !S->cancel.load() && !S->warm;
 }
 
 }  // namespace nvn
