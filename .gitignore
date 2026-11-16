@@ -4,6 +4,8 @@ analysis/
 tools/*
 !tools/level-editor/
 !tools/studio/
+!tools/hd-shadows/
+tools/hd-shadows/target/
 tools/level-editor/target/
 tools/level-editor/shots/
 *.nsp

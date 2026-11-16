@@ -1,0 +1,23 @@
+[package]
+name = "snap-hd-shadows"
+version = "0.1.0"
+edition = "2021"
+description = "HD shadows: bakes higher-resolution sun shadow maps for every course from the player's own game files"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "hd-shadows"
+path = "src/main.rs"
+
+[dependencies]
+glam = "0.34.3"
+bytemuck = { version = "1", features = ["derive"] }
+crc32fast = "1"
+walkdir = "2"
+ash = "0.38"
+png = "0.18"
+ssbh_data = { path = "../ref/ssbh_lib/ssbh_data" }
+
+[profile.release]
+opt-level = 2

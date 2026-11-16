@@ -389,5 +389,5 @@ def _main(a, table, say, emit):
     if emit:
         emit({'done': {k: rep.get(k) for k in ('level', 'built', 'failed', 'up_to_date', 'seconds')} | {'enabled': True, 'pack': str(o.pack)}})
     say(f'Done: {rep["built"]} built, {rep["failed"]} failed, {rep["up_to_date"]} already up to date, {rep["seconds"] / 60:.1f} min. '
-        f'HD AI textures are on ({o.pack}). Turn them off with --level off.')
+        f'{"HD shadows" if a.pack_id == "hd-shadows" else "HD AI textures"} are on ({o.pack}). Turn them off with --level off.')
     return 0 if rep['failed'] == 0 else 1

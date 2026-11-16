@@ -1,0 +1,90 @@
+#version 460
+#extension GL_EXT_ray_query : require
+#extension GL_EXT_scalar_block_layout : require
+
+// HD shadows: one sun-visibility value per lightmap texel. The CPU rasterizes each triangle of the mesh object into
+// `texTri` (triangle index per texel, 0xFFFFFFFF = empty). This shader rebuilds the texel's world position and normal
+// from the triangle table, then fires `samples` rays through the sun's disc (cone of half angle `cone`) at the whole
+// course (TLAS). The result is the occluded fraction 0..255 in `outBuf`, one byte per texel packed 4 to a word.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
+
+struct Tri {
+    vec4 p0; vec4 p1; vec4 p2;   // world positions
+    vec4 n0; vec4 n1; vec4 n2;   // world normals
+    vec4 uv;                     // u0 v0 u1 v1
+    vec4 uv2;                    // u2 v2 pad pad
+};
+layout(set = 0, binding = 1, scalar) readonly buffer Tris { Tri tris[]; };
+layout(set = 0, binding = 2, scalar) readonly buffer TexTri { uint texTri[]; };
+layout(set = 0, binding = 3, scalar) buffer Out { uint outWords[]; };
+
+layout(push_constant, scalar) uniform PC {
+    vec3 sunDir;       // unit vector from the surface towards the sun
+    float cone;        // tangent of the sun's angular radius
+    uint size;         // atlas width = height in texels
+    uint samples;
+    float bias;        // normal offset in world units
+    float tmin;
+    uint rowStart;     // first row of this dispatch
+    uint seed;
+} pc;
+
+uint hash(uint x) {
+    x ^= x >> 16; x *= 0x7feb352dU; x ^= x >> 15; x *= 0x846ca68bU; x ^= x >> 16;
+    return x;
+}
+
+void main() {
+    uint x = gl_GlobalInvocationID.x;
+    uint y = gl_GlobalInvocationID.y + pc.rowStart;
+    if (x >= pc.size || y >= pc.size) return;
+    uint idx = y * pc.size + x;
+    uint t = texTri[idx];
+    float occ = 0.0;
+    if (t != 0xFFFFFFFFu) {
+        Tri tr = tris[t];
+        vec2 uv0 = tr.uv.xy, uv1 = tr.uv.zw, uv2 = tr.uv2.xy;
+        vec2 p = (vec2(x, y) + 0.5) / float(pc.size);
+        vec2 e1 = uv1 - uv0, e2 = uv2 - uv0, d = p - uv0;
+        float det = e1.x * e2.y - e1.y * e2.x;
+        vec3 b = vec3(1.0, 0.0, 0.0);
+        if (abs(det) > 1e-20) {
+            float v = (d.x * e2.y - d.y * e2.x) / det;
+            float w = (e1.x * d.y - e1.y * d.x) / det;
+            b = vec3(1.0 - v - w, v, w);
+        }
+        b = max(b, vec3(0.0));
+        b /= (b.x + b.y + b.z);
+        vec3 pos = tr.p0.xyz * b.x + tr.p1.xyz * b.y + tr.p2.xyz * b.z;
+        vec3 nrm = normalize(tr.n0.xyz * b.x + tr.n1.xyz * b.y + tr.n2.xyz * b.z);
+        vec3 gn = normalize(cross(tr.p1.xyz - tr.p0.xyz, tr.p2.xyz - tr.p0.xyz));
+        if (dot(gn, nrm) < 0.0) gn = -gn;
+        float ndl = dot(nrm, pc.sunDir);
+        if (ndl <= 0.0) {
+            occ = 1.0;
+        } else {
+            vec3 o = pos + gn * pc.bias;
+            vec3 tu = normalize(abs(pc.sunDir.y) < 0.99 ? cross(pc.sunDir, vec3(0, 1, 0)) : cross(pc.sunDir, vec3(1, 0, 0)));
+            vec3 tv = cross(pc.sunDir, tu);
+            uint h = hash(idx * 747796405u + pc.seed);
+            float rot = float(h & 0xFFFFu) * (6.2831853 / 65536.0);
+            float hit = 0.0;
+            for (uint i = 0; i < pc.samples; i++) {
+                // Vogel disk, rotated per texel
+                float r = sqrt((float(i) + 0.5) / float(pc.samples));
+                float a = float(i) * 2.39996323 + rot;
+                vec3 dir = normalize(pc.sunDir + (tu * cos(a) + tv * sin(a)) * (r * pc.cone));
+                rayQueryEXT rq;
+                rayQueryInitializeEXT(rq, tlas, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT, 0xFF, o, pc.tmin, dir, 1.0e4);
+                while (rayQueryProceedEXT(rq)) {}
+                if (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT) hit += 1.0;
+            }
+            occ = hit / float(pc.samples);
+        }
+    }
+    uint v = uint(clamp(occ * 255.0 + 0.5, 0.0, 255.0));
+    atomicOr(outWords[idx >> 2], v << ((idx & 3u) * 8u));
+}
