@@ -16,6 +16,6 @@
 28.5 expect_bind A kb 0 key:P
 31 reset_binds all
 31.3 expect_bind A kb 0 key:L
-31.4 expect_bind B kb 1 none
+31.4 expect_bind B kb 1 key:1
 32 expect_bind B kb 0 key:K
 33 quit
