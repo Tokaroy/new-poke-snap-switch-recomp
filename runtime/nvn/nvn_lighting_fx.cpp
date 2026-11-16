@@ -12,12 +12,14 @@
 //   SNAP_LIGHT_AO_STRENGTH (0.85), SNAP_LIGHT_AO_POWER (1.6), SNAP_LIGHT_CONTACT_STRENGTH (0.6), SNAP_LIGHT_CONTACT_LEN (0.5), SNAP_LIGHT_CONTACT_THICK (0.2),
 //   SNAP_LIGHT_FADE view distance (60), SNAP_LIGHT_ALPHA temporal weight of the newest frame (0.1), SNAP_LIGHT_DEBUG=1 AO only, 2 contact only,
 //   3 raw (unfiltered) AO, SNAP_LIGHT_AB=<P> (see lighting_preset.h).
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
 #include "hle/lighting_preset.h"
+#include "nvn_dev.h"
 #include "nvn_fx.h"
 #include "nvn_internal.h"
 #include "nvn_lighting_spv.h"
@@ -35,7 +37,8 @@ struct G {
   bool haveHist = false; int lastPresent = -1000; double prevVp[4][4] = {};
 } g;
 
-float EnvF(const char* n, float def) { const char* e = getenv(n); return e && *e ? (float)atof(e) : def; }
+// per-frame tunables: plain getenv when SNAP_DEV is off, a live param (F1 > Tuning, nvn_dev.h) when it is on; range 0..max(1, 4*def) unless given
+float EnvF(const char* n, float def, float mn = 0.f, float mx = -1.f) { return dev_envf(n, def, mn, mx >= mn ? mx : std::max(1.f, def * 4.f)); }
 bool EnvOff(const char* n) { const char* e = getenv(n); return e && *e && atoi(e) == 0; }
 bool Configured() {   // the preset / SNAP_LIGHT_FX say yes (not looking at the A/B test aid or a failed setup)
   static const int mode = [] { const char* e = getenv("SNAP_LIGHT_FX"); return e && *e ? (atoi(e) != 0 ? 1 : 0) : -1; }();
@@ -74,6 +77,9 @@ bool MakeImg(Host* h, Img& o, uint32_t w, uint32_t hh, VkFormat fmt) {
   return vkCreateImageView(h->device, &vc, nullptr, &o.view) == VK_SUCCESS;
 }
 
+// the shader module for effect shader `name`: the embedded SPIR-V, or with SNAP_DEV=1 the live copy from SNAP_SHADER_DIR (nvn_dev.h dev_spv)
+VkShaderModule LfxMod(Host* h, const char* name, const uint32_t* emb, size_t bytes) { const DevSpv s = dev_spv(name, emb, bytes); return FxMakeModule(h, s.words, s.bytes); }
+
 bool Setup(Host* h, VkFormat sceneFmt) {
   if (!g.ready) {
     VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
@@ -88,9 +94,9 @@ bool Setup(Host* h, VkFormat sceneFmt) {
     VkPushConstantRange pr{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 128};
     VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO}; pli.setLayoutCount = 1; pli.pSetLayouts = &g.dsl; pli.pushConstantRangeCount = 1; pli.pPushConstantRanges = &pr;
     if (vkCreatePipelineLayout(h->device, &pli, nullptr, &g.pl) != VK_SUCCESS) return false;
-    g.fsAo = FxMakeModule(h, kLfxAoFrag, sizeof kLfxAoFrag);
-    g.fsRes = FxMakeModule(h, kLfxResolveFrag, sizeof kLfxResolveFrag);
-    g.fsComp = FxMakeModule(h, kLfxCompFrag, sizeof kLfxCompFrag);
+    g.fsAo = LfxMod(h, "lfx_ao", kLfxAoFrag, sizeof kLfxAoFrag);
+    g.fsRes = LfxMod(h, "lfx_resolve", kLfxResolveFrag, sizeof kLfxResolveFrag);
+    g.fsComp = LfxMod(h, "lfx_comp", kLfxCompFrag, sizeof kLfxCompFrag);
     if (!g.fsAo || !g.fsRes || !g.fsComp) return false;
     g.pipeAo = FxMakeFullscreenPipeline(h, g.pl, g.fsAo, VK_FORMAT_R8G8_UNORM, false);
     g.pipeRes = FxMakeFullscreenPipeline(h, g.pl, g.fsRes, VK_FORMAT_R16G16B16A16_SFLOAT, false);
@@ -138,8 +144,38 @@ void Bind(Host* h, VkDescriptorSet set, uint32_t binding, VkSampler s, VkImageVi
   vkUpdateDescriptorSets(h->device, 1, &w, 0, nullptr);
 }
 
+// SNAP_DEV=1: a shader edited in SNAP_SHADER_DIR was recompiled (nvn_dev.h): swap the module and rebuild only the pipelines that use it. The old
+// pipelines are not destroyed (an earlier command buffer may still be running them); a failed rebuild keeps them.
+void DevReload(Host* h) {
+  static uint32_t seen[3];
+  struct S { const char* name; const uint32_t* emb; size_t bytes; VkShaderModule* mod; };
+  const S list[3] = {{"lfx_ao", kLfxAoFrag, sizeof kLfxAoFrag, &g.fsAo}, {"lfx_resolve", kLfxResolveFrag, sizeof kLfxResolveFrag, &g.fsRes},
+                     {"lfx_comp", kLfxCompFrag, sizeof kLfxCompFrag, &g.fsComp}};
+  for (int i = 0; i < 3; i++) {
+    if (!g.ready) return;
+    if (!dev_spv_changed(list[i].name, &seen[i])) continue;
+    VkShaderModule m = LfxMod(h, list[i].name, list[i].emb, list[i].bytes);
+    if (!m) continue;
+    VkPipeline a = VK_NULL_HANDLE, b = VK_NULL_HANDLE;
+    switch (i) {
+      case 0: a = FxMakeFullscreenPipeline(h, g.pl, m, VK_FORMAT_R8G8_UNORM, false); break;
+      case 1: a = FxMakeFullscreenPipeline(h, g.pl, m, VK_FORMAT_R16G16B16A16_SFLOAT, false); break;
+      default: a = FxMakeFullscreenPipeline(h, g.pl, m, g.sceneFmt, true); b = FxMakeFullscreenPipeline(h, g.pl, m, g.sceneFmt, false); break;
+    }
+    if (!a) { fprintf(stderr, "[dev] lighting: pipeline for reloaded shader %s failed, keeping the old one\n", list[i].name); continue; }
+    *list[i].mod = m;
+    switch (i) {
+      case 0: g.pipeAo = a; break;
+      case 1: g.pipeRes = a; break;
+      default: g.pipeComp = a; if (b) g.pipeDbg = b; break;
+    }
+    fprintf(stderr, "[dev] lighting: shader %s applied (pipelines rebuilt)\n", list[i].name); fflush(stderr);
+  }
+}
+
 void Pre(ReplayCtx& cx) {
   if (g.failed) return;
+  if (dev_on()) DevReload(cx.h);
   const FxCam* cam = FxCamera();
   TextureImpl* c = FxSceneColor(); TextureImpl* z = FxSceneDepth();
   if (!cam || !c || !z || c->HW() != z->HW() || c->HH() != z->HH() || !FxWritable(c)) return;
@@ -152,7 +188,7 @@ void Pre(ReplayCtx& cx) {
   bool contact = wantCt && cs && ContactSkyGate(cx, z, cam->nearZ);
   float L[3] = {0, 1, 0};
   if (cs) {   // toward the light: the caster matrix' depth axis points away from the light (or toward it): take the sign that points up
-    float sgn = EnvF("SNAP_CONTACT_LSIGN", 0.f);
+    float sgn = EnvF("SNAP_CONTACT_LSIGN", 0.f, -1.f, 1.f);
     if (sgn == 0.f) sgn = cs->axis[1] > 0.f ? 1.f : -1.f;
     for (int i = 0; i < 3; i++) L[i] = cs->axis[i] * (sgn < 0 ? -1.f : 1.f);
   }
@@ -185,7 +221,7 @@ void Pre(ReplayCtx& cx) {
   PcComp pk{};
   pk.k[0] = wantAo ? EnvF("SNAP_LIGHT_AO_STRENGTH", 0.85f) : 0.f; pk.k[1] = contact ? EnvF("SNAP_LIGHT_CONTACT_STRENGTH", 0.6f) : 0.f;
   pk.k[2] = EnvF("SNAP_LIGHT_FADE", 60.f); pk.k[3] = EnvF("SNAP_LIGHT_AO_POWER", 1.6f);
-  pk.size[0] = (float)g.w; pk.size[1] = (float)g.h; pk.size[2] = EnvF("SNAP_LIGHT_DEBUG", 0.f);
+  pk.size[0] = (float)g.w; pk.size[1] = (float)g.h; pk.size[2] = EnvF("SNAP_LIGHT_DEBUG", 0.f, 0.f, 3.f);
   const bool rawDbg = pk.size[2] > 2.5f;   // 3: the raw AO factor, no resolve (shows what the denoise removes)
   if (rawDbg) pk.size[2] = 1.f;
 
@@ -199,15 +235,15 @@ void Pre(ReplayCtx& cx) {
     // history image never written yet: give it a defined layout (its contents are not read while pr.size[2] is 0)
     if (old.layout == VK_IMAGE_LAYOUT_UNDEFINED) { ImgBar(cx.cb, old, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL); }
     Bind(cx.h, s1, 0, g.nearest, dv, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
-    DrawTo(cx, g.raw, g.pipeAo, s1, &pa, sizeof pa);
+    dev_pass_begin(cx.cb, "lfx ao"); DrawTo(cx, g.raw, g.pipeAo, s1, &pa, sizeof pa);
     Bind(cx.h, s2, 0, g.nearest, dv, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
     Bind(cx.h, s2, 1, g.nearest, g.raw.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     Bind(cx.h, s2, 2, g.linear, old.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    DrawTo(cx, out, g.pipeRes, s2, &pr, sizeof pr);
+    dev_pass_begin(cx.cb, "lfx resolve"); DrawTo(cx, out, g.pipeRes, s2, &pr, sizeof pr);
     Bind(cx.h, s3, 0, g.nearest, rawDbg ? g.raw.view : out.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     if (rawDbg) pk.k[2] = 1e9f;
     const bool dbg = pk.size[2] > 0.5f;
-    FxDrawFullscreen(cx, c, dbg && g.pipeDbg ? g.pipeDbg : g.pipeComp, g.pl, s3, &pk, sizeof pk);
+    dev_pass_begin(cx.cb, "lfx comp"); FxDrawFullscreen(cx, c, dbg && g.pipeDbg ? g.pipeDbg : g.pipeComp, g.pl, s3, &pk, sizeof pk); dev_pass_end(cx.cb, "lfx comp");
     FxNoteRan();
     g.haveHist = true; g.lastPresent = g_presentCount; g.cur ^= 1;
     for (int r = 0; r < 4; r++) for (int k = 0; k < 4; k++) g.prevVp[r][k] = cam->vp[r][k];

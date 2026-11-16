@@ -84,11 +84,16 @@ LRESULT ui_wndproc_impl(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (!(l & (1 << 30))) fps_overlay_cycle();
         return 0;
       }
+      if (w == VK_F4 && tune_hotkey_free()) {   // SNAP_DEV=1: GPU cost overlay (ui_tune.cpp)
+        if (!(l & (1 << 30))) tune_toggle_overlay();
+        return 0;
+      }
       break;
     case WM_KEYUP:
     case WM_SYSKEYUP:
       if (w == VK_F1) return 0;
       if (w == VK_F3 && fps_overlay_hotkey_free()) return 0;
+      if (w == VK_F4 && tune_hotkey_free()) return 0;
       break;
     case WM_MOUSEWHEEL:
       hle::input::post_wheel(GET_WHEEL_DELTA_WPARAM(w));
@@ -402,7 +407,8 @@ static void ui_present_impl(const SnapUiFrame* f) {
   }
   const bool toast = !open && now < g.toast_until;
   const bool perf = fps_overlay_tick();   // performance overlay (ui_fps.cpp); one atomic load when Off
-  if (!open && !shader && !toast && !perf && !shiny_fx_active() && !shiny_badges_active()) return;
+  const bool tune = tune_tick();          // SNAP_DEV=1 dev layer (ui_tune.cpp): GPU cost overlay, shader errors; one cached bool when off
+  if (!open && !shader && !toast && !perf && !tune && !shiny_fx_active() && !shiny_badges_active()) return;
   if (!init_imgui(f)) return;
   if (open || shader) hubr.poll(8);   // keeps rebinding and the live readout fresh even when the game is not polling
 
@@ -430,6 +436,7 @@ static void ui_present_impl(const SnapUiFrame* f) {
       ImGui::PopStyleVar();
     }
     if (!open && !shader) { draw_shiny_fx(size); draw_shiny_badges(size); }   // shiny capture effect (ui_shiny.cpp)
+    if (tune && !shader) draw_tune_overlay(size);   // never in the game's own photos (host overlay)
     if (perf && !shader) draw_fps_overlay(size);   // over the game and the F1 menu; never in the game's own photos (host overlay)
     ImGui::Render();
     dd = ImGui::GetDrawData();

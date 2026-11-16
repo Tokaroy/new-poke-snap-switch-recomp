@@ -35,6 +35,12 @@ void fps_overlay_cycle();                        // F3: Off -> FPS -> Detailed -
 bool fps_overlay_hotkey_free();                  // F3 is not bound to a game button
 bool fps_overlay_tick();                         // once per present; true when the overlay draws this frame
 void draw_fps_overlay(ImVec2 size);
+// Developer loop UI (runtime/ui/ui_tune.cpp; SNAP_DEV=1 only, see runtime/nvn/nvn_dev.h): F1 "Tuning" tab, GPU cost overlay (F4), shader compile errors.
+bool tune_hotkey_free();                         // F4 is not bound to a game button
+void tune_toggle_overlay();
+bool tune_tick();                                // once per present; true when the dev layer draws this frame
+void draw_tune_overlay(ImVec2 size);
+void tab_tune();
 void menu_select_tab(const char* name);   // scripted test: Bindings, Mouse, Controller, Accessibility, Test
 // Rebinding as the UI performs it (a click on a slot); used by the scripted test.
 bool menu_begin_rebind(int action, hle::input::Device dev, int slot);

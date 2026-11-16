@@ -11,6 +11,7 @@
 #include "hle/hle.h"
 #include "hle/input_core.h"
 #include "imgui.h"
+#include "nvn/nvn_dev.h"
 #include "ui_internal.h"
 #include "ui_theme.h"
 
@@ -237,8 +238,9 @@ void reset_button(Device d) {
 }
 
 // ---- tabs ------------------------------------------------------------------------------------------------------------
-const char* const kTabs[] = {"Bindings", "Mouse", "Controller", "Accessibility", "Audio", "Graphics", "Display", "Photos", "Mods", "Saves", "Test input"};
+const char* const kTabs[] = {"Bindings", "Mouse", "Controller", "Accessibility", "Audio", "Graphics", "Display", "Photos", "Mods", "Saves", "Test input", "Tuning"};
 constexpr int kTabCount = (int)(sizeof kTabs / sizeof kTabs[0]);
+int tab_count() { return dev_on() ? kTabCount : kTabCount - 1; }   // "Tuning" (ui_tune.cpp) exists only with SNAP_DEV=1
 
 bool begin_tab(const char* name) {
   ImGuiTabItemFlags fl = 0;
@@ -496,8 +498,8 @@ void draw_menu(ImVec2 size, bool* want_close) {
 
   // controller: LB/RB switch pages, B closes (the same as Escape)
   if (!S.rb.active && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) && !ImGui::IsAnyItemActive()) {
-    if (ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false)) S.want_tab = kTabs[(S.cur_tab + kTabCount - 1) % kTabCount];
-    if (ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false)) S.want_tab = kTabs[(S.cur_tab + 1) % kTabCount];
+    if (ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false)) S.want_tab = kTabs[(S.cur_tab + tab_count() - 1) % tab_count()];
+    if (ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false)) S.want_tab = kTabs[(S.cur_tab + 1) % tab_count()];
     if (!esc_used && !was_rebinding && ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) *want_close = true;
   }
 
@@ -590,6 +592,11 @@ void draw_menu(ImVec2 size, bool* want_close) {
     }
     if (begin_tab("Test input")) {
       if (ImGui::BeginChild("p", ImVec2(0, -footer_h))) tab_test();
+      ImGui::EndChild();
+      ImGui::EndTabItem();
+    }
+    if (dev_on() && begin_tab("Tuning")) {   // SNAP_DEV=1 only (ui_tune.cpp)
+      if (ImGui::BeginChild("p", ImVec2(0, -footer_h))) tab_tune();
       ImGui::EndChild();
       ImGui::EndTabItem();
     }
