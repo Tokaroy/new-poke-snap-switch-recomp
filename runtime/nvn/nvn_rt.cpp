@@ -34,8 +34,8 @@ bool EnvOn(const char* n, bool def = false) { const char* e = getenv(n); return 
 int EnvInt(const char* n, int def) { const char* e = getenv(n); return e && *e ? atoi(e) : def; }
 double Now() { LARGE_INTEGER f, t; QueryPerformanceFrequency(&f); QueryPerformanceCounter(&t); return (double)t.QuadPart * 1000.0 / (double)f.QuadPart; }
 
-bool g_on = false, g_capture = false, g_failed = false, g_reflFailed = false, g_giFailed = false;
-int g_reflOn = 1, g_giOn = 1;   // SNAP_RT_REFLECT live value (dev param), read by the render thread
+bool g_on = false, g_capture = false, g_failed = false, g_reflFailed = false, g_giFailed = false, g_aoFailed = false;
+int g_reflOn = 1, g_giOn = 1, g_aoOn = 1;   // SNAP_RT_REFLECT live value (dev param), read by the render thread
 VkPhysicalDeviceAccelerationStructureFeaturesKHR g_fAs{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
 VkPhysicalDeviceRayQueryFeaturesKHR g_fRq{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
 VkPhysicalDeviceTransformFeedbackFeaturesEXT g_fTf{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT};
@@ -188,7 +188,7 @@ struct G {
   Buf racc, ravg; VkDescriptorSetLayout rdsl = VK_NULL_HANDLE; VkPipelineLayout rpl = VK_NULL_HANDLE; VkPipeline rpipe = VK_NULL_HANDLE; VkShaderModule rmod = VK_NULL_HANDLE; bool rinit = false;
   std::vector<uint32_t> freeIds; uint32_t nextId = 0; std::set<uint32_t> idReset;   // ids handed out; reused ids whose cached colour must be cleared before the next accumulation
   bool tlasValid = false; uint32_t killsSinceBuild = 0;   // the TLAS was built from live entries and none of its BLASes has been released since
-  uint64_t rPasses = 0, rSkip = 0; int rDoneAt = -1; VkShaderModule gmod = VK_NULL_HANDLE;   // rDoneAt: the present the colour cache was last updated at (the reflection and bounce light passes share one update per frame)
+  uint64_t rPasses = 0, rSkip = 0; int rDoneAt = -1; VkShaderModule gmod = VK_NULL_HANDLE, amod = VK_NULL_HANDLE; uint64_t aoPasses = 0, aoSkip = 0;   // rDoneAt: the present the colour cache was last updated at (the reflection and bounce light passes share one update per frame)
 } g;
 
 // A slot's mapped words, descriptor set and query results belong to the GPU until its queue timeline reaches the stamp taken when the slot was recorded (g.mu held).
@@ -212,10 +212,11 @@ bool CreateFailed() { if (++g_createFails >= 3) { g_failed = true; NoteWhy("acce
 // Scene geometry capture (M1/M2: the debug overlay and the future AO / reflection passes). With SNAP_RT_SHADOWS set and neither SNAP_RT_DEBUG nor SNAP_RT_SCENE=1 only the
 // shadow casters are captured (small buffers, no scene BLAS work).
 bool ShadowsRequested() { static const bool r = [] { const char* e = getenv("SNAP_RT_SHADOWS"); return e && *e; }(); return r; }
+bool AoRequested() { static const bool r = [] { const char* e = getenv("SNAP_RT_AO"); return e && *e && atoi(e) != 0; }(); return r; }   // RT ambient occlusion (nvn_lighting_fx.cpp, replaces the GTAO pass): needs the scene capture only
 bool GiRequested() { static const bool r = [] { const char* e = getenv("SNAP_RT_GI"); return e && *e && atoi(e) != 0; }(); return r; }   // RT bounce light (nvn_lighting_fx.cpp, needs SNAP_SSGI=1): needs the scene capture
 bool ReflectRequested() { static const bool r = [] { const char* e = getenv("SNAP_RT_REFLECT"); return e && *e && atoi(e) != 0; }(); return r; }   // RT reflections (the water pass, nvn_ssr.cpp): needs the scene capture
 bool SceneCapture() {
-  static const bool v = [] { const char* e = getenv("SNAP_RT_SHADOWS"); return !(e && *e) || EnvInt("SNAP_RT_DEBUG", 0) != 0 || EnvOn("SNAP_RT_SCENE") || ReflectRequested() || GiRequested(); }();
+  static const bool v = [] { const char* e = getenv("SNAP_RT_SHADOWS"); return !(e && *e) || EnvInt("SNAP_RT_DEBUG", 0) != 0 || EnvOn("SNAP_RT_SCENE") || ReflectRequested() || GiRequested() || AoRequested(); }();
   return v;
 }
 
@@ -373,7 +374,7 @@ namespace {
 std::mutex g_patchedMu; std::set<std::string> g_patched;   // first 12 hex digits of the vertex programs whose module carries the Xfb decorations
 bool IsPatched(const char* k) { if (!k) return false; std::lock_guard<std::mutex> lk(g_patchedMu); return g_patched.count(std::string(k, 12)) != 0; }
 }
-bool Wanted() { static const bool w = EnvOn("SNAP_RT") || ShadowsRequested() || ReflectRequested() || GiRequested(); return w; }
+bool Wanted() { static const bool w = EnvOn("SNAP_RT") || ShadowsRequested() || ReflectRequested() || GiRequested() || AoRequested(); return w; }
 bool On() { return g_on; }
 bool Capture() { return g_on && g_capture && !g_failed; }
 
@@ -752,6 +753,8 @@ void DeviceShutdown(Host* h) {   // the device is idle here; also cleans a half-
   if (g.rmod) vkDestroyShaderModule(d, g.rmod, nullptr);
   if (g.gmod) vkDestroyShaderModule(d, g.gmod, nullptr);
   g.gmod = VK_NULL_HANDLE;
+  if (g.amod) vkDestroyShaderModule(d, g.amod, nullptr);
+  g.amod = VK_NULL_HANDLE;
   g.rpipe = VK_NULL_HANDLE; g.rpl = VK_NULL_HANDLE; g.rdsl = VK_NULL_HANDLE; g.rmod = VK_NULL_HANDLE; g.rinit = false; g.tlasValid = false;
   if (g.qp) vkDestroyQueryPool(d, g.qp, nullptr);
   if (g.convPipe) vkDestroyPipeline(d, g.convPipe, nullptr);
@@ -1239,6 +1242,34 @@ VkShaderModule GiModule(Host* h) {
 }
 bool GiPass(ReplayCtx& cx, VkImageView col, VkSampler samp, const double vp[4][4], ReflInfo* out) { return GiOn() && CachePass(cx, col, samp, vp, out); }
 
+// ---- RT ambient occlusion (SNAP_RT_AO): the ray traced variant of the GTAO pass of the enhanced-lighting chain (nvn_lighting_fx.cpp). The shader (lfx_ao_rt.frag) only needs the
+// TLAS, not the colour cache. A failure returns the chain to GTAO.
+char g_aoWhy[160] = {};
+void AoFail(const char* why) { g_aoFailed = true; snprintf(g_aoWhy, sizeof g_aoWhy, "%s", why); fprintf(stderr, "[rt] ambient occlusion falls back to GTAO: %s\n", why); }
+bool AoOn() {
+  if (!AoRequested() || g_aoFailed || g_failed || !g_on) return false;
+  static bool reg = false;
+  if (!reg) { reg = true; g_aoOn = 1; dev_param_i("SNAP_RT_AO", &g_aoOn, 0, 1, 1); }
+  return g_aoOn != 0;
+}
+const char* AoNotice() { return AoRequested() && g_aoWhy[0] ? g_aoWhy : nullptr; }
+VkShaderModule AoModule(Host* h) {
+  if (g.amod) return g.amod;
+  if (Forced("ao")) { AoFail("forced failure (SNAP_RT_FORCE_FAIL=ao)"); return VK_NULL_HANDLE; }
+  VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO}; mi.codeSize = sizeof kLfxAoRtSpv; mi.pCode = kLfxAoRtSpv;
+  if (vkCreateShaderModule(h->device, &mi, nullptr, &g.amod) != VK_SUCCESS) { g.amod = VK_NULL_HANDLE; AoFail("AO shader module"); }
+  return g.amod;
+}
+bool AoPass(uint64_t* tlas) {
+  if (!AoOn() || FxIsPhotoFrame()) return false;
+  std::lock_guard<std::mutex> lk(g.mu);
+  if (!g.ready || !g.tlas || !Capture()) return false;
+  if (!g.tlasValid || g.killsSinceBuild) { g.aoSkip++; return false; }
+  g.aoPasses++;
+  *tlas = g.tlasAddr;
+  return true;
+}
+
 void OnPresent() {
   if (!g.ready || g.logEvery <= 0 || g_presentCount - g.lastLogPresent < g.logEvery) return;
   g.lastLogPresent = g_presentCount;
@@ -1249,6 +1280,7 @@ void OnPresent() {
             (unsigned long long)S.noRecvM, (unsigned long long)S.skipped, S.sunL[0], S.sunL[1], S.sunL[2], S.tmax, S.recvRatio, Cfg().mode, Cfg().dbg, ShadowRays());
     S.frames = S.draws_n = S.tris = S.receivers = S.noRecvM = 0; S.gpuMs = 0; S.gpuN = 0;
   }
+  if (AoRequested() && (g.aoPasses || g.aoSkip)) { fprintf(stderr, "[rt] p%d ambient occlusion: %llu RT passes, %llu skipped (no TLAS yet or a BLAS was released)\n", g_presentCount, (unsigned long long)g.aoPasses, (unsigned long long)g.aoSkip); g.aoPasses = g.aoSkip = 0; }
   if ((ReflectRequested() || GiRequested()) && (g.rPasses || g.rSkip)) { fprintf(stderr, "[rt] p%d colour cache (reflections, bounce light): %llu passes, %llu skipped (no TLAS yet or a BLAS was released since it was built); %u instance ids in use, reflections %s, bounce light %s\n", g_presentCount, (unsigned long long)g.rPasses, (unsigned long long)g.rSkip, g.nextId - (uint32_t)g.freeIds.size(), !ReflectRequested() ? "not asked" : g_reflFailed ? "fell back" : g_reflOn ? "on" : "off (live)", !GiRequested() ? "not asked" : g_giFailed ? "fell back" : g_giOn ? "on" : "off (live)"); g.rPasses = g.rSkip = 0; }
   Stats& s = g.st;
   if (!s.frames) return;

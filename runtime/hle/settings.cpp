@@ -101,7 +101,7 @@ void write_file() {
 // something; "" and "default" mean "leave the variable alone" (the game's own behavior). An env var set by hand always wins (set_env_if_unset).
 const struct { const char* key; const char* env; } kEnvKeys[] = {
     {"gfx_render_scale", "SNAP_RENDER_SCALE"}, {"gfx_aniso", "SNAP_ANISO"},           {"gfx_lod_bias", "SNAP_LOD_BIAS"},
-    {"gfx_shadow_res", "SNAP_SHADOW_RES"},     {"ssao_quality", "SNAP_SSAO_QUALITY"}, {"gfx_lighting", "SNAP_LIGHTING"},
+    {"gfx_shadow_res", "SNAP_SHADOW_RES"},     {"ssao_quality", "SNAP_SSAO_QUALITY"}, {"gfx_lighting", "SNAP_LIGHTING"}, {"rt_reflect", "SNAP_RT_REFLECT"}, {"rt_gi", "SNAP_RT_GI"}, {"rt_gi_rays", "SNAP_RT_GI_RAYS"},
     {"gfx_aa", "SNAP_AA"},                     {"gfx_smaa_quality", "SNAP_SMAA_QUALITY"}, {"return_to_launcher", "SNAP_RETURN_TO_LAUNCHER"}, {"gfx_sharpen", "SNAP_SHARPEN"},       {"gfx_upscaler", "SNAP_UPSCALER"},
     {"gfx_upscale_quality", "SNAP_UPSCALE_QUALITY"}, {"gfx_hdr", "SNAP_HDR"},        {"gfx_hdr_peak", "SNAP_HDR_PEAK"},
     {"gfx_hdr_paper", "SNAP_HDR_PAPER"},       {"gfx_draw_dist", "SNAP_DRAW_DIST"}, {"gfx_lod_dist", "SNAP_LOD_DIST"}, {"gfx_lod_force0", "SNAP_LOD_FORCE0"},   // gfx_fov removed (owner 2026-11-12): a saved value is ignored
@@ -173,7 +173,7 @@ bool safe_keeps(const std::string& k) {
 
 // Safe mode: the feature switches that could also arrive from the environment (set by hand or by a script) are cleared too, so the run really is plain.
 void safe_clear_env() {
-  static const char* const kExtra[] = {"SNAP_RT", "SNAP_RT_SHADOWS", "SNAP_LOOK", "SNAP_PASS_OFF", "SNAP_SHINY", "SNAP_SHINY_ODDS", "SNAP_FRAMEGEN", "SNAP_UPSCALER",
+  static const char* const kExtra[] = {"SNAP_RT", "SNAP_RT_SHADOWS", "SNAP_RT_REFLECT", "SNAP_LOOK", "SNAP_PASS_OFF", "SNAP_SHINY", "SNAP_SHINY_ODDS", "SNAP_FRAMEGEN", "SNAP_UPSCALER",
                                        "SNAP_MODEL_REFINE", "SNAP_MODS_AB", "SNAP_MODEL_AB", "SNAP_SPAWN_RAND", "SNAP_INPUT_SCRIPT_MODS"};
   for (auto& m : kEnvKeys) if (!safe_keeps(m.key)) _putenv_s(m.env, "");
   for (const char* n : kExtra) _putenv_s(n, "");

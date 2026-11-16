@@ -1,0 +1,23 @@
+# Experimental rows of the Graphics page (rt_reflect, rt_gi, rt_gi_rays; runtime/ui/ui_options.cpp, settings.cpp key map): present, restart-applied, default Off, a choice sticks.
+# Run with tests\hle\run_rt_rows_test.ps1. Times: seconds after the first present.
+25 i18n_collect 1
+26 key F1 1
+27 expect_open 1
+27.5 tab Graphics
+28 expect_when rt_reflect restart
+28 expect_when rt_gi restart
+28 expect_when rt_gi_rays restart
+28.1 expect_opt rt_reflect default
+28.1 expect_opt rt_gi default
+28.1 expect_opt rt_gi_rays default
+28.2 opt rt_reflect 1
+28.3 opt rt_gi 1
+28.4 opt rt_gi_rays 4
+28.5 expect_opt rt_reflect 1
+28.5 expect_opt rt_gi 1
+28.5 expect_opt rt_gi_rays 4
+29 scroll 0.5
+31 scroll 0.6
+33 scroll 0.7
+35 expect_i18n
+36 quit
