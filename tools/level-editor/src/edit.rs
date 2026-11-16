@@ -401,6 +401,30 @@ pub fn add_copy(c: &mut LoadedCourse, s: Sel, at: Option<Vec3>) -> Result<(Sel, 
     }
 }
 
+/// A copy at `at` with its own rotation (when given and stored) and, for scenery models, its size multiplied by
+/// `scale_mul`. One undo step hides it again.
+pub fn place_copy(c: &mut LoadedCourse, s: Sel, at: Vec3, rot: Option<Quat>, scale_mul: f32) -> Result<(Sel, Writes), String> {
+    let (ns, mut w) = add_copy(c, s, Some(at))?;
+    match ns {
+        Sel::Spawn(l, i) => {
+            if let (Some(q), Some(o)) = (rot, c.levels[l].spawns[i].rot_off) {
+                w.extend(wq(l, o, q));
+            }
+        }
+        Sel::Model(m) => {
+            let pm = &c.models[m];
+            if let (Some(q), Some(o)) = (rot, pm.inst.rot_off) {
+                w.extend(wq(pm.level_idx, o, q));
+            }
+            if let (true, Some(o)) = ((scale_mul - 1.0).abs() > 1e-6, pm.inst.scale_off) {
+                w.extend(w3(pm.level_idx, o, Vec3::from(pm.inst.scale) * scale_mul));
+            }
+        }
+        Sel::Rail(..) => {}
+    }
+    Ok((ns, w))
+}
+
 /// Writes that remove an added object (undo brings it back). Objects from the original file cannot be removed yet.
 pub fn remove(c: &LoadedCourse, s: Sel) -> Result<Writes, String> {
     let (l, off) = match s {

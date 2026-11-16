@@ -24,6 +24,8 @@ pub struct Hit {
     pub t: f32,
     pub point: Vec3,
     pub model: usize,
+    /// Unit normal of the hit triangle, turned to face back along the ray.
+    pub normal: Vec3,
 }
 
 fn ray_box(o: Vec3, inv_d: Vec3, min: Vec3, max: Vec3, tmax: f32) -> bool {
@@ -77,7 +79,9 @@ impl Ground {
                     (self.pos[self.idx[i] as usize], self.pos[self.idx[i + 1] as usize], self.pos[self.idx[i + 2] as usize]);
                 if let Some(tt) = ray_tri(o, d, a, b, c) {
                     if tt < best.map(|b| b.t).unwrap_or(tmax) {
-                        best = Some(Hit { t: tt, point: o + d * tt, model: m.model });
+                        let n = (b - a).cross(c - a).normalize_or_zero();
+                        let normal = if n.dot(d) > 0.0 { -n } else { n };
+                        best = Some(Hit { t: tt, point: o + d * tt, model: m.model, normal });
                     }
                 }
             }

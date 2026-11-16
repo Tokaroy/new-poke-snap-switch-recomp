@@ -3,6 +3,7 @@
 //! level-editor [--data <extracted/drp-v262144>] [--course LC_001_A] [--variant 1]
 //!              [--select L:I] [--move L:I:dx,dy,dz]... [--export DIR --pack NAME]
 //!              [--shot out.png [--size 1600x900] [--advanced]] [--summary] [--selftest]
+//!              [--brush radius,count,seed [--align]] [--scatter MODEL_NAME@x,z | --scatter L:I@x,z]... [--tool place|scatter]
 //!
 //! Without --shot, --summary or --selftest it opens a window. --shot renders the same UI offscreen and writes a PNG
 //! (no window). --move edits spawn I of level L (indices as in the Pokémon list), --export writes the changed levels
@@ -20,10 +21,11 @@ mod grow;
 mod layout;
 mod level;
 mod pick;
+mod place;
 mod render;
 
 use edit::Sel;
-use glam::Vec3;
+use glam::{Quat, Vec3};
 use std::path::PathBuf;
 
 struct Args {
@@ -46,6 +48,10 @@ struct Args {
     model_adds: Vec<(String, Vec3)>,
     model_moves: Vec<(String, Vec3)>,
     spawn_copies: Vec<(usize, usize, Vec3)>,
+    /// (model name or L:I spawn, x, z)
+    scatters: Vec<(String, f32, f32)>,
+    brush: place::Brush,
+    tool: Option<app::Tool>,
 }
 
 fn parse_vec3(d: &str) -> Result<Vec3, String> {
@@ -233,6 +239,9 @@ fn parse_args() -> Result<Args, String> {
         model_adds: vec![],
         spawn_copies: vec![],
         model_moves: vec![],
+        scatters: vec![],
+        brush: place::Brush::default(),
+        tool: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
@@ -288,6 +297,33 @@ fn parse_args() -> Result<Args, String> {
                 let v = val()?;
                 let (n, d) = v.split_once(':').ok_or("--move-model NAME:dx,dy,dz")?;
                 a.model_moves.push((n.to_string(), parse_vec3(d)?));
+            }
+            "--scatter" => {
+                // SRC@x,z where SRC is a scenery model name or a spawn L:I
+                let v = val()?;
+                let (src, xz) = v.rsplit_once('@').ok_or("--scatter SRC@x,z")?;
+                let (x, z) = xz.split_once(',').ok_or("--scatter SRC@x,z")?;
+                a.scatters.push((src.to_string(), x.parse().map_err(|_| "--scatter: bad x")?, z.parse().map_err(|_| "--scatter: bad z")?));
+            }
+            "--brush" => {
+                // radius,count,seed
+                let v = val()?;
+                let f: Vec<&str> = v.split(',').collect();
+                if f.len() != 3 {
+                    return Err("--brush radius,count,seed".into());
+                }
+                a.brush.radius = f[0].parse().map_err(|_| "--brush: bad radius")?;
+                a.brush.count = f[1].parse().map_err(|_| "--brush: bad count")?;
+                a.brush.seed = f[2].parse().map_err(|_| "--brush: bad seed")?;
+            }
+            "--align" => a.brush.align = true,
+            "--tool" => {
+                a.tool = Some(match val()?.as_str() {
+                    "select" => app::Tool::Select,
+                    "place" => app::Tool::Place,
+                    "scatter" => app::Tool::Scatter,
+                    _ => return Err("--tool select|place|scatter".into()),
+                })
             }
             "--export" => a.export = Some(val()?.into()),
             "--pack" => a.pack = Some(val()?),
@@ -562,6 +598,69 @@ fn selftest(data: &mut course::DataRoot, name: &str, variant: u32) -> Result<boo
     );
     h.undo(&mut lc);
     check("undo after the rail checks leaves the course unchanged", lc.levels.iter().all(|l| l.data == l.orig && !l.dirty), String::new());
+
+    // Placement: a scatter dab of a scenery model around a Pokémon's spot lands on the ground inside the circle, keeps
+    // its gap, tilts to the slope, repeats from the same seed, exports as grown files and undoes in one step.
+    let ground = render::build_geometry(&lc, render::Layers::default()).1;
+    let mi = lc.models.iter().position(|m| m.inst.pos_off.is_some() && m.inst.rot_off.is_some() && m.inst.scale_off.is_some()).ok_or("no model with a stored rotation and size")?;
+    let ml = lc.models[mi].level_idx;
+    let orig_models = lc.levels[ml].models.iter().filter(|m| m.alive_off.is_none()).count();
+    let c0 = place::surface_below(&ground, Vec3::from(own_before), 50.0).ok_or("no ground under the test spawn")?.0;
+    let brush = place::Brush { radius: 10.0, count: 8, min_gap: 2.0, scale: (0.5, 2.0), align: true, seed: 7, ..Default::default() };
+    let spots = place::dab(&ground, &brush, &mut place::Rng::new(brush.seed), c0, &mut vec![]);
+    let again = place::dab(&ground, &brush, &mut place::Rng::new(brush.seed), c0, &mut vec![]);
+    check(
+        "scatter repeats from the same seed",
+        spots.len() == again.len() && spots.iter().zip(&again).all(|(a, b)| a.pos == b.pos && a.yaw == b.yaw && a.scale_mul == b.scale_mul),
+        format!("{} spots", spots.len()),
+    );
+    let flat = |v: Vec3| Vec3::new(v.x, 0.0, v.z);
+    let apart = spots.iter().enumerate().all(|(i, a)| spots[i + 1..].iter().all(|b| flat(a.pos - b.pos).length() >= 2.0));
+    let inside = spots.iter().all(|s| flat(s.pos - c0).length() <= 10.0 + 1e-3);
+    check("scatter keeps the gap and stays in the circle", spots.len() >= 4 && apart && inside, format!("{} of 8 placed", spots.len()));
+    let (src_scale, src_rot) = (Vec3::from(lc.models[mi].inst.scale), lc.models[mi].inst.rot);
+    let steps0 = h.steps();
+    let mut placed = vec![];
+    for sp in &spots {
+        let rot = place::orient(src_rot, sp.yaw, sp.normal, true);
+        let (ns, w) = edit::place_copy(&mut lc, Sel::Model(mi), sp.pos, Some(rot), sp.scale_mul)?;
+        h.apply(&mut lc, "scatter", Some("scatter"), w);
+        placed.push((ns, *sp));
+    }
+    h.end_interaction();
+    let mut worst = 0.0f32;
+    let mut sat = true;
+    for (ns, sp) in &placed {
+        let Sel::Model(m) = ns else { continue };
+        let inst = &lc.models[*m].inst;
+        sat &= Vec3::from(inst.pos).distance(sp.pos) < 1e-4 && (Vec3::from(inst.scale) - src_scale * sp.scale_mul).length() < 1e-3;
+        worst = worst.max(1.0 - (Quat::from_array(inst.rot) * Vec3::Y).dot(sp.normal));
+        sat &= ground.below(sp.pos, None).map(|g| (g.y - sp.pos.y).abs() < 0.05).unwrap_or(false);
+    }
+    check("scattered copies sit on the ground with their size and tilt", sat && worst < 1e-3, format!("worst tilt error {worst:.2e}"));
+    check("a scatter stroke is one undo step", h.steps() == steps0 + 1, format!("{} steps", h.steps() - steps0));
+    let (ss, w) = edit::place_copy(&mut lc, Sel::Spawn(li, own), Vec3::from(own_before) + Vec3::new(-2.0, 0.0, 2.0), Some(Quat::from_rotation_y(1.0)), 1.0)?;
+    h.apply(&mut lc, "place spawn", None, w);
+    let sy = edit::rot_of(&lc, ss).map(edit::yaw_of).unwrap_or(f32::NAN);
+    check("a placed Pokémon gets its heading", (sy - 1.0).abs() < 1e-4, format!("{sy:.4} rad"));
+    let files = edit::export(&lc, &out, "scatter", "selftest scatter", false)?;
+    let mfile = std::path::Path::new(&lc.levels[ml].file).file_name().unwrap().to_owned();
+    let f = files.iter().find(|p| p.file_name() == Some(mfile.as_os_str())).ok_or("scatter level not exported")?;
+    let re = level::parse(&std::fs::read(f).map_err(|e| e.to_string())?, &f.display().to_string())?;
+    let last = re.models.last().ok_or("no models")?;
+    let want = placed.last().map(|p| p.1.pos).unwrap_or(Vec3::ZERO);
+    check(
+        "the scattered copies export as grown files",
+        re.models.len() == orig_models + placed.len() && Vec3::from(last.pos).distance(want) < 1e-4,
+        format!("{} models (was {orig_models})", re.models.len()),
+    );
+    h.undo(&mut lc);
+    h.undo(&mut lc);
+    check(
+        "undo of the scatter leaves the course unchanged",
+        lc.levels.iter().all(|l| l.data == l.orig && !l.dirty && l.adds().is_empty()),
+        String::new(),
+    );
     println!("selftest output in {}", out.display());
     Ok(ok)
 }
@@ -661,6 +760,30 @@ fn main() {
                 std::process::exit(1);
             }
         }
+    }
+    ed.brush = args.brush;
+    for (src, x, z) in &args.scatters {
+        let sel = match parse_li(src) {
+            Ok((l, i)) => Some(Sel::Spawn(l, i)),
+            Err(_) => ed.loaded.as_ref().and_then(|c| c.models.iter().position(|m| m.inst.name.eq_ignore_ascii_case(src))).map(Sel::Model),
+        };
+        let names = || {
+            let mut n: Vec<String> = ed.loaded.as_ref().map(|c| c.models.iter().map(|m| m.inst.name.clone()).collect()).unwrap_or_default();
+            n.sort();
+            n.dedup();
+            n.join(", ")
+        };
+        let r = sel.ok_or_else(|| format!("no model instance named {src}; models: {}", names())).and_then(|s| ed.scatter_at(s, *x, *z));
+        match r {
+            Ok(n) => println!("scattered {n} copies of {src} around ({x}, {z})"),
+            Err(e) => {
+                eprintln!("scatter {src}: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+    if let Some(t) = args.tool {
+        ed.tool = t;
     }
     if let Some(dir) = &args.export {
         let pack = args.pack.clone().unwrap_or(format!("{course_name}-edit"));

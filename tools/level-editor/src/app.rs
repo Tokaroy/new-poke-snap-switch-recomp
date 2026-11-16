@@ -6,6 +6,7 @@
 use crate::course::{CourseEntry, DataRoot, LoadedCourse, Variant};
 use crate::edit::{self, History, Issue, Sel, Writes};
 use crate::gizmo;
+use crate::place;
 use crate::level::kind_name;
 use crate::pick::{self, Ground};
 use crate::render::{self, GpuScene, Layers, OrbitCamera, Viewport};
@@ -37,11 +38,28 @@ enum Action {
     OpenCourse(usize),
     LoadVariant(u32),
     Rebuild,
+    /// Makes this the object that Place and Scatter put down.
+    SetBrush(Sel),
 }
 
 struct Drag {
     sel: Sel,
     height: f32,
+}
+
+/// What a left click or drag in the 3D view does.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Tool {
+    Select,
+    Place,
+    Scatter,
+}
+
+/// A scatter stroke in progress (one undo step).
+struct Stroke {
+    last: Vec3,
+    taken: Vec<Vec3>,
+    placed: Vec<Vec3>,
 }
 
 pub struct EditorApp {
@@ -83,6 +101,13 @@ pub struct EditorApp {
     gizmo_drag: Option<gizmo::GizmoDrag>,
     /// Shared search over the Add a Pokémon palette, the Pokémon list and the scenery list.
     search: String,
+    pub tool: Tool,
+    pub brush: place::Brush,
+    /// The object Place and Scatter copy.
+    pub brush_src: Option<Sel>,
+    rng: place::Rng,
+    rng_seed: u64,
+    stroke: Option<Stroke>,
 }
 
 fn col32(c: [f32; 3]) -> egui::Color32 {
@@ -129,6 +154,12 @@ impl EditorApp {
             snap: gizmo::Snap::default(),
             gizmo_drag: None,
             search: String::new(),
+            tool: Tool::Select,
+            brush: place::Brush::default(),
+            brush_src: None,
+            rng: place::Rng::new(place::Brush::default().seed),
+            rng_seed: place::Brush::default().seed,
+            stroke: None,
         }
     }
 
@@ -412,7 +443,159 @@ impl EditorApp {
                 self.geo_dirty = true;
                 self.ov_dirty = true;
             }
+            Action::SetBrush(s) => match self.loaded.as_ref().map(|c| Self::can_copy(c, s)) {
+                Some(Ok(())) => {
+                    self.brush_src = Some(s);
+                    if self.tool == Tool::Select {
+                        self.tool = Tool::Place;
+                    }
+                    self.status = format!("Brush: {}. Click the ground to place one, or switch to Scatter and drag.", self.label(s));
+                }
+                Some(Err(e)) => self.status = e,
+                None => {}
+            },
         }
+    }
+
+    /// Whether `s` can be copied (and so used as the Place and Scatter brush).
+    fn can_copy(c: &LoadedCourse, s: Sel) -> Result<(), String> {
+        match s {
+            Sel::Spawn(l, i) => {
+                let sp = &c.levels[l].spawns[i];
+                if sp.pos_from_path || sp.pos_off.is_none() || sp.rot_off.is_none() {
+                    Err("Only Pokémon with their own spawn point can be copied (this one follows a route)".into())
+                } else {
+                    Ok(())
+                }
+            }
+            Sel::Model(_) => Ok(()),
+            Sel::Rail(..) => Err("Rail points cannot be copied".into()),
+        }
+    }
+
+    /// One source spawn per species that has its own spawn point (route-following ones cannot be copied yet).
+    fn species_sources(c: &LoadedCourse) -> std::collections::BTreeMap<String, Sel> {
+        let mut seen = std::collections::BTreeMap::new();
+        for (li, l) in c.levels.iter().enumerate() {
+            for (si, sp) in l.spawns.iter().enumerate() {
+                // CH_000 and CH_001 entries are flowers, branches and other props
+                let pokemon = sp.label.starts_with("CH_") && !sp.label.starts_with("CH_000") && !sp.label.starts_with("CH_001");
+                if sp.alive && sp.alive_off.is_none() && !sp.pos_from_path && sp.pos_off.is_some() && sp.pos != [0.0; 3] && pokemon {
+                    seen.entry(sp.label.clone()).or_insert(Sel::Spawn(li, si));
+                }
+            }
+        }
+        seen
+    }
+
+    /// Builds the picking ground when no frame has drawn yet (command-line runs).
+    pub fn ensure_ground(&mut self) {
+        if self.ground.models.is_empty() {
+            if let Some(c) = &self.loaded {
+                self.ground = render::build_geometry(c, self.layers).1;
+            }
+        }
+    }
+
+    /// Height the brush source keeps above the ground, so a flying Pokémon stays in the air. 0 for scenery.
+    fn src_height(&self, s: Sel) -> f32 {
+        if !matches!(s, Sel::Spawn(..)) {
+            return 0.0;
+        }
+        let Some(p) = self.loaded.as_ref().and_then(|c| edit::position(c, s)) else { return 0.0 };
+        self.ground.below(p, None).map(|g| (p.y - g.y).max(0.0)).unwrap_or(0.0)
+    }
+
+    /// Puts one copy of the brush source at `spot`. Copies with the same `key` merge into one undo step.
+    fn place_spot(&mut self, spot: place::Spot, verb: &str, key: Option<&str>) -> Result<Sel, String> {
+        let s = self.brush_src.ok_or("Pick what to place first: Brush, at the top of the right panel")?;
+        let c = self.loaded.as_ref().ok_or("no course loaded")?;
+        let is_model = matches!(s, Sel::Model(_));
+        let rot = edit::rot_of(c, s).map(|r| place::orient(r, spot.yaw, spot.normal, self.brush.align && is_model));
+        let at = spot.pos + Vec3::Y * self.src_height(s);
+        let label = format!("{verb} {}", self.label(s));
+        let c = self.loaded.as_mut().ok_or("no course loaded")?;
+        let (ns, w) = edit::place_copy(c, s, at, rot, if is_model { spot.scale_mul } else { 1.0 })?;
+        self.apply(label, key, Ok(w));
+        Ok(ns)
+    }
+
+    fn sync_rng(&mut self) {
+        if self.rng_seed != self.brush.seed {
+            self.rng = place::Rng::new(self.brush.seed);
+            self.rng_seed = self.brush.seed;
+        }
+    }
+
+    /// Place tool: one copy where the surface was hit; it becomes the selection so the gizmo can fine-tune it.
+    fn place_one(&mut self, hit: pick::Hit) {
+        self.sync_rng();
+        let spot = place::single(&self.brush, &mut self.rng, hit.point, hit.normal);
+        match self.place_spot(spot, "Place", None) {
+            Ok(ns) => {
+                self.history.end_interaction();
+                self.sel = Some(ns);
+                if matches!(ns, Sel::Model(_)) {
+                    self.geo_dirty = true;
+                }
+                self.ov_dirty = true;
+            }
+            Err(e) => self.status = e,
+        }
+    }
+
+    fn stroke_begin(&mut self, at: Vec3) {
+        self.sync_rng();
+        self.stroke = Some(Stroke { last: at, taken: vec![], placed: vec![] });
+        self.stroke_dab(at);
+    }
+
+    /// Scatter tool: drops a dab of copies around `center`. The ground is rebuilt only when the stroke ends, so copies
+    /// from this stroke never stack on each other.
+    fn stroke_dab(&mut self, center: Vec3) {
+        let Some(st) = self.stroke.as_mut() else { return };
+        let mut taken = std::mem::take(&mut st.taken);
+        let spots = place::dab(&self.ground, &self.brush, &mut self.rng, center, &mut taken);
+        let mut placed = vec![];
+        for sp in spots {
+            match self.place_spot(sp, "Scatter", Some("scatter")) {
+                Ok(_) => placed.push(sp.pos),
+                Err(e) => {
+                    self.status = e;
+                    break;
+                }
+            }
+        }
+        if let Some(st) = self.stroke.as_mut() {
+            st.taken = taken;
+            st.last = center;
+            st.placed.extend(placed);
+        }
+    }
+
+    fn stroke_end(&mut self) {
+        let Some(st) = self.stroke.take() else { return };
+        self.history.end_interaction();
+        if let Some(s) = self.brush_src {
+            if matches!(s, Sel::Model(_)) && !st.placed.is_empty() {
+                self.geo_dirty = true;
+            }
+            self.status = format!("Scattered {} copies of {} (one undo step)", st.placed.len(), self.label(s));
+        }
+        self.ov_dirty = true;
+    }
+
+    /// Command-line scatter: one dab of `brush` around (x, z), as a drag in the Scatter tool would make.
+    pub fn scatter_at(&mut self, src: Sel, x: f32, z: f32) -> Result<usize, String> {
+        self.ensure_ground();
+        let c = self.loaded.as_ref().ok_or("no course loaded")?;
+        Self::can_copy(c, src)?;
+        self.brush_src = Some(src);
+        let (p, _) = place::surface_below(&self.ground, Vec3::new(x, 0.0, z), 1000.0).ok_or("no ground at that spot")?;
+        self.stroke_begin(p);
+        let n = self.stroke.as_ref().map(|s| s.placed.len()).unwrap_or(0);
+        self.stroke_end();
+        Ok(n)
     }
 
     pub fn select(&mut self, s: Option<Sel>, focus: bool) {
@@ -500,6 +683,10 @@ impl EditorApp {
                 ui.separator();
             }
             egui::ScrollArea::vertical().show(ui, |ui| {
+                if self.tool != Tool::Select && self.loaded.is_some() {
+                    self.placing_ui(ui, &mut acts);
+                    ui.separator();
+                }
                 self.inspector(ui, &mut acts);
                 ui.separator();
                 self.checks_ui(ui, &mut acts);
@@ -525,6 +712,7 @@ impl EditorApp {
         use egui::{Key, Modifiers};
         let sel = self.sel;
         let pos = sel.and_then(|s| self.loaded.as_ref().and_then(|c| edit::position(c, s)));
+        let tool = &mut self.tool;
         ui.input_mut(|i| {
             if i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z) || i.consume_key(Modifiers::COMMAND, Key::Y) {
                 acts.push(Action::Redo);
@@ -533,6 +721,11 @@ impl EditorApp {
             }
             if i.consume_key(Modifiers::NONE, Key::Escape) {
                 acts.push(Action::Select(None));
+            }
+            for (k, t) in [(Key::S, Tool::Select), (Key::P, Tool::Place), (Key::B, Tool::Scatter)] {
+                if i.consume_key(Modifiers::NONE, k) {
+                    *tool = t;
+                }
             }
             if let Some(s) = sel {
                 if i.consume_key(Modifiers::NONE, Key::G) {
@@ -671,16 +864,10 @@ impl EditorApp {
             ui.separator();
             ui.heading("Add a Pokémon");
             ui.label("Click one to put a copy on the ground in the middle of the view. Then drag it where you want it.");
-            // one source spawn per species that has its own spawn point (route-following ones cannot be copied yet)
-            let mut seen = std::collections::BTreeMap::new();
-            for (li, l) in c.levels.iter().enumerate() {
-                for (si, sp) in l.spawns.iter().enumerate() {
-                    // CH_000 and CH_001 entries are flowers, branches and other props
-                    let pokemon = sp.label.starts_with("CH_") && !sp.label.starts_with("CH_000") && !sp.label.starts_with("CH_001");
-                    if sp.alive && sp.alive_off.is_none() && !sp.pos_from_path && sp.pos_off.is_some() && sp.pos != [0.0; 3] && pokemon {
-                        seen.entry(sp.label.clone()).or_insert(Sel::Spawn(li, si));
-                    }
-                }
+            let seen = Self::species_sources(c);
+            let painting = self.tool != Tool::Select;
+            if painting {
+                ui.weak("Place and Scatter are on: a click here picks the brush instead of adding one in the middle of the view.");
             }
             let target = self.ground.below(self.cam.target + Vec3::Y * 50.0, None).unwrap_or(self.cam.target);
             let f = self.search.to_lowercase();
@@ -691,8 +878,13 @@ impl EditorApp {
             ui.horizontal_wrapped(|ui| {
                 for (label, src) in shown {
                     let b = egui::Button::new(egui::RichText::new(label).color(col32(render::species_color(label))));
-                    if ui.add(b).on_hover_text("Copies this species, with its behavior, from the course").clicked() {
-                        acts.push(Action::Copy(*src, Some(target)));
+                    let tip = if painting {
+                        "Use this species as the Place and Scatter brush"
+                    } else {
+                        "Copies this species, with its behavior, from the course"
+                    };
+                    if ui.add(b).on_hover_text(tip).clicked() {
+                        acts.push(if painting { Action::SetBrush(*src) } else { Action::Copy(*src, Some(target)) });
                     }
                 }
             });
@@ -821,6 +1013,15 @@ impl EditorApp {
             if ui.add_enabled(movable, egui::Button::new("Make a copy")).on_hover_text("A copy with the same behavior appears beside it (Ctrl+D)").clicked() {
                 acts.push(Action::Copy(s, None));
             }
+            let brushable = Self::can_copy(c, s);
+            if ui
+                .add_enabled(brushable.is_ok(), egui::Button::new("Use as brush"))
+                .on_hover_text("Place and Scatter put down copies of this one")
+                .on_disabled_hover_text(brushable.err().unwrap_or_default())
+                .clicked()
+            {
+                acts.push(Action::SetBrush(s));
+            }
             let added = edit::is_added(c, s);
             if ui
                 .add_enabled(added, egui::Button::new("Remove"))
@@ -875,6 +1076,76 @@ impl EditorApp {
                 }
             });
         }
+    }
+
+    /// Brush settings for the Place and Scatter tools.
+    fn placing_ui(&mut self, ui: &mut egui::Ui, acts: &mut Vec<Action>) {
+        let Some(c) = &self.loaded else { return };
+        let scatter = self.tool == Tool::Scatter;
+        ui.heading(if scatter { "Scatter" } else { "Place" });
+        ui.label(if scatter {
+            "Drag over the ground to paint copies of the brush. Each stroke is one undo step. Alt+drag turns the camera."
+        } else {
+            "Click the ground or any surface to put down a copy of the brush. Drag turns the camera."
+        });
+        let cur = self.brush_src.map(|s| self.label(s)).unwrap_or_else(|| "nothing yet".into());
+        ui.horizontal(|ui| {
+            ui.label("Brush");
+            egui::ComboBox::from_id_salt("brush_src")
+                .selected_text(cur)
+                .width(160.0)
+                .show_ui(ui, |ui| {
+                    for (label, src) in Self::species_sources(c) {
+                        if ui.selectable_label(self.brush_src == Some(src), egui::RichText::new(&label).color(col32(render::species_color(&label)))).clicked() {
+                            acts.push(Action::SetBrush(src));
+                        }
+                    }
+                })
+                .response
+                .on_hover_text("The Pokémon species to put down. For scenery, select a model and press Use as brush.");
+            if let Some(s) = self.sel {
+                let ok = Self::can_copy(c, s);
+                if ui
+                    .add_enabled(ok.is_ok() && self.brush_src != Some(s), egui::Button::new("Use the selection"))
+                    .on_hover_text("Makes the selected Pokémon or scenery model the brush")
+                    .on_disabled_hover_text(ok.err().unwrap_or("It is already the brush".into()))
+                    .clicked()
+                {
+                    acts.push(Action::SetBrush(s));
+                }
+            }
+        });
+        let model = matches!(self.brush_src, Some(Sel::Model(_)));
+        let b = &mut self.brush;
+        if scatter {
+            ui.add(egui::Slider::new(&mut b.radius, 1.0..=40.0).text("radius").logarithmic(true))
+                .on_hover_text("Size of the circle copies land in, in world units");
+            ui.add(egui::Slider::new(&mut b.count, 1..=20).text("copies per dab"))
+                .on_hover_text("How many copies drop each time the brush moves on by the spacing");
+            ui.add(egui::Slider::new(&mut b.spacing, 0.5..=30.0).text("spacing").logarithmic(true))
+                .on_hover_text("How far the mouse moves before the next dab, in world units");
+            ui.add(egui::Slider::new(&mut b.min_gap, 0.0..=10.0).text("gap between copies"))
+                .on_hover_text("Copies from one stroke keep at least this far apart, so they do not pile up");
+        }
+        ui.checkbox(&mut b.random_yaw, "Random heading").on_hover_text("Each copy faces a random way. Off keeps the brush's own heading.");
+        ui.add_enabled_ui(model, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Random size");
+                ui.add(egui::DragValue::new(&mut b.scale.0).speed(0.01).range(0.05..=20.0).prefix("from "))
+                    .on_hover_text("Smallest size, as a multiple of the brush's size");
+                ui.add(egui::DragValue::new(&mut b.scale.1).speed(0.01).range(0.05..=20.0).prefix("to "))
+                    .on_hover_text("Largest size; set both to 1 to keep the brush's size");
+            })
+            .response
+            .on_disabled_hover_text("Pokémon spawns store no size; this applies to scenery models");
+            ui.checkbox(&mut b.align, "Tilt to the slope")
+                .on_hover_text("Scenery leans with the ground under it")
+                .on_disabled_hover_text("Pokémon always stand upright; this applies to scenery models");
+        });
+        ui.horizontal(|ui| {
+            ui.label("Seed");
+            ui.add(egui::DragValue::new(&mut b.seed)).on_hover_text("The same seed gives the same random layout. Change it for a different one.");
+        });
     }
 
     fn checks_ui(&mut self, ui: &mut egui::Ui, acts: &mut Vec<Action>) {
@@ -1132,6 +1403,15 @@ impl EditorApp {
 
     fn viewport_ui(&mut self, ui: &mut egui::Ui, gpu: &mut Gpu, acts: &mut Vec<Action>) {
         ui.horizontal(|ui| {
+            let t0 = self.tool;
+            ui.selectable_value(&mut self.tool, Tool::Select, "Select").on_hover_text("Click to select, drag to move (S)");
+            ui.selectable_value(&mut self.tool, Tool::Place, "Place").on_hover_text("Click a surface to put down a copy of the brush (P)");
+            ui.selectable_value(&mut self.tool, Tool::Scatter, "Scatter")
+                .on_hover_text("Drag over the ground to paint several copies with random heading and size (B)");
+            if t0 != self.tool {
+                self.stroke_end();
+            }
+            ui.separator();
             let before = self.layers;
             ui.checkbox(&mut self.layers.geometry, "scenery").on_hover_text("Show the course's ground and scenery models");
             ui.checkbox(&mut self.layers.rail, "rail").on_hover_text("Show the camera rail the player rides");
@@ -1212,7 +1492,20 @@ impl EditorApp {
         let rect = resp.rect;
 
         let gz = self.gizmo_target();
-        if resp.drag_started_by(egui::PointerButton::Primary) {
+        let painting = self.tool != Tool::Select && self.loaded.is_some() && !ui.input(|i| i.modifiers.alt);
+        let surface_at = |me: &Self, at: egui::Pos2| {
+            let (o, d) = pick::screen_ray(&me.cam, rect, at);
+            me.ground.raycast(o, d, 1e5, None)
+        };
+        if painting && resp.drag_started_by(egui::PointerButton::Primary) {
+            // Scatter paints; Place leaves the drag to turn the camera
+            let origin = ui.input(|i| i.pointer.press_origin()).unwrap_or(rect.center());
+            if self.tool == Tool::Scatter {
+                if let Some(h) = surface_at(self, origin) {
+                    self.stroke_begin(h.point);
+                }
+            }
+        } else if resp.drag_started_by(egui::PointerButton::Primary) {
             let origin = ui.input(|i| i.pointer.press_origin()).unwrap_or(rect.center());
             self.gizmo_drag = gz.and_then(|(_, p, yaw, ring)| {
                 gizmo::hit(&self.cam, rect, p, ring, origin).and_then(|h| gizmo::begin(&self.cam, rect, p, yaw, h, origin))
@@ -1230,7 +1523,14 @@ impl EditorApp {
             }
         }
         let d = resp.drag_delta();
-        if resp.dragged_by(egui::PointerButton::Primary) {
+        if resp.dragged_by(egui::PointerButton::Primary) && self.stroke.is_some() {
+            if let Some(h) = resp.interact_pointer_pos().and_then(|at| surface_at(self, at)) {
+                let last = self.stroke.as_ref().map(|s| s.last).unwrap_or(h.point);
+                if h.point.distance(last) >= self.brush.spacing {
+                    self.stroke_dab(h.point);
+                }
+            }
+        } else if resp.dragged_by(egui::PointerButton::Primary) {
             if let (Some(g), Some((s, ..)), Some(at)) = (self.gizmo_drag, gz, resp.interact_pointer_pos()) {
                 match g.update(&self.cam, rect, at, self.snap) {
                     Some(gizmo::DragResult::Move(p)) => self.move_sel_to(s, p, Some("gizmo")),
@@ -1262,11 +1562,23 @@ impl EditorApp {
         if resp.drag_stopped() {
             self.drag = None;
             self.gizmo_drag = None;
+            self.stroke_end();
             self.history.end_interaction();
         }
         if resp.clicked() {
             let at = resp.interact_pointer_pos().unwrap_or(rect.center());
-            acts.push(Action::Select(self.pick(rect, at)));
+            if painting {
+                match (self.tool, surface_at(self, at)) {
+                    (Tool::Place, Some(h)) => self.place_one(h),
+                    (Tool::Scatter, Some(h)) => {
+                        self.stroke_begin(h.point);
+                        self.stroke_end();
+                    }
+                    _ => self.status = "Nothing to place on there (is the scenery layer on?)".into(),
+                }
+            } else {
+                acts.push(Action::Select(self.pick(rect, at)));
+            }
         }
         if resp.double_clicked() {
             if let Some(p) = self.sel.and_then(|s| self.loaded.as_ref().and_then(|c| edit::position(c, s))) {
@@ -1298,8 +1610,39 @@ impl EditorApp {
                 }
             }
         }
+        // brush cursor and this stroke's copies (scenery copies show as dots until the stroke ends)
+        if painting {
+            let painter = ui.painter().with_clip_rect(rect);
+            let col = egui::Color32::from_rgb(120, 230, 255);
+            if let Some(h) = resp.hover_pos().and_then(|at| surface_at(self, at)) {
+                if self.tool == Tool::Scatter {
+                    let pts: Vec<egui::Pos2> = (0..=40)
+                        .filter_map(|i| {
+                            let a = i as f32 / 40.0 * std::f32::consts::TAU;
+                            pick::project(&self.cam, rect, h.point + Vec3::new(a.sin(), 0.0, a.cos()) * self.brush.radius)
+                        })
+                        .collect();
+                    painter.add(egui::Shape::line(pts, egui::Stroke::new(2.0, col)));
+                } else if let Some(c) = pick::project(&self.cam, rect, h.point) {
+                    painter.circle_stroke(c, 7.0, egui::Stroke::new(2.0, col));
+                    if let Some(t) = pick::project(&self.cam, rect, h.point + h.normal.normalize_or_zero() * 1.5) {
+                        painter.line_segment([c, t], egui::Stroke::new(2.0, col));
+                    }
+                }
+            }
+            if let Some(st) = &self.stroke {
+                for p in &st.placed {
+                    if let Some(c) = pick::project(&self.cam, rect, *p) {
+                        painter.circle_filled(c, 3.5, col);
+                    }
+                }
+            }
+            if self.brush_src.is_none() {
+                painter.text(rect.center_top() + egui::vec2(0.0, 36.0), egui::Align2::CENTER_TOP, "Pick a brush first (right panel)", egui::FontId::proportional(16.0), col);
+            }
+        }
         // gizmo on top, from the position after this frame's edits
-        if let Some((_, p, _, ring)) = self.gizmo_target() {
+        if let (false, Some((_, p, _, ring))) = (painting, self.gizmo_target()) {
             let active = self.gizmo_drag.map(|g| g.handle).or_else(|| resp.hover_pos().and_then(|at| gizmo::hit(&self.cam, rect, p, ring, at)));
             gizmo::draw(&ui.painter().with_clip_rect(rect), &self.cam, rect, p, ring, active);
             if let (None, Some(h)) = (self.gizmo_drag, active) {
@@ -1316,7 +1659,11 @@ impl EditorApp {
         ui.horizontal(|ui| {
             ui.label(&self.status);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.weak("left drag: orbit / move selected   arrows: move on one axis   ring: turn   right drag: pan   wheel: zoom   G ground   R face rail   F show");
+                ui.weak(match self.tool {
+                    Tool::Select => "left drag: orbit / move selected   arrows: move on one axis   ring: turn   right drag: pan   wheel: zoom   G ground   R face rail   F show",
+                    Tool::Place => "click: place a copy   left drag: orbit   right drag: pan   wheel: zoom   S select   B scatter",
+                    Tool::Scatter => "left drag: paint copies   Alt+drag: orbit   right drag: pan   wheel: zoom   S select   P place",
+                });
             });
         });
     }
