@@ -650,9 +650,9 @@ void add_binding_summary(Page& p) {
     for (int a = first; a < first + 4; ++a) { const Source s = slot_get(action_sources(m, a), kDevKeyboard, 0); out += (out.empty() ? "" : " ") + (s.kind == Source::None ? std::string("-") : source_label(s)); }
     return out;
   };
-  info("Left stick (up down left right)", "Keyboard: " + keys4(16) + "     Controller: left stick");
-  info("Right stick (up down left right)", "Keyboard: " + keys4(20) + "     Controller: right stick");
-  info(custom ? "Changed in the game" : "Default bindings", "Change them in the game: F1 > Bindings. Two slots per device, conflicts shown, reset to defaults.");
+  info("Left stick", "Keyboard: " + keys4(16) + " (up down left right)     Controller: left stick");
+  info("Right stick", "Keyboard: " + keys4(20) + " (up down left right)     Controller: right stick");
+  info(custom ? "Your bindings" : "Default bindings", "Change them in the game: F1 > Bindings.");
 }
 
 void access_changed();   // below
