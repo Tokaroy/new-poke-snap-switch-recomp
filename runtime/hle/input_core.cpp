@@ -32,6 +32,13 @@ bool consume_screenshot() { return g_shot_req.exchange(false); }
 extern "C" void snap_state_request(int op, const char* name);   // runtime/os/os_state.cpp: queue a save (1) or load (2); a worker thread does it
 extern "C" int snap_state_idle();
 extern "C" int snap_state_count(const char* kind);   // "saves..." / "loads..." (ok) or "done..." (ok or refused) finished since the process started
+// test builds without the OS layer (tests/hle) link these instead
+extern "C" void snap_state_request_none(int, const char*) {}
+extern "C" int snap_state_idle_none() { return 1; }
+extern "C" int snap_state_count_none(const char*) { return 0; }
+#pragma comment(linker, "/alternatename:snap_state_request=snap_state_request_none")
+#pragma comment(linker, "/alternatename:snap_state_idle=snap_state_idle_none")
+#pragma comment(linker, "/alternatename:snap_state_count=snap_state_count_none")
 
 // ---------------------------------------------------------------------------------------------------------------
 // names
