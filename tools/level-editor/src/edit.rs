@@ -612,6 +612,15 @@ pub fn export(c: &LoadedCourse, mods_root: &Path, pack: &str, description: &str,
         std::fs::write(&out, &bytes).map_err(|e| format!("{}: {e}", out.display()))?;
         written.push(out);
     }
+    written.extend(write_pack_meta(mods_root, &pack, description)?);
+    Ok(written)
+}
+
+/// Writes the pack's `pack.json` and switches the pack on in `mods.json`. Returns the files written.
+pub fn write_pack_meta(mods_root: &Path, pack: &str, description: &str) -> Result<Vec<PathBuf>, String> {
+    let pack = sanitize_pack(pack);
+    let dir = mods_root.join(&pack);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let pj = dir.join("pack.json");
     let body = format!(
         "{{ \"name\": {}, \"version\": \"0.1.0\", \"author\": \"\", \"description\": {} }}\n",
@@ -619,7 +628,7 @@ pub fn export(c: &LoadedCourse, mods_root: &Path, pack: &str, description: &str,
         json_str(description)
     );
     std::fs::write(&pj, body).map_err(|e| format!("{}: {e}", pj.display()))?;
-    written.push(pj);
+    let mut written = vec![pj];
     if let Some(mj) = enable_pack(mods_root, &pack)? {
         written.push(mj);
     }

@@ -22,6 +22,8 @@ mod headless;
 mod ground;
 mod grow;
 mod import;
+mod import_pack;
+mod reskin;
 mod layout;
 mod level;
 mod modelb;
@@ -72,6 +74,14 @@ struct Args {
     import_scale: f32,
     import_yaw: f32,
     list_materials: bool,
+    /// --reskin FILE: the user's model replaces a species' meshes
+    reskin: Option<PathBuf>,
+    /// --species CH_nnn (with --reskin or --reskin-info)
+    species: Option<String>,
+    reskin_model: String,
+    reskin_keep: Vec<String>,
+    reskin_map: Vec<(String, String)>,
+    reskin_info: bool,
     /// RomFS root holding the original archives (default: `romfs-v262144` beside the data root)
     romfs: Option<PathBuf>,
 }
@@ -132,16 +142,11 @@ fn add_models(data: &mut course::DataRoot, name: &str, variant: u32, adds: &[(St
     Ok(true)
 }
 
-fn romfs_archive(data: &course::DataRoot, romfs: Option<&std::path::Path>, archive: &str) -> PathBuf {
-    let root = romfs.map(|p| p.to_path_buf()).unwrap_or_else(|| data.root.parent().unwrap_or(&data.root).join("romfs-v262144"));
-    root.join(archive)
-}
-
 /// Prints the game materials and template model groups of a course (for --material and --template).
 fn list_materials(data: &mut course::DataRoot, name: &str, variant: u32, romfs: Option<&std::path::Path>) -> Result<(), String> {
     let c = data.courses().into_iter().find(|c| c.name.eq_ignore_ascii_case(name)).ok_or("course not found")?;
     let lc = data.load(&c, variant)?;
-    let a = drp::Archive::open(&romfs_archive(data, romfs, &lc.archive))?;
+    let a = drp::Archive::open(&import_pack::romfs_archive(data, romfs, &lc.archive))?;
     let t = scenery::templates(&a);
     println!("templates ({}):", t.len());
     for x in &t {
@@ -155,108 +160,41 @@ fn list_materials(data: &mut course::DataRoot, name: &str, variant: u32, romfs: 
     Ok(())
 }
 
-/// Imports a model as a new scenery group and places one instance of it. Writes the rewritten archive under
-/// `<dir>/<pack>/romfs/` and the level under the pack's loose files.
+/// `--reskin-info`: species packs, or one species' mesh objects (for --reskin-keep and --reskin-map).
+fn reskin_info(data: &course::DataRoot, species: Option<&str>, model: &str) -> Result<(), String> {
+    match species {
+        None => println!("species: {}", reskin::species(&data.root).join(" ")),
+        Some(sp) => {
+            let (m, objs) = reskin::objects(&data.root, sp, model)?;
+            println!("{sp} model {m}: {} mesh objects", objs.len());
+            for o in objs {
+                println!("  {}.{}  {}  {} vertices{}", o.name, o.subindex, o.material, o.vertices, if o.skinned { ", skinned" } else { "" });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `--reskin`: the user's model replaces a species' meshes in a mod pack (see `reskin`).
+fn reskin_species(data: &course::DataRoot, spec: &reskin::Spec, dir: &std::path::Path, pack: &str) -> Result<bool, String> {
+    if spec.species.is_empty() {
+        return Err("--reskin needs --species CH_nnn (see --reskin-info)".into());
+    }
+    let r = reskin::build(spec, &data.root)?;
+    for line in &r.report {
+        println!("{line}");
+    }
+    let files = reskin::write_pack(&r, dir, pack, &format!("Reskin of {}", spec.species))?;
+    println!("wrote {} file(s) to {}", files.len(), dir.join(edit::sanitize_pack(pack)).display());
+    Ok(true)
+}
+
+/// `--import`: imports a model as a new scenery group into a mod pack (see `import_pack`).
 #[allow(clippy::too_many_arguments)]
 fn import_scenery(data: &mut course::DataRoot, name: &str, variant: u32, spec: &scenery::Spec, pos: Vec3, yaw: f32, romfs: Option<&std::path::Path>, dir: &std::path::Path, pack: &str) -> Result<bool, String> {
-    let c = data.courses().into_iter().find(|c| c.name.eq_ignore_ascii_case(name)).ok_or("course not found")?;
-    let mut lc = data.load(&c, variant)?;
-    if spec.template.is_empty() {
-        return Err("--import needs --template GROUP (see --list-materials)".into());
+    for line in import_pack::import_to_pack(data, name, variant, spec, pos, yaw, romfs, dir, pack)? {
+        println!("{line}");
     }
-    let src = romfs_archive(data, romfs, &lc.archive);
-    let a = drp::Archive::open(&src)?;
-    // y is the height above the surface under (x, z) (ground or any other scenery), like click-to-place
-    let (_, surf) = render::build_geometry(&lc, render::Layers::default());
-    let ground = surf.raycast(Vec3::new(pos.x, 1000.0, pos.z), Vec3::NEG_Y, 2000.0, None).map(|h| h.point.y);
-    let pos = match ground {
-        Some(h) => {
-            println!("ground at ({}, {}) is y {h:.2}; placing {} above it", pos.x, pos.z, pos.y);
-            Vec3::new(pos.x, h + pos.y, pos.z)
-        }
-        None => {
-            println!("no ground under ({}, {}); y {} is absolute", pos.x, pos.z, pos.y);
-            pos
-        }
-    };
-    // the placement is baked into the vertices; the instance stays at the origin like the course's own scenery
-    let spec = &scenery::Spec { place: (pos, yaw), ..spec.clone() };
-    let built = scenery::build(spec, &a, &data.root.join(&lc.archive))?;
-    println!("{}: shapes {}, world bounds {:?}..{:?}", spec.name, built.shapes.join(", "), built.bounds.0, built.bounds.1);
-    for (src_m, game_m, v, t) in &built.parts {
-        println!("  part {src_m}: {v} vertices, {t} triangles -> {game_m}");
-    }
-    // debugging aid: SNAP_IMPORT_DUMP=DIR writes the new files there as loose files
-    if let Some(d) = std::env::var_os("SNAP_IMPORT_DUMP") {
-        let d = std::path::PathBuf::from(d);
-        std::fs::create_dir_all(&d).map_err(|e| e.to_string())?;
-        for (n, b) in &built.chunks {
-            std::fs::write(d.join(n), b).map_err(|e| format!("{n}: {e}"))?;
-        }
-    }
-    let (li, ei) = scenery::template_instance(&lc, &spec.template).ok_or_else(|| format!("no instance of {} to copy", spec.template))?;
-    let add = grow::Add {
-        entity: ei,
-        set: vec![(5, 3, vec![0.0; 3]), (5, 4, vec![0.0, 0.0, 0.0, 1.0]), (5, 5, vec![1.0, 1.0, 1.0])],
-        names: vec![(5, 1, spec.name.clone())],
-        // the instance lists one lightmap (s17) and one s23 entry per model entry, in model order
-        lists: vec![(5, 17, built.shapes.clone()), (5, 23, built.shapes.clone())],
-    };
-    let l = &mut lc.levels[li];
-    let (out, ids) = grow::grow(&l.data, std::slice::from_ref(&add))?;
-    println!("{}: {}", l.name, grow::verify(&l.data, &out, std::slice::from_ref(&add))?);
-    println!("  new entity {:08x}: instance at the origin, geometry around {pos}", ids[0].hash);
-    l.data = out;
-    l.dirty = true;
-    let files = edit::export(&lc, dir, pack, &format!("Imported scenery: {}", spec.name), false)?;
-    let pack_dir = dir.join(edit::sanitize_pack(pack));
-    // collision: the model's triangles as one more shape in the collision file of the ground under it (the course's
-    // rocks and props live there too); served as a loose file next to the level
-    let center = (built.bounds.0 + built.bounds.1) * 0.5;
-    let mut collided = false;
-    for m in lc.models.iter().filter(|m| ground::is_terrain_name(&m.inst.name)) {
-        let Some(src) = &m.source else { continue };
-        let path = src.parent().ok_or("model without folder")?.join(format!("{}.DC4A8177", m.inst.name));
-        let Ok(b) = std::fs::read(&path) else { continue };
-        let xf = ground::inst_xf(&m.inst);
-        let shapes = terrain::parse_collision(&b).map_err(|e| format!("{}: {e}", path.display()))?;
-        let covers = shapes.iter().filter(|s| s.identity() && !s.verts.is_empty()).any(|s| {
-            let w: Vec<Vec3> = s.verts.iter().map(|v| xf.transform_point3(*v)).collect();
-            let lo = w.iter().fold(Vec3::splat(f32::MAX), |a, v| a.min(*v));
-            let hi = w.iter().fold(Vec3::splat(f32::MIN), |a, v| a.max(*v));
-            (lo.x..=hi.x).contains(&center.x) && (lo.z..=hi.z).contains(&center.z)
-        });
-        if !covers {
-            continue;
-        }
-        let inv = xf.inverse();
-        let verts: Vec<Vec3> = built.collision.0.iter().map(|v| inv.transform_point3(*v)).collect();
-        let flags = terrain::prop_face_flags(&b).ok_or("the ground collision has no faces")?;
-        let nb = terrain::append_shape(&b, &verts, &built.collision.1, flags, crc32fast::hash(spec.name.as_bytes()))?;
-        let out = pack_dir.join(lc.archive.replace('/', std::path::MAIN_SEPARATOR_STR)).join(path.file_name().ok_or("bad file name")?);
-        std::fs::create_dir_all(out.parent().ok_or("bad path")?).map_err(|e| e.to_string())?;
-        std::fs::write(&out, &nb).map_err(|e| format!("{}: {e}", out.display()))?;
-        println!("  collision: {} triangles added to {} (shapes {} -> {}, surface flags {:x?})", built.collision.1.len(), m.inst.name, shapes.len(), shapes.len() + 1, flags);
-        collided = true;
-        break;
-    }
-    if !collided {
-        println!("  collision: no ground collision under the model; it has none");
-    }
-    let out = pack_dir.join("romfs").join(lc.archive.replace('/', std::path::MAIN_SEPARATOR_STR));
-    a.write(&built.chunks, &built.groups, &out)?;
-    // read the written archive back
-    let b = drp::Archive::open(&out)?;
-    if b.entries.len() != a.entries.len() + built.chunks.len() || b.groups != built.groups {
-        return Err("written archive differs from the plan".into());
-    }
-    for (k, (n, d)) in built.chunks.iter().enumerate() {
-        let i = a.entries.len() + k;
-        if b.entries[i].name != *n || b.raw_payload(i)?.as_deref() != Some(&d[..]) {
-            return Err(format!("written archive: {n} differs"));
-        }
-    }
-    println!("exported {} file(s) and {} ({} new entries) to {}", files.len(), out.display(), built.chunks.len(), pack_dir.display());
     Ok(true)
 }
 
@@ -408,6 +346,12 @@ fn parse_args() -> Result<Args, String> {
         import_scale: 1.0,
         import_yaw: 0.0,
         list_materials: false,
+        reskin: None,
+        species: None,
+        reskin_model: String::new(),
+        reskin_keep: vec![],
+        reskin_map: vec![],
+        reskin_info: false,
         romfs: None,
     };
     let mut it = std::env::args().skip(1);
@@ -560,6 +504,17 @@ fn parse_args() -> Result<Args, String> {
             "--import-scale" => a.import_scale = val()?.parse().map_err(|_| "--import-scale: number expected")?,
             "--import-yaw" => a.import_yaw = val()?.parse().map_err(|_| "--import-yaw: degrees expected")?,
             "--list-materials" => a.list_materials = true,
+            "--reskin" => a.reskin = Some(PathBuf::from(val()?)),
+            "--species" => a.species = Some(val()?),
+            "--reskin-model" => a.reskin_model = val()?,
+            "--reskin-keep" => a.reskin_keep = val()?.split(',').map(str::to_string).collect(),
+            "--reskin-map" => {
+                a.reskin_map = val()?
+                    .split(',')
+                    .map(|kv| kv.split_once('=').map(|(k, v)| (k.to_string(), v.to_string())).ok_or("--reskin-map: source=object pairs expected"))
+                    .collect::<Result<_, _>>()?
+            }
+            "--reskin-info" => a.reskin_info = true,
             "--romfs" => a.romfs = Some(val()?.into()),
             "--export" => a.export = Some(val()?.into()),
             "--pack" => a.pack = Some(val()?),
@@ -1207,10 +1162,23 @@ fn main() {
     };
     let data = course::DataRoot::locate(args.data.as_deref());
     let course_name = args.course.clone().unwrap_or("LC_001_A".into());
-    if args.summary || args.selftest || args.rail_view.is_some() || args.layout || args.rail_info || args.ground_info || !args.model_adds.is_empty() || args.import.is_some() || args.list_materials {
+    if args.summary || args.selftest || args.rail_view.is_some() || args.layout || args.rail_info || args.ground_info || !args.model_adds.is_empty() || args.import.is_some() || args.list_materials || args.reskin.is_some() || args.reskin_info {
         let r = match data {
             Ok(mut d) => {
-                if args.list_materials {
+                if args.reskin_info {
+                    reskin_info(&d, args.species.as_deref(), &args.reskin_model).map(|_| true)
+                } else if let Some(file) = &args.reskin {
+                    let dir = args.export.clone().ok_or("--reskin needs --export DIR".to_string());
+                    let spec = reskin::Spec {
+                        file: file.clone(),
+                        species: args.species.clone().unwrap_or_default(),
+                        model: args.reskin_model.clone(),
+                        scale: args.import_scale,
+                        keep: args.reskin_keep.clone(),
+                        map: args.reskin_map.clone(),
+                    };
+                    dir.and_then(|dir| reskin_species(&d, &spec, &dir, args.pack.as_deref().unwrap_or("reskin")))
+                } else if args.list_materials {
                     list_materials(&mut d, &course_name, args.variant, args.romfs.as_deref()).map(|_| true)
                 } else if let Some((file, pos)) = &args.import {
                     let dir = args.export.clone().ok_or("--import needs --export DIR".to_string());

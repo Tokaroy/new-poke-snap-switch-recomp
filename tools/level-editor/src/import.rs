@@ -14,12 +14,39 @@ pub struct Part {
     pub normals: Vec<[f32; 3]>,
     pub uvs: Vec<[f32; 2]>,
     pub indices: Vec<u32>,
+    /// joint names of a skinned glTF (shared by every vertex of the part); empty for unskinned models
+    pub joints: Vec<String>,
+    /// up to four (index into `joints`, weight) per vertex, same length as `positions` when `joints` is not empty;
+    /// vertices of an unskinned mesh in a skinned part get zero weights
+    pub weights: Vec<[(u16, f32); 4]>,
 }
 
+/// One primitive's skin: joint names and per-vertex joints and weights.
+type Skin = (Vec<String>, Vec<[u16; 4]>, Vec<[f32; 4]>);
+
 impl Part {
-    fn append(&mut self, p: &[[f32; 3]], n: Option<Vec<[f32; 3]>>, uv: Option<Vec<[f32; 2]>>, idx: &[u32]) {
+    fn append(&mut self, p: &[[f32; 3]], n: Option<Vec<[f32; 3]>>, uv: Option<Vec<[f32; 2]>>, idx: &[u32], skin: Option<Skin>) {
         let base = self.positions.len() as u32;
         let count = p.len();
+        match skin.filter(|s| s.1.len() == count && s.2.len() == count) {
+            Some((names, j, w)) => {
+                // joints of this primitive's skin, as indices into the part's joint list
+                let remap: Vec<u16> = names
+                    .iter()
+                    .map(|n| match self.joints.iter().position(|x| x == n) {
+                        Some(i) => i as u16,
+                        None => {
+                            self.joints.push(n.clone());
+                            (self.joints.len() - 1) as u16
+                        }
+                    })
+                    .collect();
+                self.weights.resize(base as usize, [(0, 0.0); 4]);
+                self.weights.extend((0..count).map(|v| std::array::from_fn(|k| (remap.get(j[v][k] as usize).copied().unwrap_or(0), w[v][k]))));
+            }
+            None if !self.joints.is_empty() => self.weights.resize(base as usize + count, [(0, 0.0); 4]),
+            None => {}
+        }
         self.positions.extend_from_slice(p);
         let n = n.filter(|n| n.len() == count).unwrap_or_else(|| smooth_normals(p, idx));
         self.normals.extend(n);
@@ -86,7 +113,7 @@ fn load_obj(path: &Path) -> Result<BTreeMap<String, Part>, String> {
         // OBJ v runs bottom to top; the game's textures are top-down like glTF
         let uv = (!mesh.texcoords.is_empty()).then(|| mesh.texcoords.chunks_exact(2).map(|c| [c[0], 1.0 - c[1]]).collect());
         let part = out.entry(name.clone()).or_insert_with(|| Part { material: name, ..Default::default() });
-        part.append(&p, n, uv, &mesh.indices);
+        part.append(&p, n, uv, &mesh.indices, None);
     }
     Ok(out)
 }
@@ -145,6 +172,9 @@ fn load_gltf(path: &Path) -> Result<BTreeMap<String, Part>, String> {
     let mut stack: Vec<(gltf::Node, Mat4)> = scene.nodes().map(|n| (n, Mat4::IDENTITY)).collect();
     while let Some((node, parent)) = stack.pop() {
         let m = parent * Mat4::from_cols_array_2d(&node.transform().matrix());
+        // a skinned mesh's vertices are in the skeleton's bind space; glTF ignores the mesh node's own transform
+        let skin = node.skin().map(|s| s.joints().map(|j| j.name().map(str::to_string).unwrap_or_else(|| format!("joint{}", j.index()))).collect::<Vec<_>>());
+        let (m, parent_m) = (if skin.is_some() { Mat4::IDENTITY } else { m }, m);
         let nm = Mat3::from_mat4(m).inverse().transpose();
         if let Some(mesh) = node.mesh() {
             for prim in mesh.primitives() {
@@ -170,12 +200,17 @@ fn load_gltf(path: &Path) -> Result<BTreeMap<String, Part>, String> {
                     Some(i) => format!("material{i}"),
                     None => "default".into(),
                 });
+                let sk = skin.as_ref().and_then(|names| {
+                    let j: Vec<[u16; 4]> = r.read_joints(0)?.into_u16().collect();
+                    let w: Vec<[f32; 4]> = r.read_weights(0)?.into_f32().collect();
+                    Some((names.clone(), j, w))
+                });
                 let part = out.entry(name.clone()).or_insert_with(|| Part { material: name, ..Default::default() });
-                part.append(&p, n, uv, &idx);
+                part.append(&p, n, uv, &idx, sk);
             }
         }
         for c in node.children() {
-            stack.push((c, m));
+            stack.push((c, parent_m));
         }
     }
     Ok(out)

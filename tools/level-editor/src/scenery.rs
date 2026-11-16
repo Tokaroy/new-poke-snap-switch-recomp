@@ -230,8 +230,9 @@ fn type_size(t: ssbh_lib::formats::mesh::AttributeDataTypeV10) -> usize {
 /// ssbh_data writes 2-component attributes as HalfFloat2 and names every attribute after its `attribute_names` entry,
 /// while the game's shaders bind the template's names (`map1`, `lightMap1`) and layout (Float2 UVs, 16-byte stride).
 /// Rewrites every object of `new` to the attribute layout of the template object `shape` (data types, buffers, offsets,
-/// strides, names), converting the values. Bounds, indices and rigging stay as ssbh_data wrote them.
-fn match_layout(new: &[u8], template: &Path, shape: &str) -> Result<Vec<u8>, String> {
+/// strides, names), converting the values; with no `shape`, each object follows the template object of its own name and
+/// subindex. Bounds, indices and rigging stay as ssbh_data wrote them.
+pub(crate) fn match_layout(new: &[u8], template: &Path, shape: Option<&str>) -> Result<Vec<u8>, String> {
     use ssbh_lib::formats::mesh::*;
     let Mesh::V10(t) = Mesh::from_file(template).map_err(|e| format!("{}: {e}", template.display()))? else {
         return Err("template mesh is not version 1.10".into());
@@ -239,14 +240,18 @@ fn match_layout(new: &[u8], template: &Path, shape: &str) -> Result<Vec<u8>, Str
     let Mesh::V10(mut m) = Mesh::read(&mut Cursor::new(new)).map_err(|e| format!("new mesh: {e}"))? else {
         return Err("new mesh is not version 1.10".into());
     };
-    let to = t.objects.elements.iter().find(|o| o.name.to_str() == Some(shape)).or(t.objects.elements.first()).ok_or("template mesh is empty")?;
-    if to.attributes.elements.iter().any(|a| a.buffer_index > 1) || to.stride2 != 0 || to.stride3 != 0 {
-        return Err("template mesh uses vertex buffers 2/3; not supported yet".into());
-    }
-    let tstride = [to.stride0 as usize, to.stride1 as usize];
     let src: Vec<Vec<u8>> = m.vertex_buffers.elements.iter().map(|b| b.elements.clone()).collect();
     let mut bufs: [Vec<u8>; 2] = [vec![], vec![]];
     for o in m.objects.elements.iter_mut() {
+        let to = match shape {
+            Some(shape) => t.objects.elements.iter().find(|x| x.name.to_str() == Some(shape)).or(t.objects.elements.first()),
+            None => t.objects.elements.iter().find(|x| x.name.to_str() == o.name.to_str() && x.subindex == o.subindex),
+        }
+        .ok_or_else(|| format!("template mesh has no object {:?}", o.name.to_str()))?;
+        if to.attributes.elements.iter().any(|a| a.buffer_index > 1) || to.stride2 != 0 || to.stride3 != 0 {
+            return Err("template mesh uses vertex buffers 2/3; not supported yet".into());
+        }
+        let tstride = [to.stride0 as usize, to.stride1 as usize];
         let n = o.vertex_count as usize;
         let sstride = [o.stride0 as usize, o.stride1 as usize];
         let soff = [o.vertex_buffer0_offset as usize, o.vertex_buffer1_offset as usize];
@@ -287,7 +292,7 @@ fn match_layout(new: &[u8], template: &Path, shape: &str) -> Result<Vec<u8>, Str
     Ok(out.into_inner())
 }
 
-fn mesh_object(t: &MeshObjectData, shape: &str, sub: u64, p: &Part) -> Result<MeshObjectData, String> {
+pub(crate) fn mesh_object(t: &MeshObjectData, shape: &str, sub: u64, p: &Part) -> Result<MeshObjectData, String> {
     let n = p.positions.len();
     let pos = VectorData::Vector3(p.positions.iter().map(|v| (*v).into()).collect());
     let normals: Vec<[f32; 4]> = p.normals.iter().map(|v| [v[0], v[1], v[2], 0.0]).collect();
@@ -450,7 +455,7 @@ pub fn build(spec: &Spec, a: &Archive, unpacked: &Path) -> Result<Built, String>
     }
     let mut cur = Cursor::new(vec![]);
     mesh.write(&mut cur).map_err(|e| format!("numshb write: {e}"))?;
-    let mesh_bytes = match_layout(&cur.into_inner(), &unpacked.join(&modl.mesh_file_name), &shape)?;
+    let mesh_bytes = match_layout(&cur.into_inner(), &unpacked.join(&modl.mesh_file_name), Some(&shape))?;
     let back = MeshData::read(&mut Cursor::new(&mesh_bytes)).map_err(|e| format!("numshb re-read: {e}"))?;
     if back.objects.len() != parts.len() || back.objects.iter().zip(&parts).any(|(o, p)| o.vertex_count().ok() != Some(p.positions.len()) || o.vertex_indices != p.indices) {
         return Err("numshb re-read differs".into());

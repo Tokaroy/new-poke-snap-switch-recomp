@@ -8,6 +8,8 @@ use crate::edit::{self, History, Issue, Sel, Writes};
 use crate::gizmo;
 use crate::ground;
 use crate::place;
+use crate::reskin;
+use crate::scenery;
 use crate::level::kind_name;
 use crate::pick::{self, Ground};
 use crate::render::{self, GpuScene, Layers, OrbitCamera, Viewport};
@@ -43,6 +45,43 @@ enum Action {
     SetBrush(Sel),
     /// Rule-based fill around the rail with this many copies.
     Fill(usize),
+    /// Import the model in the Import panel into the pack under this folder.
+    Import(PathBuf),
+    /// Write the Reskin panel's model over a species' meshes, into the pack under this folder.
+    Reskin(PathBuf),
+}
+
+/// The Import a model panel: a user's model file becomes a new scenery model in a mod pack.
+struct ImportForm {
+    file: String,
+    name: String,
+    template: String,
+    material: String,
+    scale: f32,
+    yaw: f32,
+    height: f32,
+    /// Template model groups and game materials of the open course's archive, read when the panel first opens.
+    lists: Option<Result<(Vec<String>, Vec<String>), String>>,
+    msg: Option<(bool, String)>,
+}
+
+impl Default for ImportForm {
+    fn default() -> Self {
+        Self { file: String::new(), name: String::new(), template: String::new(), material: String::new(), scale: 1.0, yaw: 0.0, height: 0.0, lists: None, msg: None }
+    }
+}
+
+/// The Reskin a Pokémon panel: a user's model replaces a species' meshes; skeleton, animations and behavior stay.
+#[derive(Default)]
+struct ReskinForm {
+    file: String,
+    species: String,
+    keep: String,
+    /// species packs in the data, read when the panel first opens
+    list: Option<Vec<String>>,
+    /// mesh objects of the chosen species: (species, lines)
+    objects: Option<(String, Result<Vec<String>, String>)>,
+    msg: Option<(bool, String)>,
 }
 
 struct Drag {
@@ -131,6 +170,8 @@ pub struct EditorApp {
     /// Spawns and scenery standing on edited ground move with it.
     pub ground_carry: bool,
     gstroke: Option<GroundStroke>,
+    import: ImportForm,
+    reskin: ReskinForm,
 }
 
 fn col32(c: [f32; 3]) -> egui::Color32 {
@@ -190,6 +231,8 @@ impl EditorApp {
             ground_strength: 0.5,
             ground_carry: true,
             gstroke: None,
+            import: ImportForm::default(),
+            reskin: ReskinForm::default(),
         }
     }
 
@@ -229,6 +272,7 @@ impl EditorApp {
                 self.history = History::default();
                 self.issues_version = None;
                 self.export_msg = None;
+                self.import = ImportForm::default();
                 self.geo_dirty = true;
                 self.ov_dirty = true;
                 self.status = "Click a Pokémon marker to select it, then drag it to move it.".into();
@@ -448,6 +492,74 @@ impl EditorApp {
                             "Exported {} file(s) to {}. The pack is switched on in mods.json and loads at the next game start; set \"enabled\": false there (or delete the pack folder) to go back to the original course.",
                             files.len(),
                             root.join(edit::sanitize_pack(&self.pack_name)).display()
+                        ),
+                    ),
+                    Err(e) => (false, e),
+                });
+            }
+            Action::Import(root) => {
+                let (Some(c), Ok(data)) = (&mut self.loaded, &self.data) else { return };
+                let f = &self.import;
+                let file = PathBuf::from(f.file.trim().trim_matches('"'));
+                let name = if f.name.trim().is_empty() {
+                    let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or("Model");
+                    format!("SM_USR_{}", stem.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').collect::<String>())
+                } else {
+                    f.name.trim().to_string()
+                };
+                let spec = scenery::Spec {
+                    file,
+                    name,
+                    template: f.template.clone(),
+                    materials: if f.material.is_empty() { vec![] } else { vec![f.material.clone()] },
+                    scale: f.scale,
+                    place: (Vec3::ZERO, 0.0),
+                };
+                // at the selected object, else at the view's center; the height is above the ground there
+                let at = self.sel.and_then(|s| edit::position(c, s)).unwrap_or(self.cam.target);
+                let pos = Vec3::new(at.x, f.height, at.z);
+                let (yaw, pack) = (f.yaw, self.pack_name.clone());
+                let r = crate::import_pack::import_into(data, c, &spec, pos, yaw, None, &root, &pack);
+                self.import.msg = Some(match r {
+                    Ok(lines) => {
+                        // the level bytes changed under the history's recorded edits; start it over
+                        self.history = History::default();
+                        self.ov_dirty = true;
+                        (
+                            true,
+                            format!(
+                                "Imported {} into {}. The editor's view still shows the course without it; ride the course in the game to see it.\n{}",
+                                spec.name,
+                                root.join(edit::sanitize_pack(&pack)).display(),
+                                lines.join("\n")
+                            ),
+                        )
+                    }
+                    Err(e) => (false, e),
+                });
+            }
+            Action::Reskin(root) => {
+                let Ok(data) = &self.data else { return };
+                let f = &self.reskin;
+                let spec = reskin::Spec {
+                    file: PathBuf::from(f.file.trim().trim_matches('"')),
+                    species: f.species.clone(),
+                    model: String::new(),
+                    scale: 1.0,
+                    keep: f.keep.split(',').map(|k| k.trim().to_string()).filter(|k| !k.is_empty()).collect(),
+                    map: vec![],
+                };
+                let pack = self.pack_name.clone();
+                let r = reskin::build(&spec, &data.root).and_then(|r| reskin::write_pack(&r, &root, &pack, &format!("Reskin of {}", spec.species)).map(|w| (r.report, w)));
+                self.reskin.msg = Some(match r {
+                    Ok((lines, w)) => (
+                        true,
+                        format!(
+                            "Wrote {} file(s) to {}. The editor keeps showing markers; ride a course with {} in the game to see the new model.\n{}",
+                            w.len(),
+                            root.join(edit::sanitize_pack(&pack)).display(),
+                            spec.species,
+                            lines.join("\n")
                         ),
                     ),
                     Err(e) => (false, e),
@@ -885,6 +997,8 @@ impl EditorApp {
                 ui.separator();
                 self.checks_ui(ui, &mut acts);
                 self.export_ui(ui, &mut acts);
+                self.import_ui(ui, &mut acts);
+                self.reskin_ui(ui, &mut acts);
                 ui.separator();
                 self.parts(ui, &mut acts);
             });
@@ -1492,6 +1606,150 @@ impl EditorApp {
                 ui.weak("Make a change first. Only changed files are written; the original game stays untouched.");
             }
             if let Some((ok, m)) = &self.export_msg {
+                ui.colored_label(if *ok { egui::Color32::LIGHT_GREEN } else { egui::Color32::LIGHT_RED }, m);
+            }
+        });
+    }
+
+    fn import_ui(&mut self, ui: &mut egui::Ui, acts: &mut Vec<Action>) {
+        let Some(c) = &self.loaded else { return };
+        egui::CollapsingHeader::new("Import a model").default_open(false).show(ui, |ui| {
+            if self.import.lists.is_none() {
+                self.import.lists = Some(match &self.data {
+                    Ok(d) => crate::drp::Archive::open(&crate::import_pack::romfs_archive(d, None, &c.archive)).map(|a| (scenery::templates(&a), scenery::materials(&a))),
+                    Err(e) => Err(e.clone()),
+                });
+            }
+            let f = &mut self.import;
+            ui.horizontal(|ui| {
+                ui.label("Model file");
+                ui.text_edit_singleline(&mut f.file).on_hover_text("Full path of a .glb, .gltf or .obj file. It stays on your PC; only the pack gets a converted copy.");
+            });
+            ui.horizontal(|ui| {
+                ui.label("Name");
+                ui.add(egui::TextEdit::singleline(&mut f.name).hint_text("SM_USR_<file name>"))
+                    .on_hover_text("The new model's name in the course: letters, digits and _ only, and new to this course");
+            });
+            match f.lists.as_ref() {
+                Some(Ok((templates, materials))) => {
+                    egui::ComboBox::from_label("Template")
+                        .selected_text(if f.template.is_empty() { "choose" } else { f.template.as_str() })
+                        .show_ui(ui, |ui| {
+                            for t in templates {
+                                ui.selectable_value(&mut f.template, t.clone(), t);
+                            }
+                        })
+                        .response
+                        .on_hover_text("A model of this course to copy settings from: its vertex layout, shading and lightmap. A rock or a ground piece suits most props.");
+                    egui::ComboBox::from_label("Material")
+                        .selected_text(if f.material.is_empty() { "choose" } else { f.material.as_str() })
+                        .show_ui(ui, |ui| {
+                            for m in materials {
+                                ui.selectable_value(&mut f.material, m.clone(), m);
+                            }
+                        })
+                        .response
+                        .on_hover_text("The game material every part of the model uses (its textures and shader). For one material per part, use --import with --material on the command line.");
+                }
+                Some(Err(e)) => {
+                    ui.colored_label(egui::Color32::LIGHT_RED, format!("Can't read the course archive: {e}"));
+                }
+                None => {}
+            }
+            ui.horizontal(|ui| {
+                ui.add(egui::DragValue::new(&mut f.scale).speed(0.01).range(0.001..=1000.0).prefix("scale "))
+                    .on_hover_text("Size multiplier; glTF files are in meters");
+                ui.add(egui::DragValue::new(&mut f.yaw).speed(1.0).range(-360.0..=360.0).suffix("°").prefix("turn "))
+                    .on_hover_text("Turn around the vertical axis, in degrees");
+                ui.add(egui::DragValue::new(&mut f.height).speed(0.05).prefix("height "))
+                    .on_hover_text("Height above the ground under the placement point");
+            });
+            let at = if self.sel.is_some() { "the selected object" } else { "the center of the view" };
+            ui.weak(format!("Goes at {at}, into the pack \"{}\" in the Folder above.", self.pack_name));
+            let ready = !f.file.trim().is_empty() && !f.template.is_empty() && !f.material.is_empty();
+            if ui
+                .add_enabled(ready, egui::Button::new("Import into the pack"))
+                .on_hover_text("Converts the model, adds it to the course archive with collision, places it, and writes everything into the pack. A second import into the same pack adds to it.")
+                .on_disabled_hover_text("Fill in the model file, template and material first")
+                .clicked()
+            {
+                acts.push(Action::Import(PathBuf::from(&self.export_dir)));
+            }
+            if let Some((ok, m)) = &f.msg {
+                ui.colored_label(if *ok { egui::Color32::LIGHT_GREEN } else { egui::Color32::LIGHT_RED }, m);
+            }
+        });
+    }
+
+    fn reskin_ui(&mut self, ui: &mut egui::Ui, acts: &mut Vec<Action>) {
+        let Ok(data) = &self.data else { return };
+        // a selected Pokémon marker suggests its species
+        let picked = match (self.sel, &self.loaded) {
+            (Some(Sel::Spawn(l, i)), Some(c)) => c.levels.get(l).and_then(|l| l.spawns.get(i)).and_then(|s| {
+                let at = s.label.find("CH_")?;
+                s.label.get(at..at + 6).filter(|id| id[3..].chars().all(|ch| ch.is_ascii_digit())).map(str::to_string)
+            }),
+            _ => None,
+        };
+        egui::CollapsingHeader::new("Reskin a Pokémon").default_open(false).show(ui, |ui| {
+            let f = &mut self.reskin;
+            if f.list.is_none() {
+                f.list = Some(reskin::species(&data.root));
+            }
+            if f.species.is_empty() {
+                if let Some(p) = &picked {
+                    f.species = p.clone();
+                }
+            }
+            ui.horizontal(|ui| {
+                ui.label("Model file");
+                ui.text_edit_singleline(&mut f.file).on_hover_text(
+                    "Full path of a .glb, .gltf or .obj file. A glTF rigged to the species' skeleton (bone names as in the game) animates fully; any other model follows the nearest bone.",
+                );
+            });
+            egui::ComboBox::from_label("Species")
+                .selected_text(if f.species.is_empty() { "choose" } else { f.species.as_str() })
+                .show_ui(ui, |ui| {
+                    for sp in f.list.iter().flatten() {
+                        ui.selectable_value(&mut f.species, sp.clone(), sp);
+                    }
+                })
+                .response
+                .on_hover_text("The Pokémon whose look is replaced. Its skeleton, animations, sounds and behavior stay. Selecting its marker in the view picks it too.");
+            if !f.species.is_empty() && f.objects.as_ref().map(|o| o.0 != f.species).unwrap_or(true) {
+                let r = reskin::objects(&data.root, &f.species, "").map(|(_, objs)| objs.iter().map(|o| format!("{}  ({}, {} vertices)", o.name, o.material, o.vertices)).collect());
+                f.objects = Some((f.species.clone(), r));
+            }
+            ui.horizontal(|ui| {
+                ui.label("Keep");
+                ui.add(egui::TextEdit::singleline(&mut f.keep).hint_text("mesh objects to keep, comma separated"))
+                    .on_hover_text("Original mesh objects to leave as they are, such as the eyes. Every other object without a part of your model draws nothing.");
+            });
+            if let Some((_, objs)) = &f.objects {
+                match objs {
+                    Ok(lines) => {
+                        egui::CollapsingHeader::new(format!("{} mesh objects", lines.len())).id_salt("reskin_objects").show(ui, |ui| {
+                            for l in lines {
+                                ui.weak(l);
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        ui.colored_label(egui::Color32::LIGHT_RED, e);
+                    }
+                }
+            }
+            ui.weak(format!("Writes into the pack \"{}\" in the Folder above.", self.pack_name));
+            let ready = !f.file.trim().is_empty() && !f.species.is_empty();
+            if ui
+                .add_enabled(ready, egui::Button::new("Write the reskin"))
+                .on_hover_text("Converts the model to the species' meshes (and its distance versions) and writes them into the pack")
+                .on_disabled_hover_text("Fill in the model file and species first")
+                .clicked()
+            {
+                acts.push(Action::Reskin(PathBuf::from(&self.export_dir)));
+            }
+            if let Some((ok, m)) = &f.msg {
                 ui.colored_label(if *ok { egui::Color32::LIGHT_GREEN } else { egui::Color32::LIGHT_RED }, m);
             }
         });
