@@ -6,14 +6,14 @@ On a window wider than 16:9, the 3D view gets wider: the vertical field of view 
 
 | Where | Values | Default |
 |---|---|---|
-| `SNAP_ULTRAWIDE` | `off`, `auto` | `off` |
-| Launcher and F1 > Graphics: "Ultrawide" (`gfx_ultrawide`) | Off (16:9 with side bars), Auto (experimental: photo scores unverified) | Off |
+| `SNAP_ULTRAWIDE` | `auto`, `off` | `auto` |
+| Launcher and F1 > Graphics: "Ultrawide" (`gfx_ultrawide`) | Auto (wider 3D view), Off (16:9 with side bars) | Auto |
 
-Auto is off by default until photo scoring is checked (see Known limits). The setting needs a restart. The factor is k = window aspect / (16/9), capped at 4. It is read once from the window's client size when the game starts (`host/boot.cpp`, log line `ultrawide: auto, window client WxH, factor k`). A window at 16:9 or narrower gets k = 1, and every path then runs exactly as before. Off keeps the 16:9 picture with black bars.
+The setting needs a restart. The factor is k = window aspect / (16/9), capped at 4. It is read once from the window's client size when the game starts (`host/boot.cpp`, log line `ultrawide: auto, window client WxH, factor k`). A window at 16:9 or narrower gets k = 1, and every path then runs exactly as before. Off keeps the 16:9 picture with black bars.
 
 ## How it works
 
-Code: `runtime/nvn/nvn_wide.cpp` (the draw rules), `host/mods/lodanim.cpp` (`wide_camera`, the camera), plus small hooks in `nvn_draw.cpp`, `nvn_entry.cpp`, `nvn_aa.cpp` and `nvn_fx.h`, each marked `[wide]`.
+Code: `runtime/nvn/nvn_wide.cpp` (the draw rules), `host/mods/lodanim.cpp` (`wide_camera`, the camera; `snap_wide_eval_copy`, the photo Evaluation), plus small hooks in `nvn_draw.cpp`, `nvn_entry.cpp`, `nvn_aa.cpp` and `nvn_fx.h`, each marked `[wide]`.
 
 1. **Camera.** The ride and lab camera builder (`main+0x295170`) loads the aspect into `s9` just before its `tanf` call at `main+0x296400`. The `tanf` hook multiplies that register by k when it holds 16/9, so the projection keeps its vertical field of view and gets k times the width. The CPU camera is widened too, so culling and level of detail cover the new edges and nothing pops in at the sides. Other 16:9 cameras (cutscenes, some menus) are not widened.
 2. **Render targets.** Every 16:9 render target (the scene, its depth, the post chain, the window textures) gets an image k times wider (`TextureImpl::wide`; `hostW = ceil(width * scale * k)`). The Evaluation depth target and the photo targets keep their size.
@@ -21,7 +21,7 @@ Code: `runtime/nvn/nvn_wide.cpp` (the draw rules), `host/mods/lodanim.cpp` (`wid
    - **full** (x times k): draws with the widened camera, post passes that sample a wide image, full-screen fills, and full-screen or screen-quarter overlays while the 3D view is wide (dimming, wipes, the viewfinder frame).
    - **narrow** (the middle 16:9): interface draws and 16:9 cameras that were not widened.
    - **effects**: world-space particles drawn with a 16:9 camera through the shared camera buffer (c3) get a widened copy of that buffer, so they line up with the widened world. Set `SNAP_WIDE_NO_C3=1` to keep them narrow.
-4. **Photos and scoring.** A draw with the widened camera into a 16:9-only target (the photo Evaluation passes) uses mode **unwiden**: the viewport is k times wider around its center, which gives back the original 16:9 projection exactly. A 16:9 target that samples a wide image reads its middle 16:9 at full resolution (`WideCropSubstitute`). Saved photos keep the original framing.
+4. **Photos and scoring.** A photo keeps the projection the ride camera had at the shutter, so at k > 1 it is k times wider than 16:9 (the 72 photo records, 0x550 bytes apart, hold it at aspect 16/9 x k). The Evaluation copies each photo's camera block (0x480 bytes at +0x50 of the shared photo camera) to its stack with `memcpy`: `f_710041c330` (return `main+0x41c438`), and `f_7100418350` on the Score screen (return `main+0x41b334`). It then crops that projection to its 3:2 photo camera (`f_71003975d0`). The host `memcpy` override (`host/hooks.cpp`) calls `snap_wide_eval_copy` first, which multiplies the x scale (m00) of each 16:9 x k projection in the block by k. The Evaluation then works from the 16:9 projection and builds the same 3:2 camera (aspect 1.5) as at 16:9, on the CPU and in its GPU passes. A draw with the widened camera into a 16:9-only target uses mode **unwiden**: the viewport is k times wider around its center, which gives back the original 16:9 projection exactly. A 16:9 target that samples a wide image reads its middle 16:9 at full resolution (`WideCropSubstitute`). Saved photos keep the original framing.
 5. **Present.** A frame with a widened 3D draw is shown at full width. A frame with none (menus, photo select, movies, cutscenes) shows the middle 16:9 with black bars (`WidePresentCrop`). When the game sets its own present crop (it does on some loading and menu screens), that crop is mapped into the middle 16:9 too. The decision holds for 4 presents so the bars do not flicker on screens that draw their 3D backdrop every other frame.
 
 ## What to expect
@@ -32,11 +32,7 @@ Code: `runtime/nvn/nvn_wide.cpp` (the draw rules), `host/mods/lodanim.cpp` (`wid
 
 ## Known limits
 
-- **Photo scoring on the CPU side (why Auto is off by default).** The projection stored with each photo at the shutter is the widened one. Memory scans at k = 2 find one copy per photo at aspect 16/9 x 2 (records 0x550 bytes apart) and the Evaluation's 3:2 photo camera at aspect 1.5 x 2. The GPU Evaluation passes unwiden it exactly. Hardware read-watch runs (debug registers on every thread, Florio `score_time_a`, 5120x1440) found:
-  - The Evaluation camera's x scale is read during the Evaluation only by its own copy code (`f_710041c330`) and the GPU upload.
-  - The Evaluation also calls `f_71003975d0` on a photo camera that holds the widened 1.5k projection. That function combines the projection with a viewport rect into further camera matrices, so CPU code does work from the widened frame.
-  - Whether those matrices change a score part (Placement and Other Pokémon are the likely ones) was not measured. Runs are not repeatable enough to compare scores between k = 1 and k = 2.
-  - The fix is to store the 16:9 projection at the shutter: an inline hook that divides the stored m00 by k where the photo record is written (that site is not found yet), then the cam-kind-4 unwiden rule goes away. Guest inline hooks need a main regeneration.
+- **Photo records keep the widened projection.** Only the Evaluation's copy is changed; the records themselves still hold aspect 16/9 x k. Check (Florio, `score_time_a`, memory scans after the Score screen): at k = 2 without the fix, the Evaluation cameras were at aspect 3.0 (m00 1.02589, m11 3.07768). With the fix, no camera at aspect 1.5 x k is left. The Evaluation cameras read m00 2.05179, m11 3.07768, m8, m9 and m10 0, m14 0.01, the same values as an Off run (k = 1), and 5.84533 / 8.768 when zoomed. Scores were not compared on the same photo: a save state cannot change k, and rides are not repeatable.
 - Post effects that use a horizontal aspect constant (the edge focus blur, vignette and lens-distortion tonemap) keep the 16:9 constant over the wider image, so their shape is stretched by k.
 
 ## Developer switches

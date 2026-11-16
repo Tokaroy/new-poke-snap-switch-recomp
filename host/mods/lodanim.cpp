@@ -430,7 +430,29 @@ extern "C" void rt_gm_anim_rate(Cpu *c) {
     if (cnt + 1 < last * 2 && cur == last) g_anim_forced++;   // the original code would skip the rebuild this frame
     if (g_full_rate) *(int32_t *)(p + 0x170) = 0x3fffffff;    // cnt+1 >= 2*last always: rebuild every frame, counter resets to 0
 }
+// Ultrawide photo Evaluation (docs/ultrawide.md). A photo keeps the projection the ride camera had at the shutter, which is k
+// times wider than 16:9. The Evaluation copies each photo's camera block (0x480 bytes at +0x50 of the shared photo camera) to
+// its stack with memcpy (f_710041c330, return 0x41c438; f_7100418350 on the Score screen, return 0x41b334), then crops that
+// projection to its 3:2 photo camera (f_71003975d0). Before the copy, each 16:9 x k projection in the block gets its x scale
+// multiplied by k: the Evaluation then works from the same 16:9 projection, and the same 3:2 camera, as at 16:9.
 namespace loader {
+void snap_wide_eval_copy(uint64_t src) {
+    const float k = wide_k();
+    if (k <= 1.0f) return;
+    int fixed = 0;
+    for (uint64_t o = 0; o + 64 <= 0x480; o += 4) {
+        float *m = (float *)(src + o);   // column-major; a perspective projection has m[11] = -1 and zeros off its terms
+        uint32_t w11;
+        memcpy(&w11, m + 11, 4);
+        if (w11 != 0xbf800000u) continue;
+        if (m[1] != 0 || m[2] != 0 || m[3] != 0 || m[4] != 0 || m[6] != 0 || m[7] != 0 || m[12] != 0 || m[13] != 0 || m[15] != 0) continue;
+        if (!(m[0] > 0 && m[5] > 0) || std::fabs(m[5] / m[0] / (16.0 / 9.0 * k) - 1.0) > 0.01) continue;
+        m[0] *= k;
+        fixed++;
+    }
+    static bool logged;
+    if (fixed && !logged) { logged = true; fprintf(stderr, "ultrawide: photo Evaluation uses the 16:9 projection (x scale times %.4f)\n", k); }
+}
 void snap_lodanim_install() {
     const char *e = getenv("SNAP_FOV");
     if (e && *e) {

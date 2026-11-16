@@ -497,7 +497,7 @@ std::vector<Opt>& display_opts() {
        "", {{"", "Remembered"}, {"1280x720", "1280 x 720"}, {"1600x900", "1600 x 900"}, {"1920x1080", "1920 x 1080"}, {"2560x1440", "2560 x 1440"}, {"3840x2160", "3840 x 2160"}}, 0, 0, "", "SNAP_WINDOW_W"},
       {"gfx_ultrawide", "Ultrawide", kChoice, kRestart,
        "On a screen wider than 16:9, Auto shows more of the world at the sides with the same height of view. Menus, the interface and your photos stay 16:9 in the middle. Off shows the 16:9 picture with side bars.",
-       "off", {{"off", "Off (16:9 with side bars)"}, {"auto", "Auto (experimental: photo scores unverified)"}}, 0, 0, "", "SNAP_ULTRAWIDE"},
+       "auto", {{"auto", "Auto (wider 3D view)"}, {"off", "Off (16:9 with side bars)"}}, 0, 0, "", "SNAP_ULTRAWIDE"},
       {"", "Text", kSection, kLive, "", ""},
       {"gfx_ui_font", "Menu text sharpness", kChoice, kRestart,
        "The game's own menus and labels are drawn from a low-resolution letter sheet. Higher draws the letters sharper on large screens, at the same size and position. Automatic uses 2x when the game window is 1440 lines tall or more.", "default",

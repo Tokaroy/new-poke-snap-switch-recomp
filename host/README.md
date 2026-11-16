@@ -533,7 +533,7 @@ Named before / after hooks on game functions, no regeneration of `main`: the fun
 
 ## Ultrawide (2026-11-15, `runtime/nvn/nvn_wide.cpp`, on by default for windows wider than 16:9; `docs/ultrawide.md`)
 
-- `SNAP_ULTRAWIDE=auto|off` (default off; settings key `gfx_ultrawide`; F1 > Graphics and the launcher, restart). Auto is experimental: photo scores are unverified (`docs/ultrawide.md`, Known limits). Auto widens the 3D view by k = window aspect / (16/9), capped at 4, with the same vertical field of view; the HUD, menus, videos and photos stay 16:9 in the middle. Off, or a window at 16:9 or narrower, leaves every path as before. Log line: `ultrawide: auto, window client WxH, factor k`.
+- `SNAP_ULTRAWIDE=auto|off` (default auto; settings key `gfx_ultrawide`; F1 > Graphics and the launcher, restart). Auto widens the 3D view by k = window aspect / (16/9), capped at 4, with the same vertical field of view; the HUD, menus, videos and photos stay 16:9 in the middle. Off, or a window at 16:9 or narrower, leaves every path as before. Log lines: `ultrawide: auto, window client WxH, factor k`, and at the first photo Evaluation `ultrawide: photo Evaluation uses the 16:9 projection`.
 - Developer switches: `SNAP_WIDE_LOG=1|2|3` (decisions; `SNAP_WIDE_LOG_FROM=<present>`), `SNAP_WIDE_TRACE=1` (camera callers), `SNAP_WIDE_SITES=0xOFF:reg,...` (extra camera sites), `SNAP_WIDE_NO_C3=1` (16:9 effect cameras stay narrow).
 
 ## Scheduler switches (nn::os review fixes, 2026-11-13; `analysis\core\review_os.md`, `runtime\os\os_kernel.cpp`)

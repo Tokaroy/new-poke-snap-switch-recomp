@@ -7,7 +7,7 @@
 // draw then picks how its guest x maps onto the wider image (ReplayCtx::wideMode):
 //   full     3D draws with a widened camera, post passes that sample wide images, full-screen fills: guest x * scale * k
 //   narrow   interface draws and 16:9 cameras that were not widened: the middle 16:9 of the image (guest x * scale + offset)
-//   unwiden  a widened camera drawing into a 16:9-only target (the photo Evaluation pass): the viewport is k times wider around
+//   unwiden  a widened camera drawing into a 16:9-only target: the viewport is k times wider around
 //            its center, which is exactly the original 16:9 projection
 // A draw into a target that is not wide (photo, thumbnail, Evaluation depth) that samples a wide image reads its middle 16:9 at
 // full resolution (WideCropSubstitute), so photos and scoring see the original framing. A present with no widened 3D draw
@@ -41,7 +41,8 @@ bool IsDepthFmt(int f) { return f == FMT_STENCIL8 || (f >= FMT_DEPTH16 && f <= F
 // 16:9 within 4% (1920x1080, 960x540, 192x108, 1728x972 and their mip chains down to ~16 px)
 bool Is169(int w, int h) { if (w < 16 || h < 9) return false; const double a = (double)w / h; return std::fabs(a / (16.0 / 9.0) - 1.0) < 0.04; }
 TextureImpl* FirstRt(const ReplayCtx& cx) { for (int i = 0; i < 9; i++) if (cx.rt[i]) return cx.rt[i]; return nullptr; }
-// Camera bank c3 (PerViewCBuffer): projection at +0x80, column-major. 0 = no perspective camera, 1 = 16:9, 2 = widened by k, 3 = other, 4 = 3:2 photo camera widened by k.
+// Camera bank c3 (PerViewCBuffer): projection at +0x80, column-major. 0 = no perspective camera, 1 = 16:9, 2 = widened by k, 3 = other.
+// The photo Evaluation's 3:2 camera is built from the 16:9 projection (snap_wide_eval_copy, host/mods/lodanim.cpp), so it is 3.
 int CameraKind(const uint8_t* c3, uint64_t range) {
   if (!c3 || range < 0xC0) return 0;
   float f[16]; memcpy(f, c3 + 0x80, 64);
@@ -50,8 +51,6 @@ int CameraKind(const uint8_t* c3, uint64_t range) {
   const double a = std::fabs((double)m11 / m00), base = 16.0 / 9.0;
   if (std::fabs(a / base - 1.0) < 0.02) return 1;
   if (g_wideK > 1.0f && std::fabs(a / (base * g_wideK) - 1.0) < 0.02) return 2;
-  // The photo Evaluation camera is the scene camera narrowed to the photo's centered 3:2 part (aspect 1.5): widened, it is 1.5 k
-  if (g_wideK > 1.0f && std::fabs(a / (1.5 * g_wideK) - 1.0) < 0.02) return 4;
   return 3;
 }
 }  // namespace
@@ -113,7 +112,7 @@ bool WideOnDraw(ReplayCtx& cx, TextureImpl* const* sampled, int nSampled, const 
       mode = 0; why = fullScreen ? "full-screen overlay on a wide view" : "screen-quarter overlay on a wide view";
     }
     else { mode = 1; why = cam == 3 ? "other camera" : "interface"; }
-  } else if (cam == 2 || cam == 4) { mode = 2; why = cam == 4 ? "widened photo camera into a 16:9 target" : "widened camera into a 16:9 target"; }
+  } else if (cam == 2) { mode = 2; why = "widened camera into a 16:9 target"; }
   g_stats[mode]++;
   // SNAP_WIDE_LOG=2: each distinct decision once (target, rule, box, sampled sizes), except widened-camera draws (3: those too),
   // from present SNAP_WIDE_LOG_FROM, at most 4000 lines

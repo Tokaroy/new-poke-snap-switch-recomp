@@ -111,7 +111,9 @@ static void h_calloc(Cpu *c) {
 static void h_realloc(Cpu *c) { c->x[0] = (uint64_t)_aligned_realloc(gp(c->x[0]), (size_t)c->x[1] ? (size_t)c->x[1] : 1, 16); }
 static void h_aligned_alloc(Cpu *c) { uint64_t sz = c->x[1], lr = c->x[30]; c->x[0] = (uint64_t)_aligned_malloc((size_t)c->x[1] ? (size_t)c->x[1] : 1, (size_t)c->x[0]); memev('a', c->x[0], sz, lr); }
 static void h_memalign(Cpu *c) { h_aligned_alloc(c); }
-static void h_memcpy(Cpu *c) { memev('y', c->x[0], c->x[2], c->x[30]); memcpy(gp(c->x[0]), gp(c->x[1]), (size_t)c->x[2]); }   // returns x0 unchanged
+namespace loader { void snap_wide_eval_copy(uint64_t src); }   // host/mods/lodanim.cpp, docs/ultrawide.md
+// the photo Evaluation copying a photo's camera block (0x480 bytes) out of the shared photo camera: ultrawide puts its 16:9 projection back first
+static void h_memcpy(Cpu *c) { memev('y', c->x[0], c->x[2], c->x[30]); if (c->x[2] == 0x480 && (c->x[30] == 0x710041c438ull || c->x[30] == 0x710041b334ull)) loader::snap_wide_eval_copy(c->x[1]); memcpy(gp(c->x[0]), gp(c->x[1]), (size_t)c->x[2]); }   // returns x0 unchanged
 static void h_memmove(Cpu *c) { memev('v', c->x[0], c->x[2], c->x[30]); memmove(gp(c->x[0]), gp(c->x[1]), (size_t)c->x[2]); }
 static void h_memset(Cpu *c) { memev('s', c->x[0], c->x[2], c->x[30]); memset(gp(c->x[0]), (int)c->x[1], (size_t)c->x[2]); }
 static void h_strlen(Cpu *c) { c->x[0] = strlen((const char *)gp(c->x[0])); }
