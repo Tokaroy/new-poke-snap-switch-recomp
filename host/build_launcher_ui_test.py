@@ -18,7 +18,8 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     imgui = ROOT / 'runtime' / 'ui' / 'third_party' / 'imgui'
     env = vc_env()
-    srcs = [ROOT / 'host' / 'launcher_ui.cpp', ROOT / 'host' / 'launcher_ui_test.cpp'] + [imgui / f for f in (
+    srcs = [ROOT / 'host' / 'launcher_ui.cpp', ROOT / 'host' / 'launcher_ui_test.cpp',
+            ROOT / 'runtime' / 'mods' / 'mods_core.cpp', ROOT / 'runtime' / 'hle' / 'zip_read.cpp'] + [imgui / f for f in (   # the Mods page reads packs and conflicts with the game's loader
         'imgui.cpp', 'imgui_draw.cpp', 'imgui_tables.cpp', 'imgui_widgets.cpp', 'imgui_impl_dx11.cpp', 'imgui_impl_win32.cpp')]
     objs = []
     for s in srcs:

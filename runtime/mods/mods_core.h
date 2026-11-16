@@ -12,16 +12,25 @@
 namespace mods {
 
 struct Pack {
-  std::string id;            // folder name under the mods root
-  std::string dir;           // absolute path
+  std::string id;            // folder name under the mods root, or the .zip's name without ".zip"
+  std::string dir;           // absolute path (for a zip: its unpacked copy under <root>/.unpacked/<id>)
   std::string name, version, author, description;
   bool enabled = true;
+  bool zip = false;          // the pack is <root>/<id>.zip
 };
 
 struct Override {
   std::string file;          // absolute path of the replacement
   int pack = 0;              // index into Index::packs
   std::string label;         // "archive/entry" for logs
+  std::string rel;           // the file's path inside its pack
+};
+
+// Two enabled packs change the same file: `path` is the file inside the pack ("romfs/..." for whole files); the
+// winner is the pack higher in mods.json. Indexes into Index::packs.
+struct Conflict {
+  std::string path;
+  int winner = 0, loser = 0;
 };
 
 uint32_t crc32(const void* data, size_t n);
@@ -40,11 +49,11 @@ class Index {
  public:
   std::vector<Pack> packs;
   std::unordered_map<std::string, Override> map;
-  std::vector<std::string> conflicts;   // "key: pack A beats pack B"
+  std::vector<Conflict> conflicts;     // every file two enabled packs change, in the order found
   std::vector<std::pair<std::string, int>> rom_layers;   // (<pack>/romfs folder, pack index) of enabled packs, priority order:
                                                           // whole files that shadow rom:/ (e.g. an archive with added entries)
   bool empty() const { return map.empty(); }
-  void add(int pack, const std::string& archive, const std::string& stem, uint32_t extcrc, const std::string& file);
+  void add(int pack, const std::string& archive, const std::string& stem, uint32_t extcrc, const std::string& file, const std::string& rel = "");
   // `name` is the entry name as stored in the chunk; the plain name and the name minus a ".<ext>" suffix whose crc is
   // the chunk's ext id are both tried.
   const Override* find(const std::string& archive_norm, const std::string& name, uint32_t extcrc) const;
@@ -54,7 +63,21 @@ class Index {
 std::string default_root();
 // Reads <root>/mods.json (priority order, "enabled" flags; without the file nothing is enabled except the packs the game needs (native-options),
 // in name order), each pack.json, and indexes the files of enabled packs. Problems go to `warnings`.
-void load(const std::string& root, Index& out, std::vector<std::string>& warnings);
+// unpack = false (the launcher's conflict list): enabled zips are read from their file list and not unpacked, so the
+// index has the same keys and conflicts but no servable files or romfs layers for them.
+void load(const std::string& root, Index& out, std::vector<std::string>& warnings, bool unpack = true);
+
+// ---- Zipped packs. A pack may be a folder or <root>/<id>.zip with the same layout inside (at the top of the zip, or in
+// one folder at its top). The zip is never changed: an enabled zip is unpacked once into <root>/.unpacked/<id>/ and read
+// from there; a changed zip (size or time) is unpacked again. Deleting .unpacked is always safe.
+// Every pack on disk (folders with a pack.json, and .zip files), by id, in name order. ".unpacked" is skipped.
+std::vector<std::string> packs_on_disk(const std::string& root);
+// Fills p (id, zip, name, version, author, description) for the pack `id` without unpacking a zip (pack.json is read
+// from the zip). p.dir is the folder, or for a zip its unpacked copy, which may not exist yet. False if there is no such pack.
+bool pack_info(const std::string& root, const std::string& id, Pack& p, std::vector<std::string>& warnings);
+// Unpacks <root>/<id>.zip into <root>/.unpacked/<id>/ unless that copy is current; returns the copy's folder, or "" (with
+// a warning) when the zip is damaged or holds a path that would leave the folder.
+std::string unpack_zip(const std::string& root, const std::string& id, std::vector<std::string>& warnings);
 
 // Replacement chunk for the DRP entry worker: the original chunk's header (words, name and padding, `hdr_len` bytes)
 // followed by the raw data, stored the way the game stores uncompressed entries (csize == dsize) with the data's CRC32.

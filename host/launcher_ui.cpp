@@ -30,6 +30,7 @@
 #include "hle/json_lite.h"
 #include "hle/picture_rows.h"
 #include "hle/visual_defaults.h"
+#include "mods/mods_core.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -145,6 +146,7 @@ struct Page {
 struct ModPack {
   std::string id, name, version, author, desc;
   bool enabled = false;
+  bool zip = false;   // <id>.zip in the mods folder rather than a folder
 };
 
 // The quality preset is not stored; it is worked out from these rows (the same table and values as runtime/ui/ui_options.cpp: keep them in step).
@@ -1178,6 +1180,26 @@ std::string mods_root_dir() {
 }
 std::string lower_s(std::string t) { for (char& c : t) c = (char)std::tolower((unsigned char)c); return t; }
 
+// Files two enabled packs both change, worked out by the game's own loader from mods.json as saved (zips are read from
+// their file list, not unpacked). Refreshed after every load, toggle and move.
+struct ModClash { std::string path, winner, loser; };   // winner / loser: pack ids
+std::vector<ModClash> g_mod_clash;
+int g_mod_clash_top = 0;   // first line shown in the details panel (mouse wheel)
+void mods_find_conflicts() {
+  g_mod_clash.clear();
+  g_mod_clash_top = 0;
+  mods::Index ix;
+  std::vector<std::string> warn;
+  mods::load(g.mods_root, ix, warn, false);
+  for (const mods::Conflict& c : ix.conflicts) g_mod_clash.push_back({c.path, ix.packs[(size_t)c.winner].id, ix.packs[(size_t)c.loser].id});
+}
+// The conflicts one pack is part of (it won or lost).
+std::vector<const ModClash*> mods_clash_of(const std::string& id) {
+  std::vector<const ModClash*> v;
+  for (const ModClash& c : g_mod_clash) if (c.winner == id || c.loser == id) v.push_back(&c);
+  return v;
+}
+
 void load_mods() {
   g.mods.clear();
   g.mods_keep.clear();
@@ -1197,40 +1219,29 @@ void load_mods() {
       }
     }
   }
-  std::error_code ec;
-  auto meta = [&](ModPack& p) {
-    JsonFile pj;
-    pj.path = g.mods_root + "\\" + p.id + "\\pack.json";
-    pj.load();
-    auto f = [&](const char* k) { const hle::Json* v = pj.j.get(k); return v ? v->str() : std::string(); };
-    p.name = f("name"); p.version = f("version"); p.author = f("author"); p.desc = f("description");
-    if (p.name.empty()) p.name = p.id;
+  // A pack is a folder or <id>.zip; its name and details come from the same reader the game uses (a zip is not unpacked for this).
+  std::vector<std::string> warn;
+  auto info = [&](const std::string& id, bool on, ModPack& out) {
+    mods::Pack p;
+    if (!mods::pack_info(g.mods_root, id, p, warn)) return false;
+    out.id = id; out.enabled = on; out.zip = p.zip;
+    out.name = p.name.empty() ? id : p.name; out.version = p.version; out.author = p.author; out.desc = p.description;
+    return true;
   };
   std::vector<std::string> seen;
   auto known = [&](const std::string& id) { for (const std::string& t : seen) if (lower_s(t) == lower_s(id)) return true; return false; };
   for (const auto& o : order) {
     if (known(o.first)) continue;
     seen.push_back(o.first);
-    if (o.first == "native-options" || !fs::is_directory(P(g.mods_root + "\\" + o.first), ec)) { g.mods_keep.push_back(o); continue; }
     ModPack p;
-    p.id = o.first; p.enabled = o.second;
-    meta(p);
+    if (o.first == "native-options" || !info(o.first, o.second, p)) { g.mods_keep.push_back(o); continue; }
     g.mods.push_back(p);
   }
-  std::vector<std::string> extra;   // folders with a pack.json that mods.json does not list: off until switched on
-  for (fs::directory_iterator it(P(g.mods_root), ec), end; !ec && it != end; it.increment(ec)) {
-    std::error_code e2;
-    if (!it->is_directory(e2) || !fs::exists(it->path() / L"pack.json", e2)) continue;
-    const std::string id = narrow(it->path().filename().wstring());
-    if (id != "native-options" && !known(id)) extra.push_back(id);
-  }
-  std::sort(extra.begin(), extra.end());
-  for (const std::string& id : extra) {
+  for (const std::string& id : mods::packs_on_disk(g.mods_root)) {   // packs mods.json does not list (name order): off until switched on
     ModPack p;
-    p.id = id;
-    meta(p);
-    g.mods.push_back(p);
+    if (id != "native-options" && !known(id) && info(id, false, p)) g.mods.push_back(p);
   }
+  mods_find_conflicts();
 }
 
 void save_mods() {
@@ -1258,6 +1269,7 @@ void mods_toggle(int i) {
   if (i < 0 || i >= (int)g.mods.size()) return;
   g.mods[(size_t)i].enabled = !g.mods[(size_t)i].enabled;
   save_mods();
+  mods_find_conflicts();
   mods_toast(g.mods[(size_t)i].name + (g.mods[(size_t)i].enabled ? " is on. It loads at the next start." : " is off."));
 }
 void mods_move(int i, int d) {   // d -1 = higher priority
@@ -1265,6 +1277,7 @@ void mods_move(int i, int d) {   // d -1 = higher priority
   if (i < 0 || j < 0 || i >= (int)g.mods.size() || j >= (int)g.mods.size()) return;
   std::swap(g.mods[(size_t)i], g.mods[(size_t)j]);
   save_mods();
+  mods_find_conflicts();
   g.row = j + 1;
 }
 void mods_open_folder() {
@@ -1765,7 +1778,10 @@ void draw_mods() {
   diamond(122, 82, 56, C(0x8f8e90));
   aperture(122, 82, 26, C(kCream));
   text(180, 70, 42, C(0x6a6561), "Mods");
-  text(182, 106, 17, C(kGrey), g.mods.empty() ? "Loose-file mod packs" : "Packs higher in the list win when two change the same file");
+  std::string head = g.mods.empty() ? "Loose-file mod packs" : "Packs higher in the list win when two change the same file";
+  if (!g_mod_clash.empty())
+    head = std::to_string(g_mod_clash.size()) + (g_mod_clash.size() == 1 ? " file is" : " files are") + " changed by two packs. The higher pack wins; select one to see which files.";
+  text(182, 106, 17, C(g_mod_clash.empty() ? kGrey : 0xb0662e), head.c_str());
   const int n = (int)g.mods.size();
   g.row = std::clamp(g.row, 0, n);
   const bool moved = ImGui::GetIO().MouseDelta.x != 0 || ImGui::GetIO().MouseDelta.y != 0;
@@ -1791,7 +1807,7 @@ void draw_mods() {
     shadow(84, y, 740, 150, 22);
     rrect(84, y, 740, 150, 22, C(0xffffff));
     text(114, y + 36, 24, C(0x6a6561), "No mod packs yet");
-    text_wrap2(114, y + 96, 18, C(kGrey), "A pack is a folder with a pack.json inside. Drop it into the mods folder, then come back to this page.", 680);
+    text_wrap2(114, y + 96, 18, C(kGrey), "A pack is a folder with a pack.json inside, or a .zip of one. Drop it into the mods folder, then come back to this page.", 680);
   }
   for (int k = g.mods_top; k < n && k < g.mods_top + vis; ++k) {
     const ModPack& p = g.mods[(size_t)k];
@@ -1816,6 +1832,11 @@ void draw_mods() {
     text(x + 34, y + h / 2, 18, C(0xffffff), std::to_string(k + 1).c_str(), 1);
     text_clip(x + 66, y + 22, sel ? 24 : 22, C(sel ? kBrown : 0x6a6561), p.name.c_str(), up_x - 90);
     std::string sub = p.version.empty() ? p.id : "v" + p.version + "  -  " + p.id;
+    if (p.zip) sub += "  -  zip";
+    if (p.enabled) {
+      const size_t nc = mods_clash_of(p.id).size();
+      if (nc) sub += "  -  " + std::to_string(nc) + (nc == 1 ? " file shared" : " files shared");
+    }
     text_clip(x + 66, y + 46, 14, C(sel ? 0x7a6440 : 0x9a9795), sub.c_str(), up_x - 90);
     for (int a = 0; a < 2; ++a) {   // move up / move down
       const float ax = a == 0 ? up_x : ux;
@@ -1848,7 +1869,9 @@ void draw_mods() {
       std::string d = p.desc.empty() ? "No description." : p.desc;
       float ty = y0 + 164;
       size_t pos = 0;
-      for (int line = 0; line < 6 && pos < d.size(); ++line, ty += 26) {   // plain word wrap, six lines
+      std::vector<const ModClash*> clash = p.enabled ? mods_clash_of(p.id) : std::vector<const ModClash*>();
+      const int dlines = clash.empty() ? 6 : 2;   // the conflict list takes the rest of the panel
+      for (int line = 0; line < dlines && pos < d.size(); ++line, ty += 26) {   // plain word wrap
         std::string a;
         while (pos < d.size()) {
           size_t sp = d.find(' ', pos);
@@ -1860,15 +1883,54 @@ void draw_mods() {
         }
         text(x + 24, ty, 17, C(0x6a6561), a.c_str());
       }
+      if (!clash.empty()) {   // every file this pack shares with another enabled pack, grouped by who wins
+        auto name_of = [](const std::string& id) { for (const ModPack& m : g.mods) if (m.id == id) return m.name; return id; };
+        std::stable_sort(clash.begin(), clash.end(), [&](const ModClash* a, const ModClash* b) {
+          const bool wa = a->winner == p.id, wb = b->winner == p.id;
+          if (wa != wb) return wa;
+          return (wa ? a->loser : a->winner) < (wb ? b->loser : b->winner);
+        });
+        std::vector<std::pair<std::string, ImU32>> lines;
+        std::string last;
+        for (const ModClash* c : clash) {
+          const bool won = c->winner == p.id;
+          const std::string h2 = (won ? "Wins over " : "Loses to ") + name_of(won ? c->loser : c->winner) + ":";
+          if (h2 != last) { lines.push_back({h2, C(won ? 0x5f8a62 : 0xb0662e)}); last = h2; }
+          lines.push_back({c->path, C(0x6a6561)});
+        }
+        const float ly = y0 + 226, lh = 20;
+        const int vis_l = 7;
+        text(x + 24, ly - 8, 15, C(kGrey), (std::to_string(clash.size()) + (clash.size() == 1 ? " file" : " files") + " also changed by another pack").c_str());
+        if (hot(x, y0, w, h) && ImGui::GetIO().MouseWheel != 0) g_mod_clash_top -= (int)(ImGui::GetIO().MouseWheel * 3);
+        static int last_row = -1;
+        if (last_row != g.row) { g_mod_clash_top = 0; last_row = g.row; }
+        g_mod_clash_top = std::clamp(g_mod_clash_top, 0, std::max(0, (int)lines.size() - vis_l));
+        for (int k = 0; k < vis_l && g_mod_clash_top + k < (int)lines.size(); ++k) {
+          const auto& L = lines[(size_t)(g_mod_clash_top + k)];
+          const bool is_head = L.first.back() == ':';
+          std::string s = L.first;
+          const float maxw = w - 48 - (is_head ? 0 : 12);
+          if (!is_head && text_w(14, s.c_str()) > maxw) {   // long paths keep their end (the file name)
+            while (s.size() > 1 && text_w(14, (".." + s).c_str()) > maxw) s.erase(0, 1);
+            s = ".." + s;
+          }
+          text(x + 24 + (is_head ? 0 : 12), ly + 14 + k * lh, is_head ? 15 : 14, L.second, s.c_str());
+        }
+        if ((int)lines.size() > vis_l) {
+          char t[48];
+          std::snprintf(t, sizeof t, "%d - %d of %d lines (scroll)", g_mod_clash_top + 1, std::min((int)lines.size(), g_mod_clash_top + vis_l), (int)lines.size());
+          text(x + w - 24, ly + 14 + vis_l * lh, 13, C(kGrey), t, 2);
+        }
+      }
       text(x + 24, y0 + h - 76, 16, C(p.enabled ? 0x5f8a62 : kGrey), p.enabled ? "On: loads at the next start" : "Off");
-      text_clip(x + 24, y0 + h - 44, 14, C(0x9a9795), (g.mods_root + "\\" + p.id).c_str(), w - 48);
+      text_clip(x + 24, y0 + h - 44, 14, C(0x9a9795), (g.mods_root + "\\" + p.id + (p.zip ? ".zip" : "")).c_str(), w - 48);
     } else {
       text_wrap2(x + 24, y0 + 110, 17, C(0x6a6561), "Each pack replaces game files, such as textures, text and menus, without touching the game itself.", w - 48);
       text_wrap2(x + 24, y0 + 190, 17, C(0x6a6561), "The order is the priority: pack 1 wins over pack 2.", w - 48);
       text_wrap2(x + 24, y0 + 270, 17, C(0x6a6561), "Changes apply the next time you press Play.", w - 48);
     }
   }
-  help_bar(g.row == 0 ? "Opens the mods folder in Explorer. Put each pack in its own folder with a pack.json."
+  help_bar(g.row == 0 ? "Opens the mods folder in Explorer. Put each pack in its own folder with a pack.json, or drop in its .zip."
                        : "Enter turns the pack on or off. Q and E (or the arrows beside it) move it up or down the priority order. Changes apply at the next start.");
   if (click && hot(1186, 656, 94, 64)) g.view = G::HOME;
 }

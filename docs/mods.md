@@ -15,6 +15,9 @@ mods\
     pack.json                    name, version, author, description
     common\UI\master\Foo.drp\    <- the archive path, exactly as under rom:/ (the folder name ends in .drp)
       icon_a.nutexb              <- one decompressed entry, named like the extracted file
+    romfs\                       <- optional: whole files laid over rom:/ by path
+  ui-tweaks.zip                  a pack can also be a .zip (see "Zip packs")
+  .unpacked\                     the loader's copies of enabled zips; safe to delete
 ```
 
 The path below the pack folder is `<archive path>/<entry file>`, the same layout as
@@ -38,7 +41,21 @@ entries apart, so that file overrides every entry with the same name and type in
 { "name": "Magenta UI test", "version": "1.0.0", "author": "you", "description": "What it changes." }
 ```
 
-All fields are optional text. The folder name is the pack id used in `mods.json` and in the log.
+All fields are optional text. The folder name (or the zip name without `.zip`) is the pack id used in `mods.json`, in the
+launcher and in the log.
+
+## Zip packs
+
+A pack can be a single `<id>.zip` in the mods root instead of a folder. Inside the zip, `pack.json` sits either at the top or
+in one top folder (a zipped pack folder works as is). Stored and deflate zips are read, zip64 included.
+
+- The zip is never changed. When the pack is on, the loader unpacks it once to `mods\.unpacked\<id>\` and serves files
+  from there. A `<id>.stamp` file next to the copy holds the zip's size and time; when the zip changes, the copy is made
+  again at the next start. Deleting `.unpacked` is always safe.
+- A file whose path would land outside the pack (`../`, a drive letter, an absolute path) makes the loader refuse the
+  whole zip and turn the pack off for that start, with a warning in the log.
+- A pack that is off is not unpacked. Its `pack.json` is still read so the launcher can show its name.
+- A folder and a zip with the same id are one pack; the folder is used.
 
 ## mods.json and priority
 
@@ -54,8 +71,28 @@ All fields are optional text. The folder name is the pack id used in `mods.json`
   (`[mods] conflict: ...`).
 - A plain string means enabled. A pack that is listed but missing, or on disk but not listed, is skipped (a warning is
   logged for the first case).
-- Without a `mods.json`, every folder that contains a `pack.json` is enabled, in name order.
-- Changes apply at the next game start. There is no hot reload.
+- Without a `mods.json`, no pack is on except `native-options` (the PC tabs of the options menu), which is on unless
+  `mods.json` lists it as disabled.
+- Changes apply at the next game start. There is no hot reload. Nothing in the game files is modified, so turning a pack
+  off is the whole rollback.
+
+## Conflicts
+
+Two enabled packs conflict when both replace the same DRP entry, or both carry the same `romfs/` path. The pack higher in
+the list wins. The loader logs each one at startup:
+
+```
+[mods] conflict: common/UI/master/Foo.drp/icon_a.nutexb: my-hd-pack beats ui-tweaks
+```
+
+The launcher's Mods page lists the same conflicts (it runs the same loader code): every path two enabled packs both
+change, and which pack wins. Move a pack up to make it win.
+
+## The HD texture pack
+
+The builder's AI texture upscaler (`builder\HD-TEXTURES.md`) writes an ordinary folder pack, `hd-ai-textures`, and adds
+it to the end of `mods.json`. So any pack you list above it wins where both change a texture, and the conflict list shows
+where that happens. The pack is made from your own game files; do not share it.
 
 ## Making an override
 
@@ -98,5 +135,17 @@ code indexes by the original length) must keep its size.
   (`runtime/mods/mods_core.cpp`), and on a hit points the worker at a host-built chunk: the original header with csize =
   dsize = file size, the file's CRC32, and the file as an uncompressed payload. With no packs installed the hook is one
   atomic load and a return.
-- Tests: `tests\mods\run_tests.ps1` (path mapping, index priority, size override) and
+- Zips are read by `runtime/hle/zip_read.cpp` (no third-party code; the save importer uses it too).
+- Tests: `tests\mods\run_tests.ps1` (path mapping, index priority, size override, zip packs, conflicts) and
   `python -I tests\mods\test_make_override.py`.
+
+## Ideas from RT64 texture packs (not built yet)
+
+RT64's `TEXTURE-PACKS.md` (MIT) describes N64 texture packs. Its packs are keyed by texture hash because N64 textures
+have no names; ours are keyed by DRP path, which is stable and readable, so we keep paths. One thing we already match:
+RT64 ships BC7 DDS with a full mip chain, and our builder writes BC7 `nutexb` with mips. Two ideas worth taking later:
+
+- A low-mip cache: one small file holding the lowest mips of every replacement, loaded at startup, so a texture shows
+  at low detail at once while the full one loads.
+- zstd inside the zip: RT64 packs (`.rtz`) are zips compressed with zstd by default. Our zip reader takes stored and
+  deflate only; zstd would make big packs smaller and faster to unpack.

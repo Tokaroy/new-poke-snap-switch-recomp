@@ -51,7 +51,8 @@ void init() {
   std::vector<std::string> warn;
   mods::load(root, g_index, warn);
   for (auto& w : warn) fprintf(stderr, "[mods] warning: %s\n", w.c_str());
-  for (auto& c : g_index.conflicts) fprintf(stderr, "[mods] conflict: %s\n", c.c_str());
+  for (auto& c : g_index.conflicts)
+    fprintf(stderr, "[mods] conflict: %s: %s beats %s\n", c.path.c_str(), g_index.packs[c.winner].id.c_str(), g_index.packs[c.loser].id.c_str());
   for (auto& l : g_index.rom_layers) fprintf(stderr, "[mods] rom layer %s <- %s\n", l.first.c_str(), g_index.packs[l.second].id.c_str());
   if (g_index.empty()) {
     if (!g_index.packs.empty()) fprintf(stderr, "[mods] root %s: %zu packs, no overrides\n", root.c_str(), g_index.packs.size());

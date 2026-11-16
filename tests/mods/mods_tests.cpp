@@ -2,7 +2,11 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <chrono>
 #include <fstream>
+#include <iterator>
+#include <string>
+#include <vector>
 
 #include "mods/mods_core.h"
 
@@ -14,6 +18,32 @@ static void write(const fs::path& p, const std::string& s) {
   fs::create_directories(p.parent_path());
   std::ofstream f(p, std::ios::binary);
   f << s;
+}
+
+static std::string slurp(const fs::path& p) {
+  std::ifstream f(p, std::ios::binary);
+  return std::string(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+}
+
+// A stored (uncompressed) zip of (name, data) pairs.
+static void write_zip(const fs::path& p, const std::vector<std::pair<std::string, std::string>>& files) {
+  std::string out, cd;
+  auto u16 = [](std::string& s, uint32_t v) { s += (char)(v & 0xff); s += (char)((v >> 8) & 0xff); };
+  auto u32 = [&](std::string& s, uint32_t v) { u16(s, v & 0xffff); u16(s, v >> 16); };
+  for (auto& [name, data] : files) {
+    uint32_t crc = mods::crc32(data.data(), data.size()), off = (uint32_t)out.size(), n = (uint32_t)data.size();
+    u32(out, 0x04034b50); u16(out, 20); u16(out, 0); u16(out, 0); u16(out, 0); u16(out, 0x21);
+    u32(out, crc); u32(out, n); u32(out, n); u16(out, (uint32_t)name.size()); u16(out, 0);
+    out += name; out += data;
+    u32(cd, 0x02014b50); u16(cd, 20); u16(cd, 20); u16(cd, 0); u16(cd, 0); u16(cd, 0); u16(cd, 0x21);
+    u32(cd, crc); u32(cd, n); u32(cd, n); u16(cd, (uint32_t)name.size()); u16(cd, 0); u16(cd, 0); u16(cd, 0); u16(cd, 0);
+    u32(cd, 0); u32(cd, off); cd += name;
+  }
+  uint32_t cdo = (uint32_t)out.size();
+  out += cd;
+  u32(out, 0x06054b50); u16(out, 0); u16(out, 0); u16(out, (uint32_t)files.size()); u16(out, (uint32_t)files.size());
+  u32(out, (uint32_t)cd.size()); u32(out, cdo); u16(out, 0);
+  write(p, out);
 }
 
 int main() {
@@ -108,7 +138,84 @@ int main() {
     CHECK(w.size() == 1);        // "missing" folder
     CHECK(i2.rom_layers.size() == 1 && i2.packs[i2.rom_layers[0].second].id == "packA");
     CHECK(fs::path(i2.rom_layers[0].first) == root / "packA" / "romfs");
+    CHECK(i2.conflicts.size() == 1 && i2.conflicts[0].path == "common/UI/x.drp/icon.nutexb");   // the file as named in the pack
+    CHECK(i2.packs[i2.conflicts[0].winner].id == "packB" && i2.packs[i2.conflicts[0].loser].id == "packA");
   }
+
+  // Zipped packs: the pack inside one top folder of the zip; it outranks packB; packA and packZ both carry a whole file
+  write_zip(root / "packZ.zip", {{"packZ/pack.json", "{\"name\":\"Zip pack\",\"version\":\"2\"}"},
+                                 {"packZ/common/UI/x.drp/icon.nutexb", "ZZZZ"},
+                                 {"packZ/common/UI/x.drp/zip.msbt", "ZIP"},
+                                 {"packZ/romfs/common/UI/x.drp", "ZWHOLE"}});
+  write_zip(root / "evil.zip", {{"pack.json", "{}"}, {"../outside.txt", "nope"}});
+  write_zip(root / "quiet.zip", {{"pack.json", "{\"name\":\"Quiet\"}"}, {"common/UI/x.drp/q.msbt", "Q"}});
+  {
+    auto ids = packs_on_disk(root.string());
+    CHECK(ids == std::vector<std::string>({"evil", "packA", "packB", "packC", "packZ", "quiet"}));
+    Pack q;
+    std::vector<std::string> w;
+    CHECK(pack_info(root.string(), "quiet", q, w) && q.zip && q.name == "Quiet");   // read from the zip, not unpacked
+    CHECK(!fs::exists(root / ".unpacked" / "quiet"));
+    CHECK(!pack_info(root.string(), "nothing", q, w));
+  }
+  write(root / "mods.json", "{\"packs\":[\"packZ\",\"packB\",\"packA\",\"evil\",{\"id\":\"quiet\",\"enabled\":false}]}");
+  {
+    // the launcher's view: same conflicts, nothing unpacked
+    Index d;
+    std::vector<std::string> w;
+    load(root.string(), d, w, false);
+    CHECK(!fs::exists(root / ".unpacked" / "packZ") && !fs::exists(root / ".unpacked" / "evil"));
+    CHECK(d.packs.size() == 5 && d.packs[0].zip && d.packs[0].enabled && !d.packs[3].enabled);
+    const Override* e = d.find("common/ui/x.drp", "icon", ext_crc("nutexb"));
+    CHECK(e && d.packs[e->pack].id == "packZ" && e->file.empty());
+    int icon = 0, whole = 0;
+    for (auto& c : d.conflicts) {
+      if (c.path == "common/UI/x.drp/icon.nutexb" && d.packs[c.winner].id == "packZ") icon++;
+      if (c.path == "romfs/common/UI/x.drp" && d.packs[c.winner].id == "packZ" && d.packs[c.loser].id == "packA") whole++;
+    }
+    CHECK(d.conflicts.size() == 3 && icon == 2 && whole == 1);
+  }
+  {
+    Index i5;
+    std::vector<std::string> w;
+    load(root.string(), i5, w);
+    CHECK(i5.packs.size() == 5 && i5.packs[0].zip && i5.packs[0].name == "Zip pack" && i5.packs[0].version == "2");
+    const Override* e = i5.find("common/ui/x.drp", "icon", ext_crc("nutexb"));
+    CHECK(e && i5.packs[e->pack].id == "packZ" && slurp(e->file) == "ZZZZ");
+    CHECK(fs::path(e->file).parent_path().parent_path().parent_path().parent_path() == root / ".unpacked" / "packZ");
+    CHECK(i5.find("common/ui/x.drp", "zip", ext_crc("msbt")) != nullptr);
+    CHECK(!i5.find("common/ui/x.drp", "q", ext_crc("msbt")));                  // disabled zip: not unpacked, no entries
+    CHECK(!fs::exists(root / ".unpacked" / "quiet"));
+    CHECK(i5.packs[3].id == "evil" && !i5.packs[3].enabled && !fs::exists(root / "outside.txt") && !fs::exists(root / ".unpacked" / "evil"));
+    bool warned = false;
+    for (auto& s : w) warned |= s.find("evil.zip: refused") == 0;
+    CHECK(warned);
+    // conflicts: icon (Z beats B, Z beats A), and the whole file x.drp (Z beats A)
+    int icon = 0, whole = 0;
+    for (auto& c : i5.conflicts) {
+      if (c.path == "common/UI/x.drp/icon.nutexb" && i5.packs[c.winner].id == "packZ") icon++;
+      if (c.path == "romfs/common/UI/x.drp" && i5.packs[c.winner].id == "packZ" && i5.packs[c.loser].id == "packA") whole++;
+    }
+    CHECK(i5.conflicts.size() == 3 && icon == 2 && whole == 1);
+  }
+  {
+    // the unpacked copy is reused while the zip is unchanged, and redone when it changes
+    fs::path f = root / ".unpacked" / "packZ" / "common/UI/x.drp/zip.msbt";
+    write(f, "LOCAL");
+    Index i6;
+    std::vector<std::string> w;
+    load(root.string(), i6, w);
+    CHECK(slurp(f) == "LOCAL");
+    write_zip(root / "packZ.zip", {{"pack.json", "{}"}, {"common/UI/x.drp/zip.msbt", "NEW!"}});
+    fs::last_write_time(root / "packZ.zip", fs::last_write_time(root / "packZ.zip") + std::chrono::seconds(5));
+    Index i7;
+    load(root.string(), i7, w);
+    CHECK(slurp(f) == "NEW!" && !fs::exists(root / ".unpacked" / "packZ" / "romfs"));
+  }
+  fs::remove(root / "packZ.zip");
+  fs::remove(root / "evil.zip");
+  fs::remove(root / "quiet.zip");
+  fs::remove_all(root / ".unpacked");
   fs::remove(root / "mods.json");
   {
     Index i3;

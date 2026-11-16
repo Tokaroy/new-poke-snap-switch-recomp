@@ -11,6 +11,7 @@
 #include <sstream>
 
 #include "../hle/json_lite.h"
+#include "../hle/zip_read.h"
 
 namespace fs = std::filesystem;
 
@@ -93,17 +94,22 @@ std::string make_key(const std::string& archive_norm, const std::string& stem_lo
   return archive_norm + buf + stem_lower;
 }
 
-void Index::add(int pack, const std::string& archive, const std::string& stem, uint32_t extcrc, const std::string& file) {
+void Index::add(int pack, const std::string& archive, const std::string& stem, uint32_t extcrc, const std::string& file, const std::string& rel) {
   std::string key = make_key(archive, stem, extcrc);
   auto it = map.find(key);
   if (it != map.end()) {   // a higher-priority pack was added first
-    conflicts.push_back(key + ": " + packs[it->second.pack].id + " beats " + packs[pack].id);
+    Conflict c;
+    c.path = rel.empty() ? archive + "/" + stem : rel;
+    c.winner = it->second.pack;
+    c.loser = pack;
+    conflicts.push_back(std::move(c));
     return;
   }
   Override o;
   o.file = file;
   o.pack = pack;
   o.label = archive + "/" + stem;
+  o.rel = rel;
   map.emplace(std::move(key), std::move(o));
 }
 
@@ -172,7 +178,133 @@ static void read_pack_json(Pack& p, std::vector<std::string>& warn) {
   if (p.name.empty()) p.name = p.id;
 }
 
-void load(const std::string& root, Index& out, std::vector<std::string>& warn) {
+static fs::path U(const std::string& s) { return fs::u8path(s); }
+static std::string S8(const fs::path& p) { auto u = p.u8string(); return std::string(u.begin(), u.end()); }
+
+// Size and time of the zip: its unpacked copy is current while this matches the copy's .stamp file.
+static std::string zip_stamp(const fs::path& z) {
+  std::error_code ec;
+  uint64_t sz = (uint64_t)fs::file_size(z, ec);
+  long long t = (long long)fs::last_write_time(z, ec).time_since_epoch().count();
+  return std::to_string(sz) + " " + std::to_string(t) + " 1";
+}
+
+// A path from inside a zip may only name a file below the folder it is unpacked into.
+static bool safe_rel(const std::string& r) {
+  if (r.empty() || r[0] == '/' || r.find(':') != std::string::npos) return false;
+  for (unsigned char c : r) if (c < 0x20) return false;
+  size_t a = 0;
+  while (a <= r.size()) {
+    size_t b = r.find('/', a);
+    if (b == std::string::npos) b = r.size();
+    if (r.compare(a, b - a, "..") == 0 && b - a == 2) return false;
+    a = b + 1;
+  }
+  return true;
+}
+
+// Where the pack starts inside the zip: "" when pack.json is at the top, else "<folder>/" when every file sits in one
+// top folder (a zipped pack folder), else "".
+static std::string zip_prefix(const std::vector<hle::zipr::Entry>& v) {
+  std::string top;
+  for (auto& e : v) {
+    if (lower(e.rel) == "pack.json") return "";
+    size_t k = e.rel.find('/');
+    if (k == std::string::npos) return "";
+    std::string t = e.rel.substr(0, k + 1);
+    if (top.empty()) top = t;
+    else if (lower(t) != lower(top)) return "";
+  }
+  return top;
+}
+
+static fs::path unpacked_base(const std::string& root) { return U(root) / ".unpacked"; }
+
+std::vector<std::string> packs_on_disk(const std::string& root) {
+  std::vector<std::string> ids;
+  std::error_code ec;
+  for (fs::directory_iterator it(U(root), ec), end; !ec && it != end; it.increment(ec)) {
+    std::error_code e2;
+    std::string name = S8(it->path().filename());
+    if (name.empty() || name[0] == '.') continue;
+    if (it->is_directory(e2)) {
+      if (fs::exists(it->path() / "pack.json", e2)) ids.push_back(name);
+    } else if (it->is_regular_file(e2) && lower(name).size() > 4 && lower(name).compare(name.size() - 4, 4, ".zip") == 0) {
+      ids.push_back(name.substr(0, name.size() - 4));
+    }
+  }
+  std::sort(ids.begin(), ids.end());
+  ids.erase(std::unique(ids.begin(), ids.end()), ids.end());   // a folder and a zip of the same name: one pack (the folder is used)
+  return ids;
+}
+
+std::string unpack_zip(const std::string& root, const std::string& id, std::vector<std::string>& warn) {
+  std::error_code ec;
+  fs::path z = U(root) / U(id + ".zip"), base = unpacked_base(root), dst = base / U(id), st = base / U(id + ".stamp");
+  const std::string want = zip_stamp(z);
+  std::string have;
+  if (read_text(st, &have) && have == want && fs::is_directory(dst, ec)) return S8(dst);
+  std::vector<hle::zipr::Entry> v;
+  std::string err;
+  if (!hle::zipr::list(z, v, &err)) { warn.push_back(id + ".zip: " + err); return ""; }
+  const std::string pre = zip_prefix(v);
+  fs::path tmp = base / U(id + ".part");
+  fs::remove_all(tmp, ec);
+  fs::create_directories(tmp, ec);
+  for (auto& e : v) {
+    if (lower(e.rel.substr(0, pre.size())) != lower(pre)) continue;
+    std::string r = e.rel.substr(pre.size());
+    if (!safe_rel(r)) { warn.push_back(id + ".zip: refused " + e.rel + " (it would land outside the pack)"); fs::remove_all(tmp, ec); return ""; }
+    fs::path out = tmp / U(r);
+    fs::create_directories(out.parent_path(), ec);
+    if (!hle::zipr::extract(z, e, out, &err)) { warn.push_back(id + ".zip: " + err); fs::remove_all(tmp, ec); return ""; }
+  }
+  fs::remove(st, ec);
+  fs::remove_all(dst, ec);
+  ec.clear();
+  fs::rename(tmp, dst, ec);
+  if (ec) { warn.push_back(id + ".zip: could not move the unpacked copy into place: " + ec.message()); fs::remove_all(tmp, ec); return ""; }
+  std::ofstream(st, std::ios::binary | std::ios::trunc) << want;
+  return S8(dst);
+}
+
+bool pack_info(const std::string& root, const std::string& id, Pack& p, std::vector<std::string>& warn) {
+  std::error_code ec;
+  p = Pack();
+  p.id = id;
+  fs::path folder = U(root) / U(id), z = U(root) / U(id + ".zip");
+  if (fs::is_directory(folder, ec)) {
+    p.dir = S8(folder);
+    read_pack_json(p, warn);
+    return true;
+  }
+  if (!fs::is_regular_file(z, ec)) return false;
+  p.zip = true;
+  p.dir = S8(unpacked_base(root) / U(id));
+  p.name = id;
+  std::vector<hle::zipr::Entry> v;
+  std::string err;
+  if (!hle::zipr::list(z, v, &err)) { warn.push_back(id + ".zip: " + err); return true; }
+  const std::string want = lower(zip_prefix(v) + "pack.json");
+  for (auto& e : v) {
+    if (lower(e.rel) != want || e.size > (1u << 20)) continue;
+    Pack q;
+    q.id = id;
+    q.dir = S8(unpacked_base(root) / U(id + ".meta"));
+    fs::create_directories(U(q.dir), ec);
+    if (hle::zipr::extract(z, e, U(q.dir) / "pack.json", &err)) {
+      read_pack_json(q, warn);
+      p.name = q.name; p.version = q.version; p.author = q.author; p.description = q.description;
+    } else {
+      warn.push_back(id + ".zip: " + err);
+    }
+    fs::remove_all(U(q.dir), ec);
+    break;
+  }
+  return true;
+}
+
+void load(const std::string& root, Index& out, std::vector<std::string>& warn, bool unpack) {
   std::error_code ec;
   if (!fs::is_directory(root, ec)) return;
   std::vector<std::pair<std::string, bool>> order;   // (folder, enabled)
@@ -199,29 +331,61 @@ void load(const std::string& root, Index& out, std::vector<std::string>& warn) {
     for (auto& o : order) if (o.first == req) listed = true;
     if (!listed && fs::exists(fs::path(root) / req / "pack.json", ec)) order.push_back({req, true});
   }
+  std::unordered_map<std::string, int> rom_seen;   // romfs/ path -> the pack that serves it
   for (auto& [id, en] : order) {
     Pack p;
-    p.id = id;
-    p.dir = (fs::path(root) / id).string();
+    if (!pack_info(root, id, p, warn)) { warn.push_back(id + ": listed in mods.json but there is no folder or .zip of that name"); continue; }
     p.enabled = en;
-    if (!fs::is_directory(p.dir, ec)) { warn.push_back(id + ": listed in mods.json but the folder does not exist"); continue; }
-    read_pack_json(p, warn);
+    bool listed_only = false;   // an enabled zip read from its file list (unpack = false)
+    if (p.zip && en) {
+      if (unpack) {
+        std::string d = unpack_zip(root, id, warn);
+        if (d.empty()) { p.enabled = false; out.packs.push_back(p); continue; }
+        p.dir = d;
+        read_pack_json(p, warn);
+      } else {
+        listed_only = true;
+      }
+    }
     out.packs.push_back(p);
-    if (!en) continue;
+    if (!p.enabled) continue;
     int idx = (int)out.packs.size() - 1;
-    // <pack>/romfs/<path>: whole files laid over rom:/ (MountRom puts these folders first). Used for archives with added
-    // entries (scripts/hd/drp_add_entries.py); loose entry files below still override entries inside them.
-    if (fs::is_directory(fs::path(p.dir) / "romfs", ec)) out.rom_layers.push_back({(fs::path(p.dir) / "romfs").string(), idx});
-    for (auto it = fs::recursive_directory_iterator(p.dir, fs::directory_options::skip_permission_denied, ec); it != fs::recursive_directory_iterator(); it.increment(ec)) {
-      if (ec) break;
-      if (!it->is_regular_file(ec)) continue;
-      std::string rel = fs::relative(it->path(), p.dir, ec).generic_string();
+    // The pack's files as (path below the pack, file on disk; empty for a zip that is only listed).
+    std::vector<std::pair<std::string, std::string>> files;
+    if (listed_only) {
+      std::vector<hle::zipr::Entry> v;
+      std::string err;
+      if (!hle::zipr::list(U(root) / U(id + ".zip"), v, &err)) { warn.push_back(id + ".zip: " + err); continue; }
+      const std::string pre = zip_prefix(v);
+      bool bad = false;
+      for (auto& e : v) {
+        if (lower(e.rel.substr(0, pre.size())) != lower(pre)) continue;
+        std::string r = e.rel.substr(pre.size());
+        if (!safe_rel(r)) { warn.push_back(id + ".zip: refused " + e.rel + " (it would land outside the pack)"); bad = true; break; }
+        files.push_back({r, ""});
+      }
+      if (bad) { out.packs[(size_t)idx].enabled = false; continue; }   // unpack_zip refuses it the same way
+    } else {
+      // <pack>/romfs/<path>: whole files laid over rom:/ (MountRom puts these folders first). Used for archives with added
+      // entries (scripts/hd/drp_add_entries.py); loose entry files below still override entries inside them.
+      if (fs::is_directory(fs::path(p.dir) / "romfs", ec)) out.rom_layers.push_back({(fs::path(p.dir) / "romfs").string(), idx});
+      for (auto it = fs::recursive_directory_iterator(p.dir, fs::directory_options::skip_permission_denied, ec); it != fs::recursive_directory_iterator(); it.increment(ec)) {
+        if (ec) break;
+        if (!it->is_regular_file(ec)) continue;
+        files.push_back({fs::relative(it->path(), p.dir, ec).generic_string(), it->path().string()});
+      }
+    }
+    for (auto& [rel, file] : files) {
+      if (lower(rel).compare(0, 6, "romfs/") == 0) {   // whole-file layer, not entries
+        auto r = rom_seen.emplace(lower(rel), idx);     // the first layer that has a path wins, the same rule MountRom uses
+        if (!r.second) out.conflicts.push_back(Conflict{rel, r.first->second, idx});
+        continue;
+      }
       if (rel == "pack.json" || lower(rel).find(".drp/") == std::string::npos) continue;   // only paths below an archive folder
-      if (lower(rel).compare(0, 6, "romfs/") == 0) continue;                                // whole-file layer, not entries
       std::string a, s;
       uint32_t x;
       if (!parse_pack_path(rel, &a, &s, &x)) { warn.push_back(p.id + ": ignored " + rel + " (expected <archive>.drp/<entry>.<ext>)"); continue; }
-      out.add(idx, a, s, x, it->path().string());
+      out.add(idx, a, s, x, file, rel);
     }
   }
 }
