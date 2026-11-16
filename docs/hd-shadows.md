@@ -33,19 +33,37 @@ masks clamped to the original's min/max, soft half-tone regions kept as plain bi
 Built into the hdtex pipeline (`builder/snapbuild/hdtex*.py`), no model and no play-through:
 
 ```
-snap_builder.py hdtex --level hd --cats shadow --from-data <unpacked game root> --pack-id hd-shadows \
-    --work <work folder> --mods-dir <mods folder> --pause-game
+snap_builder.py hdtex --level hd --cats shadow --from-romfs <extracted romfs folder> --pack-id hd-shadows --pause-game [--json]
 ```
 
 - `shadow` is its own texture category. The textures pack never builds it; the HD shadows pack (`hd-shadows`) only builds it.
-- Levels: Sharp and HD 2x, Ultra 4x, Custom `shadow.scale=N` (`shadow.strength=0` is plain enlargement, de-ringed).
+- Levels: Sharp and HD 2x, Ultra 4x, Custom `shadow.scale=N` (`shadow.strength=0` is plain enlargement, de-ringed). Shadow maps
+  stop at 2048 pixels, so an original that is already 2048 stays as the game has it.
 - `process_shadow`: Lanczos enlargement kept inside the original's local min/max (no ringing, the amount of shadow stays the
   game's), then hard edges, and only those, are steepened by the scale; soft half-tones stay plain. Like the originals, the
   output keeps one mip level.
-- `--from-data` scans the unpacked course packs for `^Shadow.nutexb` (4,578 files across 275 packs) instead of the texture
-  cache, so nothing has to be played first.
-- Background: BelowNormal, `--pause-game` waits while `SnapRecomp.exe` or `snap_boot.exe` runs, progress and estimate
-  lines as in the textures build, and every finished texture is recorded, so a stop or a crash resumes where it left off.
+- `--from-romfs` reads the course archives directly: `scripts/drp_unpack.py --name '\^Shadow\.nutexb$'` decodes the 4,578
+  shadow maps of the 29 course packs (1.3 GB, 64 s) into the work folder, so nothing has to be played first and no unpacked
+  game tree is needed. `--from-data` takes an already unpacked tree instead.
+- Background: BelowNormal, `--pause-game` waits while `SnapRecomp.exe` or `snap_boot.exe` runs, and every finished texture is
+  recorded, so a stop or a crash resumes where it left off ("N of M already up to date").
+- `--json` prints `{"progress": {...}}` lines and a final `{"done": {...}}` for the launcher's progress bar; `--dry-run` prints
+  `{"plan": {...}}`. Each pack keeps its own work folder, so this build never touches the HD textures state.
+
+On the reference PC (4,493 of 4,578 maps are planned; 16 are skipped by the classifier and 69 are 2048 already): one course
+(203 maps) built at about 340 maps a minute, so the estimate for all courses was about 13 minutes of build time and 3.8 GB on
+disk at HD. Measured for all of them (2026-11-16, CPU only, three runs because of `--limit` chunks and a resume): 4,493 maps built,
+0 failed, 3.9 GB on disk, 12.7 minutes (3.7 + 5.9 + 3.1).
+
+| | NewSnapRecomp 0.9.15 | This build |
+| --- | --- | --- |
+| Every course at install, no play-through | yes | yes (`--from-romfs`) |
+| Painted shadows on stairs, decks, rocks, ground | yes | yes, every per-mesh sun-shadow map of every course |
+| Edges cleaned, soft foliage left soft | yes (ESRGAN, clamped) | yes (clamped Lanczos, hard edges only steepened) |
+| Pauses when the game starts, resumes | yes | yes |
+| Time | about 35 min, RTX 4060 | 12.7 min measured, CPU only (4090 PC) |
+| Disk | 6.3 GB | 3.9 GB at HD |
+| Progress bar | 0.9.20 | JSON progress events; launcher row pending |
 
 Result on Florio Day (crops of the same texture, original at 4x nearest | plain Lanczos | Stage A): Stage A keeps the
 game's edges where Lanczos blurs them and is smoother than nearest. `D:\snap-hdshadows\cmp_stageA.png` (local only).

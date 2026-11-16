@@ -7,7 +7,6 @@ repeat @f3100 @f7250 40 4 A
 @f7760 6 A
 @f8090 6 A
 repeat @f8300 @f8900 90 6 A
-repeat @f8900 @f17900 600 4 A
 repeat @f19900 @f60000 1200 10 Right
 repeat @f20000 @f60000 1200 10 A
 repeat @f20100 @f60000 1200 10 A
