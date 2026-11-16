@@ -34,6 +34,10 @@ extern "C" { void os_host_block_begin(void); void os_host_block_end(void); void 
 #include "ui/ui_present.h"   // controls overlay hook (runtime/ui); the stub below keeps nvn-only builds linking
 extern "C" void snap_ui_present_none(const SnapUiFrame*) {}
 #pragma comment(linker, "/alternatename:snap_ui_present=snap_ui_present_none")
+extern "C" bool snap_ui_start_pending_none() { return false; }   // "Starting the game" note (runtime/ui/ui_fps.cpp)
+extern "C" void snap_ui_first_picture_none() {}
+#pragma comment(linker, "/alternatename:snap_ui_start_pending=snap_ui_start_pending_none")
+#pragma comment(linker, "/alternatename:snap_ui_first_picture=snap_ui_first_picture_none")
 extern "C" void snap_look_present(const SnapUiFrame*);   // host/mods/look.cpp (hook request 1)
 extern "C" void snap_look_present_none(const SnapUiFrame*) {}
 #pragma comment(linker, "/alternatename:snap_look_present=snap_look_present_none")
@@ -1930,6 +1934,39 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
       } else { fdBuf = VK_NULL_HANDLE; }
     }
   }
+  // "Starting the game" note (launcher Play): while the host overlay waits for the game's first picture, a few pixels of the window texture are copied into
+  // a small host buffer every 20 presents and read once the GPU is past that submit. One pixel above black tells the overlay to drop the note. Read only.
+  static VkBuffer spBuf = VK_NULL_HANDLE; static VkDeviceMemory spMem = VK_NULL_HANDLE; static void* spMap = nullptr;
+  static bool spFlight = false; static uint64_t spVal = 0; static unsigned spTick = 0;
+  constexpr uint32_t kSpN = 8, kSpPts = 3;
+  bool spRecorded = false;
+  if (realPass && snap_ui_start_pending()) {
+    if (spFlight) {
+      uint64_t cur = 0;
+      if (vkGetSemaphoreCounterValue(h->device, q->timeline, &cur) == VK_SUCCESS && cur >= spVal) {
+        spFlight = false;
+        const uint8_t* px = static_cast<const uint8_t*>(spMap);
+        for (uint32_t i = 0; i < kSpN * kSpN * kSpPts * 4; i++) if ((i & 3) != 3 && px[i] > 12) { snap_ui_first_picture(); break; }
+      }
+    } else if ((spTick++ % 20) == 0 && src->fi && src->fi->bytes == 4 && src->fi->aspect == VK_IMAGE_ASPECT_COLOR_BIT && src->HW() >= 64 && src->HH() >= 64 &&
+               (spBuf != VK_NULL_HANDLE || CreateHostBuffer(h, (uint64_t)kSpN * kSpN * kSpPts * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, &spBuf, &spMem, &spMap))) {
+      const int32_t cw = (int32_t)src->HW(), ch = (int32_t)src->HH();
+      const int32_t cx[kSpPts] = {cw / 2, cw / 4, cw * 3 / 4}, cy[kSpPts] = {ch / 2, ch / 4, ch * 3 / 4};
+      VkBufferImageCopy rg[kSpPts] = {};
+      for (uint32_t i = 0; i < kSpPts; i++) {
+        rg[i].bufferOffset = (VkDeviceSize)i * kSpN * kSpN * 4; rg[i].bufferRowLength = kSpN; rg[i].bufferImageHeight = kSpN;
+        rg[i].imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        rg[i].imageOffset = {cx[i] - (int32_t)kSpN / 2, cy[i] - (int32_t)kSpN / 2, 0}; rg[i].imageExtent = {kSpN, kSpN, 1};
+      }
+      vkCmdCopyImageToBuffer(cb, src->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, spBuf, kSpPts, rg);
+      VkMemoryBarrier2 spb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+      spb.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT; spb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+      spb.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT; spb.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+      VkDependencyInfo spd{VK_STRUCTURE_TYPE_DEPENDENCY_INFO}; spd.memoryBarrierCount = 1; spd.pMemoryBarriers = &spb;
+      vkCmdPipelineBarrier2(cb, &spd);
+      spRecorded = true;
+    }
+  }
   PerfMark(h, cb, "present clear+blit");
   bool hdrDone = false;   // HDR10 swapchain (SNAP_HDR=1): nvn_hdr.cpp draws the PQ pass instead of the clear + blit below (set after the rects are known)
   if (!w->hdr) {
@@ -2035,6 +2072,7 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
   si.signalSemaphoreInfoCount = 2; si.pSignalSemaphoreInfos = sig;
   { snap_perf::Scope perfScope(snap_perf::C_QSUBMIT); VKCHK(vkQueueSubmit2(h->queue, 1, &si, VK_NULL_HANDLE)); }
   PerfGpuSubmitted(perfSlot, v);
+  if (spRecorded) { spFlight = true; spVal = v; }   // the starting-note sample above is readable once the timeline reaches v
   q->inflight.push_back({v, cb, nullptr});
   if (fdBuf && fdHdr) {
     VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};

@@ -171,6 +171,38 @@ void draw_safe_banner(ImVec2 size) {
   dl->AddText(font, fs, ImVec2(x, y + pad), IM_COL32(255, 232, 170, 255), t);
 }
 
+// "Starting the game": the launcher's Play button hands over to the game window, which stays black until the first picture (the first start can take
+// a minute or more while the shader cache fills and the files load). SNAP_LAUNCHER_STARTING=1 (set by the launcher) turns the note on; the NVN
+// present path reports the first picture through snap_ui_first_picture(). Gives up by itself after five minutes.
+static std::atomic<int> g_start_note{-1};   // -1: not read yet (the launcher sets the variable after static initialisation); 0 off; 1 on
+static ULONGLONG g_start_t0 = 0;
+
+bool start_note_on() {
+  int on = g_start_note.load(std::memory_order_relaxed);
+  if (on < 0) { const char* e = std::getenv("SNAP_LAUNCHER_STARTING"); on = e && e[0] == '1'; g_start_note.store(on); }
+  if (!on) return false;
+  if (!g_start_t0) g_start_t0 = GetTickCount64();
+  if (GetTickCount64() - g_start_t0 > 300000ull) { g_start_note.store(0); return false; }
+  return true;
+}
+
+void start_note_done() { g_start_note.store(0); }
+
+void draw_start_note(ImVec2 size) {
+  const float k = std::max(0.75f, size.y / 1080.0f);
+  ImFont* font = ImGui::GetFont();
+  const float fs = 26.0f * k, fs2 = 17.0f * k, pad = 16.0f * k;
+  const char* t1 = "Starting the game...";
+  const char* t2 = "The screen stays black for a little while. The first start can take a minute or more.";
+  const ImVec2 s1 = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, t1), s2 = font->CalcTextSizeA(fs2, FLT_MAX, 0.0f, t2);
+  const float w = std::max(s1.x, s2.x), h = s1.y + s2.y + 8.0f * k;
+  const float x = (size.x - w) * 0.5f, y = size.y * 0.5f - h * 0.5f;
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  dl->AddRectFilled(ImVec2(x - pad, y - pad), ImVec2(x + w + pad, y + h + pad), IM_COL32(20, 20, 24, 200), 8.0f * k);
+  dl->AddText(font, fs, ImVec2(x + (w - s1.x) * 0.5f, y), IM_COL32(255, 255, 255, 255), t1);
+  dl->AddText(font, fs2, ImVec2(x + (w - s2.x) * 0.5f, y + s1.y + 8.0f * k), IM_COL32(220, 220, 224, 255), t2);
+}
+
 void draw_fps_overlay(ImVec2 size) {
   const int mode = fps_overlay_mode();
   if (mode == 0) return;

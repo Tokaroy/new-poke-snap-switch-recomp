@@ -1172,6 +1172,7 @@ bool prepare(Result& r) {
   if (!autoplay) loader::g_fatal_hook = [](const char* m) { message("Snap Recomp", std::string(m), MB_ICONERROR); };   // a failure while loading shows the same way
   r.config_path = U8(cfg_path.wstring());
   r.proceed = true;
+  if (!autoplay) _putenv_s("SNAP_LAUNCHER_STARTING", "1");   // the game window shows "Starting the game..." until its first picture (runtime/ui/ui_fps.cpp)
   if (safe) _putenv_s("SNAP_SAFE_MODE", "1");   // read by settings (trimmed copy, no writes), mods (no packs), the shader cache (own folder) and the banner
   // logs: %LOCALAPPDATA%\SnapRecomp\logs (stderr to a file; the trace file for the boot log)
   const fs::path logs = logs_dir();

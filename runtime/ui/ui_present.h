@@ -21,3 +21,8 @@ struct SnapUiFrame {
 // Records the overlay on top of the finished scene blit (nothing when the menu is closed and there is no notice to show).
 // Called once per present on the thread that presents. Defined in runtime/ui/ui_overlay.cpp.
 extern "C" void snap_ui_present(const SnapUiFrame* frame);
+
+// "Starting the game" note (launcher Play, SNAP_LAUNCHER_STARTING=1): the game window stays black until the first picture. The present path asks whether
+// the note is still waiting (then it samples a few pixels of the game image now and then) and reports the first picture, which switches the note off.
+extern "C" bool snap_ui_start_pending();
+extern "C" void snap_ui_first_picture();
