@@ -43,6 +43,7 @@
 #include "upscale/upscale_nvn.h"   // [upscale]
 #include "nvn_framegen.h"          // [framegen]
 #include "nvn_shot.h"              // screenshot key (F12)
+#include "nvn_uismooth.h"          // [uismooth] smooth interface above 60 fps
 
 namespace nvn {
 
@@ -1327,6 +1328,35 @@ void DoDraw(ReplayCtx& cx, const Cmd& c0) {
     }
     return ok;
   };
+  for (int k = 0; k < 4; k++) cx.sm[k] = cx.smBox[k] = 0.0f;
+  {   // [uismooth] (nvn_uismooth.h) an interface draw that the game steps at 60 Hz moves a fraction of its step ahead each displayed frame; [hudtrace] SNAP_HUD_TRACE=1 logs every interface draw (present, draw number in the frame, box as drawn)
+    static const bool trace = [] { const char* e = getenv("SNAP_HUD_TRACE"); return e && *e && *e != '0'; }();
+    UiSmoothState& smooth = UiSmoothShared();
+    const bool sm = UiSmoothOn();
+    if (sm || trace) {
+      std::lock_guard<std::mutex> smLock(UiSmoothMutex());
+      const TextureImpl* t0 = cx.rt[0];
+      if (t0 && (t0->b.flags & TF_DISPLAY) && !cx.rt[8] && t0->b.target == TT_2D && t0->b.width == 1920 && t0->b.height == 1080) {
+        float tb[4];
+        if (quadBox(tb, 600)) {
+          if (tb[2] <= 256.0f && tb[3] <= 256.0f) {   // glyph quads: add the text origin (vertex uniform block 1 floats 12-13), as the HUD scale below does
+            const BufBind& hu = d.ubo[0][1];
+            if (hu.pool && hu.pool->storage && hu.range >= 64 && hu.off + 64 <= hu.pool->size) {
+              const float* f = reinterpret_cast<const float*>(static_cast<const uint8_t*>(hu.pool->storage) + hu.off);
+              if (std::isfinite(f[12]) && std::isfinite(f[13]) && f[12] >= -1.0f && f[12] <= 1.0f && f[13] >= -1.0f && f[13] <= 1.0f && f[14] == 0.0f && f[15] == 1.0f) {
+                const float ox = (f[12] + 1.0f) * 960.0f, oy = (1.0f - f[13]) * 540.0f;
+                tb[0] += ox; tb[2] += ox; tb[1] += oy; tb[3] += oy;
+              }
+            }
+          }
+          float sh[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+          if (sm) { UiSmoothOnDraw(smooth, g_presentCount, c.i[2], tb, sh); for (int k = 0; k < 4; k++) { cx.sm[k] = sh[k]; cx.smBox[k] = tb[k]; } }
+          if (trace) fprintf(stderr, "[hudtrace] f=%d i=%d n=%d %.2f %.2f %.2f %.2f   %.2f %.2f %.2f %.2f t=%.2f s=%d\n", g_presentCount, smooth.ord - 1, c.i[2], tb[0] + sh[0], tb[1] + sh[1], tb[2] + sh[2], tb[3] + sh[3], tb[0], tb[1], tb[2], tb[3],
+                                  std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(), (int)sm);   // drawn box, the game's box, ms, smoothing on
+        }
+      }
+    }
+  }
   {   // [hud] HUD scale (nvn_hud.cpp): an interface draw into the 1920x1080 window texture (no depth) is drawn scaled; every other draw is not
     HudXf hx;
     if (HudScaleNow() > 1.001f) {
@@ -1372,7 +1402,7 @@ void DoDraw(ReplayCtx& cx, const Cmd& c0) {
     }
   }
   if (!cx.rendering) BeginRendering(cx, rt);
-  if (cx.hud != cx.hudEmitted) FxReemitViewState(cx);   // [hud] this draw's transform differs from the one the viewport and scissor carry
+  if (cx.hud != cx.hudEmitted || memcmp(cx.sm, cx.smEmitted, sizeof cx.sm) != 0 || memcmp(cx.smBox, cx.smEmitted + 4, sizeof cx.smBox) != 0) FxReemitViewState(cx);   // [hud] this draw's transform differs from the one the viewport and scissor carry
   g_perfDraws++;
 
   ProgramImpl* evalVar = EvalCopyDepthVariant(cx, p, texWrites);
@@ -1625,6 +1655,9 @@ void DoCopyBufferToTexture(ReplayCtx& cx, const Cmd& c) {
 }
 
 }  // namespace
+
+extern "C" void snap_ui_smooth_set(int on) { UiSmoothUser().store(on ? 1 : 0, std::memory_order_relaxed); }   // F1 > Frame rate > Smooth interface (runtime/ui/ui_options.cpp)
+extern "C" int snap_ui_smooth_get() { return UiSmoothUser().load(std::memory_order_relaxed); }
 
 VkPipeline CreateGraphicsPipeline(Host* h, const PipeDesc& pd, StageProg* const st[6], VkPipelineLayout layout) { return CreateGraphicsPipelineImpl(h, pd, st, layout); }
 

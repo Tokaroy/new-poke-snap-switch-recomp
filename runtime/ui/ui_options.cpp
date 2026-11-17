@@ -51,6 +51,8 @@ extern "C" void snap_water_fx_set(int which, int on);   // runtime/nvn/nvn_ssr.c
 extern "C" int snap_water_fx_get(int which);
 extern "C" void snap_hud_scale_set(const char* v);   // runtime/nvn/nvn_hud.cpp: live, the next frame ("auto", "100".."200")
 extern "C" const char* snap_hud_scale_get();
+extern "C" void snap_ui_smooth_set(int on);   // runtime/nvn/nvn_draw.cpp: live, the next frame (smooth interface above 60 fps)
+extern "C" int snap_ui_smooth_get();
 
 extern "C" int snap_problem_report(const char* who, char* path_out, int path_cap, char* why_out, int why_cap);   // host/mods/problem_report.cpp
 
@@ -182,6 +184,12 @@ void set_hud_scale(const std::string& v) {
   if (v.empty() || v == "auto") st::erase("hud_scale");
   else st::set("hud_scale", v);
   snap_hud_scale_set(v.c_str());
+}
+// Smooth interface above 60 fps (nvn_uismooth.h): live; on is the default (erased), off is remembered as "ui_smooth" = "0" (exported as SNAP_UI_SMOOTH=0 at the next start)
+std::string get_ui_smooth() { return snap_ui_smooth_get() ? "default" : "0"; }
+void set_ui_smooth(const std::string& v) {
+  if (v == "0") st::set("ui_smooth", "0"); else st::erase("ui_smooth");
+  snap_ui_smooth_set(v != "0");
 }
 // ---- Look: Enhanced / Original (owner 2026-11-15: new installs start Enhanced). One row flips every visual extra of hle/visual_defaults.h together:
 // anti-aliasing, sharpening, anisotropic filtering, menu text sharpness, PNG export and HD photos (the Lighting preset joins when Lighting v2 passes:
@@ -575,6 +583,11 @@ std::vector<Opt>& graphics_opts() {
        "On: no tearing (the default). Adaptive: tears only while below the refresh rate. Fast: no tearing and lower latency, renders extra frames. "
        "Off: lowest latency, may tear. The game's own frame pacing is unchanged.", "on",
        {{"on", "On"}, {"adaptive", "Adaptive"}, {"fast", "Fast"}, {"off", "Off"}}, 0, 0, "", "SNAP_VSYNC", get_vsync, set_vsync},
+      {"ui_smooth", "Smooth interface", kChoice, kLive,
+       "Above 60 FPS the menus and the frame and reticle over a Pokemon step 60 times a second, as the game does. On draws them every displayed frame, "
+       "moving a moving element a fraction of a step ahead along its own motion, with no added delay. Display only: the game, the score and your photos are unchanged. "
+       "Does nothing at 60 FPS.", "default",
+       {{"default", "On"}, {"0", "Off"}}, 0, 0, "", "SNAP_UI_SMOOTH", get_ui_smooth, set_ui_smooth},
       {"fps_overlay", "Performance overlay", kChoice, kLive,
        "Off is the original game. FPS: the frame rate in a corner. Detailed adds frame time and a frame-time graph, 1% low, CPU and GPU time, "
        "render and output size, upscaler and anti-aliasing, frame cap and vsync. F3 cycles it (unless F3 is bound to a game button). "

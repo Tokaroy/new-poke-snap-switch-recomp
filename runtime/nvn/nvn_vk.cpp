@@ -1287,6 +1287,16 @@ static void EmitViewport(ReplayCtx& cx, int i) {
   const float* v0 = cx.vpGuest[i];
   if (v0[2] <= 0 || v0[3] <= 0) return;
   float vh[4] = {v0[0], v0[1], v0[2], v0[3]};   // [hud] the draw's HUD transform, in guest pixels before the render scale and the ultrawide mapping
+  for (int k = 0; k < 4; k++) { cx.smEmitted[k] = cx.sm[k]; cx.smEmitted[4 + k] = cx.smBox[k]; }
+  if (cx.sm[0] != 0.0f || cx.sm[1] != 0.0f || cx.sm[2] != 0.0f || cx.sm[3] != 0.0f) {   // [uismooth] the interface draw's smoothing shift (nvn_uismooth.h): the draw's box moves to box + sm, by moving and stretching its viewport (before the HUD transform scales it)
+    const float* b = cx.smBox;
+    const float w = b[2] - b[0], h = b[3] - b[1];
+    if (w > 0.0f && h > 0.0f) {
+      const float kx = (w + cx.sm[2] - cx.sm[0]) / w, ky = (h + cx.sm[3] - cx.sm[1]) / h;
+      vh[0] = (b[0] + cx.sm[0]) - kx * (b[0] - vh[0]); vh[2] *= kx;
+      vh[1] = (b[1] + cx.sm[1]) - ky * (b[1] - vh[1]); vh[3] *= ky;
+    }
+  }
   if (cx.hud.on) { vh[0] = cx.hud.p * vh[0] + cx.hud.q; vh[1] = cx.hud.r * vh[1] + cx.hud.t; vh[2] *= cx.hud.p; vh[3] *= cx.hud.r; }
   cx.hudEmitted = cx.hud;
   const float* v = vh;

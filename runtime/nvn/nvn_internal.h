@@ -420,6 +420,7 @@ struct ReplayCtx {
   float vpGuest[4][4] = {}; int scGuest[4][4] = {}; uint8_t vpHave = 0, scHave = 0; float vpScale = 1.0f, scScale = 1.0f;
   float vpSx = 1.0f, vpOx = 0.0f, scSx = 1.0f, scOx = 0.0f;   // [wide] x scale / offset the viewport and scissor were emitted with
   HudXf hud, hudEmitted;           // [hud] transform the next draw wants / the viewport and scissor were last emitted with
+  float sm[4] = {0, 0, 0, 0}, smBox[4] = {0, 0, 0, 0}, smEmitted[8] = {0, 0, 0, 0, 0, 0, 0, 0};   // [uismooth] guest-pixel shift of the next interface draw's box edges (x0, y0, x1, y1), the box, and what the viewport carries (nvn_uismooth.h)
   uint8_t wideMode = 0;            // [wide] 0 full, 1 narrow (middle 16:9), 2 unwiden (nvn_wide.cpp)
   uint64_t wideC3Hash[8] = {}; VkBuffer wideC3Buf[8] = {}; uint8_t wideC3Next = 0;   // [wide] widened c3 copies of this recording
   const char* wideFs = nullptr;   // [wide] fragment program key of the current draw (decision log only)

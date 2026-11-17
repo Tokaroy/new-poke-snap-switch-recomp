@@ -118,6 +118,7 @@ const struct { const char* key; const char* env; } kEnvKeys[] = {
     {"freecam", "SNAP_FREECAM"}, {"freecam_freeze", "SNAP_FREECAM_FREEZE"},   // free camera rows (host/mods/freecam.cpp, docs/freecam.md)
     {"skip_cutscenes", "SNAP_SKIP_CUTSCENES"},
     {"skip_course_intro", "SNAP_SKIP_INTRO"},   // "1" or unset: skip the 10.6 s course fly-over (host/mods/introskip.cpp)
+    {"ui_smooth", "SNAP_UI_SMOOTH"},            // "0" or unset: smooth interface above 60 fps off / on (runtime/nvn/nvn_uismooth.h; live in F1)
     {"hud_scale", "SNAP_HUD_SCALE"},            // auto | 100 | 125 | 150 | 175 | 200 (runtime/nvn/nvn_hud.cpp)
     {"atmos_shafts", "SNAP_ATMOS_SHAFTS"}, {"atmos_fog", "SNAP_ATMOS_FOG"}, {"atmos_exposure", "SNAP_ATMOS_EXPOSURE"}, {"atmos_bloom", "SNAP_ATMOS_BLOOM"}, {"atmos_clouds", "SNAP_ATMOS_CLOUDS"}, {"atmos_sky", "SNAP_ATMOS_SKY"},   // atmosphere rows (runtime/nvn/nvn_atmos.cpp; "1" or unset; restart)
     {"foliage_aa", "SNAP_FOLIAGE_AA"}, {"leaf_translucency", "SNAP_LEAF_TRANSLUCENCY"}, {"soft_particles", "SNAP_SOFT_PARTICLES"},   // foliage / particle rows (runtime/nvn/nvn_foliage.cpp; restart)

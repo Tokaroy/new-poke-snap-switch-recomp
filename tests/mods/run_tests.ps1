@@ -22,4 +22,12 @@ $p2 = Start-Process -FilePath $exe2 -NoNewWindow -PassThru
 $p2.PriorityClass = 'BelowNormal'
 if (-not $p2.WaitForExit(60000)) { taskkill /PID $p2.Id /T /F | Out-Null; throw "uipace_test timed out" }
 if ($p2.ExitCode -ne 0) { $code = $p2.ExitCode }
+# Smooth interface above 60 fps (runtime/nvn/nvn_uismooth.h).
+$exe3 = Join-Path $out 'uismooth_test.exe'
+& clang++ -std=c++20 -O1 -g (Join-Path $PSScriptRoot 'uismooth_test.cpp') -o $exe3
+if ($LASTEXITCODE -ne 0) { throw "uismooth_test build failed" }
+$p3 = Start-Process -FilePath $exe3 -NoNewWindow -PassThru
+$p3.PriorityClass = 'BelowNormal'
+if (-not $p3.WaitForExit(60000)) { taskkill /PID $p3.Id /T /F | Out-Null; throw "uismooth_test timed out" }
+if ($p3.ExitCode -ne 0) { $code = $p3.ExitCode }
 exit $code
