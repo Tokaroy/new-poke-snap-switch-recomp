@@ -213,7 +213,7 @@ class ReleaseParsing(unittest.TestCase):
         update._check_url('https://objects.githubusercontent.com/x', False)
 
     def test_release_url_is_the_renamed_repository(self):
-        self.assertEqual(update.RELEASES_URL, 'https://api.github.com/repos/finalpantasy/new-poke-snap-switch-recomp/releases/latest')
+        self.assertEqual(update.RELEASES_URL, 'https://api.github.com/repos/finalpantasy/new-pokemon-snap-recomp/releases/latest')
 
     def test_redirects_stay_inside_the_allowlist(self):
         import urllib.request

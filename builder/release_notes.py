@@ -14,7 +14,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 TEMPLATE = HERE / 'release' / 'NOTES_TEMPLATE.md'
-REPO_URL = 'https://github.com/finalpantasy/new-poke-snap-switch-recomp'
+REPO_URL = 'https://github.com/finalpantasy/new-pokemon-snap-recomp'
 
 SECTIONS = ('Known issues', 'Saves and settings carry over', 'Driver notes', 'Changes', 'Install or update')
 BANNER_MARK = 'A newer release is out'

@@ -21,8 +21,8 @@ Updating keeps your saves and settings. The updater copies them to a dated folde
 
 ## Changes
 
-- Fixed the pause pointer at 144 fps ([#41](https://github.com/finalpantasy/new-poke-snap-switch-recomp/pull/41))
-- Added the Testing channel ([#42](https://github.com/finalpantasy/new-poke-snap-switch-recomp/issues/42))
+- Fixed the pause pointer at 144 fps ([#41](https://github.com/finalpantasy/new-pokemon-snap-recomp/pull/41))
+- Added the Testing channel ([#42](https://github.com/finalpantasy/new-pokemon-snap-recomp/issues/42))
 
 ## Install or update
 
@@ -54,11 +54,11 @@ class Notes(unittest.TestCase):
         self.assertTrue(any('missing section "Driver notes"' in p for p in rn.lint(GOOD.replace('## Driver notes', '## Notes'))))
 
     def test_change_without_link(self):
-        bad = GOOD.replace(' ([#41](https://github.com/finalpantasy/new-poke-snap-switch-recomp/pull/41))', '')
+        bad = GOOD.replace(' ([#41](https://github.com/finalpantasy/new-pokemon-snap-recomp/pull/41))', '')
         self.assertTrue(any('without a pull request' in p for p in rn.lint(bad)))
 
     def test_link_to_another_repo_does_not_count(self):
-        bad = GOOD.replace('finalpantasy/new-poke-snap-switch-recomp/pull/41', 'someone/else/pull/41')
+        bad = GOOD.replace('finalpantasy/new-pokemon-snap-recomp/pull/41', 'someone/else/pull/41')
         self.assertTrue(any('without a pull request' in p for p in rn.lint(bad)))
 
     def test_carry_over_must_mention_the_copy(self):

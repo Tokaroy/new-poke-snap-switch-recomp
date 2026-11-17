@@ -36,8 +36,8 @@ from .util import BELOW_NORMAL, Log, StepError
 from . import safedel
 from . import userdata
 
-RELEASES_URL = 'https://api.github.com/repos/finalpantasy/new-poke-snap-switch-recomp/releases/latest'
-RELEASE_LIST_URL = 'https://api.github.com/repos/finalpantasy/new-poke-snap-switch-recomp/releases?per_page=15'
+RELEASES_URL = 'https://api.github.com/repos/finalpantasy/new-pokemon-snap-recomp/releases/latest'
+RELEASE_LIST_URL = 'https://api.github.com/repos/finalpantasy/new-pokemon-snap-recomp/releases?per_page=15'
 CHANNELS = ('stable', 'testing')
 USER_AGENT = 'SnapRecompUpdater'
 SIGN_PREFIX = b'snaprecomp-release-v1\n'

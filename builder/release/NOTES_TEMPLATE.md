@@ -19,7 +19,7 @@ Updating keeps your saves and settings. Before anything changes, the updater cop
 
 ## Changes
 
-- Short plain description of the change ([#123](https://github.com/finalpantasy/new-poke-snap-switch-recomp/pull/123))
+- Short plain description of the change ([#123](https://github.com/finalpantasy/new-pokemon-snap-recomp/pull/123))
 <!-- One bullet per change, each linked to its pull request or issue. -->
 
 ## Install or update

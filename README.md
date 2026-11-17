@@ -14,7 +14,7 @@
   <img alt="Graphics: Vulkan" src="https://img.shields.io/badge/graphics-Vulkan-AC162C">
   <img alt="Game version: 2.0.1" src="https://img.shields.io/badge/game%20version-2.0.1-informational">
   <img alt="Status: early playable" src="https://img.shields.io/badge/status-early%20playable-yellow">
-  <a href="https://github.com/finalpantasy/new-poke-snap-switch-recomp/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/finalpantasy/new-poke-snap-switch-recomp"></a>
+  <a href="https://github.com/finalpantasy/new-pokemon-snap-recomp/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/finalpantasy/new-pokemon-snap-recomp"></a>
   <img alt="License: GPL-3.0 with additional permission" src="https://img.shields.io/badge/license-GPL--3.0-blue">
 </p>
 
@@ -208,7 +208,7 @@ Each pair is captured at the same point on the ride, so the camera matches; the 
 
 ## Build it yourself
 
-Snap Recomp Builder turns your own copy of New Pokémon Snap 2.0.1 into `SnapRecomp.exe`. The easy way is `SnapRecompSetup.exe` from the [latest release](https://github.com/finalpantasy/new-poke-snap-switch-recomp/releases/latest): double-click it, pick your game folder and press Build. Setup takes a folder of extracted files (`main`, `sdk`, RomFS) or a folder with your dumped base game (XCI or NSP), the 2.0.1 update NSP and your `prod.keys`. It reads them in place and extracts only what it needs. The command-line route uses `SnapRecomp-Builder-v<version>-win-x64.zip` from the same page. Both hold only our code and prebuilt runtime objects, no game data. See the license and release-history notes below.
+Snap Recomp Builder turns your own copy of New Pokémon Snap 2.0.1 into `SnapRecomp.exe`. The easy way is `SnapRecompSetup.exe` from the [latest release](https://github.com/finalpantasy/new-pokemon-snap-recomp/releases/latest): double-click it, pick your game folder and press Build. Setup takes a folder of extracted files (`main`, `sdk`, RomFS) or a folder with your dumped base game (XCI or NSP), the 2.0.1 update NSP and your `prod.keys`. It reads them in place and extracts only what it needs. The command-line route uses `SnapRecomp-Builder-v<version>-win-x64.zip` from the same page. Both hold only our code and prebuilt runtime objects, no game data. See the license and release-history notes below.
 
 <p align="center">
   <img src="builder/release/screenshots/setup_1_welcome.png" alt="Setup wizard, welcome page" width="49%">
