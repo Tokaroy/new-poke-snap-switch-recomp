@@ -252,13 +252,13 @@ void apply(bool env) {
     const char* e = std::getenv("SNAP_BUTTON_ICONS");
     icons::set_style(icons::parse_style(e && *e ? std::string(e) : get("button_icons", "auto")));
   }
-  for (const char* k : {"access_cvd", "access_cvd_strength", "access_ui_size", "access_contrast", "access_flash", "access_mono"})   // Accessibility rows: live; a SNAP_ACCESS_* variable set by hand wins
-    if (!env_wins(k)) hle::access::set(k, get(k, ""));
-  if (!env) return;
   {   // Look row (gfx_look "original" / "enhanced"; erased = the build's default): the column of hle/visual_defaults.h every unset visual row follows; SNAP_VISUALS set by hand wins
     const std::string l = get("gfx_look", "");
     snapdef::saved_look().store(l == "original" ? 0 : l == "enhanced" ? 1 : -1, std::memory_order_relaxed);
   }
+  for (const char* k : {"access_cvd", "access_cvd_strength", "access_ui_size", "access_contrast", "access_flash", "access_mono"})   // Accessibility rows: live; a SNAP_ACCESS_* variable set by hand wins
+    if (!env_wins(k)) hle::access::set(k, get(k, ""));
+  if (!env) return;
   // next start: env-var mods
   std::string look = get("look", "neutral");
   if (look != "neutral" && !look.empty()) {

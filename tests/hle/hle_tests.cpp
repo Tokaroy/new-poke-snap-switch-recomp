@@ -1828,13 +1828,24 @@ static void test_input_hub() {
   CHECK(!h.consume_menu_toggle());                    // still held: no repeat
   raw.pad.reset();
   poll();
-  raw.pad.set(kPadBack); raw.pad.set(kPadStart);
-  poll();
-  std::this_thread::sleep_for(std::chrono::milliseconds(200));
-  poll();
-  raw.pad.reset();                                    // released early: nothing
-  poll();
-  CHECK(!h.consume_menu_toggle());
+  // Released early: nothing. The hub reads the wall clock, so a host stall between the two polls could outlast the 0.5 s chord on a loaded PC:
+  // time the hold ourselves and only judge an attempt that was really short (retry otherwise; a stalled attempt's toggle is consumed).
+  {
+    bool judged = false;
+    for (int attempt = 0; attempt < 20 && !judged; ++attempt) {
+      raw.pad.set(kPadBack); raw.pad.set(kPadStart);
+      const auto t0 = std::chrono::steady_clock::now();
+      poll();
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      poll();
+      raw.pad.reset();
+      const bool stalled = std::chrono::steady_clock::now() - t0 > std::chrono::milliseconds(400);
+      poll();
+      const bool fired = h.consume_menu_toggle();
+      if (!stalled) { CHECK(!fired); judged = true; }
+    }
+    CHECK(judged);
+  }
 
   // --- injected sources (scripted UI test) behave like a device
   raw = RawInput{};
