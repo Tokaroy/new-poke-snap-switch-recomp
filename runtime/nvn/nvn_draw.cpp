@@ -30,7 +30,6 @@
 
 #include "nvn_aa.h"
 #include "nvn_fx.h"   // [fx]
-#include "nvn_freecam.h"           // free camera clean shot
 #include "nvn_ssr.h"  // [water]
 #include "hle/lighting_preset.h"   // SNAP_LIGHTING parser (shared with host/mods/gamemods.cpp, nvn_entry.cpp)
 #include "nvn_internal.h"
@@ -42,7 +41,9 @@
 #include "nvn_state.h"
 #include "upscale/upscale_nvn.h"   // [upscale]
 #include "nvn_framegen.h"          // [framegen]
+#include "nvn_freecam.h"           // free camera clean shot
 #include "nvn_shot.h"              // screenshot key (F12)
+#include "nvn_pom.h"               // parallax occlusion mapping
 #include "nvn_uismooth.h"          // [uismooth] smooth interface above 60 fps
 
 namespace nvn {
@@ -271,6 +272,9 @@ void ImgBarrier(VkCommandBuffer cb, VkImage img, VkImageLayout from, VkImageLayo
   vkCmdPipelineBarrier2(cb, &di);
 }
 
+struct PomDrawState { uint8_t cls = 0; int handle = -1; bool push = false; };
+static thread_local PomDrawState g_pomDraw;   // parallax: the first table texture bound to this draw's fragment stage (PrepareTextures), whether the pipeline is a parallax variant (GetPipeline)
+
 // ---- pipelines ----------------------------------------------------------------------------------------------------------
 struct RtInfo { VkFormat color[8]; int nColor; VkFormat depth; VkFormat stencil; int samples; };
 
@@ -279,9 +283,10 @@ static void MakePipeDesc(PipeDesc& pd, DrawState& d, VkPrimitiveTopology topo, c
   ProgramImpl* p = d.prog;
   memset(&pd, 0, sizeof pd);
   pd.pad0 = (uint32_t)XlateAbVariant();   // SNAP_XLATE_AB: separate pipelines for the alternate translation (0 when unset)
-  {   // pad1: bits 0..7 = soft-shadow taps (P5), bit 7 = PCSS, bits 8..15 = shadow-distance factor * 4 (receivers remap the dynamic map's lookup, see ShadowDistanceOnBind)
+  {   // pad1: bits 16..23 = RT shadow rays (M3), bits 0..7 = soft-shadow taps (P5), bit 7 = PCSS, bits 8..15 = shadow-distance factor * 4 (receivers remap the dynamic map's lookup, see ShadowDistanceOnBind)
     const uint32_t kc = ShadowDistK() > 1.0f ? (uint32_t)(ShadowDistK() * 4.0f + 0.5f) : 0u;
-    pd.pad1 = (p->st[1].valid && (ShadowFilterTaps() || kc) && ShadowFilterApplies(p->st[1])) ? ((uint32_t)ShadowFilterTaps() | (kc << 8) | (ShadowPcss() ? 0x80u : 0u)) : 0u;
+    const int rtR = snap_rt::ShadowRays();   // [rt] M3: ray-traced sun shadows replace the dynamic map's taps (bits 16..23 = rays per tap; the PCF bits stay 0)
+    pd.pad1 = (p->st[1].valid && (ShadowFilterTaps() || kc || rtR) && ShadowFilterApplies(p->st[1])) ? (rtR ? ((uint32_t)std::min(rtR, 255) << 16) : ((uint32_t)ShadowFilterTaps() | (kc << 8) | (ShadowPcss() ? 0x80u : 0u))) : 0u;
   }   // SNAP_SHADOW_FILTER (P5): own pipeline keys for the patched fragment modules (0 when off: the original keys)
   for (int s = 0; s < 5; s++) if (p->st[s].valid) snprintf(pd.stage[s], sizeof pd.stage[s], "%s", p->st[s].key);
   pd.topo = (int)topo;
@@ -346,8 +351,8 @@ VkPipeline CreateGraphicsPipelineImpl(Host* h, const PipeDesc& pd, StageProg* co
   float alphaRefVal = pd.alphaRef;
   VkSpecializationMapEntry alphaMap{0, 0, 4};
   VkSpecializationInfo alphaSpec{};
-  float swayVals[3] = {};   // SNAP_WIND_SWAY (nvn_foliage.cpp): vertex wrapper amplitude and debug time offset, specialization constants 0 and 1 of the patched vertex module
-  const VkSpecializationMapEntry swayMap[3] = {{0, 0, 4}, {1, 4, 4}, {2, 8, 4}};
+  float swayVals[4] = {};   // SNAP_WIND_SWAY (nvn_foliage.cpp): vertex wrapper amplitude and debug time offset, specialization constants 0 and 1 of the patched vertex module
+  const VkSpecializationMapEntry swayMap[4] = {{0, 0, 4}, {1, 4, 4}, {2, 8, 4}, {3, 12, 4}};
   VkSpecializationInfo swaySpec{};
   for (int s : {0, 3, 4, 2, 1}) {
     if (!valid(s)) continue;
@@ -358,8 +363,8 @@ VkPipeline CreateGraphicsPipelineImpl(Host* h, const PipeDesc& pd, StageProg* co
     PinSubgroup32(&si, &sgPin[s], st[s]->mod);
     if (s == 0 && ((pd.pad2 >> 17) & 15u) != 0) {   // SNAP_WIND_SWAY: alpha-tested scene draws get the wind displacement wrapper (pad2 bits 17..20 = level)
       if (VkShaderModule sm = FoliageSwayModule(h, *st[0])) {
-        swayVals[0] = FoliageSwayAmpFor((int)((pd.pad2 >> 17) & 15u)); swayVals[1] = (float)((pd.pad2 >> 21) & 7u) * 0.35f; { static const bool stat = getenv("SNAP_WIND_STATIC") != nullptr; swayVals[2] = stat ? 0.0f : 1.0f; }   // amplitude, debug time offset
-        swaySpec.dataSize = 12; swaySpec.pData = swayVals; swaySpec.mapEntryCount = 3; swaySpec.pMapEntries = swayMap;
+        swayVals[0] = ((pd.pad2 >> 24) & 1u) ? 0.0f : FoliageSwayAmpFor((int)((pd.pad2 >> 17) & 15u)); swayVals[1] = (float)((pd.pad2 >> 21) & 7u) * 0.35f; { static const bool stat = getenv("SNAP_WIND_STATIC") != nullptr; swayVals[2] = stat ? 0.0f : 1.0f; }   // amplitude, debug time offset
+        { static const float zs = getenv("SNAP_WIND_ZSLACK") ? (float)atof(getenv("SNAP_WIND_ZSLACK")) : 0.0f; swayVals[3] = ((pd.pad2 >> 25) & 1u) ? zs : 0.0f; }  swaySpec.dataSize = 16; swaySpec.pData = swayVals; swaySpec.mapEntryCount = 4; swaySpec.pMapEntries = swayMap;
         si.module = sm; si.pSpecializationInfo = &swaySpec;
       }
     }
@@ -368,11 +373,13 @@ VkPipeline CreateGraphicsPipelineImpl(Host* h, const PipeDesc& pd, StageProg* co
       uint32_t intKindBits = 0; int intKinds[8] = {};   // [vkval] attachments with an integer format: 1 uint, 2 sint (2 bits each from bit 16)
       for (int i = 0; i < pd.nColor && i < 8; i++) { const int k = IntColorKind((VkFormat)pd.colorFmt[i]); intKinds[i] = k; intKindBits |= (uint32_t)k << (16 + 2 * i); }
       const bool useAlt = pd.pad0 != 0 && fp.modAlt != VK_NULL_HANDLE && !fp.spvAlt.empty();   // SNAP_XLATE_AB alternate translation
-      const int pcfTaps = (intKindBits == 0 && !useAlt) ? (int)pd.pad1 : 0;   // (pad1 = taps; the variant key below only needs "on")   // P5: soft shadow taps (nvn_shadowpcf.cpp), fragment color outputs only
+      const int pcfTaps = (intKindBits == 0 && !useAlt) ? (int)(pd.pad1 & 0xFFFFu) : 0;   // (pad1 = taps; the variant key below only needs "on")   // P5: soft shadow taps (nvn_shadowpcf.cpp), fragment color outputs only
+      const int rtRays = (intKindBits == 0 && !useAlt) ? (int)((pd.pad1 >> 16) & 0xFFu) : 0;   // M3: RT sun shadows (nvn_shadowrt.cpp)
       const bool foliageHash = alpha && (pd.pad2 & 1) != 0;   // SNAP_FOLIAGE_AA: dithered edge (0x200) or alpha-to-coverage output (0x400, multisampled targets)
       const bool foliageA2c = foliageHash && pd.samples > 1;
-      const int foliageLeaf = alpha ? (int)(((pd.pad2 >> 4) & 15u) | (((pd.pad2 >> 1) & 1u) << 4)) : 0;   // SNAP_LEAF_TRANSLUCENCY level 0..8 (vkey bits 11..15)
-      const uint32_t vkey = (uint32_t)(alpha ? af : 0) | ((uint32_t)pd.nColor << 4) | (dual ? 0x100u : 0u) | intKindBits | (useAlt ? 0x80000000u : 0u) | ((uint32_t)pcfTaps << 16) | (foliageHash ? (foliageA2c ? 0x400u : 0x200u) : 0u) | ((uint32_t)foliageLeaf << 11);
+      const int foliageLeaf = alpha ? (int)(((pd.pad2 >> 4) & 15u) | (((pd.pad2 >> 1) & 1u) << 4)) : 0;   // SNAP_LEAF_TRANSLUCENCY level 0..8 (vkey bits 11..14)
+      const uint64_t vkey = (uint64_t)((uint32_t)(alpha ? af : 0) | ((uint32_t)pd.nColor << 4) | (dual ? 0x100u : 0u) | intKindBits | (useAlt ? 0x80000000u : 0u) | ((uint32_t)pcfTaps << 16) |
+                            (foliageHash ? (foliageA2c ? 0x400u : 0x200u) : 0u) | ((uint32_t)foliageLeaf << 11)) | ((uint64_t)rtRays << 32) | ((uint64_t)((pd.pad2 >> 8) & 0x1FFu) << 40);
       std::lock_guard<std::mutex> fl(fragMu);
       auto it = fp.fragMods.find(vkey);
       if (it == fp.fragMods.end()) {
@@ -386,7 +393,9 @@ VkPipeline CreateGraphicsPipelineImpl(Host* h, const PipeDesc& pd, StageProg* co
         const VkShaderModule baseMod = useAlt ? fp.modAlt : fp.mod;
         VkShaderModule m = baseMod;
         const PcssParams pcssP = ShadowPcssParams();
-        if (pcfTaps && PatchShadowPcf(cur, std::max(1, pcfTaps & 0x7F), ShadowFilterRadius(), ShadowFilterBias(), (float)((pcfTaps >> 8) & 0xFF) / 4.0f, tmp, (pcfTaps & 0x80) ? &pcssP : nullptr)) { cur = tmp; m = VK_NULL_HANDLE; }
+        if (const uint32_t pb = (pd.pad2 >> 8) & 0x1FFu; pb && !rtRays && PatchPom(cur, (int)((pb >> 2) & 0x7Fu), (int)(pb & 3u), tmp)) { cur = tmp; m = VK_NULL_HANDLE; }   // parallax occlusion mapping (nvn_pom.cpp)
+        if (rtRays && PatchShadowRt(cur, rtRays, tmp)) { cur = tmp; m = VK_NULL_HANDLE; }   // M3: ray queries instead of the map taps
+        else if (pcfTaps && PatchShadowPcf(cur, std::max(1, pcfTaps & 0x7F), ShadowFilterRadius(), ShadowFilterBias(), (float)((pcfTaps >> 8) & 0xFF) / 4.0f, tmp, (pcfTaps & 0x80) ? &pcssP : nullptr)) { cur = tmp; m = VK_NULL_HANDLE; }
         if (PatchFragmentOutputs(cur, pd.nColor, dual, tmp)) cur = tmp, m = VK_NULL_HANDLE;
         if (intKindBits) {
           int skippedInt = 0;
@@ -507,11 +516,26 @@ VkPipeline CreateGraphicsPipelineImpl(Host* h, const PipeDesc& pd, StageProg* co
   return pipe;
 }
 
+// SNAP_PIPELINE_DEFER=1: see GetPipeline. True when the draw's target is the main scene colour (RGBA16F 1920x1080, not a display image) or scene depth
+// (DEPTH32F 1920x1080); the photo (360x240), Evaluation (DEPTH32F_STENCIL8) and UI targets are never matched.
+static bool PipelineDeferScene(const ReplayCtx& cx) {
+  static const bool on = [] { const char* e = getenv("SNAP_PIPELINE_DEFER"); return e && *e == '1'; }();
+  if (!on) return false;
+  const TextureImpl* t = cx.rt[0] ? cx.rt[0] : cx.rt[8];
+  if (!t || t->b.width != 1920 || t->b.height != 1080 || t->b.target != TT_2D || t->b.samples > 1) return false;
+  return (t->b.format == FMT_RGBA16F && !(t->b.flags & TF_DISPLAY)) || t->b.format == FMT_DEPTH32F;
+}
+
 VkPipeline GetPipeline(ReplayCtx& cx, DrawState& d, VkPrimitiveTopology topo, const RtInfo& rt) {
   Host* h = cx.h;
   snap_perf::Scope perfGet(snap_perf::C_GETPIPE);
   PipeDesc pd;
   MakePipeDesc(pd, d, topo, rt);
+  g_pomDraw.push = false;
+  if (g_pomDraw.cls && !((pd.pad1 >> 16) & 0xFFu)) {   // parallax (not together with RT shadows: both use the fragment push block)
+    pd.pad2 |= PomPipeBits(cx.rt[0], PomLevel(), g_pomDraw.handle, g_pomDraw.cls);
+    g_pomDraw.push = ((pd.pad2 >> 8) & 0x1FFu) != 0;
+  }
   bool pending = false;
   // A draw into a target that is not rendered every frame (photo thumbnail, evaluation/capture targets, one-shot passes) cannot be skipped
   // while its pipeline compiles: nothing redraws it, so the result would stay empty. Only per-frame targets (3+ consecutive frames) may skip.
@@ -522,7 +546,15 @@ VkPipeline GetPipeline(ReplayCtx& cx, DrawState& d, VkPrimitiveTopology topo, co
     mustHave = rt0->drawStreak < 3;
   }
   if (!mustHave && PipelineShutterWindow()) mustHave = true;   // a photo is being taken: no skipped draws
+  // SNAP_PIPELINE_DEFER=1 (off by default): a draw into the game's main scene colour or depth target (RGBA16F / DEPTH32F, 1920x1080 guest size: redrawn every
+  // frame, never a photo, Evaluation or UI target) that is only must-have because the target is in its first two frames is skipped like any per-frame draw,
+  // and its pipeline compiles on the worker pool. Not during the shutter window. Costs a missing object for a frame or two after a course load; saves the
+  // 20-110 ms inline compile on the replay thread (analysis/perf/results.md, hitch sweep).
+  if (mustHave && PipelineDeferScene(cx) && !PipelineShutterWindow()) mustHave = false;
+  const uint64_t dbgT0 = snap_perf::now_ns();   // DEFER-DEBUG (temporary)
   VkPipeline pipe = PipelineAcquire(h, pd, d.prog, &pending, mustHave);   // nvn_pipeline.cpp: ready map, inline or background compile, key recording
+  { static const bool dl = getenv("SNAP_PIPELINE_DEFER_LOG") != nullptr; const double ms = (snap_perf::now_ns() - dbgT0) / 1e6;   // DEFER-DEBUG (temporary)
+    if (dl && ms > 4.0) { const TextureImpl* t = cx.rt[0] ? cx.rt[0] : cx.rt[8]; fprintf(stderr, "[defer-dbg] p%d inline %.1f ms must %d tgt %s %ux%u fmt %d tgt %d samples %d flags %x streak %d vs=%s fs=%s\n", g_presentCount, ms, (int)mustHave, cx.rt[0] ? "rt0" : "rt8", t ? t->b.width : 0, t ? t->b.height : 0, t ? (int)t->b.format : -1, t ? (int)t->b.target : -1, t ? (int)t->b.samples : 0, t ? (unsigned)t->b.flags : 0, t ? t->drawStreak : -1, pd.stage[0], pd.stage[1]); } }
   if (!pipe && pending) { snap_perf::count(snap_perf::V_PIPES_SKIPPED); LifeCount(LS_PIPE_SKIP); }   // [nvnfix] SNAP_NVN_STATS
   return pipe;
 }
@@ -622,7 +654,6 @@ ResolvedTex ResolveHandle(ReplayCtx& cx, DrawState& d, uint64_t handle, bool ima
     { PoolImpl* vp = nullptr; uint64_t vo = 0; if (d.vbAddr[0] && r.t->host && r.t->host->ResolveAddress(d.vbAddr[0], &vp, &vo) && vp && vp->storage) sd.vbf = reinterpret_cast<const float*>(static_cast<const uint8_t*>(vp->storage) + vo); }
     r.t = ShinySubstitute(r.t, sd);
   }
-  bool hdSub = false;
   if (!image && !up && BtnIconActive()) {   // button icon mod (nvn_btnicon.cpp): UI glyph sprites
     BtnDraw bd; bd.rtW = cx.rt[0] ? cx.rt[0]->b.width : 0; bd.rtH = cx.rt[0] ? cx.rt[0]->b.height : 0; bd.prog = d.prog ? (int)d.prog->id : -1;
     PoolImpl* vp = nullptr; uint64_t vo = 0;
@@ -630,6 +661,7 @@ ResolvedTex ResolveHandle(ReplayCtx& cx, DrawState& d, uint64_t handle, bool ima
       bd.vbf = reinterpret_cast<const float*>(static_cast<const uint8_t*>(vp->storage) + vo);
     r.t = BtnIconSubstitute(r.t, bd);
   }
+  bool hdSub = false;
   if (!image && !up && HdPhotoOn() && cx.rt[0] && cx.rt[0]->b.width == 1920) {   // HD photos (nvn_hdphoto.cpp): a photo drawn large in the UI
     float drawnW = 0;
     PoolImpl* vp = nullptr; uint64_t vo = 0;
@@ -640,6 +672,7 @@ ResolvedTex ResolveHandle(ReplayCtx& cx, DrawState& d, uint64_t handle, bool ima
     }
     if (TextureImpl* hs = HdPhotoSubstitute(r.t, drawnW, (float)cx.rt[0]->HW() / 1920.0f)) { r.t = hs; hdSub = true; }
   }
+  if (!image && !up && !hdSub) PomNoteTexture(r.t);   // parallax class by content key, before the first upload
   if (!r.t->EnsureImage()) return r;
   const TexView* tv = (slot.hasView && !up && !hdSub) ? &slot.view : nullptr;
   r.range = r.t->RangeOf(tv);
@@ -839,6 +872,7 @@ static ProgramImpl* EvalCopyDepthVariant(ReplayCtx& cx, ProgramImpl* p, const st
 bool PrepareTextures(ReplayCtx& cx, DrawState& d, ProgramImpl* p, std::vector<TexWrite>& texWrites, bool graphics) {
   Host* h = cx.h; (void)h;
   // sampled textures / storage images (layouts must be right before a rendering scope is open)
+  g_pomDraw = PomDrawState();
   ScratchVec<PrepWant> wantS;   // [cpuprof]
   std::vector<PrepWant>& wantLayout = wantS.get();
   for (int s = 0; s < 6; s++) {
@@ -849,6 +883,7 @@ bool PrepareTextures(ReplayCtx& cx, DrawState& d, ProgramImpl* p, std::vector<Te
         int bi = TexBindIndex(t) + k;
         ResolvedTex r;
         if (bi >= 0 && bi < 32 && d.texSet[s][bi]) r = ResolveHandle(cx, d, d.tex[s][bi], false, t.type);
+        if (s == 1 && r.t && r.t->pomCls && !g_pomDraw.cls) { g_pomDraw.cls = r.t->pomCls; g_pomDraw.handle = t.handleIndex; }
         texWrites.push_back({t.set, t.binding, k, r, false, t.type});
         if (r.t && r.view) wantLayout.push_back({r.t, SampledLayout(r.t), r.range});
       }
@@ -1142,7 +1177,7 @@ void DoDraw(ReplayCtx& cx, const Cmd& c0) {
       DebugDumpSampledTexture(cx, w.r.t, tag);
     }
   }
-  { static const bool folLog = getenv("SNAP_FOLIAGE_LOG") != nullptr;   // [foliage] debug census of alpha-tested / blended scene draws (nvn_foliage.cpp)
+  { static const bool folLog = getenv("SNAP_FOLIAGE_LOG") != nullptr || getenv("SNAP_PARTICLE_CENSUS") != nullptr;   // [foliage] debug census of alpha-tested / blended scene draws (nvn_foliage.cpp)
     if (folLog && cx.rt[0] && p->st[1].valid) {
       FoliageDrawInfo fi{}; fi.present = g_presentCount; fi.vs = p->st[0].key; fi.fs = p->st[1].key; fi.alphaFunc = d.color.alphaFunc; fi.alphaRef = d.alphaRef;
       fi.nColor = rt.nColor; fi.colorFmt0 = cx.rt[0]->b.format; fi.rtW = cx.rt[0]->b.width; fi.rtH = cx.rt[0]->b.height; fi.rtSamples = cx.rt[0]->b.samples; fi.depthFmt = cx.rt[8] ? cx.rt[8]->b.format : 0;
@@ -1242,6 +1277,13 @@ void DoDraw(ReplayCtx& cx, const Cmd& c0) {
     UpscaleOnDraw(cx, vu, vr, 2);
     { const BufBind& u9 = d.ubo[0][9]; FxOnDraw(cx, vu, vr, (u9.pool && u9.pool->storage) ? (const uint8_t*)u9.pool->storage + u9.off : nullptr, u9.range); } }   // [fx] camera and shadow caster capture (nvn_fx.cpp)
   if (FxMidPass(cx, (d.color.blendEn & 1) != 0, DsGet(d.ds, DS_DW, 1) != 0)) FxReemitViewState(cx);   // [fx] opaque-only effects at the first blended scene draw
+  snap_rt::ShadowPush rtShPush; bool rtShOk = false;   // [rt] M3: a receiver draw (its fragment program was patched to trace rays): builds the frame's shadow TLAS on the first one
+  if (cx.rt[0] && p->st[1].valid && snap_rt::ShadowRays() && ShadowFilterApplies(p->st[1])) {
+    bool reemit = false;
+    const BufBind& r9 = d.ubo[1][9];   // the receivers' own matrix: fragment-stage binding 9 (the shader's c12), 132 bytes
+    rtShOk = snap_rt::ShadowReceiverPrepare(cx, (r9.pool && r9.pool->storage && r9.range >= 128) ? (const uint8_t*)r9.pool->storage + r9.off : nullptr, r9.range, &rtShPush, &reemit);
+    if (reemit) FxReemitViewState(cx);
+  }
   if (WaterBeforeDraw(cx, p->st[1].valid ? p->st[1].key : nullptr, (d.color.blendEn & 1) != 0, DsGet(d.ds, DS_DW, 1) != 0)) FxReemitViewState(cx);   // [water] SNAP_WATER_*: copy before the sea, effect pass after it (nvn_ssr.cpp)
   if (ShinyActive() && cx.rt[0] && !cx.bcDst[0] && texWrites.size() == 1 && !texWrites[0].image && texWrites[0].r.t && texWrites[0].r.t->b.width >= 1280) ShinyCaptureDraw(cx.rt[0]);   // shiny mod: capture pass into a photo target
   if (HdPhotoOn() && cx.rt[0] && !cx.bcDst[0] && texWrites.size() == 1 && !texWrites[0].image && texWrites[0].r.t) {   // HD photos: a 2160x1440 copy of each capture (nvn_hdphoto.cpp)
@@ -1449,7 +1491,16 @@ void DoDraw(ReplayCtx& cx, const Cmd& c0) {
   const uint32_t shinyQ = cx.occOpen ? (ShinyQueryDiscard(), UINT32_MAX) : ShinyQueryBegin(h, cx.cb);   // shiny twin draw: own samples-passed query
   snap_rt::DrawCapture rtCap; snap_rt::DrawInfo rtInfo;   // [rt] SNAP_RT=1: transform-feedback capture of scene opaque draws (nvn_rt.cpp)
   const bool rtWant = snap_rt::Capture();
-  if (rtWant) RtFillInfo(rtInfo, d, p, c, indexed, topo, rewrite ? (uint32_t)rw.size() : (uint32_t)std::max(c.i[2], 0));
+  if (rtWant) {
+    RtFillInfo(rtInfo, d, p, c, indexed, topo, rewrite ? (uint32_t)rw.size() : (uint32_t)std::max(c.i[2], 0));
+    const BufBind& u9 = d.ubo[0][9];   // M3: a draw of the dynamic shadow map's caster pass (same test as FxOnDraw): depth-only square target, 64-byte caster matrix in vertex slot 9
+    if (u9.pool && u9.pool->storage && u9.range == 64 && cx.rt[8] && !cx.rt[0] && cx.rt[8]->b.width == cx.rt[8]->b.height && cx.rt[8]->b.width >= 512 && cx.rt[8]->b.width <= 8192 &&
+        cx.rt[8]->b.format >= FMT_DEPTH16 && cx.rt[8]->b.format <= FMT_DEPTH32F_STENCIL8 && ShadowDynTexture(cx.rt[8])) {
+      rtInfo.cast = true; rtInfo.s9 = (const uint8_t*)u9.pool->storage + u9.off; rtInfo.s9Range = u9.range;
+    }
+  }
+  if (rtShOk) vkCmdPushConstants(cx.cb, p->layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof rtShPush, &rtShPush);   // M3: the receivers' ray-query constants
+  if (g_pomDraw.push) { PomPush pp; if (PomFillPush(&pp)) vkCmdPushConstants(cx.cb, p->layout, VK_SHADER_STAGE_FRAGMENT_BIT, 128, sizeof pp, &pp); }   // parallax: camera, sun, fade (second half of the fragment push block)
   if (rewrite) {
     VkBuffer ib = VK_NULL_HANDLE;
     uint8_t* m = NewScratch(cx, rw.size() * 4, &ib, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
@@ -1477,6 +1528,7 @@ void DoDraw(ReplayCtx& cx, const Cmd& c0) {
   rtCap.End();   // [rt] (a no-op unless this draw was captured; the build runs from the Fx post-tonemap slot, nvn_rt.cpp)
   FxAfterDraw(cx, p->st[1].key);   // [fx] post-tonemap slot (nvn_fx.cpp)
   AaAfterDraw(cx, p->st[1].key);   // SNAP_AA=smaa / SNAP_SHARPEN: in-place pass after the game's tonemap draw (nvn_aa.cpp)
+  FgAfterDraw(cx, p->st[1].key);   // [framegen] HUD-less copy of the finished 3D scene (nvn_framegen.cpp)
   FcShotAfterDraw(cx, p->st[1].key);   // free camera clean shot (nvn_freecam.cpp)
   ShotAfterDraw(cx, p->st[1].key);   // screenshot key without the HUD (nvn_shot.cpp)
   if (thumbDraw) {
@@ -1528,7 +1580,6 @@ void DoDispatch(ReplayCtx& cx, const Cmd& c) {
   EndRendering(cx);
   ScratchVec<TexWrite> twS;   // [cpuprof]
   std::vector<TexWrite>& tw = twS.get();
-  FgAfterDraw(cx, p->st[1].key);   // [framegen] HUD-less copy of the finished 3D scene (nvn_framegen.cpp)
   if (!PrepareTextures(cx, d, p, tw, false)) return;
   std::string key = "CS" + std::to_string(p->id);
   VkPipeline pipe = VK_NULL_HANDLE;

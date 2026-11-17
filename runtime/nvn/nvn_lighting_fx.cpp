@@ -23,6 +23,8 @@
 #include "nvn_fx.h"
 #include "nvn_internal.h"
 #include "nvn_lighting_spv.h"
+#include "nvn_rt.h"
+#include "nvn_ssgi_spv.h"
 
 namespace nvn {
 namespace {
@@ -35,6 +37,14 @@ struct G {
   VkPipeline pipeAo = VK_NULL_HANDLE, pipeRes = VK_NULL_HANDLE, pipeComp = VK_NULL_HANDLE, pipeDbg = VK_NULL_HANDLE; VkFormat sceneFmt = VK_FORMAT_UNDEFINED;
   Img raw, hist[2]; uint32_t w = 0, h = 0; int cur = 0;
   bool haveHist = false; int lastPresent = -1000; double prevVp[4][4] = {};
+  // bounce light (SNAP_SSGI): own pipelines and images, same helpers
+  bool giReady = false, giFailed = false;
+  VkShaderModule fsGi = VK_NULL_HANDLE, fsGiRes = VK_NULL_HANDLE, fsGiComp = VK_NULL_HANDLE;
+  VkPipeline pipeGi = VK_NULL_HANDLE, pipeGiRes = VK_NULL_HANDLE, pipeGiComp = VK_NULL_HANDLE, pipeGiDbg = VK_NULL_HANDLE;
+  VkPipeline pipeAoRt = VK_NULL_HANDLE;   // SNAP_RT_AO: the ray traced AO (nvn_rt.cpp AoModule); null = GTAO runs
+  VkPipeline pipeGiRt = VK_NULL_HANDLE;   // SNAP_RT_GI: the ray traced gather (nvn_rt.cpp GiModule); null = the screen-space gather runs
+  Img giRaw, giHist[2]; uint32_t giW = 0, giH = 0; int giCur = 0;
+  bool giHaveHist = false; int giLastPresent = -1000; double giPrevVp[4][4] = {};
 } g;
 
 // per-frame tunables: plain getenv when SNAP_DEV is off, a live param (F1 > Tuning, nvn_dev.h) when it is on; range 0..max(1, 4*def) unless given
@@ -44,11 +54,18 @@ bool Configured() {   // the preset / SNAP_LIGHT_FX say yes (not looking at the 
   static const int mode = [] { const char* e = getenv("SNAP_LIGHT_FX"); return e && *e ? (atoi(e) != 0 ? 1 : 0) : -1; }();
   return mode >= 0 ? mode == 1 : snaplight::enhanced();
 }
-bool Enabled() { return Configured() && !g.failed && snaplight::ab_on((unsigned long long)g_presentCount); }
+bool SsgiOn() {   // SNAP_SSGI=1: screen-space bounce light, its own switch (the "Bounce light" row), independent of the lighting preset
+  static const bool v = [] { const char* e = getenv("SNAP_SSGI"); return e && *e && atoi(e) != 0; }();
+  return v && !g.giFailed;
+}
+bool Enabled() { return (Configured() || SsgiOn()) && !g.failed && snaplight::ab_on((unsigned long long)g_presentCount); }
 
 struct PcAo { float ivp[16]; float dclip[4]; float light[4]; float size[4]; float q[4]; };
 struct PcRes { float reproj[16]; float size[4]; float q[4]; };
 struct PcComp { float k[4]; float size[4]; };
+struct PcGi { float ivp[16]; float size[4]; float q[4]; uint64_t tlas, avg; };   // tlas, avg: the RT gather only (scene TLAS and per-instance colour cache, device addresses)
+struct PcGiComp { float k[4]; float size[4]; };
+static_assert(sizeof(PcGi) == 112 && sizeof(PcGiComp) <= 128, "push constants must fit the 128 byte guarantee");
 static_assert(sizeof(PcAo) == 128 && sizeof(PcRes) <= 128 && sizeof(PcComp) <= 128, "push constants must fit the 128 byte guarantee");
 
 void ImgBar(VkCommandBuffer cb, Img& im, VkImageLayout to) {
@@ -101,6 +118,11 @@ bool Setup(Host* h, VkFormat sceneFmt) {
     g.pipeAo = FxMakeFullscreenPipeline(h, g.pl, g.fsAo, VK_FORMAT_R8G8_UNORM, false);
     g.pipeRes = FxMakeFullscreenPipeline(h, g.pl, g.fsRes, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     if (!g.pipeAo || !g.pipeRes) return false;
+    if (snap_rt::On() && snap_rt::AoOn()) {   // the RT AO needs the ray query device: only with SNAP_RT_AO at launch. Any failure keeps GTAO.
+      VkShaderModule m = snap_rt::AoModule(h);
+      g.pipeAoRt = m ? FxMakeFullscreenPipeline(h, g.pl, m, VK_FORMAT_R8G8_UNORM, false) : VK_NULL_HANDLE;
+      if (!g.pipeAoRt && m) fprintf(stderr, "[rt] ambient occlusion falls back to GTAO: the RT AO pipeline could not be made\n");
+    }
     g.ready = true;
   }
   if (g.sceneFmt != sceneFmt || !g.pipeComp) {   // the scene colour format is fixed (RGBA16F), so this runs once
@@ -144,15 +166,97 @@ void Bind(Host* h, VkDescriptorSet set, uint32_t binding, VkSampler s, VkImageVi
   vkUpdateDescriptorSets(h->device, 1, &w, 0, nullptr);
 }
 
+bool SetupGi(Host* h, VkFormat sceneFmt) {
+  if (g.giReady) return true;
+  if (!g.ready && !Setup(h, sceneFmt)) return false;   // samplers, set layout and pipeline layout are shared with AO
+  g.fsGi = LfxMod(h, "lfx_gi", kLfxGiFrag, sizeof kLfxGiFrag);
+  g.fsGiRes = LfxMod(h, "lfx_gires", kLfxGiResFrag, sizeof kLfxGiResFrag);
+  g.fsGiComp = LfxMod(h, "lfx_gicomp", kLfxGiCompFrag, sizeof kLfxGiCompFrag);
+  if (!g.fsGi || !g.fsGiRes || !g.fsGiComp) return false;
+  g.pipeGi = FxMakeFullscreenPipeline(h, g.pl, g.fsGi, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+  g.pipeGiRes = FxMakeFullscreenPipeline(h, g.pl, g.fsGiRes, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+  g.pipeGiComp = FxMakeFullscreenPipeline(h, g.pl, g.fsGiComp, sceneFmt, true);
+  g.pipeGiDbg = FxMakeFullscreenPipeline(h, g.pl, g.fsGiComp, sceneFmt, false);
+  if (!g.pipeGi || !g.pipeGiRes || !g.pipeGiComp) return false;
+  if (snap_rt::On() && snap_rt::GiOn()) {   // the RT gather needs the ray query device: only with SNAP_RT_GI at launch. Any failure keeps the screen-space gather.
+    VkShaderModule m = snap_rt::GiModule(h);
+    g.pipeGiRt = m ? FxMakeFullscreenPipeline(h, g.pl, m, VK_FORMAT_R16G16B16A16_SFLOAT, false) : VK_NULL_HANDLE;
+    if (!g.pipeGiRt && m) fprintf(stderr, "[rt] bounce light falls back to screen-space: the RT gather pipeline could not be made\n");
+  }
+  g.giReady = true;
+  return true;
+}
+
+bool EnsureGiImages(Host* h, uint32_t w, uint32_t hh) {
+  if (g.giW == w && g.giH == hh && g.giRaw.img) return true;
+  if (g.giRaw.img) fprintf(stderr, "lighting: bounce light render size changed to %ux%u, the old images are kept until exit\n", w, hh);
+  if (!MakeImg(h, g.giRaw, w, hh, VK_FORMAT_R16G16B16A16_SFLOAT) || !MakeImg(h, g.giHist[0], w, hh, VK_FORMAT_R16G16B16A16_SFLOAT) || !MakeImg(h, g.giHist[1], w, hh, VK_FORMAT_R16G16B16A16_SFLOAT)) return false;
+  g.giW = w; g.giH = hh; g.giHaveHist = false; g.giCur = 0;
+  return true;
+}
+
+// Bounce light: gather (reads depth and the scene colour), denoise (the same bilateral + temporal filter as AO), multiply composite onto the scene colour.
+// Runs after the AO / contact composite so the bounce sees the occluded colour. DrawTo draws into g.w x g.h, which is kept equal to the scene size here.
+void GiPass(ReplayCtx& cx, const FxCam* cam, TextureImpl* c, TextureImpl* z) {
+  if (!SetupGi(cx.h, c->fi->vk) || !EnsureGiImages(cx.h, c->HW(), c->HH())) { g.giFailed = true; fprintf(stderr, "lighting: bounce light setup failed, disabled\n"); return; }
+  g.w = g.giW; g.h = g.giH;
+  const bool histOk = g.giHaveHist && g_presentCount - g.giLastPresent <= 4;
+  PcGi pg{};
+  for (int r = 0; r < 4; r++) for (int k = 0; k < 4; k++) pg.ivp[k * 4 + r] = (float)cam->ivp[r][k];
+  float jx, jy; FxJitter(&jx, &jy);
+  pg.size[0] = (float)g.giW; pg.size[1] = (float)g.giH; pg.size[2] = jx; pg.size[3] = jy;
+  pg.q[0] = EnvF("SNAP_SSGI_RADIUS", 2.0f); pg.q[1] = (float)(int)EnvF("SNAP_SSGI_SAMPLES", 12.f); pg.q[2] = (float)(g_presentCount & 1023); pg.q[3] = EnvF("SNAP_SSGI_CLAMP", 3.0f);
+  PcRes pr{};
+  {
+    double R[4][4];
+    for (int r = 0; r < 4; r++) for (int k = 0; k < 4; k++) { double s = 0; for (int j = 0; j < 4; j++) s += g.giPrevVp[r][j] * cam->ivp[j][k]; R[r][k] = s; }
+    for (int r = 0; r < 4; r++) for (int k = 0; k < 4; k++) pr.reproj[k * 4 + r] = (float)R[r][k];
+  }
+  pr.size[0] = (float)g.giW; pr.size[1] = (float)g.giH; pr.size[2] = histOk ? 1.f : 0.f; pr.size[3] = cam->nearZ;
+  pr.q[0] = EnvF("SNAP_SSGI_ALPHA", 0.08f);
+  PcGiComp pk{};
+  pk.k[0] = EnvF("SNAP_SSGI_STRENGTH", 0.6f); pk.k[1] = EnvF("SNAP_SSGI_FADE", 60.f); pk.k[2] = EnvF("SNAP_SSGI_MAX", 1.6f); pk.k[3] = EnvF("SNAP_SSGI_DEBUG", 0.f, 0.f, 1.f);
+  pk.size[0] = (float)g.giW; pk.size[1] = (float)g.giH;
+  static int logged; if (logged++ < 3) fprintf(stderr, "lighting: p%d bounce light %ux%u radius %.2f samples %d history %d\n", g_presentCount, g.giW, g.giH, pg.q[0], (int)pg.q[1], (int)histOk);
+
+  VkImageLayout prev;
+  VkImageView dv = FxDepthRead(cx, z, &prev);
+  Transition(cx.cb, c, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  VkImageView cv = c->View(nullptr, true);
+  Img& out = g.giHist[g.giCur]; Img& old = g.giHist[g.giCur ^ 1];
+  VkDescriptorSet s1 = FxAllocSet(cx, g.dsl), s2 = FxAllocSet(cx, g.dsl), s3 = FxAllocSet(cx, g.dsl);
+  if (dv && cv && s1 && s2 && s3) {
+    if (old.layout == VK_IMAGE_LAYOUT_UNDEFINED) ImgBar(cx.cb, old, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    Bind(cx.h, s1, 0, g.nearest, dv, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+    Bind(cx.h, s1, 1, g.nearest, cv, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    snap_rt::ReflInfo ri;   // RT gather: updates the shared per-instance colour cache (compute, outside any render pass), then the gather shader traces against the TLAS
+    const bool rt = g.pipeGiRt && snap_rt::GiPass(cx, cv, g.linear, cam->vp, &ri);
+    if (rt) { pg.tlas = ri.tlas; pg.avg = ri.avg; pg.q[0] = EnvF("SNAP_RT_GI_RADIUS", 6.0f); pg.q[1] = (float)(int)EnvF("SNAP_RT_GI_RAYS", 1.f); }
+    dev_pass_begin(cx.cb, rt ? "lfx gi rt" : "lfx gi"); DrawTo(cx, g.giRaw, rt ? g.pipeGiRt : g.pipeGi, s1, &pg, sizeof pg);
+    Bind(cx.h, s2, 0, g.nearest, dv, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+    Bind(cx.h, s2, 1, g.nearest, g.giRaw.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    Bind(cx.h, s2, 2, g.linear, old.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    dev_pass_begin(cx.cb, "lfx gi resolve"); DrawTo(cx, out, g.pipeGiRes, s2, &pr, sizeof pr);
+    Bind(cx.h, s3, 0, g.nearest, out.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    const bool dbg = pk.k[3] > 0.5f;
+    dev_pass_begin(cx.cb, "lfx gi comp"); FxDrawFullscreen(cx, c, dbg && g.pipeGiDbg ? g.pipeGiDbg : g.pipeGiComp, g.pl, s3, &pk, sizeof pk); dev_pass_end(cx.cb, "lfx gi comp");
+    FxNoteRan();
+    g.giHaveHist = true; g.giLastPresent = g_presentCount; g.giCur ^= 1;
+    for (int r = 0; r < 4; r++) for (int k = 0; k < 4; k++) g.giPrevVp[r][k] = cam->vp[r][k];
+  }
+  FxDepthDone(cx, z, prev);
+}
+
 // SNAP_DEV=1: a shader edited in SNAP_SHADER_DIR was recompiled (nvn_dev.h): swap the module and rebuild only the pipelines that use it. The old
 // pipelines are not destroyed (an earlier command buffer may still be running them); a failed rebuild keeps them.
 void DevReload(Host* h) {
-  static uint32_t seen[3];
-  struct S { const char* name; const uint32_t* emb; size_t bytes; VkShaderModule* mod; };
-  const S list[3] = {{"lfx_ao", kLfxAoFrag, sizeof kLfxAoFrag, &g.fsAo}, {"lfx_resolve", kLfxResolveFrag, sizeof kLfxResolveFrag, &g.fsRes},
-                     {"lfx_comp", kLfxCompFrag, sizeof kLfxCompFrag, &g.fsComp}};
-  for (int i = 0; i < 3; i++) {
-    if (!g.ready) return;
+  static uint32_t seen[6];
+  struct S { const char* name; const uint32_t* emb; size_t bytes; VkShaderModule* mod; bool gi; };
+  const S list[6] = {{"lfx_ao", kLfxAoFrag, sizeof kLfxAoFrag, &g.fsAo, false}, {"lfx_resolve", kLfxResolveFrag, sizeof kLfxResolveFrag, &g.fsRes, false},
+                     {"lfx_comp", kLfxCompFrag, sizeof kLfxCompFrag, &g.fsComp, false}, {"lfx_gi", kLfxGiFrag, sizeof kLfxGiFrag, &g.fsGi, true},
+                     {"lfx_gires", kLfxGiResFrag, sizeof kLfxGiResFrag, &g.fsGiRes, true}, {"lfx_gicomp", kLfxGiCompFrag, sizeof kLfxGiCompFrag, &g.fsGiComp, true}};
+  for (int i = 0; i < 6; i++) {
+    if (list[i].gi ? !g.giReady : !g.ready) continue;
     if (!dev_spv_changed(list[i].name, &seen[i])) continue;
     VkShaderModule m = LfxMod(h, list[i].name, list[i].emb, list[i].bytes);
     if (!m) continue;
@@ -160,6 +264,9 @@ void DevReload(Host* h) {
     switch (i) {
       case 0: a = FxMakeFullscreenPipeline(h, g.pl, m, VK_FORMAT_R8G8_UNORM, false); break;
       case 1: a = FxMakeFullscreenPipeline(h, g.pl, m, VK_FORMAT_R16G16B16A16_SFLOAT, false); break;
+      case 2: a = FxMakeFullscreenPipeline(h, g.pl, m, g.sceneFmt, true); b = FxMakeFullscreenPipeline(h, g.pl, m, g.sceneFmt, false); break;
+      case 3: a = FxMakeFullscreenPipeline(h, g.pl, m, VK_FORMAT_R16G16B16A16_SFLOAT, false); break;
+      case 4: a = FxMakeFullscreenPipeline(h, g.pl, m, VK_FORMAT_R16G16B16A16_SFLOAT, false); break;
       default: a = FxMakeFullscreenPipeline(h, g.pl, m, g.sceneFmt, true); b = FxMakeFullscreenPipeline(h, g.pl, m, g.sceneFmt, false); break;
     }
     if (!a) { fprintf(stderr, "[dev] lighting: pipeline for reloaded shader %s failed, keeping the old one\n", list[i].name); continue; }
@@ -167,7 +274,10 @@ void DevReload(Host* h) {
     switch (i) {
       case 0: g.pipeAo = a; break;
       case 1: g.pipeRes = a; break;
-      default: g.pipeComp = a; if (b) g.pipeDbg = b; break;
+      case 2: g.pipeComp = a; if (b) g.pipeDbg = b; break;
+      case 3: g.pipeGi = a; break;
+      case 4: g.pipeGiRes = a; break;
+      default: g.pipeGiComp = a; if (b) g.pipeGiDbg = b; break;
     }
     fprintf(stderr, "[dev] lighting: shader %s applied (pipelines rebuilt)\n", list[i].name); fflush(stderr);
   }
@@ -180,7 +290,9 @@ void Pre(ReplayCtx& cx) {
   TextureImpl* c = FxSceneColor(); TextureImpl* z = FxSceneDepth();
   if (!cam || !c || !z || c->HW() != z->HW() || c->HH() != z->HH() || !FxWritable(c)) return;
   const bool wantAo = !EnvOff("SNAP_LIGHT_AO"), wantCt = !EnvOff("SNAP_LIGHT_CONTACT");
-  if (!wantAo && !wantCt) return;
+  const bool lightOn = Configured() && (wantAo || wantCt), giOn = SsgiOn();
+  if (!lightOn && !giOn) return;
+  if (!lightOn) { GiPass(cx, cam, c, z); return; }
   if (!Setup(cx.h, c->fi->vk) || !EnsureImages(cx.h, c->HW(), c->HH())) { g.failed = true; fprintf(stderr, "lighting: setup failed, disabled\n"); return; }
 
   // the sun, for contact shadows: only where there is a dynamic shadow pass and the sky is in view
@@ -235,7 +347,15 @@ void Pre(ReplayCtx& cx) {
     // history image never written yet: give it a defined layout (its contents are not read while pr.size[2] is 0)
     if (old.layout == VK_IMAGE_LAYOUT_UNDEFINED) { ImgBar(cx.cb, old, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL); }
     Bind(cx.h, s1, 0, g.nearest, dv, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
-    dev_pass_begin(cx.cb, "lfx ao"); DrawTo(cx, g.raw, g.pipeAo, s1, &pa, sizeof pa);
+    uint64_t aoTlas = 0;   // RT AO: the pass takes rays from the scene TLAS; q.zw carry its address, light.w the ray count (the shader's push block, lfx_ao_rt.frag)
+    const bool rtAo = wantAo && g.pipeAoRt && snap_rt::AoPass(&aoTlas);
+    if (rtAo) {
+      uint32_t lo = (uint32_t)aoTlas, hi = (uint32_t)(aoTlas >> 32);
+      memcpy(&pa.q[2], &lo, 4); memcpy(&pa.q[3], &hi, 4);
+      pa.q[0] = EnvF("SNAP_RT_AO_RADIUS", 1.5f);
+      pa.light[3] = (float)((g_presentCount & 1023) + 1024 * (int)EnvF("SNAP_RT_AO_RAYS", 2.f, 1.f, 16.f));
+    }
+    dev_pass_begin(cx.cb, rtAo ? "lfx ao rt" : "lfx ao"); DrawTo(cx, g.raw, rtAo ? g.pipeAoRt : g.pipeAo, s1, &pa, sizeof pa);
     Bind(cx.h, s2, 0, g.nearest, dv, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
     Bind(cx.h, s2, 1, g.nearest, g.raw.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     Bind(cx.h, s2, 2, g.linear, old.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -249,6 +369,7 @@ void Pre(ReplayCtx& cx) {
     for (int r = 0; r < 4; r++) for (int k = 0; k < 4; k++) g.prevVp[r][k] = cam->vp[r][k];
   }
   FxDepthDone(cx, z, prev);
+  if (giOn) GiPass(cx, cam, c, z);
 }
 
 const FxEffect kEffect = {"enhanced_lighting", Enabled, Pre, nullptr, true};

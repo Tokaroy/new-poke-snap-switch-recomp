@@ -6,12 +6,13 @@
 // draw is emitted with: guest x' = p x + q, y' = r y + t. The 3D view, post passes, full-screen fills, photos and every draw that is not an
 // interface draw into the window texture keep the identity.
 //
-// Scaling every draw around the center would push the corner icons of the ride HUD off the screen, and scaling each draw on its own would pull
-// a button apart from its label near the edges. So draws are grouped: boxes that overlap or lie within 40 px of each other (a button, its icon
-// and its label; a film counter and its frame) form a cluster, built at each present from the draws of that frame and used by the next frame
-// (the interface hardly changes between two presents). A cluster scales uniformly about the screen center by s, at most as far as it still fits
-// the screen with a margin of 3% (so a panel that fills the screen stays 100%), and then moves back inside if its scaled box would cross a screen edge,
-// keeping up to 3% (at most its original distance) from that edge. Everything inside one cluster moves together.
+// Scaling each draw on its own would pull a button apart from its label, so draws are grouped: boxes that overlap or lie within 40 px of each other
+// (a button, its icon and its label; a film counter and its frame) form a cluster, built at each present from the draws of that frame and used by the next
+// frame (the interface hardly changes between two presents). A draw next to a cluster (within 40 px) joins it, so text that gains a glyph a frame keeps the
+// transform of the line it grows. A cluster scales uniformly by s, at most as far as it still fits the screen with a margin of 3% (so a panel that fills
+// the screen stays 100%). It scales about the point that keeps it where the 100% layout puts it: the edge it sits nearest to when its center is in the outer
+// third of the screen on an axis, else its center; a cluster that is still there next frame keeps that point. It then moves back inside if its scaled box
+// would cross a screen edge, keeping up to 3% (at most its original distance) from that edge. Everything inside one cluster moves together.
 // Touch input: snap_window_to_guest maps a window position to guest pixels through the last present's blit rectangle and then undoes the cluster
 // transform that drew the frame on screen, so a tap lands on the element it was drawn on at every scale (and on ultrawide windows).
 #include "nvn_internal.h"
@@ -34,12 +35,15 @@ constexpr float kGap = 40.0f;        // boxes closer than this (guest px) belong
 
 struct Box { float x0, y0, x1, y1; };
 struct Used { Box orig; Box shown; HudXf xf; };
+struct Cl { Box b; HudXf xf; };                          // a cluster of the last frame and the transform every draw inside it gets
+struct Rec { Box b; float ax, ay; };                     // a cluster's box and the point it scales about, kept to the next frame
 std::mutex g_mu;
 std::string g_setting = "auto";      // as chosen: auto or a percent
 std::atomic<float> g_eff{1.0f};      // scale in effect now (>= 1)
 int g_winH = 0;
 std::vector<Box> g_cur;              // boxes of this frame's scaled-class draws
-std::vector<Box> g_prev;             // clusters made from the last frame: they drive this frame
+std::vector<Cl> g_prev;              // clusters made from the last frame: they drive this frame
+std::vector<Rec> g_recs;             // the same clusters' anchors: a cluster that is still there next frame scales about the same point
 std::vector<Used> g_curUsed;         // what this frame drew with
 std::vector<Used> g_shown;           // what the frame on screen was drawn with (touch input)
 bool g_inited = false;
@@ -76,6 +80,31 @@ float Area(const Box& b) { return (b.x1 - b.x0) * (b.y1 - b.y0); }
 }  // namespace
 static bool MapLocked(float nx, float ny, float* gx, float* gy);
 
+// the point a new box scales about, so it stays where the 100% layout puts it: its own center, or the edge it sits nearest to when its center is in the
+// outer third of the screen on that axis (a corner icon or a left-hand panel grows away from its edge, a centered dialogue box around its middle)
+static void AnchorFor(const Box& c, float* ax, float* ay) {
+  const float cx = (c.x0 + c.x1) * 0.5f, cy = (c.y0 + c.y1) * 0.5f;
+  *ax = cx < kW * 0.33f ? c.x0 : cx > kW * 0.67f ? c.x1 : cx;
+  *ay = cy < kH * 0.33f ? c.y0 : cy > kH * 0.67f ? c.y1 : cy;
+}
+
+// the transform for a cluster/box c, scaling by at most s about (ax, ay): the placement the 100% layout gives it stays (a panel grows where it sits),
+// then it is moved back inside if it would cross a screen edge, keeping up to 3% (at most its original distance) from that edge
+static HudXf MakeXf(const Box& c, float ax, float ay, float s) {
+  HudXf o;
+  const float cw = c.x1 - c.x0, ch = c.y1 - c.y0;
+  const float mlx = std::min(std::max(c.x0, 0.0f), kMargin * kW), mrx = std::min(std::max(kW - c.x1, 0.0f), kMargin * kW);
+  const float mty = std::min(std::max(c.y0, 0.0f), kMargin * kH), mby = std::min(std::max(kH - c.y1, 0.0f), kMargin * kH);
+  const float sc = std::min({s, (kW - mlx - mrx) / cw, (kH - mty - mby) / ch});
+  if (!(sc > 1.001f)) return o;
+  const float nx0 = ax + (c.x0 - ax) * sc, nx1 = ax + (c.x1 - ax) * sc, ny0 = ay + (c.y0 - ay) * sc, ny1 = ay + (c.y1 - ay) * sc;
+  float dx = 0.0f, dy = 0.0f;
+  if (nx0 < mlx) dx = mlx - nx0; else if (nx1 > kW - mrx) dx = (kW - mrx) - nx1;
+  if (ny0 < mty) dy = mty - ny0; else if (ny1 > kH - mby) dy = (kH - mby) - ny1;
+  o.on = true; o.p = sc; o.q = ax * (1.0f - sc) + dx; o.r = sc; o.t = ay * (1.0f - sc) + dy;
+  return o;
+}
+
 float HudScaleNow() { if (!g_inited) { std::lock_guard<std::mutex> lk(g_mu); Init(); } return g_eff.load(std::memory_order_relaxed); }
 
 bool HudOnDraw(const float* box, HudXf* out) {
@@ -90,21 +119,22 @@ bool HudOnDraw(const float* box, HudXf* out) {
   std::lock_guard<std::mutex> lk(g_mu);
   g_cur.push_back(b);
   const float cx = (b.x0 + b.x1) * 0.5f, cy = (b.y0 + b.y1) * 0.5f;
-  Box c = b;                                                                          // its cluster from the last frame, else the draw alone
+  const Cl* hit = nullptr;                                                            // its cluster from the last frame: the smallest one it lies in
   float best = 1e30f;
-  for (const Box& k : g_prev)
-    if (cx >= k.x0 && cx <= k.x1 && cy >= k.y0 && cy <= k.y1 && Area(k) < best) { best = Area(k); c = k; }
-  const float cw = c.x1 - c.x0, ch = c.y1 - c.y0;
-  const float mlx = std::min(std::max(c.x0, 0.0f), kMargin * kW), mrx = std::min(std::max(kW - c.x1, 0.0f), kMargin * kW);
-  const float mty = std::min(std::max(c.y0, 0.0f), kMargin * kH), mby = std::min(std::max(kH - c.y1, 0.0f), kMargin * kH);
-  float sc = std::min({s, (kW - mlx - mrx) / cw, (kH - mty - mby) / ch});
-  if (!(sc > 1.001f)) return false;
-  const float ccx = kW * 0.5f, ccy = kH * 0.5f;
-  const float nx0 = ccx + (c.x0 - ccx) * sc, nx1 = ccx + (c.x1 - ccx) * sc, ny0 = ccy + (c.y0 - ccy) * sc, ny1 = ccy + (c.y1 - ccy) * sc;
-  float dx = 0.0f, dy = 0.0f;
-  if (nx0 < mlx) dx = mlx - nx0; else if (nx1 > kW - mrx) dx = (kW - mrx) - nx1;
-  if (ny0 < mty) dy = mty - ny0; else if (ny1 > kH - mby) dy = (kH - mby) - ny1;
-  out->on = true; out->p = sc; out->q = ccx * (1.0f - sc) + dx; out->r = sc; out->t = ccy * (1.0f - sc) + dy;
+  for (const Cl& k : g_prev)
+    if (cx >= k.b.x0 && cx <= k.b.x1 && cy >= k.b.y0 && cy <= k.b.y1 && Area(k.b) < best) { best = Area(k.b); hit = &k; }
+  if (!hit) {   // text that grows by a glyph a frame: a draw next to a cluster of the last frame (within kGap) belongs to it and keeps its transform
+    float bd = 1e30f;
+    for (const Cl& k : g_prev) {
+      const float gx = std::max(0.0f, std::max(k.b.x0 - b.x1, b.x0 - k.b.x1)), gy = std::max(0.0f, std::max(k.b.y0 - b.y1, b.y0 - k.b.y1));
+      if (gx <= kGap && gy <= kGap && gx + gy < bd) { bd = gx + gy; hit = &k; }
+    }
+  }
+  float ax, ay;
+  AnchorFor(b, &ax, &ay);
+  const HudXf xf = hit ? hit->xf : MakeXf(b, ax, ay, s);                              // else the draw alone
+  if (!xf.on) return false;
+  *out = xf;
   g_curUsed.push_back({b, Box{out->p * b.x0 + out->q, out->r * b.y0 + out->t, out->p * b.x1 + out->q, out->r * b.y1 + out->t}, *out});
   return true;
 }
@@ -175,7 +205,31 @@ void HudOnPresent(int winW, int winH, int dx, int dy, int dw, int dh, int sx, in
       for (size_t i = 0; i < cl.size() && i < 24; i++) fprintf(stderr, "[hud]   cluster %.0f,%.0f..%.0f,%.0f\n", cl[i].x0, cl[i].y0, cl[i].x1, cl[i].y1);
     }
   }
-  g_prev.swap(cl);
+  {   // each cluster's transform for the next frame. A cluster that overlaps one of the last frame keeps its anchor (the point it scales about), so text
+      // that gains a glyph a frame, or a panel that grows, does not creep; a new cluster scales about its own center.
+    const float sNow = g_eff.load(std::memory_order_relaxed);
+    std::vector<Cl> np; std::vector<Rec> nr;
+    std::vector<char> used(g_recs.size(), 0);
+    for (const Box& c : cl) {
+      float ax, ay, bo = 0.0f;
+      AnchorFor(c, &ax, &ay);
+      int bi = -1;
+      for (size_t i = 0; i < g_recs.size(); i++) {
+        if (used[i]) continue;
+        const Box& o = g_recs[i].b;
+        const float ow = std::min(c.x1, o.x1) - std::max(c.x0, o.x0), oh = std::min(c.y1, o.y1) - std::max(c.y0, o.y0);
+        if (ow > 0 && oh > 0 && ow * oh > bo) { bo = ow * oh; bi = (int)i; }
+      }
+      if (bi >= 0) {
+        const Rec& r = g_recs[(size_t)bi];
+        if (r.ax >= c.x0 && r.ax <= c.x1 && r.ay >= c.y0 && r.ay <= c.y1) { ax = r.ax; ay = r.ay; used[(size_t)bi] = 1; }
+      }
+      np.push_back(Cl{c, MakeXf(c, ax, ay, sNow)});
+      nr.push_back(Rec{c, ax, ay});
+    }
+    g_prev.swap(np);
+    g_recs.swap(nr);
+  }
   g_cur.clear();
 }
 

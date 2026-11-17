@@ -42,7 +42,7 @@ struct Live {
     dev_param_i("SNAP_SOFT_PARTICLES", &soft, 0, 1, 0);
     dev_param_f("SNAP_WIND_SWAY", &sway, 0.0f, 1.0f, 0.0f);
     dev_param_i("SNAP_WIND_PHASE", &swayPhase, 0, 7, 0);
-    dev_param_i("SNAP_FOLIAGE_PICK", &pick, 0, 4, 0);
+    dev_param_i("SNAP_FOLIAGE_PICK", &pick, 0, 5, 0);
     if (aa || leaf > 0 || soft || sway > 0) fprintf(stderr, "[foliage] on: leaf edge smoothing %d, leaf translucency %.2f, soft particles %d, wind sway %.2f (photo frames keep the game's draw)\n", aa, leaf, soft, sway);
   }
 };
@@ -51,7 +51,8 @@ Live& L() { static Live l; return l; }
 bool FoliageAaEnabled() { const int p = L().pick; return p ? (p == 1 || p == 4) : L().aa != 0; }
 float FoliageLeafStrength() { const int p = L().pick; if (p) return (p == 2 || p == 4) ? 1.0f : 0.0f; const float f = L().leaf; return f < 0 ? 0.0f : f > 1 ? 1.0f : f; }
 bool SoftParticlesEnabled() { return L().soft != 0; }
-float FoliageSwayStrength() { const int p = L().pick; if (p) return (p == 3 || p == 4) ? 1.0f : 0.0f; const float f = L().sway; return f < 0 ? 0.0f : f > 1 ? 1.0f : f; }
+float FoliageSwayStrength() { const int p = L().pick; if (p) return (p == 3 || p == 4 || p == 5) ? 1.0f : 0.0f; const float f = L().sway; return f < 0 ? 0.0f : f > 1 ? 1.0f : f; }
+bool FoliageSwayZero() { return L().pick == 5; }   // debug pick 5: wrapper on, amplitude 0 (pad2 bit 24)
 float FoliageSwayAmp() { return L().swayAmp; }
 int FoliageSwayPhase() { const int v = L().swayPhase; return v < 0 ? 0 : v > 7 ? 7 : v; }
 int FoliageLeafDebugFlags() { return (L().leafFlip ? 16 : 0) | (L().leafDebug ? 32 : 0); }
@@ -354,7 +355,7 @@ bool PatchVertexSway(const std::vector<uint32_t>& in, std::vector<uint32_t>& out
   const bool addO = !oPtrV, addU = !uPtrF;
   if (addO) oPtrV = nid();
   if (addU) uPtrF = nid();
-  const uint32_t newMain = nid(), lbl = nid(), callId = nid(), ampId = nid(), offId = nid(), tsId = nid();
+  const uint32_t newMain = nid(), lbl = nid(), callId = nid(), ampId = nid(), offId = nid(), tsId = nid(), zsId = nid();
   std::vector<uint32_t> consts, body;
   std::map<uint32_t, uint32_t> fcs, ics;
   auto cf = [&](float v) { const uint32_t b = FBits(v); auto it = fcs.find(b); if (it != fcs.end()) return it->second; const uint32_t id = nid(); Emit(consts, kOpConstant, {floatT, id, b}); fcs[b] = id; return id; };
@@ -396,6 +397,7 @@ bool PatchVertexSway(const std::vector<uint32_t>& in, std::vector<uint32_t>& out
   const uint32_t dz = add(mul(cf(0.6f), along), mul(cf(0.8f), across));
   uint32_t nc[4];
   for (uint32_t k = 0; k < 4; k++) nc[k] = add(cl[k], add(mul(dx, ld(16, k)), mul(dz, ld(18, k))));    // clip + viewProjection * (dx, 0, dz, 0)
+  nc[2] = sub(nc[2], mul(zsId, nc[3]));   // debug depth slack (spec constant 3, pre-pass only): reverse Z, so a smaller z/w is farther and the colour pass GEQUAL keeps passing
   const uint32_t nv = nid();
   Emit(body, 80 /*OpCompositeConstruct*/, {vecT, nv, nc[0], nc[1], nc[2], nc[3]});
   Emit(body, kOpStore, {pp, nv});
@@ -414,6 +416,7 @@ bool PatchVertexSway(const std::vector<uint32_t>& in, std::vector<uint32_t>& out
   }
   Emit(out, kOpDecorate, {ampId, 1, 0});   // SpecId 0: amplitude in world units
   Emit(out, kOpDecorate, {tsId, 1, 2});   // SpecId 2: timer scale (1 normally, 0 = static field, debug)
+  Emit(out, kOpDecorate, {zsId, 1, 3});   // SpecId 3: depth slack as a fraction of w (0 normally)
   Emit(out, kOpDecorate, {offId, 1, 1});   // SpecId 1: time offset in seconds (debug phase, 0 normally)
   while (k < firstFn) { const uint32_t wc = in[k] >> 16; out.insert(out.end(), in.begin() + k, in.begin() + k + wc); k += wc; }
   if (addO) Emit(out, kOpTypePointer, {oPtrV, 3, vecT});
@@ -421,6 +424,7 @@ bool PatchVertexSway(const std::vector<uint32_t>& in, std::vector<uint32_t>& out
   Emit(out, kOpSpecConstant, {floatT, ampId, FBits(0.05f)});
   Emit(out, kOpSpecConstant, {floatT, offId, FBits(0.0f)});
   Emit(out, kOpSpecConstant, {floatT, tsId, FBits(1.0f)});
+  Emit(out, kOpSpecConstant, {floatT, zsId, FBits(0.0f)});
   out.insert(out.end(), consts.begin(), consts.end());
   out.insert(out.end(), in.begin() + k, in.end());
   out.insert(out.end(), body.begin(), body.end());
@@ -458,14 +462,22 @@ bool FoliageSwayKeepSpv() { return FoliageSwayStrength() > 0.0f || dev_on(); }
 // opaque alpha-tested draws into the RGBA16F scene colour with a depth test qualify (blended particles, shadow casters, UI, the photo/Evaluation
 // targets and 8 bit targets differ), and no photo frame does. The bits are part of the pipeline-key bytes, so the persisted cache stays valid for 0.
 uint32_t FoliagePipeBits(int alphaFunc, float alphaRef, int32_t colorVkFmt, int32_t depthVkFmt, bool depthTest, int nColor, bool blend0, int depthFunc, bool depthWrite) {
-  if (alphaFunc == 0 || depthVkFmt == 0 || !depthTest || blend0) return 0;
-  if (alphaFunc != 2 && alphaFunc != 4 && alphaFunc != 5 && alphaFunc != 7) return 0;
+  static const bool swayAll = getenv("SNAP_WIND_ALL") != nullptr;   // debug: sway every opaque scene draw (alpha func ALWAYS included), to test the mixed swayed / unswayed depth theory
+  if (depthVkFmt == 0 || !depthTest || blend0) return 0;
+  if (alphaFunc == 0 && !swayAll) return 0;
+  if (alphaFunc != 0 && alphaFunc != 2 && alphaFunc != 4 && alphaFunc != 5 && alphaFunc != 7) return 0;
   if (nColor < 1) {   // the scene's colour-less depth pre-pass (reverse Z, GEQUAL, writes depth): the colour pass tests against its depth with GEQUAL, so it must move with the sway or the leaves z-fight themselves
     if (!depthWrite || depthFunc != 7 || FxIsPhotoFrame()) return 0;
     const int sw = (int)(FoliageSwayStrength() * 8.0f + 0.5f);
-    return sw > 0 ? (((uint32_t)sw << 17) | ((uint32_t)FoliageSwayPhase() << 21)) : 0u;
+    return sw > 0 ? (((uint32_t)sw << 17) | ((uint32_t)FoliageSwayPhase() << 21) | (FoliageSwayZero() ? 1u << 24 : 0u) | (1u << 25)) : 0u;
   }
-  if (alphaRef < 0.15f || colorVkFmt != 97 /* VK_FORMAT_R16G16B16A16_SFLOAT */) return 0;
+  if (colorVkFmt != 97 /* VK_FORMAT_R16G16B16A16_SFLOAT */) return 0;
+  if (alphaFunc == 0) {   // SNAP_WIND_ALL only: sway bits, no edge or leaf effects
+    if (FxIsPhotoFrame()) return 0;
+    const int sw = (int)(FoliageSwayStrength() * 8.0f + 0.5f);
+    return sw > 0 ? (((uint32_t)sw << 17) | ((uint32_t)FoliageSwayPhase() << 21) | (FoliageSwayZero() ? 1u << 24 : 0u)) : 0u;
+  }
+  if (alphaRef < 0.15f) return 0;
   const bool aa = FoliageAaEnabled();
   const int dbg = FoliageLeafDebugFlags();
   const int leaf = (dbg & 32) ? 9 : (int)(FoliageLeafStrength() * 8.0f + 0.5f);
@@ -479,7 +491,7 @@ uint32_t FoliagePipeBits(int alphaFunc, float alphaRef, int32_t colorVkFmt, int3
   }
   ++s_ran;
   FxNoteRan();   // an effect variant is drawing this frame (A/B capture gating counters)
-  return (aa ? 1u : 0u) | ((uint32_t)std::min(leaf, 9) << 4) | ((dbg & 16) ? 2u : 0u) | ((uint32_t)sway << 17) | (sway > 0 ? (uint32_t)FoliageSwayPhase() << 21 : 0u);   // bit 1 = debug flip (bits 8..16 belong to the parallax rows, 17..20 the wind sway level)
+  return (aa ? 1u : 0u) | ((uint32_t)std::min(leaf, 9) << 4) | ((dbg & 16) ? 2u : 0u) | ((uint32_t)sway << 17) | (sway > 0 ? ((uint32_t)FoliageSwayPhase() << 21) | (FoliageSwayZero() ? 1u << 24 : 0u) : 0u);   // bit 1 = debug flip (bits 8..16 belong to the parallax rows, 17..20 the wind sway level)
 }
 
 namespace {
@@ -508,7 +520,30 @@ char FoliageTexLabel(const void* tex) {
   return it == g_lbl.end() ? 0 : it->second;
 }
 
+extern "C" float snap_route_ride_progress();   // runtime/hle/input_core.cpp
+
+// SNAP_PARTICLE_CENSUS=<file>: one line per present that drew particles, tagged with the rail progress (needs SNAP_ROUTE_LOG=1 for the progress): draws into the
+// half-resolution particle layer (soft particles' target, more than a quad) and blended, depth-tested, no-depth-write draws into the scene colour (sprites).
+// "vtx" = vertices x instances, a proxy for how much is on screen.
+static void ParticleCensus(const FoliageDrawInfo& d) {
+  static const char* path = getenv("SNAP_PARTICLE_CENSUS");
+  if (!path || !*path) return;
+  static std::mutex mu;
+  static FILE* f = fopen(path, "w");
+  static int cur = -1, layerN = 0, spriteN = 0;
+  static long long layerV = 0, spriteV = 0;
+  std::lock_guard<std::mutex> g(mu);
+  if (d.present != cur) {
+    if (f && cur >= 0 && (layerN || spriteN)) { fprintf(f, "p%d ride=%.2f layer=%d/%lld sprite=%d/%lld\n", cur, snap_route_ride_progress(), layerN, layerV, spriteN, spriteV); fflush(f); }
+    cur = d.present; layerN = spriteN = 0; layerV = spriteV = 0;
+  }
+  const long long v = (long long)d.nVerts * (d.nInst > 0 ? d.nInst : 1);
+  if ((d.rtLabel == 'A' || d.rtLabel == 'B') && v > 6) { layerN++; layerV += v; }
+  else if (d.blend0 && d.depthTest && !d.depthWrite && d.nColor >= 1 && d.rtW >= 800) { spriteN++; spriteV += v; }
+}
+
 void FoliageLogDraw(const FoliageDrawInfo& d) {
+  ParticleCensus(d);
   static const char* path = getenv("SNAP_FOLIAGE_LOG");
   if (!path || !*path) return;
   static std::mutex mu;

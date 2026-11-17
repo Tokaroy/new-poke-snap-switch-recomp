@@ -95,6 +95,7 @@ struct Hd {
 using HdP = std::shared_ptr<Hd>;
 
 bool g_log = false, g_noMid = false;
+int g_minH = 720;   // the smallest sampled region (host pixels tall) that gets an HD copy; below 1440 the copy is a linear upscale of the region (SNAP_HD_PHOTOS_MIN_H, 1411 = the old 4K-only gate)
 std::mutex g_mu;
 std::atomic<int> g_active{0};                            // links + decoded buffers: zero keeps HdPhotoSubstitute a load + compare
 std::unordered_map<const TextureImpl*, HdP> g_link;     // guest texture -> HD copy of what it shows
@@ -1087,6 +1088,7 @@ bool HdPhotoOn() {
     const char* e = snapdef::get("SNAP_HD_PHOTOS");   // env or the saved choice, else the Enhanced / Original look (hle/visual_defaults.h)
     const bool v = e && (*e == '1' || !_stricmp(e, "on") || !_stricmp(e, "true") || !_stricmp(e, "yes"));
     g_log = getenv("SNAP_HD_PHOTOS_LOG") != nullptr;
+    if (const char* m = getenv("SNAP_HD_PHOTOS_MIN_H")) g_minH = std::min(1440, std::max(360, atoi(m)));
     if (const char* m = getenv("SNAP_HD_PHOTOS_SMALL")) g_noMid = m[0] == '0';   // 0: small photos (the strip in photo select) keep the game's texture
     if (v) fprintf(stderr, "[hdphoto] HD photos on: 2160x1440 copies in %s\n", Dir().c_str());
     return v;
@@ -1134,8 +1136,8 @@ void HdPhotoCapture(ReplayCtx& cx, ProgramImpl* p, TextureImpl* src, TextureImpl
     x0 = (int)std::lround((gw - cw) * 0.5f * sx); y0 = (int)std::lround((gh - ch) * 0.5f * sy);
     x1 = (int)std::lround((gw + cw) * 0.5f * sx); y1 = (int)std::lround((gh + ch) * 0.5f * sy);
   }
-  if (y1 - y0 < kH * 98 / 100) {   // region below 1440 host pixels tall (small source or a zoomed shot): an HD copy would only be an upscale
-    static int n = 0; if (g_log || n++ < 2) fprintf(stderr, "[hdphoto] capture region %dx%d of %ux%u too small for a 2160x1440 copy: no HD copy\n", x1 - x0, y1 - y0, src->HW(), src->HH());
+  if (y1 - y0 < g_minH) {   // region shorter than the game's own 720-pixel photo: a pure upscale; between 720 and 1440 the copy is a linear upscale of the region, still far sharper than the 360x240 thumbnail
+    static int n = 0; if (g_log || n++ < 2) fprintf(stderr, "[hdphoto] capture region %dx%d of %ux%u under %d tall: no HD copy\n", x1 - x0, y1 - y0, src->HW(), src->HH(), g_minH);
     std::lock_guard<std::mutex> g(g_mu); SetLink(rt0, nullptr); return;
   }
   HdP hd = Grab(cx, src, x0, y0, x1, y1, true);
@@ -1160,7 +1162,7 @@ void HdPhotoCopyRegion(ReplayCtx& cx, TextureImpl* s, TextureImpl* d, int sx, in
   const int x0 = (int)std::lround(sx * kx), y0 = (int)std::lround(sy * ky), x1 = (int)std::lround((sx + sw) * kx), y1 = (int)std::lround((sy + sh) * ky);
   if (g_log) fprintf(stderr, "[hdphoto] copy %p %dx%d (host %ux%u f%d) region (%d,%d %dx%d) -> 1080x720 %p at present %d\n", (const void*)s, s->b.width, s->b.height, s->HW(), s->HH(),
                      (int)s->fi->vk, sx, sy, sw, sh, (const void*)d, g_presentCount);
-  if (y1 - y0 < kH * 98 / 100) return;
+  if (y1 - y0 < g_minH) return;
   const VkFormat f = s->fi->vk;
   const bool srgb = f == VK_FORMAT_R8G8B8A8_SRGB || f == VK_FORMAT_B8G8R8A8_SRGB || f == VK_FORMAT_A8B8G8R8_SRGB_PACK32;
   const bool unorm8 = f == VK_FORMAT_R8G8B8A8_UNORM || f == VK_FORMAT_B8G8R8A8_UNORM || f == VK_FORMAT_A8B8G8R8_UNORM_PACK32 || f == VK_FORMAT_A2B10G10R10_UNORM_PACK32;

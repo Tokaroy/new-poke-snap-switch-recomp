@@ -42,6 +42,7 @@ bool PatchVertexSway(const std::vector<uint32_t>& in, std::vector<uint32_t>& out
 VkShaderModule FoliageSwayModule(Host* h, const StageProg& vs);
 float FoliageSwayStrength();
 int FoliageSwayPhase();   // SNAP_WIND_PHASE debug time offset step 0..7 (pad2 bits 21..23, 0.35 s each; frozen-frame strips)
+bool FoliageSwayZero();   // debug (SNAP_FOLIAGE_PICK 5): the wrapper runs with amplitude 0 (pad2 bit 24)
 float FoliageSwayAmp();   // SNAP_WIND_AMP override (world units at full strength), 0 = built in default
 inline float FoliageSwayAmpFor(int level) { const float a = FoliageSwayAmp(); return (a > 0 ? a : 0.05f) * (float)level * 0.125f; }
 bool FoliageSwayKeepSpv();   // true when vertex programs keep their SPIR-V for the wrapper (sway on, or the dev loop)

@@ -109,7 +109,8 @@ void write_file() {
 // something; "" and "default" mean "leave the variable alone" (the game's own behavior). An env var set by hand always wins (set_env_if_unset).
 const struct { const char* key; const char* env; } kEnvKeys[] = {
     {"gfx_render_scale", "SNAP_RENDER_SCALE"}, {"gfx_aniso", "SNAP_ANISO"},           {"gfx_lod_bias", "SNAP_LOD_BIAS"},
-    {"gfx_shadow_res", "SNAP_SHADOW_RES"},     {"ssao_quality", "SNAP_SSAO_QUALITY"}, {"gfx_lighting", "SNAP_LIGHTING"}, {"rt_reflect", "SNAP_RT_REFLECT"}, {"rt_gi", "SNAP_RT_GI"}, {"rt_gi_rays", "SNAP_RT_GI_RAYS"},
+    {"gfx_shadow_res", "SNAP_SHADOW_RES"},     {"ssao_quality", "SNAP_SSAO_QUALITY"}, {"gfx_lighting", "SNAP_LIGHTING"}, {"gfx_bounce", "SNAP_SSGI"}, {"rt_reflect", "SNAP_RT_REFLECT"}, {"rt_gi", "SNAP_RT_GI"}, {"rt_gi_rays", "SNAP_RT_GI_RAYS"},   // Experimental rows (runtime/nvn/nvn_rt.cpp; restart)
+   
     {"gfx_aa", "SNAP_AA"},                     {"gfx_smaa_quality", "SNAP_SMAA_QUALITY"}, {"return_to_launcher", "SNAP_RETURN_TO_LAUNCHER"}, {"gfx_sharpen", "SNAP_SHARPEN"},       {"gfx_upscaler", "SNAP_UPSCALER"},
     {"gfx_upscale_quality", "SNAP_UPSCALE_QUALITY"}, {"gfx_hdr", "SNAP_HDR"},        {"gfx_hdr_peak", "SNAP_HDR_PEAK"},
     {"gfx_hdr_paper", "SNAP_HDR_PAPER"},       {"gfx_draw_dist", "SNAP_DRAW_DIST"}, {"gfx_lod_dist", "SNAP_LOD_DIST"}, {"gfx_lod_force0", "SNAP_LOD_FORCE0"},   // gfx_fov removed (owner 2026-11-12): a saved value is ignored
@@ -124,16 +125,18 @@ const struct { const char* key; const char* env; } kEnvKeys[] = {
     {"fps_overlay_corner", "SNAP_FPS_OVERLAY_CORNER"},   // tl / tr / bl / br, unset = tr   // Contact shadows row: "1" or unset (live through snap_contact_shadows_set)
     {"photo_export", "SNAP_PHOTO_EXPORT"},    {"photo_dir", "SNAP_PHOTO_DIR"}, {"hd_photos", "SNAP_HD_PHOTOS"},    {"neo_speed", "SNAP_NEO_SPEED"}, {"film", "SNAP_FILM"},
     {"freecam", "SNAP_FREECAM"}, {"freecam_freeze", "SNAP_FREECAM_FREEZE"},   // free camera rows (host/mods/freecam.cpp, docs/freecam.md)
+    {"atmos_shafts", "SNAP_ATMOS_SHAFTS"}, {"atmos_fog", "SNAP_ATMOS_FOG"}, {"atmos_exposure", "SNAP_ATMOS_EXPOSURE"}, {"atmos_bloom", "SNAP_ATMOS_BLOOM"}, {"atmos_clouds", "SNAP_ATMOS_CLOUDS"}, {"atmos_sky", "SNAP_ATMOS_SKY"},   // atmosphere rows (runtime/nvn/nvn_atmos.cpp; "1" or unset; restart)
     {"skip_cutscenes", "SNAP_SKIP_CUTSCENES"},
     {"skip_course_intro", "SNAP_SKIP_INTRO"},   // "1" or unset: skip the 10.6 s course fly-over (host/mods/introskip.cpp)
     {"ui_smooth", "SNAP_UI_SMOOTH"},            // "0" or unset: smooth interface above 60 fps off / on (runtime/nvn/nvn_uismooth.h; live in F1)
     {"hud_scale", "SNAP_HUD_SCALE"},            // auto | 100 | 125 | 150 | 175 | 200 (runtime/nvn/nvn_hud.cpp)
-    {"atmos_shafts", "SNAP_ATMOS_SHAFTS"}, {"atmos_fog", "SNAP_ATMOS_FOG"}, {"atmos_exposure", "SNAP_ATMOS_EXPOSURE"}, {"atmos_bloom", "SNAP_ATMOS_BLOOM"}, {"atmos_clouds", "SNAP_ATMOS_CLOUDS"}, {"atmos_sky", "SNAP_ATMOS_SKY"},   // atmosphere rows (runtime/nvn/nvn_atmos.cpp; "1" or unset; restart)
+    {"frame_generation", "SNAP_FRAMEGEN"},   // Frame generation row ("fsr" or the older "1" = FSR, "dlss" = NVIDIA DLSS, unset = off; runtime/nvn/nvn_framegen.cpp; restart)
     {"foliage_aa", "SNAP_FOLIAGE_AA"}, {"leaf_translucency", "SNAP_LEAF_TRANSLUCENCY"}, {"soft_particles", "SNAP_SOFT_PARTICLES"},   // foliage / particle rows (runtime/nvn/nvn_foliage.cpp; restart)
-    {"fps_target", "SNAP_FPS"},   // Frame rate target row (90 / 120 / 144; "default" = 60, the game's own); host/mods/highfps.cpp, uipace.cpp
-    {"game_language", "SNAP_GAME_LANGUAGE"},   // Game language row: ja | en | fr | de | it | es | ko | zh-hans | zh-hant, unset = Auto (Windows language, else English); docs/player-options.md
+    {"gfx_pom", "SNAP_POM"},   // Parallax detail row (off | low | high; runtime/nvn/nvn_pom.cpp, docs/pom.md; restart)
     {"gfx_bokeh_dof", "SNAP_BOKEH_DOF"}, {"gfx_motion_blur", "SNAP_MOTION_BLUR"},   // lens effect rows (runtime/nvn/nvn_lens_fx.cpp; strength, unset = off; restart)
-    {"frame_generation", "SNAP_FRAMEGEN"},   // FSR frame generation row ("1" or unset = off; runtime/nvn/nvn_framegen.cpp; restart)
+    {"spawn_rand", "SNAP_SPAWN_RAND"}, {"spawn_seed", "SNAP_SPAWN_SEED"},   // Spawn randomizer rows (off | within | all; seed text): read by scripts/mods/make_spawn_randomizer.py, which builds the pack
+    {"game_language", "SNAP_GAME_LANGUAGE"},   // Game language row: ja | en | fr | de | it | es | ko | zh-hans | zh-hant, unset = Auto (Windows language, else English); docs/player-options.md
+    {"fps_target", "SNAP_FPS"},   // Frame rate target row (72 / 90 / 120 / 144 / 165 / 240; "default" = 60, the game's own); host/mods/highfps.cpp, uipace.cpp
     {"access_cvd", "SNAP_ACCESS_CVD"}, {"access_cvd_strength", "SNAP_ACCESS_CVD_STRENGTH"}, {"access_ui_size", "SNAP_ACCESS_UI_SIZE"}, {"access_contrast", "SNAP_ACCESS_CONTRAST"},   // Accessibility rows (hle/access.h, docs/accessibility.md); live through hle::access::set
     {"access_flash", "SNAP_ACCESS_FLASH"}, {"access_mono", "SNAP_ACCESS_MONO"}, {"access_toggle", "SNAP_ACCESS_TOGGLE"},   // access_toggle: comma list of buttons that toggle (read at start, hle/input_core.cpp)
 };
@@ -302,8 +305,8 @@ void apply(bool env) {
 const char* env_name(const std::string& key) {
   if (key == "look" || key == "look_intensity") return "SNAP_LOOK";
   if (key == "win_size") return "SNAP_WINDOW_W";
-  if (key == "shiny") return "SNAP_SHINY";
   if (key == "gfx_look") return "SNAP_VISUALS";
+  if (key == "shiny") return "SNAP_SHINY";
   for (auto& m : kPassKeys) if (key == m.key) return "SNAP_PASS_OFF";
   for (auto& m : kEnvKeys) if (key == m.key) return m.env;
   return nullptr;
