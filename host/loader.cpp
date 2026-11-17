@@ -390,11 +390,6 @@ GuestFn lookup_fn_bsearch(uint64_t pc) {
 
 // ------------------------------------------------------------------------------------------------ guest threads and calls
 
-GuestThread *new_thread(size_t stack_size) {
-    auto *t = new GuestThread();
-    t->c = (Cpu *)_aligned_malloc(sizeof(Cpu), 64);
-    memset(t->c, 0, sizeof(Cpu));
-    uint8_t *stack = (uint8_t *)VirtualAlloc(nullptr, stack_size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 // main's TLS image is read once, at the first thread (before any guest code runs, so it is the loaded bytes), and copied
 // into every guest thread's TLS block after that (runtime/hle/guest_tls.h says why it matters: the scan finds Pokemon).
 void init_guest_tls(uint64_t tp) {
@@ -409,6 +404,11 @@ void init_guest_tls(uint64_t tp) {
     if (have) hle::guest_tls_init((uint8_t *)tp, image, sizeof image);
 }
 
+GuestThread *new_thread(size_t stack_size) {
+    auto *t = new GuestThread();
+    t->c = (Cpu *)_aligned_malloc(sizeof(Cpu), 64);
+    memset(t->c, 0, sizeof(Cpu));
+    uint8_t *stack = (uint8_t *)VirtualAlloc(nullptr, stack_size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     uint8_t *tls = (uint8_t *)VirtualAlloc(nullptr, 0x10000, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);   // no PT_TLS in the ELFs
     uint8_t *tlr = (uint8_t *)VirtualAlloc(nullptr, 0x1000, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);    // Thread Local Region
     uint8_t *tt = (uint8_t *)VirtualAlloc(nullptr, 0x1000, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);     // ThreadType
