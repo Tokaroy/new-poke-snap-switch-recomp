@@ -1,0 +1,7 @@
+# fixture: tut_cand_new4
+# Rita scan tutorial, 2026-11-17 (scanfix): same start as scanfix_tls, then A taps again after the name line so the next line ("And did you also notice that [?] ...") appears; frames every 30 route frames f8200..f9800 to check the inline "?" icon.
+repeat @f300 @f7400 60 6 A
+repeat @f7650 @f8100 90 8 X
+repeat @f8160 @f9800 120 6 A
+repeat @f8200 @f9800 30 1 shot=1
+end @f9850
