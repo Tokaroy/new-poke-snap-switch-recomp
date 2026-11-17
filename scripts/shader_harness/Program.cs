@@ -123,6 +123,25 @@ namespace ShaderHarness
             return r;
         }
 
+        // --nvn-serve: one long-lived process for the runtime's cache misses (runtime/nvn/nvn_xlate_server.h). Reads one request per line on stdin,
+        // <data.bin> TAB <out.spv> TAB <out.json> TAB stage TAB constOff TAB codeOff, and answers one line on stdout: ok, or err TAB message. The same
+        // NvnTranslate as --nvn, so the files are byte-identical; what it saves is the process start and the translator's JIT warm-up per shader.
+        // Ends when stdin closes.
+        static int NvnServe()
+        {
+            var inp = new StreamReader(Console.OpenStandardInput(), new System.Text.UTF8Encoding(false));
+            var outp = new StreamWriter(Console.OpenStandardOutput(), new System.Text.UTF8Encoding(false)) { AutoFlush = true, NewLine = "\n" };
+            string line;
+            while ((line = inp.ReadLine()) != null)
+            {
+                string[] f = line.Split('\t');
+                if (f.Length != 6) { outp.WriteLine("err\tbad request"); continue; }
+                try { Nvn(f); outp.WriteLine("ok"); }
+                catch (Exception e) { outp.WriteLine("err\t" + e.GetType().Name + ": " + e.Message.Replace('\n', ' ').Replace('\r', ' ').Replace('\t', ' ')); }
+            }
+            return 0;
+        }
+
         static int Nvn(string[] a)
         {
             return NvnTranslate(File.ReadAllBytes(a[0]), a[1], a[2], int.Parse(a[3]), int.Parse(a[4]), int.Parse(a[5]));
@@ -148,17 +167,31 @@ namespace ShaderHarness
                 byte[] data = File.ReadAllBytes(Path.Combine(binsDir, f[0] + ".bin"));
                 int stage = int.Parse(f[1]), constOff = int.Parse(f[2]), codeOff = int.Parse(f[3]);
                 LogName = f[4];
-                byte[] extra = System.Text.Encoding.ASCII.GetBytes(salt + "|" + stage + "|" + codeOff);
-                var sha = System.Security.Cryptography.SHA256.Create();
-                sha.TransformBlock(data, 0, data.Length, null, 0);
-                sha.TransformFinalBlock(extra, 0, extra.Length);
-                string key = Convert.ToHexString(sha.Hash).ToLowerInvariant();
-                try { NvnTranslate(data, Path.Combine(outDir, key + ".spv"), Path.Combine(outDir, key + ".json"), stage, constOff, codeOff); ok++; }
+                string common = salt + "|" + stage + "|" + codeOff;
+                string key = KeyOf(data, common);
+                // constOff is a translation input the key does not hash: <key>.co records it, and a different constOff gets a second key
+                // (runtime/nvn/nvn_xcache.h ResolveKey: the same rule, so batch output and the layer's cache agree)
+                string coPath = Path.Combine(outDir, key + ".co");
+                if (File.Exists(coPath) && long.TryParse(File.ReadAllText(coPath).Trim(), out long have) && have != constOff)
+                {
+                    key = KeyOf(data, common + "|co" + constOff);
+                    coPath = Path.Combine(outDir, key + ".co");
+                }
+                try { NvnTranslate(data, Path.Combine(outDir, key + ".spv"), Path.Combine(outDir, key + ".json"), stage, constOff, codeOff); File.WriteAllText(coPath, constOff.ToString()); ok++; }
                 catch (Exception e) { bad++; fail.WriteLine(f[0] + "\t" + key + "\t" + f[4] + "\t" + e.GetType().Name + ": " + e.Message.Replace('\n', ' ')); }
             }
             LogW?.Flush();
             Console.WriteLine("ok " + ok + " failed " + bad);
             return bad == 0 ? 0 : 1;
+        }
+
+        static string KeyOf(byte[] data, string extraText)
+        {
+            byte[] extra = System.Text.Encoding.ASCII.GetBytes(extraText);
+            var sha = System.Security.Cryptography.SHA256.Create();
+            sha.TransformBlock(data, 0, data.Length, null, 0);
+            sha.TransformFinalBlock(extra, 0, extra.Length);
+            return Convert.ToHexString(sha.Hash).ToLowerInvariant();
         }
 
         static int NvnTranslate(byte[] data, string outSpv, string outJson, int stage, int constOff, int codeOff)
@@ -228,6 +261,7 @@ namespace ShaderHarness
         {
             // args: in.bin out.spv [compute]   |   --batch list.tsv outdir  (list: path<TAB>stage; writes results.tsv)
             if (args.Length == 7 && args[0] == "--nvn") return Nvn(args[1..]);
+            if (args.Length == 1 && args[0] == "--nvn-serve") return NvnServe();
             if (args.Length >= 5 && args[0] == "--nvn-batch") return NvnBatch(args[1..]);
             if (args.Length == 3 && args[0] == "--batch") return Batch(args[1], args[2]);
             if (args.Length < 2) { Console.Error.WriteLine("usage: in.bin out.spv [compute]"); return 2; }

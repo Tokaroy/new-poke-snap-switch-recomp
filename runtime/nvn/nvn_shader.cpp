@@ -20,15 +20,21 @@
 #include <atomic>
 #include <cstring>
 #include <fstream>
+#include <map>
+#include <memory>
 #include <sstream>
 #include <mutex>
 #include <unordered_set>
 
 #include "nvn_aa.h"
 #include "nvn_foliage.h"
+#include "nvn_hostbuf.h"
 #include "nvn_internal.h"
 #include "nvn_pipeline.h"
+#include "nvn_pom.h"
 #include "nvn_rt.h"   // [rt]
+#include "nvn_xcache.h"
+#include "nvn_xlate_server.h"
 #include "os/perf.h"   // SNAP_PERF instrumentation
 
 namespace nvn {
@@ -203,11 +209,32 @@ bool RunHarness(const std::string& bin, const std::string& spv, const std::strin
   }
   if (const char* e = getenv("NVN_SHADER_HARNESS")) dll = e;
   if (dll.empty()) { LogError("shader translation needs the harness: set NVN_SHADER_HARNESS=<ShaderHarness.dll>"); return false; }
-  std::ostringstream cl;
   const bool native = dll.size() > 4 && _stricmp(dll.c_str() + dll.size() - 4, ".exe") == 0;   // self-contained publish (release): run the apphost, no dotnet
-  if (!native) cl << "dotnet ";
-  cl << "\"" << dll << "\" --nvn \"" << bin << "\" \"" << spv << "\" \"" << json << "\" " << stage << " " << constOff << " "
-     << codeOff;
+  const std::string launch = std::string(native ? "" : "dotnet ") + "\"" + dll + "\"";
+
+  // One long-lived translator process answers every request (nvn_xlate_server.h): 15 ms a shader against 1.3 s for a process each. SNAP_XLATE_SERVE=0 keeps
+  // the one-process-per-shader path; a harness without --nvn-serve, or any trouble with the process, falls through to it as well.
+  static const bool serveOn = [] { const char* e = getenv("SNAP_XLATE_SERVE"); return !(e && *e == '0'); }();
+  if (serveOn) {
+    static std::mutex serversMu;
+    static std::map<std::string, std::unique_ptr<xlate::Server>> servers;   // by launch line: a SNAP_XLATE_REV switch never reuses another revision's process
+    xlate::Server* srv;
+    {
+      std::lock_guard<std::mutex> lk(serversMu);
+      auto& slot = servers[launch];
+      if (!slot) slot = std::make_unique<xlate::Server>(launch + " --nvn-serve");
+      srv = slot.get();
+    }
+    std::string msg;
+    switch (srv->Translate(bin, spv, json, stage, constOff, codeOff, &msg)) {
+      case xlate::Server::Result::Ok: return GetFileAttributesA(json.c_str()) != INVALID_FILE_ATTRIBUTES;
+      case xlate::Server::Result::Failed: LogError("shader harness failed: %s", msg.c_str()); return false;
+      case xlate::Server::Result::Unavailable: break;
+    }
+  }
+
+  std::ostringstream cl;
+  cl << launch << " --nvn \"" << bin << "\" \"" << spv << "\" \"" << json << "\" " << stage << " " << constOff << " " << codeOff;
   std::string cmd = cl.str();
   STARTUPINFOA si{sizeof si};
   PROCESS_INFORMATION pi{};
@@ -243,13 +270,13 @@ void FreeStage(Host* h, StageProg& s) {
 
 // SNAP_XLATE_AB test aid (see XlateAbVariant in nvn_internal.h): loads the same fragment program translated by the other revision
 // (SNAP_XLATE_AB_REV, cache dir SNAP_XLATE_AB_DIR) as StageProg::modAlt/spvAlt, with the same post-processing as the normal module.
-void LoadAbAlt(Host* h, const uint8_t* data, uint32_t dataSize, int stage, uint32_t codeOff, bool eft, const std::string& baseKey, StageProg* sp) {
+void LoadAbAlt(Host* h, const uint8_t* data, uint32_t dataSize, int stage, uint32_t codeOff, uint32_t constOff, bool eft, const std::string& baseKey, StageProg* sp) {
   const char* dir = getenv("SNAP_XLATE_AB_DIR");
   if (!dir || !*dir) return;
   const char* r = getenv("SNAP_XLATE_AB_REV");
   std::string salt = "nvn-xlate-v2|binding-model-1|interlock-off|clip7";
   if (r && *r && strcmp(r, "0")) salt += std::string("|xlate-r") + r;
-  const std::string key = Sha256Hex(data, dataSize, salt + "|" + std::to_string(stage) + "|" + std::to_string(codeOff));
+  const std::string key = xcache::ResolveKey(dir, [&](const std::string& extra) { return Sha256Hex(data, dataSize, extra); }, salt, stage, codeOff, constOff);   // same identity rule as BuildStage
   std::vector<uint8_t> spv;
   if (key.empty() || !ReadFile(std::string(dir) + "\\" + key + ".spv", &spv)) { Log("xlate A/B: no alternate translation for %s", baseKey.c_str()); return; }
   std::vector<uint32_t> words(spv.size() / 4);
@@ -293,42 +320,41 @@ bool BuildStage(Host* h, const ShaderData& sd, StageProg* out) {
       default: LogError("ProgramSetShaders: unknown SPH stage %u", (w0 >> 10) & 15); return false;
     }
   }
-  std::string key = Sha256Hex(data, dataSize, TranslatorSaltStr() + "|" + std::to_string(stage) + "|" + std::to_string(codeOff));
+  // The key hashes the data section, stage and codeOff; constOff is recorded next to the entry and only changes the key on a mismatch (nvn_xcache.h).
+  const std::string key = xcache::ResolveKey(h->cacheDir, [&](const std::string& extra) { return Sha256Hex(data, dataSize, extra); }, TranslatorSaltStr(), stage, codeOff, constOff);
   if (key.empty()) return false;
   const std::string base = h->cacheDir + "\\" + key;
   const std::string spvPath = base + ".spv", jsonPath = base + ".json";
   std::vector<uint8_t> spv, js;
-  // cache I/O (2026-11-14): entries are written to .tmp and renamed (json last), and validated on load, so a kill mid-write cannot leave a permanent bad entry
+  // cache I/O (2026-11-16): one writer per key and private scratch files (nvn_xcache.h); entries are published by rename (json last) and validated on load,
+  // so a kill mid-write cannot leave a permanent bad entry, and two threads or processes on one cold cache cannot delete each other's files.
   J m;
-  bool loaded = false;
-  for (int attempt = 0; attempt < 2 && !loaded; ++attempt) {
-    if (ReadFile(spvPath, &spv) && ReadFile(jsonPath, &js)) {
-      if (spv.size() >= 20 && (spv.size() & 3) == 0) {
+  const bool loaded = xcache::EnsureEntry(
+      h->cacheDir, key, constOff,
+      [&]() {   // a complete, valid entry on disk
+        if (!ReadFile(spvPath, &spv) || !ReadFile(jsonPath, &js)) return false;
+        if (spv.size() < 20 || (spv.size() & 3) != 0) { LogError("bad shader cache entry %s (spv %zu bytes); retranslating", base.c_str(), spv.size()); return false; }
         JP jp{reinterpret_cast<const char*>(js.data()), reinterpret_cast<const char*>(js.data()) + js.size()};
         m = J();
-        if (jp.parse(m)) { loaded = true; break; }
+        if (jp.parse(m)) return true;
         LogError("bad shader manifest %s; retranslating", jsonPath.c_str());
-      } else {
-        LogError("bad shader cache entry %s (spv %zu bytes); retranslating", base.c_str(), spv.size());
-      }
-      DeleteFileA(spvPath.c_str()); DeleteFileA(jsonPath.c_str());
-    }
-    if (attempt) break;
-    const std::string binPath = base + ".bin", spvTmp = spvPath + ".tmp", jsonTmp = jsonPath + ".tmp";
-    WriteFile(binPath, data, dataSize);
-    Log("translating shader %s (stage %d)", key.c_str(), stage);
-    DeleteFileA(spvTmp.c_str()); DeleteFileA(jsonTmp.c_str());
-    bool ok = RunHarness(binPath, spvTmp, jsonTmp, stage, constOff, codeOff);
-    DeleteFileA(binPath.c_str());
-    if (ok) ok = MoveFileExA(spvTmp.c_str(), spvPath.c_str(), MOVEFILE_REPLACE_EXISTING) && MoveFileExA(jsonTmp.c_str(), jsonPath.c_str(), MOVEFILE_REPLACE_EXISTING);
-    if (ok) {   // first-launch progress line (a warm cache never gets here)
-      static std::atomic<int> translated{0};
-      int n = ++translated;
-      if (n == 1 || n % 100 == 0) fprintf(stderr, "[nvn] first-run shader translation: %d shaders translated so far (cache: %s)\n", n, h->cacheDir.c_str());
-    }
-    if (!ok) { DeleteFileA(spvTmp.c_str()); DeleteFileA(jsonTmp.c_str()); return false; }
-  }
-  if (!loaded) { LogError("shader cache entry %s unusable after retranslation", base.c_str()); DeleteFileA(spvPath.c_str()); DeleteFileA(jsonPath.c_str()); return false; }
+        return false;
+      },
+      [&](const std::string& priv) {   // priv: this request's own path prefix
+        const std::string binPath = priv + ".bin";
+        WriteFile(binPath, data, dataSize);
+        Log("translating shader %s (stage %d)", key.c_str(), stage);
+        const uint64_t xt0 = snap_perf::now_ns();
+        const bool ok = RunHarness(binPath, priv + ".spv", priv + ".json", stage, constOff, codeOff);
+        snap_perf::event("xlate", (double)(snap_perf::now_ns() - xt0) / 1e6, key.c_str());   // SNAP_PERF events.csv: one row per cache miss, the time the translation blocked this thread
+        if (ok) {   // first-launch progress line (a warm cache never gets here)
+          static std::atomic<int> translated{0};
+          int n = ++translated;
+          if (n == 1 || n % 100 == 0) fprintf(stderr, "[nvn] first-run shader translation: %d shaders translated so far (cache: %s)\n", n, h->cacheDir.c_str());
+        }
+        return ok;
+      });
+  if (!loaded) { LogError("shader cache entry %s unusable after retranslation", base.c_str()); return false; }
   StageProg sp;
   sp.valid = true; sp.stage = stage; snprintf(sp.key, sizeof sp.key, "%.12s", key.c_str()); sp.fragOutputMap = m.i("fragmentOutputMap");
   snprintf(sp.fkey, sizeof sp.fkey, "%s", key.c_str());
@@ -366,7 +392,7 @@ bool BuildStage(Host* h, const ShaderData& sd, StageProg* out) {
   if (stage == 0) sp.inputMask = SpvVertexInputMask(words);
   if (stage == 1) { sp.spv = words; sp.outLocs = SpvFragmentOutputs(words); }
   if (stage == 0 && FoliageSwayKeepSpv()) sp.spv = words;   // vertex program kept for the wind sway wrapper (nvn_foliage.cpp)
-  if (stage == 1 && getenv("SNAP_XLATE_AB")) LoadAbAlt(h, data, dataSize, stage, codeOff, (Rd32(sd.control, 0x718) & 1) != 0, key, &sp);
+  if (stage == 1 && getenv("SNAP_XLATE_AB")) LoadAbAlt(h, data, dataSize, stage, codeOff, constOff, (Rd32(sd.control, 0x718) & 1) != 0, key, &sp);
   // c[1]: the constant-data blob that follows the code (data section tail)
   sp.constSize = dataSize - constOff;
   bool needC1 = false;
@@ -375,6 +401,7 @@ bool BuildStage(Host* h, const ShaderData& sd, StageProg* out) {
     void* mp = nullptr;
     if (CreateHostBuffer(h, (sp.constSize + 15) & ~15ull, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &sp.constBuf, &sp.constMem, &mp))
       memcpy(mp, data + constOff, sp.constSize);
+    else LogError("shader %s: its c[1] constant buffer could not be created; the stage has no c[1] data", key.c_str());
   }
   *out = std::move(sp);
   return true;
@@ -428,22 +455,22 @@ bool LoadStageFromCache(Host* h, const std::string& fullKey, StageProg* out, boo
 const char* TranslatorVersion() { return TranslatorSaltStr().c_str(); }
 bool ModuleUsesSubgroup(VkShaderModule m) { std::lock_guard<std::mutex> l(g_sgMu); return g_sgMods.count((uint64_t)(uintptr_t)m) != 0; }
 
+// A host-visible mapped buffer (the steps and their failure handling live in nvn_hostbuf.h, which tests/nvn/hostbuf_test.cpp drives with a
+// failing fake). True only when created, bound and mapped; a failed step is logged to stderr (so the problem report has it).
 bool CreateHostBuffer(Host* h, uint64_t size, VkBufferUsageFlags usage, VkBuffer* buf, VkDeviceMemory* mem, void** mapped) {
-  VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-  bi.size = size; bi.usage = usage;
-  if (vkCreateBuffer(h->device, &bi, nullptr, buf) != VK_SUCCESS) return false;
-  VkMemoryRequirements mr; vkGetBufferMemoryRequirements(h->device, *buf, &mr);
-  VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-  mai.allocationSize = mr.size;
-  mai.memoryTypeIndex = h->FindMemoryType(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-  if (mai.memoryTypeIndex == UINT32_MAX || vkAllocateMemory(h->device, &mai, nullptr, mem) != VK_SUCCESS) {
-    vkDestroyBuffer(h->device, *buf, nullptr);
-    *buf = VK_NULL_HANDLE; *mem = VK_NULL_HANDLE;
-    return false;
-  }
-  vkBindBufferMemory(h->device, *buf, *mem, 0);
-  vkMapMemory(h->device, *mem, 0, VK_WHOLE_SIZE, 0, mapped);
-  return true;
+  struct RealOps {
+    Host* h; uint64_t size;
+    VkResult CreateBuffer(const VkBufferCreateInfo* i, VkBuffer* b) { return vkCreateBuffer(h->device, i, nullptr, b); }
+    void MemReqs(VkBuffer b, VkMemoryRequirements* r) { vkGetBufferMemoryRequirements(h->device, b, r); }
+    uint32_t MemType(uint32_t bits) { return h->FindMemoryType(bits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT); }
+    VkResult Allocate(const VkMemoryAllocateInfo* i, VkDeviceMemory* m) { return vkAllocateMemory(h->device, i, nullptr, m); }
+    VkResult Bind(VkBuffer b, VkDeviceMemory m) { return vkBindBufferMemory(h->device, b, m, 0); }
+    VkResult Map(VkDeviceMemory m, void** p) { return vkMapMemory(h->device, m, 0, VK_WHOLE_SIZE, 0, p); }
+    void DestroyBuffer(VkBuffer b) { vkDestroyBuffer(h->device, b, nullptr); }
+    void Free(VkDeviceMemory m) { vkFreeMemory(h->device, m, nullptr); }
+    void Error(const char* step, VkResult r) { LogError("host buffer of %llu bytes: %s failed: %d", (unsigned long long)size, step, (int)r); }
+  } ops{h, size};
+  return snapnvn::CreateHostBufferWith(ops, size, usage, buf, mem, mapped);
 }
 
 void ProgramDestroy(ProgramImpl* p) {
@@ -527,6 +554,9 @@ bool ProgramBuildLayout(ProgramImpl* p) {
   }
   VkPipelineLayoutCreateInfo pl{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
   pl.setLayoutCount = 4; pl.pSetLayouts = p->setLayout;
+  const uint32_t pomRange = PomPushRangeBytes(h->props.limits.maxPushConstantsSize);   // parallax (nvn_pom.cpp) uses bytes 128..255 of the same fragment range
+  const VkPushConstantRange rtRange{VK_SHADER_STAGE_FRAGMENT_BIT, 0, pomRange ? pomRange : (uint32_t)sizeof(snap_rt::ShadowPush)};   // [rt] M3: the RT shadow receivers' ray-query constants (nvn_shadowrt.cpp); every layout carries it so push constants survive pipeline changes
+  if (snap_rt::Capture() || pomRange) { pl.pushConstantRangeCount = 1; pl.pPushConstantRanges = &rtRange; }
   if (vkCreatePipelineLayout(h->device, &pl, nullptr, &p->layout) != VK_SUCCESS) { ProgramDestroy(p); return false; }
   {
     static std::mutex mu;
