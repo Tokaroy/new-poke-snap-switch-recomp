@@ -2875,7 +2875,51 @@ static void test_save_rename_parent() {
 }
 #endif
 
+// ---- guest TLS image (runtime/hle/guest_tls.h): main's thread-local bounds slot must start at -1
+// Model of main+0x2a2970 (AddBounds): a thread with a negative slot appends an entry, then grows its own entry.
+static size_t model_add_bounds(const uint8_t* tp, std::vector<int>* list) {
+  int32_t slot;
+  std::memcpy(&slot, tp + hle::kTlsBlockOffset, 4);
+  if (slot < 0) { slot = (int32_t)list->size(); list->push_back(0); std::memcpy((uint8_t*)tp + hle::kTlsBlockOffset, &slot, 4); }
+  if ((size_t)slot < list->size()) (*list)[slot]++;   // a slot past the end (zeroed TLS, empty list) adds nothing
+  return list->size();
+}
+static void test_guest_tls_image() {
+  static const uint8_t image[hle::kMainTlsImageSize] = {0xff, 0xff, 0xff, 0xff, 0x95, 0x23, 0x73, 0x00};
+  std::vector<uint8_t> blk(0x10000, 0);
+  uint8_t* tp = blk.data() + 0x8000;
+  hle::guest_tls_init(tp, image, sizeof image);
+  int32_t slot; uint32_t hash;
+  std::memcpy(&slot, tp + 0x10, 4);
+  std::memcpy(&hash, tp + 0x14, 4);
+  CHECK_EQ(slot, -1);
+  CHECK_EQ(hash, 0x00732395u);
+  bool rest_zero = true;
+  for (size_t i = 0; i < blk.size(); i++)
+    if ((i < 0x8010 || i >= 0x8018) && blk[i]) rest_zero = false;
+  CHECK(rest_zero);   // TCB and .tbss untouched
+  std::vector<int> list;
+  CHECK_EQ(model_add_bounds(tp, &list), 1u);   // the image's -1: the first add appends this thread's entry
+  CHECK_EQ(model_add_bounds(tp, &list), 1u);
+  CHECK_EQ(list[0], 2);
+  std::vector<uint8_t> zero(0x10000, 0);
+  std::vector<int> list0;
+  model_add_bounds(zero.data() + 0x8000, &list0);
+  CHECK_EQ(list0.size(), 0u);                  // the old zeroed TLS: the list stays empty (the scan bug)
+  hle::guest_tls_init(nullptr, image, sizeof image);   // no block: no write, no crash
+  // The constants match the game's own bytes when the local import ELF is present (it is never committed).
+  stdfs::path elf = g_root / "analysis" / "import" / "v262144-main.elf";
+  if (stdfs::exists(elf)) {
+    std::ifstream f(elf, std::ios::binary);
+    f.seekg((std::streamoff)(0x1000 + hle::kMainTlsImageVaddr));   // this ELF maps vaddr 0 at file offset 0x1000
+    uint8_t got[hle::kMainTlsImageSize] = {};
+    f.read((char*)got, sizeof got);
+    CHECK(f.good() && std::memcmp(got, image, sizeof got) == 0);
+  }
+}
+
 #include "save_port_tests.h"
+#include "save_backup_tests.h"
 #include "cheats_tests.h"
 
 int main(int argc, char** argv) {
@@ -2883,7 +2927,6 @@ int main(int argc, char** argv) {
   else g_root = stdfs::path(__FILE__).parent_path().parent_path().parent_path();
   g_root = stdfs::absolute(g_root);
   g_tmp = stdfs::temp_directory_path() / ("snap_hle_test_" + std::to_string((unsigned long long)std::chrono::steady_clock::now().time_since_epoch().count()));
-#include "save_backup_tests.h"
   stdfs::create_directories(g_tmp);
   set_log_sink([](const char*, size_t) {});  // keep the output readable; failures print through printf
   apply_defaults();
@@ -2891,6 +2934,7 @@ int main(int argc, char** argv) {
 
   struct T { const char* name; void (*fn)(); } tests[] = {
       {"access.rows", test_access},
+      {"tls.main_image", test_guest_tls_image},
       {"cheats.wiring", test_cheats},
       {"fs.rom", test_fs_rom},
       {"fs.overlay", test_fs_overlay},
@@ -2944,6 +2988,12 @@ int main(int argc, char** argv) {
       {"saveport.running", sp_test::test_refuse_running},
       {"saveport.real_table", sp_test::test_real_table},
 #endif
+      {"savebackup.make", sb_test::test_make_and_list},
+      {"savebackup.prune", sb_test::test_prune_and_off},
+      {"savebackup.restore", sb_test::test_restore},
+#ifdef _WIN32
+      {"savebackup.running", sb_test::test_restore_refused_running},
+#endif
       {"padfx", test_padfx},
       {"focus_guard", test_focus_guard},
       {"freecam", test_freecam},
@@ -2953,56 +3003,8 @@ int main(int argc, char** argv) {
   int before_failed;
   for (auto& t : tests) {
     before_failed = g_failed;
-#endif
-      {"savebackup.make", sb_test::test_make_and_list},
-      {"savebackup.prune", sb_test::test_prune_and_off},
-      {"savebackup.restore", sb_test::test_restore},
-#ifdef _WIN32
-      {"savebackup.running", sb_test::test_restore_refused_running},
     int before_checks = g_checks;
     try { t.fn(); }
-// ---- guest TLS image (runtime/hle/guest_tls.h): main's thread-local bounds slot must start at -1
-// Model of main+0x2a2970 (AddBounds): a thread with a negative slot appends an entry, then grows its own entry.
-static size_t model_add_bounds(const uint8_t* tp, std::vector<int>* list) {
-  int32_t slot;
-  std::memcpy(&slot, tp + hle::kTlsBlockOffset, 4);
-  if (slot < 0) { slot = (int32_t)list->size(); list->push_back(0); std::memcpy((uint8_t*)tp + hle::kTlsBlockOffset, &slot, 4); }
-  if ((size_t)slot < list->size()) (*list)[slot]++;   // a slot past the end (zeroed TLS, empty list) adds nothing
-  return list->size();
-}
-static void test_guest_tls_image() {
-  static const uint8_t image[hle::kMainTlsImageSize] = {0xff, 0xff, 0xff, 0xff, 0x95, 0x23, 0x73, 0x00};
-  std::vector<uint8_t> blk(0x10000, 0);
-  uint8_t* tp = blk.data() + 0x8000;
-  hle::guest_tls_init(tp, image, sizeof image);
-  int32_t slot; uint32_t hash;
-  std::memcpy(&slot, tp + 0x10, 4);
-  std::memcpy(&hash, tp + 0x14, 4);
-  CHECK_EQ(slot, -1);
-  CHECK_EQ(hash, 0x00732395u);
-  bool rest_zero = true;
-  for (size_t i = 0; i < blk.size(); i++)
-    if ((i < 0x8010 || i >= 0x8018) && blk[i]) rest_zero = false;
-  CHECK(rest_zero);   // TCB and .tbss untouched
-  std::vector<int> list;
-  CHECK_EQ(model_add_bounds(tp, &list), 1u);   // the image's -1: the first add appends this thread's entry
-  CHECK_EQ(model_add_bounds(tp, &list), 1u);
-  CHECK_EQ(list[0], 2);
-  std::vector<uint8_t> zero(0x10000, 0);
-  std::vector<int> list0;
-  model_add_bounds(zero.data() + 0x8000, &list0);
-  CHECK_EQ(list0.size(), 0u);                  // the old zeroed TLS: the list stays empty (the scan bug)
-  hle::guest_tls_init(nullptr, image, sizeof image);   // no block: no write, no crash
-  // The constants match the game's own bytes when the local import ELF is present (it is never committed).
-  stdfs::path elf = g_root / "analysis" / "import" / "v262144-main.elf";
-  if (stdfs::exists(elf)) {
-    std::ifstream f(elf, std::ios::binary);
-    f.seekg((std::streamoff)(0x1000 + hle::kMainTlsImageVaddr));   // this ELF maps vaddr 0 at file offset 0x1000
-    uint8_t got[hle::kMainTlsImageSize] = {};
-    f.read((char*)got, sizeof got);
-    CHECK(f.good() && std::memcmp(got, image, sizeof got) == 0);
-  }
-}
 
     catch (const std::exception& e) { std::printf("  FAIL [%s] exception: %s\n", t.name, e.what()); ++g_failed; }
     catch (...) { std::printf("  FAIL [%s] unknown exception\n", t.name); ++g_failed; }
@@ -3013,4 +3015,3 @@ static void test_guest_tls_image() {
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed ? 1 : 0;
 }
-      {"tls.main_image", test_guest_tls_image},
