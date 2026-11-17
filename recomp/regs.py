@@ -60,6 +60,10 @@ class Plan:
         self.local = set(regs)
         self.spill = spill   # per instruction: registers to store at its sync points
         self.kept = kept     # registers a call leaves as they were (CALLEE_SAVED, or none)
+        # the same text for every instruction of the function, built once (resolve() ran these joins per instruction)
+        self._reload = ''.join(f' {name(r)} = {cpu(r)};' for r in regs)
+        self._reload_call = ''.join(f' {name(r)} = {cpu(r)};' for r in regs if r not in kept)
+        self._spill_text = {}
 
     def decl(self):
         """Locals at the top of the function, loaded from the Cpu."""
@@ -71,11 +75,15 @@ class Plan:
             r = SP if m.group(0) == 'c->sp' else int(m.group(1))
             return name(r) if r in self.local else m.group(0)
 
-        text = REG.sub(local, text)
-        spill = ''.join(f'{cpu(r)} = {name(r)}; ' for r in sorted(self.spill[i]))
-        reload = ''.join(f' {name(r)} = {cpu(r)};' for r in self.regs)
-        reload_call = ''.join(f' {name(r)} = {cpu(r)};' for r in self.regs if r not in self.kept)
-        return text.replace(SPILL, spill).replace(RELOAD, reload).replace(RELOAD_CALL, reload_call)
+        if 'c->' in text:
+            text = REG.sub(local, text)
+        if '\x00' not in text:     # no sync marker (SPILL, RELOAD, RELOAD_CALL all start with NUL)
+            return text
+        key = tuple(sorted(self.spill[i]))
+        spill = self._spill_text.get(key)
+        if spill is None:
+            spill = self._spill_text[key] = ''.join(f'{cpu(r)} = {name(r)}; ' for r in key)
+        return text.replace(SPILL, spill).replace(RELOAD, self._reload).replace(RELOAD_CALL, self._reload_call)
 
 
 def plan(texts, succ, clean, n_locals=LOCALS, kept=CALLEE_SAVED):

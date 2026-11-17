@@ -36,6 +36,9 @@ class FlagError(Exception):
 
 def effect(code):
     """(reads flags, kind of the flags written or None) of one instruction's C."""
+    # every pattern below needs one of these literals; most instructions have none, so skip the regex searches for them
+    if not ('COND_' in code or 'adc' in code or 'sbc' in code or 'c->nzcv' in code or 'subs' in code or 'adds' in code or 'logic' in code):
+        return False, None
     reads = bool(COND.search(code) or CARRY_USE.search(code) or CARRY_DEF.search(code) or NZ_USE in code)
     if NZ_DEF in code or CARRY_DEF.search(code):
         return reads, 'nz'

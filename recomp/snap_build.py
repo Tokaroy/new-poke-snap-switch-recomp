@@ -13,6 +13,7 @@ import ctypes
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -78,6 +79,51 @@ def compile_one(src, obj, flags):
             'src_bytes': src.stat().st_size}
 
 
+CACHE_LIMIT_GB = 3.0
+
+
+def compile_cached(src, obj, flags, ident, cache_dir, use_cache):
+    """compile_one behind the object cache (preprocessed-text key); the result carries 'cache': hit | miss | off."""
+    if not use_cache:
+        return dict(compile_one(src, obj, flags), cache='off')
+    t0 = time.perf_counter()
+    key = preprocess_key(src, flags, ident)
+    if key is not None:
+        hit = cache_dir / f'{key}.obj'
+        if hit.exists():
+            shutil.copyfile(hit, obj)
+            os.utime(hit)                      # recently used: pruned last
+            os.utime(obj)                      # newer than the source, so the next build sees it as current
+            return {'src': src.name, 'seconds': time.perf_counter() - t0, 'peak_mb': 0, 'rc': 0, 'log': '', 'cache': 'hit',
+                    'obj_bytes': obj.stat().st_size, 'src_bytes': src.stat().st_size}
+    r = compile_one(src, obj, flags)
+    r['cache'] = 'miss'
+    if r['rc'] == 0 and key is not None and obj.exists():
+        tmp = cache_dir / f'{key}.tmp{os.getpid()}'
+        shutil.copyfile(obj, tmp)
+        os.replace(tmp, cache_dir / f'{key}.obj')
+    return r
+
+
+def preprocess_key(src, flags, ident):
+    """Content key of a TU: the preprocessed text (comments and unused whitespace gone) plus every flag, the compiler identity and the
+    profile data (already folded into `ident`). Equal key, equal object code."""
+    p = subprocess.run([str(CLANG)] + flags + ['-E', '-P', str(src)], capture_output=True, creationflags=BELOW_NORMAL)
+    if p.returncode != 0:
+        return None
+    return hashlib.sha256(ident.encode() + b'\0' + p.stdout).hexdigest()
+
+
+def prune_cache(cache_dir, limit_gb):
+    files = sorted(cache_dir.glob('*.obj'), key=lambda f: f.stat().st_mtime)
+    total = sum(f.stat().st_size for f in files)
+    for f in files:
+        if total <= limit_gb * 2**30:
+            break
+        total -= f.stat().st_size
+        f.unlink(missing_ok=True)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--gen', type=Path, default=ROOT / 'generated' / 'v262144' / 'main')
@@ -91,6 +137,10 @@ def main():
     # PGO (2026-11-13, host/README.md "PGO and ThinLTO"): 'auto' optimizes with build/pgo/snap.profdata when it exists (local,
     # trained on a Florio course run); 'off' = the plain -O2 build. Skipped when --cflags already has a -fprofile flag.
     ap.add_argument('--pgo', choices=('auto', 'off'), default='auto')
+    # Object cache (2026-11-15): a stale TU is first preprocessed (0.2 s) and looked up by content in build/objcache; a hit copies the object
+    # (comment-only header edit, a reverted experiment, a flag set built before). A miss compiles and stores. --no-cache turns it off.
+    ap.add_argument('--no-cache', action='store_true')
+    ap.add_argument('--cache-dir', type=Path, default=ROOT / 'build' / 'objcache')
     args = ap.parse_args()
     lower_priority()
     obj_dir, lib_dir = args.out / 'obj', args.out / 'lib'
@@ -117,10 +167,19 @@ def main():
     sampler = MemSampler().__enter__()
     t0 = time.perf_counter()
     results, failed = [], []
-    # largest sources first
-    todo.sort(key=lambda t: -t[0].stat().st_size)
+    # Longest first, by the seconds each TU took the last time it was compiled (tu_cost.json), else by size: a 1.2 MB TU can take 88 s and a
+    # 1.5 MB one 20 s, so size alone leaves the slowest TUs for the tail of the build.
+    cost_f = args.out / 'tu_cost.json'
+    cost = json.loads(cost_f.read_text()) if cost_f.exists() else {}
+    sec_per_byte = (sum(cost.values()) / max(1, sum((args.gen / n).stat().st_size for n in cost if (args.gen / n).exists()))) if cost else 0
+    todo.sort(key=lambda t: -cost.get(t[0].name, sec_per_byte * t[0].stat().st_size or t[0].stat().st_size))
+    ident = ''
+    if not args.no_cache:
+        args.cache_dir.mkdir(parents=True, exist_ok=True)
+        st = CLANG.stat()
+        ident = f'{CLANG.name} {st.st_size} {int(st.st_mtime)} {prof_hash} ' + ' '.join(flags)
     with cf.ThreadPoolExecutor(args.jobs) as ex:
-        futs = [ex.submit(compile_one, s, o, flags) for s, o in todo]
+        futs = [ex.submit(compile_cached, s, o, flags, ident, args.cache_dir, not args.no_cache) for s, o in todo]
         for i, f in enumerate(cf.as_completed(futs)):
             r = f.result()
             results.append(r)
@@ -131,6 +190,12 @@ def main():
                 print(f'compiled {i + 1}/{len(futs)} TUs, {time.perf_counter() - t0:.0f}s', flush=True)
     wall = time.perf_counter() - t0
     sampler.__exit__()
+    for r in results:
+        if r['rc'] == 0 and r.get('cache') != 'hit':
+            cost[r['src']] = round(r['seconds'], 1)
+    cost_f.write_text(json.dumps(cost, indent=0))
+    if not args.no_cache:
+        prune_cache(args.cache_dir, CACHE_LIMIT_GB)
     if failed:
         return 1
     stamp_f.write_text(stamp)
@@ -141,7 +206,8 @@ def main():
         lib.unlink(missing_ok=True)
         subprocess.check_call([str(AR), 'rcs', str(lib)] + [str(o) for o in objs], creationflags=BELOW_NORMAL)
     t_ar = time.perf_counter() - t1
-    rep = {'tus_total': len(srcs), 'tus_built': len(todo), 'wall_s': round(wall, 1), 'cpu_s': round(sum(r['seconds'] for r in results), 1),
+    hits = sum(1 for r in results if r.get('cache') == 'hit')
+    rep = {'tus_total': len(srcs), 'tus_built': len(todo) - hits, 'cache_hits': hits, 'wall_s': round(wall, 1), 'cpu_s': round(sum(r['seconds'] for r in results), 1),
            'ar_s': round(t_ar, 1), 'jobs': args.jobs, 'system_peak_used_mb': sampler.peak_used_mb, 'flags': flags,
            'src_mb': round(sum(s.stat().st_size for s in srcs) / 1e6, 1),
            'obj_mb': round(sum(o.stat().st_size for o in objs) / 1e6, 1),
