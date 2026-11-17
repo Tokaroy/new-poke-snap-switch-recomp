@@ -1,0 +1,28 @@
+# fixture: unlock_all
+# hdtex before/after set (2026-11-15): qa_florio_e0 with ZL zoom held for 5 s of every 10 s of the ride, so Pokémon fill
+# more of the frame. Run with SNAP_MODS_AB=1 and NVN_FRAME_DUMP_AT pairs (N, N+1): even presents show the pack, odd ones the
+# originals (build/w/hdtex/hdtex_ab.ps1). Ride inputs are timed from the ride start, so the camera path repeats between runs.
+wait ui=title timeout=200
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=300
+@f240 6 A
+wait ui=map_select:CourseSelect timeout=60
+@f180 6 A
+wait ride timeout=300
+repeat @f0 @f60000 24 4 A
+repeat @f0 @f60000 400 60 rx=0.25
+repeat @f200 @f60000 400 60 rx=-0.25
+repeat @f300 @f60000 600 300 ZL
+wait ui=photo_submit:FolderSelect timeout=500
+@f150 8 Down
+@f240 8 Down
+@f330 8 A
+@f480 8 Plus
+@f560 8 Up
+@f640 8 A
+wait ui=evaluation timeout=60
+repeat @f240 @f60000 90 8 A
+wait ui=evaluation:Score timeout=120
+repeat @f60 @f60000 90 8 A
+wait ui=evaluation:End timeout=240
+end @f300

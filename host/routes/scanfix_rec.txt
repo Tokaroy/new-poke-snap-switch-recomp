@@ -1,0 +1,7 @@
+# fixture: tut_cand_new4
+# scanfix2 recorder route: A taps through the lab dialogue and Rita's lines up to the yard scan prompt, ONE X (scan) at f7500,
+# frames every 60 presents f7440..f8400. Use with SNAP_SKIPS_REC=7300,1200,<out> to list functions entered only around the scan.
+repeat @f300 @f7400 60 6 A
+@f7500 8 X
+repeat @f7440 @f8400 60 1 shot=1
+end @f8500

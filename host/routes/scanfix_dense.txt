@@ -1,0 +1,7 @@
+# fixture: tut_cand_new4
+# scanfix2: A taps through the lab dialogue and Rita's lines up to the yard scan prompt, one X at f7500, then no input;
+# a frame every 8 route frames f7470..f7790 to see what follows the scan (name pop-up, "?" marker, where Pikachu goes).
+repeat @f300 @f7400 60 6 A
+@f7500 8 X
+repeat @f7470 @f7790 8 1 shot=1
+end @f7800

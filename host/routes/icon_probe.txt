@@ -1,0 +1,6 @@
+# fixture: tut_cand_new4
+# Probe (optpair, scratch): fast A through the lab dialogue, then slower A and X taps in the yard scan tutorial; a frame every 120 presents.
+repeat @f300 @f60000 40 6 A
+repeat @f3000 @f60000 120 6 X
+repeat @f1500 @f12000 120 1 shot=1
+end @f12100

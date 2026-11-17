@@ -1,0 +1,10 @@
+# fixture: scanfix_e3pre
+# scanfix2 (fixture = story_fix.py --bits 0,1,2,33 --flags 3e20=1, so event 33 is already done): play the Research Camp fluffruit tutorial (event 3) instead of skipping it, to test fruit hits after the guest TLS
+# fix (e26e856). Hub "Bouken" starts it; then A for dialogue and B (throw) every 50 presents, pointer centred, no Skip.
+repeat @f300 @f30000 120 8 A
+wait ui=main_menu:MainMenu timeout=300
+@f200 8 A
+wait dialog timeout=150
+repeat @f100 @f40000 70 6 A
+repeat @f130 @f40000 50 6 B
+end @f9000

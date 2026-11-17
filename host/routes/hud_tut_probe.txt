@@ -1,0 +1,6 @@
+# fixture: new_game
+# HUD scale placement check (docs/hud-scale.md): new game from the title through the intro cutscene, the professor's lines and the start of the yard
+# tutorial, slow A taps so typewriter dialogue is on screen between shots. Run with -ShotAt 20 -ShotEvery 4 -ShotMax 70 at 3840x2160 and
+# SNAP_HUD_SCALE=150 (or unset for Auto).
+repeat @f1500 @f20000 240 6 A
+end 19000
