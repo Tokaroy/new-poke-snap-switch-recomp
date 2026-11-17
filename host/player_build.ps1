@@ -77,7 +77,12 @@ Step 'exe (build\snap)' { Py (@('host\build_snap.py') + $pgoExe) }
 if (-not $SkipTests) {
     Write-Host "[$(Get-Date -f mm:ss)] HLE tests"
     if (-not $DryRun) {
+        # the test script's stderr (a missing vswhere on PATH, warnings) must not stop this script: only its summary line counts
+        $vsi = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer'
+        if ((Test-Path $vsi) -and ($env:PATH -notlike "*$vsi*")) { $env:PATH += ";$vsi" }
+        $ea = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
         $out = & powershell -NoProfile -File (Join-Path $PSScriptRoot '..\tests\hle\run_tests.ps1') 2>&1 | Out-String
+        $ErrorActionPreference = $ea
         $sum = ($out -split "`r?`n" | Where-Object { $_ -match '\d+ checks, \d+ failed' } | Select-Object -Last 1)
         Write-Host $sum
         if ($sum -notmatch ' 0 failed') { throw "HLE tests failed:`n$out" }
