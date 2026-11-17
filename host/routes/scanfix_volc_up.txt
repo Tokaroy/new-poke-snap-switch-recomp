@@ -1,0 +1,36 @@
+# fixture: unlock_all
+# scanfix2: Volcano Illumina after the guest TLS fix (e26e856; fruit hits now register, see scanfix_fruit). Pointer centred, Fluffruit (B)
+# every 0.5 s from +4 to +200 s (flames come within ~10 m of the reticle at ride +6..+15 s and +150..+160 s; fruit lands ~12 m out), orb (Y) every 1.4 s, camera tilted up at +2.5 s (flames hover ~2 m above eye level), shutter +40..+130 s.
+wait ui=title timeout=200
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=500
+@f120 6 Right
+@f480 6 Right
+@f840 6 Right
+@f1200 6 Right
+@f1560 6 Up
+@f2100 6 A
+wait ui=map_select:CourseSelect timeout=400
+@f300 6 Down
+@f600 6 A
+wait ride timeout=300
+@f0 2000 shot=40
+@f150 40 ry=0.6
+repeat 4 200 0.5 0.12 B
+repeat 4.25 200 1.4 0.12 Y
+repeat 40 130 0.5 0.12 A
+repeat 160 3000 1.5 0.15 A
+wait ui=photo_submit:FolderSelect timeout=400
+@f0 1700 shot=40
+# Photo select: on Illumina spots only glowing-Illumina photos count; without them the game shows "no photos" on entry.
+@f1150 8 Plus
+@f1260 8 Up
+@f1350 8 A
+wait ui=evaluation timeout=60
+@f0 1500 shot=40
+repeat @f240 @f60000 90 8 A
+wait ui=evaluation:Score timeout=120
+@f0 1500 shot=30
+repeat @f60 @f60000 90 8 A
+wait ui=evaluation:End timeout=240
+end @f300
