@@ -199,6 +199,7 @@ void neo_init() {
 namespace hle::input { bool route_on(); void route_rail(uint64_t obj, float prog); void route_film(int count); }   // runtime/hle/input_core.cpp (route "wait" signals)
 
 extern "C" void snap_intro_rail(uint64_t R);   // host/mods/introskip.cpp (skip course intro)
+extern "C" void snap_intro_film(int film);   // host/mods/introskip.cpp (end of course, once no photo can be taken)
 
 static void neo_speed_impl(Cpu *c) {
     snap_intro_rail(c->x[19]);
@@ -254,6 +255,7 @@ extern "C" void rt_gm_film_c(Cpu *c) {
     uint64_t hud = c->x[26];
     if (!hud || IsBadReadPtr((void *)(hud + 0x2b8), 4)) return;
     hle::input::route_film(*(int *)(hud + 0x2b8));
+    snap_intro_film(*(int *)(hud + 0x2b8));
     int i = 0;
     while (i < nd && addr[i] != hud) i++;
     if (i == nd) { if (nd == 8) i = 7; else { addr[nd] = hud; last[nd] = -1; nd++; } }

@@ -5,7 +5,7 @@
 //     scripts/bench_pack.py) and a copy of the player's settings.cfg, so the run uses the player's picture settings and never touches a real save;
 //   * SNAP_INPUT_SCRIPT = the Florio ride route (host/routes/bench_florio.txt, embedded), SNAP_PERF + SNAP_GPU_PASSES = the frame and per-pass logs
 //     (runtime/os/perf.cpp, runtime/nvn/nvn_perf.cpp), vsync and the frame limit off, sound off.
-// When the game exits this process reads the two present numbers the route logged ("wait 'ride' met" / "wait 'ride_end' met"), cuts the frame
+// When the game exits this process reads the two present numbers the route logged ("wait 'ride' met" / "wait 'rail>=110' met"), cuts the frame
 // log to that span, computes the numbers, writes JSON and PNG and shows the results window (Dear ImGui on a D3D11 window, like the launcher's).
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -577,7 +577,7 @@ void draw_results(const Result& r) {
   }
   if (r.prev_avg_fps > 0) {
     const double d = (r.avg_fps - r.prev_avg_fps) / r.prev_avg_fps * 100.0;
-    text(66, 570, 17, C(fabs(d) <= 5.0 ? kGreen : kOrange), fmt("Last run on these settings: %.1f fps (%+.1f%%)", r.prev_avg_fps, d).c_str());
+    text(66, 570, 17, C(fabs(d) <= 5.0 ? kGreen : kOrange), fmt("Last run: %.1f fps (%+.1f%%)", r.prev_avg_fps, d).c_str());
   } else {
     text(66, 570, 17, C(kGrey), r.prev_note.empty() ? "No earlier run on these settings." : r.prev_note.c_str());
   }
@@ -869,7 +869,8 @@ void build_settings(Result& r, const std::map<std::string, std::string>& cfg, co
     }
   }
   r.settings.emplace_back("HD textures", hd ? fmt("On (%d packs)", hd) : "Off");
-  const std::string fps = get("fps_target");
+  std::string fps = get("fps_target");
+  if (!env("SNAP_FPS").empty()) fps = env("SNAP_FPS");   // a hand-set variable wins over the saved row, as in the game
   r.settings.emplace_back("Frame rate target", (fps.empty() || fps == "default" ? "60" : fps) + (uncapped ? " target, limiter off" : " target"));
   r.settings.emplace_back("GPU", nice_value(istr("gpu"), "unknown"));
   r.settings.emplace_back("Driver", nice_value(istr("driver"), "unknown"));
@@ -962,6 +963,7 @@ bool execute(const Options& op, Result& out) {
   eb.set("SNAP_WINDOW_FRAME_CAP", "0");
   eb.set("SNAP_SHINY", "0");
   eb.set("SNAP_VOL_MASTER", "0");
+  eb.set("SNAP_SAVE_BACKUP_KEEP", "0");   // the game copies the whole save folder at launch (1.6 GB when not sparse, minutes); the scratch save needs no backup
   if (op.uncapped) eb.set("SNAP_FPS_UNCAPPED", "1"); else eb.erase("SNAP_FPS_UNCAPPED");
   if (launcher_mode) eb.set("SNAP_LAUNCHER_AUTOPLAY", "1");
   std::string stderr_path = base + "_stderr.log";
@@ -1008,14 +1010,14 @@ bool execute(const Options& op, Result& out) {
     log.clear();
     read_text(P(stderr_path), log);
     from = 0; to = 0;
-    const bool have = find_wait_present(log, "ride", from) && find_wait_present(log, "ride_end", to) && to > from;
+    const bool have = find_wait_present(log, "ride", from) && find_wait_present(log, "rail>=110", to) && to > from;
     if (!have) {
       out.error = "The ride did not finish (the game exited with code " + std::to_string(code) + ").";
       const std::string t = tail_lines(log, 3);
       if (!t.empty()) out.error += "\n\nLast lines of the game's log:\n" + t;
       return false;
     }
-    { const std::string key = "rail progress "; const size_t q = log.find(key, log.rfind("wait 'ride_end' met")); rail_end = q == std::string::npos ? 0.0 : std::atof(log.c_str() + q + key.size()); }
+    { const std::string key = "rail progress "; const size_t q = log.find(key, log.rfind("wait 'rail>=110' met")); rail_end = q == std::string::npos ? 0.0 : std::atof(log.c_str() + q + key.size()); }
     return true;
   };
   if (!run_once()) return false;

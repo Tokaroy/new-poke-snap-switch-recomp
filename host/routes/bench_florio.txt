@@ -1,0 +1,18 @@
+# fixture: unlock_all
+# Built-in benchmark route (host/benchmark.cpp, SnapRecomp.exe --benchmark; embedded in the exe through scripts/bench_pack.py).
+# Florio Nature Park (Day), real ride speed: title, lab hub, Lental Map, course start, then the whole rail with shutter taps, a slow
+# right-stick sway and zoom holds, all timed in seconds (not presents) so every frame rate shoots the same shots. The measured part runs
+# from "wait ride" to "wait rail>=110"; the host reads those two present numbers from the "wait ... met" lines.
+wait ui=title timeout=300
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=400
+repeat @f60 @f30000 120 8 A
+wait ride timeout=300
+repeat 0 900 1.5 0.067 A
+repeat 0 900 12 3.333 ZL
+repeat 0 900 8 1 rx=0.25
+repeat 4 900 8 1 rx=-0.25
+# The measured ride ends when the rail reaches 110 of about 116 (the last seconds are the course end). Not "ride_end": the rail stands still
+# for several seconds at progress 43, and after the course end the game starts moving a rail again.
+wait rail>=110 timeout=600
+end @f30
