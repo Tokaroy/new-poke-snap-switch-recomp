@@ -1,0 +1,36 @@
+# fixture: unlock_all
+# scanfix2: Volcano (Day) collider census, comparison for scanfix_volc (Illumina). Same inputs, first course entry.
+# every 0.7 s from +30 to +120 s (Volcarona reaches the reticle at about +41 s), orb (Y) offset by 0.35 s, shutter +40..+130 s; dense frames to see whether the flames go out.
+wait ui=title timeout=200
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=500
+@f120 6 Right
+@f480 6 Right
+@f840 6 Right
+@f1200 6 Right
+@f1560 6 Up
+@f2100 6 A
+wait ui=map_select:CourseSelect timeout=400
+
+@f600 6 A
+wait ride timeout=300
+@f0 2000 shot=100
+repeat 30 120 0.7 0.15 B
+repeat 30.35 120 1.4 0.15 Y
+repeat 40 130 0.5 0.12 A
+repeat 160 3000 1.5 0.15 A
+wait ui=photo_submit:FolderSelect timeout=400
+@f0 1700 shot=40
+repeat @f100 @f900 90 8 Down if=!focus=AllCheck
+@f1000 8 A
+@f1150 8 Plus
+@f1260 8 Up
+@f1350 8 A
+wait ui=evaluation timeout=60
+@f0 1500 shot=40
+repeat @f240 @f60000 90 8 A
+wait ui=evaluation:Score timeout=120
+@f0 1500 shot=30
+repeat @f60 @f60000 90 8 A
+wait ui=evaluation:End timeout=240
+end @f300
