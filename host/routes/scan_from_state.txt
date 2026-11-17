@@ -1,0 +1,47 @@
+# fixture: tut_cand_new4
+# Yard scan tutorial from a save state (2026-11-16). A taps through the lab dialogue and Rita's lines; at f7450 (the "Press X to run a scan" prompt is up, no X pressed yet)
+# the whole game is saved to RAM as scan_tut. Then pass 1 plays the scan (X, A lines, pan the reticle over Pikachu), `load=scan_tut` puts the game back at the prompt (about
+# 0.5 s) and pass 2 plays the same scan again, then a third. One boot gives three scan attempts; each repeat costs about 35 s instead of a full boot (about 2 min 30 s).
+# The state lives in RAM of this process only (docs/save-states.md): it cannot be kept on disk or shared between runs or builds, so every NEW build still boots once.
+# Known state (2026-11-16, HEAD): the scan wave plays and the bubble advances, Pikachu runs off and the "?" never appears (the last bubble loops).
+# Pass = after the scan a "?" marker shows over Pikachu and the dialogue advances in every pass. Frames: analysis\boot\route_scan_from_state_<run>_NN.png (a frame every 100 presents of each pass).
+# With frame dumps (-ShotAt 3000 -ShotEvery 3000 -ShotMax 200) each pass takes about 2 min instead of 46 s; the waits allow for it.
+# Run: powershell -File host\run_boot.ps1 -Route scan_from_state -Timeout 590   (add -BuildDir build\w\<dir> for a private build)
+repeat @f300 @f7400 60 6 A
+@f7450 8 save=scan_tut
+wait state=saves>=1 timeout=400
+# Press X once (Pikachu stays at the lower left with one X; repeated X or A spam makes it leave), A for Rita's lines, then a slow pan (left, then down) to put the reticle on Pikachu.
+@f50 8 X
+@f320 6 A
+@f520 6 A
+@f850 6 A
+@f1000 6 A
+@f1150 6 A
+repeat @f1300 @f1600 30 15 rx=-0.25
+repeat @f1600 @f1900 30 15 ry=0.25
+repeat @f700 @f2000 100 1 shot=1
+@f2100 8 load=scan_tut
+wait state=loads>=1 timeout=400
+# Press X once (Pikachu stays at the lower left with one X; repeated X or A spam makes it leave), A for Rita's lines, then a slow pan (left, then down) to put the reticle on Pikachu.
+@f50 8 X
+@f320 6 A
+@f520 6 A
+@f850 6 A
+@f1000 6 A
+@f1150 6 A
+repeat @f1300 @f1600 30 15 rx=-0.25
+repeat @f1600 @f1900 30 15 ry=0.25
+repeat @f700 @f2000 100 1 shot=1
+@f2100 8 load=scan_tut
+wait state=loads>=2 timeout=400
+# Press X once (Pikachu stays at the lower left with one X; repeated X or A spam makes it leave), A for Rita's lines, then a slow pan (left, then down) to put the reticle on Pikachu.
+@f50 8 X
+@f320 6 A
+@f520 6 A
+@f850 6 A
+@f1000 6 A
+@f1150 6 A
+repeat @f1300 @f1600 30 15 rx=-0.25
+repeat @f1600 @f1900 30 15 ry=0.25
+repeat @f700 @f2000 100 1 shot=1
+end @f2100
