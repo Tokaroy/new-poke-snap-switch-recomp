@@ -138,6 +138,13 @@ def main():
             return o, 0, ''
         stamp.unlink(missing_ok=True)
         r = subprocess.run(cmd, env=env, creationflags=BELOW_NORMAL, capture_output=True, text=True, timeout=1800)
+        if r.returncode and prof and any(c.startswith('-fprofile-use') for c in cmd):
+            # clang 23.1.5 crashed once on nvn_shader.cpp with a profile (2026-11-16): build that one file without PGO instead of failing the build
+            plain = [c for c in cmd if not c.startswith('-fprofile-use')]
+            r2 = subprocess.run(plain, env=env, creationflags=BELOW_NORMAL, capture_output=True, text=True, timeout=1800)
+            if r2.returncode == 0:
+                print(f'note: {src.name} compiled without PGO (clang failed with the profile)')
+            r = r2
         if r.returncode == 0:
             stamp.write_text(want)
         return o, r.returncode, r.stderr

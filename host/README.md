@@ -21,6 +21,10 @@ modules is separate (`recomp/snap_gen.py`, `recomp/snap_build.py`).
 
 Build notes (2026-11-14): the incremental check depends on every `host/**/*.h` and `runtime/**/*.h`, and each object has a `.flags` stamp next to it (hash of its compile command), so changing a header in any directory or a code-generation switch (`--pgo-*`, `--lto`, `--cflags-extra`) rebuilds what it affects. `run_boot.ps1` exits with the game's exit code (124 = killed on timeout, route TIMEOUT = 3); `bench.ps1` prints BENCH RUN FAILED for a nonzero code.
 
+## One-command player build (2026-11-16, `host\player_build.ps1`)
+
+`powershell -NoProfile -File host\player_build.ps1` builds the sdk and main libs (`build\eh`), the exe (`build\snap`) and runs the HLE tests; PGO is used when `build\pgo\snap.profdata` exists. Then `powershell -File host\play.ps1`. Options: `-Regenerate` (lifter or ABI edits), `-Retrain` (instrumented build, `florio_photos` training run, merge to `snap.profdata` with the old one kept as `snap.prev-<date>.profdata`), `-NoPgo`, `-SkipTests`, `-DryRun`. Each step takes `build\heavy.lock` alone and releases it; it warns when the profile is older than the generated main code. The profile never leaves this PC (no `.profdata` in git or in a release; `builder\leak_scan.py` rejects it).
+
 ## PGO and ThinLTO (2026-11-13, opt worker)
 
 **PGO is the default when `build\pgo\snap.profdata` exists** (local, never committed: it is derived from generated game code).
