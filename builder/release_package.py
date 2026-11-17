@@ -23,9 +23,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'builder'))
 from snapbuild import pipeline  # noqa: E402
+import ci_gate  # noqa: E402
 
 BUILDER_SKIP_DIRS = {'__pycache__', 'tests', 'dev'}
-BUILDER_SKIP_FILES = {'release_prebuilt.py', 'release_harness.py', 'release_sign.py', 'release_package.py', 'leak_scan.py',
+BUILDER_SKIP_FILES = {'release_prebuilt.py', 'release_harness.py', 'release_sign.py', 'release_package.py', 'ci_gate.py', 'leak_scan.py',
                       'leak_allow_names.txt', 'leak_allow_content.txt', 'abi_tables.json'}
 GHIDRA_SCRIPTS = ('SeedFdeStarts.java', 'DumpAnalysisOptions.java', 'ExportMaps.java')
 SCRIPTS = ('nso2elf.py', 'reconcile_functions.py')
@@ -79,7 +80,9 @@ def main():
     ap.add_argument('--version')
     ap.add_argument('--recomp-dir', help='take recomp/*.py from this folder instead of the tree (matches an older prebuilt)')
     ap.add_argument('--romfs', help='romfs folder for the game-file-name check of the leak scan (read only)')
+    ci_gate.add_args(ap)
     a = ap.parse_args()
+    ci_gate.gate(a, 'release_package')
     version = a.version or (ROOT / 'builder' / 'VERSION').read_text(encoding='utf-8').strip()
     if version != (ROOT / 'builder' / 'VERSION').read_text(encoding='utf-8').strip():
         raise SystemExit('--version must match builder/VERSION (the builder reports that file)')

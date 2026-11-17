@@ -1,0 +1,7 @@
+# Known, reviewed findings of host/ci_checks.py identity: <path glob>|<rule or *>   # why
+# (builder/leak_allow_content.txt is read too: its path|rule pairs apply here as well)
+runtime/os/overrides.tsv|extension          # our own HLE override table, not a game file
+builder/leak_allow_content.txt|personal     # its comment names the third-party address it allows
+builder/tests/*|home-path                   # the leak-scan unit tests feed fake home paths
+builder/tests/*|email                       # and fake addresses
+builder/tests/*|personal                    # and fake terms

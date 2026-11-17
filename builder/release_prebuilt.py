@@ -22,6 +22,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'recomp'))
 sys.path.insert(0, str(ROOT / 'builder'))
+import ci_gate  # noqa: E402
 from snapbuild import safedel  # noqa: E402
 LLVM = ROOT / 'tools' / 'llvm' / 'bin'
 SDL = ROOT / 'tools' / 'dl_sdl3' / 'x' / 'SDL3-3.4.20'
@@ -58,7 +59,9 @@ def main():
     ap.add_argument('--jobs', type=int, default=8)
     ap.add_argument('--rebuild', action='store_true')
     ap.add_argument('--romfs', default=str(ROOT / 'extracted' / 'romfs-v262144'), help='romfs folder for the game-file-name rule of the leak scan')
+    ci_gate.add_args(ap)
     a = ap.parse_args()
+    ci_gate.gate(a, 'release_prebuilt')
     abi = abi_guard(False)
 
     cmd = [sys.executable, '-I', str(ROOT / 'host' / 'build_snap.py'), '--release-objs', str(a.work), '--jobs', str(a.jobs)]

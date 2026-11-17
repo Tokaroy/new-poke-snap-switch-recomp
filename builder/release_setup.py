@@ -26,6 +26,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'builder'))
+import ci_gate  # noqa: E402
 import release_package  # noqa: E402
 from snapbuild import fetch, winsdk  # noqa: E402
 from snapbuild import safedel  # noqa: E402
@@ -79,7 +80,9 @@ def main():
     ap.add_argument('--romfs', help='romfs folder for the game-file-name check of the leak scan (read only)')
     ap.add_argument('--sign', action='store_true')
     ap.add_argument('--stub-only', action='store_true', help='compile the wizard exe without a payload (UI tests)')
+    ci_gate.add_args(ap)
     a = ap.parse_args()
+    ci_gate.gate(a, 'release_setup')
     version = (ROOT / 'builder' / 'VERSION').read_text(encoding='utf-8').strip()
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
