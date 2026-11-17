@@ -109,6 +109,7 @@ void fs_open_file(Cpu* c) {  // Result OpenFile(FileHandle* out, const char* pat
     }
   }
   if (rc) rc = instance().open_file(&id, path, (int)arg32(c, 2));
+  if (rc && (trace_flags & (kTraceFs | kTraceOpen))) log("fs: open FAILED %s mode %d rc %#x", path.c_str(), (int)arg32(c, 2), rc);   // load-failure marker for SNAP_HLE_TRACE=open
   if (!rc) { store<uint64_t>(ptr<void>(arg(c, 0)), id); if (g_snap_fs_tap_open) g_snap_fs_tap_open(id, path.c_str()); if (g_snap_presence_open) g_snap_presence_open(path.c_str()); }
   ret(c, rc);
 }
@@ -137,6 +138,7 @@ void fs_flush_file(Cpu* c) { ret(c, instance().flush_file(arg(c, 0))); }
 void fs_get_file_size(Cpu* c) {  // Result GetFileSize(long* out, FileHandle)
   int64_t s = 0;
   uint32_t rc = instance().get_file_size(arg(c, 1), &s);
+  if ((rc || s == 0) && (trace_flags & (kTraceFs | kTraceOpen))) log("fs: GetFileSize file %llu -> size %lld rc %#x%s", (unsigned long long)arg(c, 1), (long long)s, rc, s == 0 ? " (ZERO)" : "");
   if (!rc) store<int64_t>(ptr<void>(arg(c, 0)), s);
   ret(c, rc);
 }
@@ -146,6 +148,7 @@ void fs_set_file_size(Cpu* c) { ret(c, instance().set_file_size(arg(c, 0), (int6
 void fs_get_entry_type(Cpu* c) {  // Result GetEntryType(DirectoryEntryType*, const char*)
   int t = 0;
   uint32_t rc = instance().get_entry_type(&t, cstr(arg(c, 1)));
+  if (rc && (trace_flags & (kTraceFs | kTraceOpen))) log("fs: GetEntryType %s FAILED rc %#x", cstr(arg(c, 1)).c_str(), rc);
   if (!rc) store<int32_t>(ptr<void>(arg(c, 0)), t);
   ret(c, rc);
 }

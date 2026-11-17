@@ -326,6 +326,12 @@ void run(const std::string& line, double t) {
     out("t=%.1f switching to profile \"%s\" (the game restarts)", t, g_last_import.c_str());
     std::fflush(stderr);
     saves_test_switch(g_last_import);
+  } else if (cmd == "saves_backups") {   // saves_backups open <n> | queue | queued: the F1 > Saves "Restore a backup" list (open = show it with row n picked)
+    std::string a, what;
+    int n = 0;
+    is >> a >> n;
+    const bool ok = saves_test_backups(a, n, &what);
+    check(ok, "saves_backups " + a + (what.empty() ? "" : " (" + what + ")"));
   } else if (cmd == "expect_profile") {   // expect_profile <name>: the running game's profile
     std::string n;
     std::getline(is >> std::ws, n);

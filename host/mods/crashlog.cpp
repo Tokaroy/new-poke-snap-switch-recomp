@@ -25,6 +25,7 @@
 extern "C" const char* snap_quirks_gpu_line();       // runtime/nvn/nvn_quirks.cpp
 extern "C" const char* snap_quirks_applied_line();
 extern "C" void snap_audio_log_checks(void);          // runtime/audio/audio_out.cpp: the "[audio] checks:" counter line
+extern "C" __attribute__((weak)) void snap_fs_log_io_failures(void);   // runtime/hle/fs_core.cpp: one line when a save flush failed
 
 namespace {
 
@@ -196,6 +197,7 @@ void write_report(const char* kind, const char* detail, uint64_t fault, uint64_t
   append(out, sizeof out, at, "Driver quirks off: %s\r\n", q && *q ? q : "none");
   append(out, sizeof out, at, "\r\nLast %d log lines:\r\n", kTailLines);
   if (full) snap_audio_log_checks();   // the audio counters (rejected calls, underruns) land in the log and so in the tail below; once, on the full write
+  if (full && snap_fs_log_io_failures) snap_fs_log_io_failures();   // same: lands in the tail below
   fflush(stderr);
   log_tail(out, sizeof out, at);
   HANDLE f = CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);

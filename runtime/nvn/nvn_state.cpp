@@ -41,6 +41,7 @@ struct SnapStateHooks {
   int (*pre_load)(char *why, int cap);         // the world is parked: GPU idle, readbacks landed; 0 = refuse (why says why)
   void (*post_load)();                         // guest memory is back: fix up the host objects
   void (*shot)();                              // test aid: request a screenshot (SNAP_STATE_TEST ",shots")
+  void (*abort_load)();                        // not used here (null); the state layer reads this member, so the layout must match os_state.cpp
 };
 void snap_state_set_hooks(const SnapStateHooks *h);   // runtime/os/os_state.cpp
 }

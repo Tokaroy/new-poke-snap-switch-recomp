@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -44,6 +45,22 @@ static std::string from_path(const stdfs::path& p) {
   auto u = p.u8string();
   return std::string(u.begin(), u.end());
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Test fault injection (tests/hle): the `count` flushes after the first `skip` ones fail with host error `os_error`.
+static std::atomic<int> g_flush_skip{0}, g_flush_fail{0}, g_flush_err{0};
+void test_fail_flushes(int skip, int count, int os_error) { g_flush_err = os_error; g_flush_skip = skip; g_flush_fail = count; }
+
+// Failed save I/O of this process (a flush the disk refused): counted, the last text kept for the crash report and the problem report's
+// log (snap_fs_log_io_failures, called from host/mods/crashlog.cpp). Static buffers: the crash path must not allocate.
+static std::atomic<uint64_t> g_io_failures{0};
+static char g_io_last[256];
+static void note_io_failure(const char* what, const std::error_code& ec) {
+  g_io_failures.fetch_add(1, std::memory_order_relaxed);
+  std::snprintf(g_io_last, sizeof g_io_last, "%s: %s (host error %d)", what, ec.message().c_str(), ec.value());
+  log("fs: save: %s", g_io_last);
+}
+uint64_t io_failure_count() { return g_io_failures.load(std::memory_order_relaxed); }
 
 // ---------------------------------------------------------------------------------------------------------------
 // host file with positioned I/O
@@ -135,7 +152,17 @@ class HostFile {
     return ftruncate(fd_, size) == 0;
 #endif
   }
+  // false when the disk did not take the data; the host error is still in GetLastError()/errno for the caller to read at once
   bool flush() {
+    if (g_flush_fail.load(std::memory_order_relaxed) > 0 && g_flush_skip.fetch_sub(1) <= 0) {
+      g_flush_fail.fetch_sub(1);
+#ifdef _WIN32
+      SetLastError((DWORD)g_flush_err.load());
+#else
+      errno = g_flush_err.load();
+#endif
+      return false;
+    }
 #ifdef _WIN32
     return FlushFileBuffers(h_) != 0;
 #else
@@ -150,12 +177,6 @@ class HostFile {
   int fd_ = -1;
 #endif
 };
-
-// Flushes a file to disk by path (used for commit durability). Best effort.
-static void flush_path(const stdfs::path& p) {
-  HostFile f;
-  if (f.open(p, true)) { f.flush(); }
-}
 
 // Atomically replaces `to` with `from` (same directory/volume), writing through.
 static bool replace_file(const stdfs::path& from, const stdfs::path& to) {
@@ -198,6 +219,19 @@ static std::error_code last_os_error() {
 #endif
 }
 
+// Flushes a file to disk by path (commit durability). False, with the host error in *ec, when the disk refused the flush: the caller
+// must not publish what it just wrote. A file that cannot be reopened for the flush is logged and passes (it was written whole; the
+// OS still writes it back, and a held file is the usual cause).
+static bool flush_path(const stdfs::path& p, std::error_code* ec = nullptr) {
+  HostFile f;
+  if (!f.open(p, true)) { log("fs: save: cannot reopen %s to flush it; continuing without the explicit flush", from_path(p).c_str()); return true; }
+  if (f.flush()) return true;
+  const std::error_code e = last_os_error();   // before close() can touch it
+  if (ec) *ec = e;
+  note_io_failure(("flush of " + from_path(p)).c_str(), e);
+  return false;
+}
+
 bool split_path(const std::string& path, std::string* mount, std::string* rel) {
   size_t c = path.find(':');
   if (c == std::string::npos || c == 0 || c > 32) return false;
@@ -230,6 +264,7 @@ struct OpenFile {
   bool writable = false;
   std::string mount;
   std::string rel;          // save mounts: path inside the mount, so a write after a commit re-marks the file dirty
+  std::string path;         // the guest path it was opened with (trace messages)
   struct Save* save = nullptr;  // owned by the mount; kept alive by keep below
   std::shared_ptr<void> keep;   // the owning Mount: a write that outlives unmount/remount still has a valid save for mark_dirty
   std::mutex mu;  // serializes write / resize on this handle
@@ -313,16 +348,16 @@ struct Save {
   static uint32_t check_of(uint64_t n) { return (uint32_t)(n * 2654435761u) ^ 0x534e4150u; }
 
   bool read_pointer(uint64_t* n) const { return savegen::read_pointer_file(root / kPointerName, n); }
-  bool write_pointer(uint64_t n, const std::function<void(const char*)>& hook) const {
+  bool write_pointer(uint64_t n, const std::function<void(const char*)>& hook, std::error_code* why = nullptr) const {
     stdfs::path tmp = root / "CURRENT.tmp";
     {
       std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
-      if (!f) return false;
+      if (!f) { if (why) *why = last_os_error(); return false; }
       f << "SNAPSAVE1\n" << n << "\n" << check_of(n) << "\n";
     }
-    flush_path(tmp);
+    if (!flush_path(tmp, why)) return false;   // the pointer is never switched to a file the disk did not take
     if (hook) hook("commit:pointer-tmp");
-    if (!replace_file(tmp, root / kPointerName)) return false;
+    if (!replace_file(tmp, root / kPointerName)) { if (why) *why = last_os_error(); return false; }
     if (hook) hook("commit:pointer-done");
     return true;
   }
@@ -468,7 +503,7 @@ struct Save {
           e2.clear();
           stdfs::copy_file(e.path(), to / name, stdfs::copy_options::none, e2);
           if (e2) { why = e2; return false; }
-          flush_path(to / name);   // a real copy must be on disk before the .ok marker, like every written file
+          if (!flush_path(to / name, &e2)) { why = e2; return false; }   // a real copy must be on disk before the .ok marker, like every written file
         }
       }
     }
@@ -528,7 +563,7 @@ struct Save {
       if (!gone(dst) && !remove_checked(dst)) return fail(std::make_error_code(std::errc::device_or_resource_busy), "replace");
       stdfs::copy_file(src, dst, stdfs::copy_options::none, ec);
       if (ec) return fail(ec, "file copy");
-      flush_path(dst);
+      if (!flush_path(dst, &ec)) return fail(ec, "file flush");   // the previous generation stays current
       stage("commit:file");
     }
     for (const std::string& rel : dirs) {
@@ -542,9 +577,10 @@ struct Save {
       f.flush();
       if (!f) return fail(std::error_code(errno ? errno : EIO, std::generic_category()), "marker");
     }
-    flush_path(gen_ok(n));
+    if (!flush_path(gen_ok(n), &ec)) return fail(ec, "marker flush");
     stage("commit:marker");
-    if (!write_pointer(n, hook)) return fail(last_os_error(), "pointer");
+    std::error_code pe;
+    if (!write_pointer(n, hook, &pe)) return fail(pe ? pe : last_os_error(), "pointer");
     orphans.erase(n);
     cur = n;
     dirty.clear(); deleted.clear(); dirs.clear();
@@ -790,6 +826,7 @@ uint32_t Fs::open_file(FileId* out, const std::string& path, int mode) {
   std::string mount, rel;
   split_path(path, &mount, &rel);
   of->mount = mount;
+  of->path = path;
   if (want_write && r.m->kind == Mount::SaveData) { of->rel = r.rel; of->save = r.m->save.get(); of->keep = r.m; }
   stdfs::path host = r.host;
   if (want_write) {
@@ -868,6 +905,8 @@ uint32_t Fs::read_file(FileId f, int64_t off, void* buf, size_t n, size_t* out) 
   }
   os_io_end();
   if (trace_flags & kTraceFs) log("fs: read file %llu off %lld n %zu -> %lld", (unsigned long long)f, (long long)off, n, (long long)got);
+  if ((got < 0 || (size_t)got != n) && (trace_flags & (kTraceFs | kTraceOpen)))
+    log("fs: read file %llu (%s) off %lld n %zu -> %lld SHORT/FAILED", (unsigned long long)f, of->path.c_str(), (long long)off, n, (long long)got);
   if (got < 0) return kResultTargetLocked;
   if (out) { *out = (size_t)got; return kSuccess; }
   return (size_t)got == n ? kSuccess : kResultOutOfRange;
@@ -891,8 +930,12 @@ uint32_t Fs::write_file(FileId f, int64_t off, const void* buf, size_t n, bool f
   // Horizon needs the file to be created with its final size (WriteFile does not grow it unless OpenMode_AllowAppend).
   // The host grows it either way: the game only ever writes inside the size it created.
   if (n && !of->hf.write_at(off, buf, n)) return kResultUsableSpaceNotEnough;
-  if (flush) of->hf.flush();
-  mark_dirty(p_.get(), *of);
+  mark_dirty(p_.get(), *of);   // before the flush result: the bytes are in the working copy whether or not the disk took the flush
+  if (flush && !of->hf.flush()) {
+    const std::error_code e = last_os_error();
+    note_io_failure("flush after write", e);
+    return commit_result(e);
+  }
   if (trace_flags & kTraceFs) log("fs: write file %llu off %lld n %zu", (unsigned long long)f, (long long)off, n);
   return kSuccess;
 }
@@ -900,7 +943,14 @@ uint32_t Fs::write_file(FileId f, int64_t off, const void* buf, size_t n, bool f
 uint32_t Fs::flush_file(FileId f) {
   auto of = get_file(p_.get(), f);
   if (!of) return kResultInvalidArgument;
-  if (of->writable) { std::lock_guard<std::mutex> g(of->mu); of->hf.flush(); }
+  if (of->writable) {
+    std::lock_guard<std::mutex> g(of->mu);
+    if (!of->hf.flush()) {
+      const std::error_code e = last_os_error();
+      note_io_failure("flush of an open file", e);
+      return commit_result(e);   // every write marked the file dirty, so the next commit still carries it
+    }
+  }
   return kSuccess;
 }
 
@@ -1156,10 +1206,19 @@ uint32_t Fs::commit(const std::string& mount) {
   if (!m) return kResultNotMounted;
   if (m->kind != Mount::SaveData) return kSuccess;  // nothing to commit on other mounts
   for (auto& kv : p_->files) if (kv.second->mount == mount && kv.second->writable) to_flush.push_back(kv.second);
-  for (auto& f : to_flush) f->hf.flush();
+  for (auto& f : to_flush) {   // no of->mu here (lock order: of->mu, then p->mu); FlushFileBuffers on a shared handle is safe
+    if (!f->hf.flush()) {
+      const std::error_code e = last_os_error();
+      note_io_failure("flush before commit", e);
+      return commit_result(e);   // nothing was committed: CURRENT and the dirty set are as they were, so a retry carries everything
+    }
+  }
   auto hook = p_->hook;
+  const auto t0 = std::chrono::steady_clock::now();
   uint32_t rc = m->save->do_commit(hook);
-  if (trace_flags & kTraceFs) log("fs: commit %s -> generation %llu (result %#x)", mount.c_str(), (unsigned long long)m->save->cur, rc);
+  // always logged (a handful per session): how long the disk kept the game waiting is part of a "the game froze when it saved" report
+  log("fs: commit %s -> generation %llu in %.1f ms (result %#x)", mount.c_str(), (unsigned long long)m->save->cur,
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(), rc);
   return rc;
 }
 
@@ -1284,3 +1343,9 @@ Fs& instance() {
 }
 
 }  // namespace hle::fs
+
+// Called from the crash report (host/mods/crashlog.cpp) and so into the log tail and the problem report: one line, only when a save flush failed.
+extern "C" void snap_fs_log_io_failures(void) {
+  const uint64_t n = hle::fs::io_failure_count();
+  if (n) std::fprintf(stderr, "[fs] save I/O failures: %llu (the last one is logged above as 'fs: save: ...')\n", (unsigned long long)n);
+}

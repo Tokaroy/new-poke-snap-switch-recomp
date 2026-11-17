@@ -2649,6 +2649,74 @@ static void test_save_orphan_generation() {
   CHECK_EQ(f.unmount("savedata"), 0u);
 }
 
+// Flush failures (Codex audit 3, B14): a flush the disk refuses is an error the game sees, never a silent success, and a commit whose flush fails
+// leaves the previous generation current. Fault injection: fs::test_fail_flushes makes the next flush(es) fail with a chosen host error.
+static void test_save_flush_faults() {
+  g_test = "save.flush_faults";
+  const int kDiskFull = 112, kIoDevice = 1117;   // ERROR_DISK_FULL, ERROR_IO_DEVICE
+  stdfs::path root = g_tmp / "save_flush", ud = root / hle::uid_dir_name(kUid);
+  fs::Fs f; f.set_save_root(root.string());
+  CHECK_EQ(f.mount_save("savedata", kUid), 0u);
+  put(f, "savedata:/a", "AAAA");
+  CHECK_EQ(f.commit("savedata"), 0u);
+  const uint64_t g0 = current_gen(ud);
+  const uint64_t fails0 = fs::io_failure_count();
+  std::string body;
+
+  // write with flush: disk full -> "not enough space", any other host error -> "target locked"; the written bytes stay (dirty) either way
+  fs::FileId id = 0;
+  CHECK_EQ(f.open_file(&id, "savedata:/a", fs::kModeRead | fs::kModeWrite), 0u);
+  fs::test_fail_flushes(0, 1, kDiskFull);
+  CHECK_EQ(f.write_file(id, 0, "BBBB", 4, true), fs::kResultUsableSpaceNotEnough);
+  fs::test_fail_flushes(0, 1, kIoDevice);
+  CHECK_EQ(f.write_file(id, 0, "BBBB", 4, true), fs::kResultTargetLocked);
+  CHECK_EQ(f.write_file(id, 0, "BBBB", 4, true), 0u);            // injection used up: a retry succeeds
+  // explicit flush of an open file
+  fs::test_fail_flushes(0, 1, kIoDevice);
+  CHECK_EQ(f.flush_file(id), fs::kResultTargetLocked);
+  CHECK_EQ(f.flush_file(id), 0u);
+  CHECK(fs::io_failure_count() == fails0 + 3);
+
+  // commit with the file still open: the flush before the commit fails -> nothing committed, CURRENT unchanged, dirty state kept
+  CHECK_EQ(f.write_file(id, 0, "CCCC", 4, false), 0u);
+  fs::test_fail_flushes(0, 1, kDiskFull);
+  CHECK_EQ(f.commit("savedata"), fs::kResultUsableSpaceNotEnough);
+  CHECK_EQ(current_gen(ud), g0);
+  CHECK_EQ(f.commit("savedata"), 0u);                              // retry carries the file
+  CHECK(current_gen(ud) > g0);
+  f.close_file(id);
+  CHECK_EQ(f.unmount("savedata"), 0u);
+  CHECK_EQ(f.mount_save("savedata", kUid), 0u);
+  CHECK(get(f, "savedata:/a", &body) && body == "CCCC");
+
+  // commit-time flushes (copied file, marker, pointer): fail the k-th one in turn; every failed commit leaves the previous generation as the
+  // one a later mount loads, and the same data commits once the disk recovers
+  int failed_points = 0;
+  for (int k = 0; k < 6; ++k) {
+    const std::string was = body, now = "D" + std::to_string(k) + "DD";
+    put(f, "savedata:/a", now);
+    const uint64_t g = current_gen(ud);
+    fs::test_fail_flushes(k, 1, kDiskFull);
+    const uint32_t rc = f.commit("savedata");
+    fs::test_fail_flushes(0, 0, 0);
+    if (rc == 0u) { CHECK(current_gen(ud) > g); body = now; break; }   // fewer flushes than k: nothing left to fail
+    ++failed_points;
+    CHECK_EQ(rc, fs::kResultUsableSpaceNotEnough);
+    CHECK_EQ(current_gen(ud), g);                                  // CURRENT still points at the old generation
+    CHECK_EQ(f.unmount("savedata"), 0u);
+    CHECK_EQ(f.mount_save("savedata", kUid), 0u);
+    CHECK(get(f, "savedata:/a", &body) && body == was);            // a fresh mount reads the previous good file
+    put(f, "savedata:/a", now);
+    CHECK_EQ(f.commit("savedata"), 0u);                            // the disk recovered: the same write commits
+    CHECK(current_gen(ud) > g);
+    CHECK_EQ(f.unmount("savedata"), 0u);
+    CHECK_EQ(f.mount_save("savedata", kUid), 0u);
+    CHECK(get(f, "savedata:/a", &body) && body == now);
+  }
+  CHECK(failed_points >= 3);                                       // the copied file, the .ok marker and the pointer file each have a checked flush
+  CHECK_EQ(f.unmount("savedata"), 0u);
+}
+
 // savefix3 round 2 #2: the legacy migration copies into a staging folder and moves it into place only when complete; a failed
 // copy leaves nothing and is retried; an empty or marker-less target does not block it; a real save in the target is never touched
 static void test_migration_staged() {
@@ -2990,6 +3058,7 @@ int main(int argc, char** argv) {
 #ifdef _WIN32
       {"save.type_change", test_save_type_change},
       {"save.orphan_generation", test_save_orphan_generation},
+      {"save.flush_faults", test_save_flush_faults},
       {"paths.migration_staged", test_migration_staged},
       {"profiles.trash_fallback", test_profiles_trash_fallback},
       {"save.orphan_shared_rule", test_orphan_shared_rule},

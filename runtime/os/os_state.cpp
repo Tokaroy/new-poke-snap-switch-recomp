@@ -25,11 +25,13 @@ struct SnapStateHooks {
     int (*pre_load)(char *why, int cap);
     void (*post_load)();
     void (*shot)();   // test aid: request a screenshot
+    void (*abort_load)();   // a load that passed pre_load was refused or failed before post_load: undo whatever pre_load held (idempotent)
 };
 }
 static const SnapStateHooks *g_xhs[4];   // one set per layer that owns host state (NVN, audio); registered from static initializers, so zero-initialized here
 static int g_nxh = 0;
 extern "C" void snap_state_set_hooks(const SnapStateHooks *h) { if (g_nxh < 4) g_xhs[g_nxh++] = h; }
+static void abort_loads() { for (int i = 0; i < g_nxh; i++) if (g_xhs[i]->abort_load) g_xhs[i]->abort_load(); }   // every refusal after the pre_load hooks started
 
 // Requests from the HLE layer (route tokens), SNAP_CHECKPOINT and the player's buttons. op 1 = save, 2 = load. They only queue; one worker thread does the drain.
 extern "C" {
@@ -698,13 +700,14 @@ bool do_load(std::string &why) {
     if (!drain(2000, rows, dms, last)) { why = "drain timed out waiting for " + last; release_all(); return false; }
     for (int i = 0; i < g_nxh; i++) {   // GPU idle and readbacks landed BEFORE guest memory goes back, then the NVN object sets and the audio outputs must still match
         char buf[160] = {};
-        if (g_xhs[i]->pre_load && !g_xhs[i]->pre_load(buf, sizeof buf)) { why = buf; release_all(); return false; }
+        if (g_xhs[i]->pre_load && !g_xhs[i]->pre_load(buf, sizeof buf)) { why = buf; abort_loads(); release_all(); return false; }
     }
     g_tts = all_thread_types();
     {
         Lock lk(G);
         why = load_refusal();
         if (!why.empty()) {
+            abort_loads();   // audio held its mixer since pre_load
             g_sphase.store(PH_IDLE);
             for (Thread *t : every_thread()) t->cv.notify_all();
             return false;

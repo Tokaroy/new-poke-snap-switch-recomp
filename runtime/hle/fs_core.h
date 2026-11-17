@@ -110,4 +110,9 @@ Fs& instance();  // the process-wide instance the guest shims use
 // "rom:/a/b" -> mount "rom", rel "a/b" (normalized, no leading slash). false on a malformed path.
 bool split_path(const std::string& path, std::string* mount, std::string* rel);
 
+// Save I/O failures this process has seen (a flush the disk refused); the crash report prints a line when it is not zero.
+uint64_t io_failure_count();
+// Test fault injection: the `count` flushes after the first `skip` ones fail with host error `os_error` (112 = disk full on Windows).
+void test_fail_flushes(int skip, int count, int os_error);
+
 }  // namespace hle::fs

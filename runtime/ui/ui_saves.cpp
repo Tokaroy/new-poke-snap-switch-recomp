@@ -52,6 +52,7 @@ struct SavesState {
   bool restart_needed = false;
   int last_sel = -1;
   int backup_sel = -1;   // the "Restore a backup" list
+  bool backup_force = false;   // scripted test: keep that node open
   std::vector<std::string> fixtures;
   double fixtures_at = -100;
   // folder dialog result (filled by a worker thread)
@@ -266,6 +267,24 @@ bool saves_test_import(const std::string& fixture, std::string* name_out, std::s
 }
 void saves_test_switch(const std::string& name) { restart_now(name); }
 
+// Scripted test (ui_test.cpp "saves_backups"): "open" keeps the "Restore a backup" node open with row n picked, "queue" queues the picked backup the way the
+// hold button does, "queued" is true while a restore waits for the next start. what = the backup folder, or the reason it failed.
+bool saves_test_backups(const std::string& action, int n, std::string* what) {
+  const std::string root = hle::config().save_root;
+  const auto list = hle::savebackup::list(root);
+  if (action == "open") { Z.backup_force = true; Z.backup_sel = n; return n >= 0 && n < (int)list.size(); }
+  if (action == "queue") {
+    if (Z.backup_sel < 0 || Z.backup_sel >= (int)list.size()) { if (what) *what = "no backup picked"; return false; }
+    std::string e;
+    const bool ok = hle::savebackup::queue_restore(root, list[Z.backup_sel].folder, &e);
+    if (what) *what = ok ? list[Z.backup_sel].folder : e;
+    if (ok) Z.restart_needed = true;
+    return ok;
+  }
+  if (action == "queued") { const std::string q = hle::savebackup::queued_restore(root); if (what) *what = q; return !q.empty(); }
+  return false;
+}
+
 void saves_tab_opened() { Z.loaded_at = -100; Z.confirm = SavesState::None; }
 
 void tab_saves() {
@@ -430,6 +449,7 @@ void tab_saves() {
   }
 
   // ---- backups of the running save (runtime/hle/save_backup.h, docs/save-backups.md): the same list as the launcher's "Restore a backup..."
+  if (Z.backup_force) ImGui::SetNextItemOpen(true, ImGuiCond_Always);
   if (ImGui::TreeNode((std::string(tr("Restore a backup")) + "###restbak").c_str())) {
     const std::string sroot = hle::config().save_root;
     const std::string waiting = hle::savebackup::queued_restore(sroot);
