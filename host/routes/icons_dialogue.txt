@@ -1,0 +1,8 @@
+# fixture: tut_cand_new4
+# Inline dialogue icons check (2026-11-16): the scanfix_tls route, then A taps through Rita's lines after the scan:
+# "First, move [stick icon] over the [target icon]." and "And did you also notice that [icon]?" must show the button/target glyphs, not solid squares.
+# Run: powershell -File host\run_boot.ps1 -Route icons_dialogue -Timeout 590 -ShotAt 140 -ShotEvery 2 -ShotMax 90   (set SNAP_UI_FONT_SCALE=2 to force the 2x UI font atlas at any window size; first dialogue line is up around 190-250 s)
+repeat @f300 @f7400 60 6 A
+repeat @f7650 @f9300 50 8 X
+repeat @f9400 @f14000 100 6 A
+end @f14100

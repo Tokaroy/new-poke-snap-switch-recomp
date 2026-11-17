@@ -331,9 +331,20 @@ void font_composite(Cpu* c, bool first) {
     call_guest_nested(c, kMainBase + 0xa37d90, {engine, s, 0, 0, s});
     for (int i = 1; i < 8; i++) c->x[i] = saved[i];
     c->x[0] = (uint64_t)r1;
+    // Every AcquireGlyphmap needs a ReleaseGlyphmap(engine, glyph) (PLT 0xa37dd0; the game calls it once per glyph with the pointer it holds). The extra
+    // acquire above leaked one glyphmap per glyph until the engine's pool ran dry, and then a large glyph (the camera-ring and "?" icons U+E200/E201 in
+    // Rita's inline dialogue icons, 56x55) came back null and drew as a solid square. When the composite is used, the game later releases r2's glyphmap
+    // (the composite header carries r2's owner pointer) and r1's would leak, so r1 is released here; when the composite is dropped the game releases
+    // r1 and r2 is released here.
+    auto release = [&](uint8_t* g) {
+        uint64_t sv[8];
+        for (int i = 0; i < 8; i++) sv[i] = c->x[i];
+        call_guest_nested(c, kMainBase + 0xa37dd0, {engine, (uint64_t)g});
+        for (int i = 0; i < 8; i++) c->x[i] = sv[i];
+    };
     if (!r2 || !readable(r2, 0x30)) return;
     uint16_t w2 = *(uint16_t*)(r2 + 0x1c), h2 = *(uint16_t*)(r2 + 0x1e);
-    if (w2 < w1 || h2 < h1 || !readable(r2, 0x28 + (size_t)w2 * h2)) return;
+    if (w2 < w1 || h2 < h1 || !readable(r2, 0x28 + (size_t)w2 * h2)) { release(r2); return; }
     std::vector<uint8_t>& b = t_font_ring[t_font_ring_i++ & 7];
     b.assign(16 + 0x28 + (size_t)w2 * h2, 0);
     memcpy(b.data(), &kMagic, 8);
@@ -342,6 +353,7 @@ void font_composite(Cpu* c, bool first) {
     memcpy(b.data() + 16, r2, 0x28 + (size_t)w2 * h2);
     memcpy(b.data() + 16 + 0xc, hdr1 + 0xc, 6);   // bearing x, bearing y, advance: the 1x values
     c->x[0] = (uint64_t)(b.data() + 16);
+    release(r1);
     static int n, n2, total[2];
     total[first ? 0 : 1]++;
     if (g_trace && first && n < 6) { n++; trace("gamemods: font glyph %#x 1x %ux%u -> %ux%u (scale %#x)", cp, w1, h1, w2, h2, s); }
