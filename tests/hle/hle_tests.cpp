@@ -2506,9 +2506,17 @@ static void test_padfx() {
   settings::set_bool("gyro_on", false);
   settings::set_float("gyro_sens", 1.0f);
   // migration: an old gfx_draw_distance (LOD + cull together) becomes gfx_lod_dist + gfx_draw_dist, clamped to 8; a value already set is kept
+  // (then moved to the nearest Detail distance choice: 3.00 -> 3)
   { std::ofstream o(f, std::ios::trunc); o << "gfx_draw_distance=12\ngfx_lod_dist=3.00\n"; }
   settings::use_path_for_test(f);
-  CHECK(!settings::has("gfx_draw_distance") && settings::get("gfx_draw_dist") == "8.00" && settings::get("gfx_lod_dist") == "3.00");
+  CHECK(!settings::has("gfx_draw_distance") && settings::get("gfx_draw_dist") == "8.00" && settings::get("gfx_lod_dist") == "3");
+  // Detail distance choice (2026-11-16): an old slider value goes to the nearest step; 1.2 is the original and is erased
+  { std::ofstream o(f, std::ios::trunc); o << "gfx_lod_dist=6.50\n"; }
+  settings::use_path_for_test(f);
+  CHECK(settings::get("gfx_lod_dist") == "8");
+  { std::ofstream o(f, std::ios::trunc); o << "gfx_lod_dist=1.20\n"; }
+  settings::use_path_for_test(f);
+  CHECK(!settings::has("gfx_lod_dist"));
   // Look (owner 2026-11-15): an existing profile with no saved Look gets the Enhanced column for every key it never saved, keeps the keys it did save,
   // a saved gfx_look=original follows the Original column, and SNAP_VISUALS set by hand wins over both
   _putenv_s("SNAP_VISUALS", "");
@@ -2528,6 +2536,12 @@ static void test_padfx() {
   CHECK(snapdef::enhanced());
   int nlk = 0; const char* const* lk = snapdef::look_keys(&nlk);
   CHECK(nlk == 6 && std::string(lk[0]) == "gfx_aa" && std::string(lk[nlk - 1]) == "hd_photos");
+  // Enhanced supersampling is relative to the output with a 2160-line budget (nvn_aa.cpp SsaaAutoScale): 1080p 2.0 (2x per side), 1440p 2.0 (1.5x), 2160p 2.0 (1.0x)
+  CHECK(snapdef::ssaa_auto_scale(1080, 2160.f, 3.f) == 2.0f && snapdef::ssaa_auto_scale(1440, 2160.f, 3.f) == 2.0f && snapdef::ssaa_auto_scale(2160, 2160.f, 3.f) == 2.0f);
+  CHECK(std::fabs(snapdef::ssaa_auto_scale(720, 2160.f, 3.f) - 1440.f / 1080.f) < 1e-5f);                       // a small window still gets the full 2x
+  CHECK(snapdef::ssaa_auto_scale(2160, 0.f, 3.f) == 3.0f && snapdef::ssaa_auto_scale(1440, 0.f, 3.f) > 2.6f);   // budget 0: the old 2x-of-window, capped at 3x
+  CHECK(snapdef::ssaa_auto_scale(4320, 0.f, 3.f) == 3.0f);
+  CHECK(std::fabs(snapdef::ssaa_auto_scale(2160, 2592.f, 3.f) - 2.4f) < 1e-5f && snapdef::ssaa_auto_scale(0, 2160.f, 3.f) >= 1.0f);
   stdfs::remove(f);
 }
 

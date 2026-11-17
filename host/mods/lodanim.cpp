@@ -11,6 +11,7 @@
 //   * SNAP_TRACE_LOD_CALLERS=0xaddr[,..] counts the callers (lr) of those functions over the window.
 #include <windows.h>
 
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -348,7 +349,21 @@ void lodmods_init() {
 }
 
 extern "C" uint64_t snap_present_count();   // host/boot.cpp
-bool mod_active() { return !(g_dd_ab && ((snap_present_count() / g_dd_ab) & 1) == 0); }   // false on the "original" blocks of the A/B aid
+// Photo scoring re-renders each photo's scene from its stored camera at the start of photo select, one photo per present, with live
+// LOD picks; the GPU scoring draws (NVN_EVAL_LOG) come only from that sweep. Those picks must stay the game's: the LOD switches are off
+// from a photo Evaluation's camera-block copy (snap_wide_eval_copy, one per photo, also on the Professor and Re-snap screens, which
+// draw no scoring passes) until kEvalHold presents after the last one. The display shows the original LOD for those few presents.
+std::atomic<uint64_t> g_eval_present{0};   // present count + 1 of the last Evaluation camera copy; 0 = none yet
+constexpr uint64_t kEvalHold = 10;
+bool in_photo_eval() {
+    const uint64_t e = g_eval_present.load(std::memory_order_relaxed);
+    const uint64_t p = snap_present_count() + 1;
+    return e && p >= e && p - e <= kEvalHold;
+}
+bool mod_active() {
+    if (in_photo_eval()) return false;
+    return !(g_dd_ab && ((snap_present_count() / g_dd_ab) & 1) == 0);   // false on the "original" blocks of the A/B aid
+}
 float ratio_mul() { return mod_active() ? g_dd_ratio_mul : 1.0f; }
 
 float get_s0(Cpu *c) { uint32_t b = (uint32_t)c->v[0]; float f; memcpy(&f, &b, 4); return f; }
@@ -379,9 +394,10 @@ void lod_trace(Cpu *c, float ratio, int path) {
 
 // Before main+0x337ca8 (main path, group in w22) and main+0x337ab8 (sub-model path, group in w25): s0 = screen-coverage ratio.
 // SNAP_LOD_DIST / SNAP_DRAW_DIST / SNAP_LOD_FORCE0: the chain is re-evaluated here with separate multipliers (ratios are 1/d^2, so a distance
-// multiplier m scales the ratio by m^2): LOD0/LOD1 use the LOD multiplier, the cull (LOD3) uses max(LOD, draw) so it never comes before a
-// LOD switch. FORCE0 makes every not-culled model LOD0. The result is handed back to the original compare chain by writing s0: unchanged
-// when the original LOD already matches, else the exact threshold of the wanted LOD (0 for culled).
+// multiplier m scales the ratio by m^2): LOD0/LOD1/LOD2 use the LOD multiplier and the cull (LOD3) only the draw one, so Detail distance
+// never changes which models are drawn (a LOD switch past the cull just never happens). FORCE0 makes every not-culled model LOD0. The
+// result is handed back to the original compare chain by writing s0: unchanged when the original LOD already matches, else the exact
+// threshold of the wanted LOD (0 for culled). Off while photos are scored (in_photo_eval), so the scoring renders keep the game's picks.
 static void lod_apply(Cpu *c, int path) {
     lodmods_init();
     const bool legacy = g_dd_ratio_mul != 1.0f;
@@ -400,16 +416,16 @@ static void lod_apply(Cpu *c, int path) {
         }
         const float lm = g_lod_mul2 * g_dd_ratio_mul;
         if (t) {
-            const float cm = (g_cull_mul2 > g_lod_mul2 ? g_cull_mul2 : g_lod_mul2) * g_dd_ratio_mul;
+            const float cm = g_cull_mul2 * g_dd_ratio_mul;   // the cull moves only with Draw distance (or the legacy switch)
             const float rl = r0 * lm, rc = r0 * cm;
             const int orig = r0 >= t[0] ? 0 : r0 >= t[1] ? 1 : r0 >= t[2] ? 2 : 3;
-            int want = rl >= t[0] ? 0 : rl >= t[1] ? 1 : rc >= t[2] ? 2 : 3;
+            int want = rc < t[2] ? 3 : rl >= t[0] ? 0 : rl >= t[1] ? 1 : 2;
             if (g_lod_force0 && want != 3) want = 0;
             if (want == orig) r = r0;
             else if (want == 3) r = 0.0f;
             else r = t[want] > r0 || orig == 3 || orig > want ? t[want] : r0;
             if (r != r0) set_s0(c, r);
-        } else if (lm != 1.0f) {   // no table (group 0 or unreadable): plain scaling, as the legacy switch did
+        } else if (legacy) {   // no table (group 0 or unreadable): plain scaling, as the legacy switch did
             r = r0 * lm;
             set_s0(c, r);
         }
@@ -437,6 +453,7 @@ extern "C" void rt_gm_anim_rate(Cpu *c) {
 // multiplied by k: the Evaluation then works from the same 16:9 projection, and the same 3:2 camera, as at 16:9.
 namespace loader {
 void snap_wide_eval_copy(uint64_t src) {
+    g_eval_present.store(snap_present_count() + 1, std::memory_order_relaxed);   // LOD switches off while photos are scored (in_photo_eval)
     const float k = wide_k();
     if (k <= 1.0f) return;
     int fixed = 0;

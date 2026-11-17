@@ -24,7 +24,7 @@ Sliders are not used. The slider widget exists in the generator but no PC page d
 
 - Default equals the original look. A row's default must equal the F1 `Opt.def`, so Restore Default erases the key instead of storing an explicit value.
 - Restart notice: no badge exists in the native menu, so every restart row ends its help text with " Applies after restart." Live rows omit it. Help text is at most 112 characters (generator assert). Labels stay near 20 characters.
-- No row may touch photo scoring. Excluded on purpose: `SNAP_FOV`, `SNAP_LOD_FORCE0`, `SNAP_FULL_RATE_ANIM`, `SNAP_PASS_FORCE`, `SNAP_VSYNC_HZ`, legacy pace, `NVN_NO_*_FIX/EXEMPT`, and `SNAP_PHOTO_MIN_W`. `SNAP_LOD_DIST` and `SNAP_DRAW_DIST` keep their current View rows (already flagged "may change photo scores"); no new granular steps there.
+- No row may touch photo scoring. Excluded on purpose: `SNAP_FOV`, `SNAP_LOD_FORCE0`, `SNAP_FULL_RATE_ANIM`, `SNAP_PASS_FORCE`, `SNAP_VSYNC_HZ`, legacy pace, `NVN_NO_*_FIX/EXEMPT`, and `SNAP_PHOTO_MIN_W`. `SNAP_LOD_DIST` is the Detail distance choice (Original, High 3x, Max 8x), display-only since 2026-11-16. `SNAP_DRAW_DIST` keeps its slider row, still flagged "may change photo scores".
 - Env switches that are debug or compatibility only stay env-only (upscaler jitter/mv/log, AA dump/split, pass dump/ab, HDR debug, Vulkan, memory and shader-cache switches, `SNAP_GAME_FONT`, `SNAP_VISUALS`).
 
 ## 3. Grouping

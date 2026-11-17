@@ -65,6 +65,14 @@ void read_file() {
     g_kv.erase(old);
     write_file();
   }
+  // Migration (2026-11-16): "gfx_lod_dist" became a choice of 1 (Original), 3 (High) and 8 (Max); an old slider value goes to the nearest step.
+  auto lod = g_kv.find("gfx_lod_dist");
+  if (lod != g_kv.end() && lod->second != "1" && lod->second != "3" && lod->second != "8") {
+    const double v = std::atof(lod->second.c_str());
+    if (v < 1.5) g_kv.erase(lod);
+    else lod->second = v < 5.5 ? "3" : "8";
+    write_file();
+  }
 }
 
 void write_file() {
