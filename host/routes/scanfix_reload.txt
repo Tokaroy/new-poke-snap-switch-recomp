@@ -1,0 +1,17 @@
+# fixture: scanfix_lvl2_after
+# Save then load (scanfix 2026-11-17): the fixture is the save kept by scanfix_levelup (Florio level 2 reached, Florio Night unlocked, one photo saved).
+# A fresh process: title (A taps = continue), the professor's pending "nighttime visit" lines, the Lental Map stage select and Florio's course select
+# (Day / Night entries); frames throughout.
+repeat @f300 @f30000 120 8 A
+repeat @f0 @f4000 200 1 shot=1
+wait ui=map_select timeout=300
+wait ui=map_select:StageSelect timeout=100
+repeat @f0 @f400 40 1 shot=1
+@f500 8 A
+wait ui=map_select:CourseSelect timeout=200
+repeat @f0 @f700 35 1 shot=1
+@f200 8 Right
+@f330 8 Left
+@f460 8 Down
+@f560 8 Up
+end @f800

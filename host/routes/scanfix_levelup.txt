@@ -1,0 +1,28 @@
+# fixture: scanfix_lvl2_pre
+# Research level-up check (scanfix 2026-11-17): fixture = post_tutorial with Florio at 38,000 research points (level 2 needs 40,000; patched with
+# snap_save.py patch: file 9 entry 0 +0 plays=1, +8 id=1, +12..+18 four scores of 9500). One Florio ride, one scored photo crosses the threshold;
+# frames every 45 route frames after the evaluation End show the level-up panel and the unlock announcements; the run keeps its save.
+repeat @f300 @f30000 120 8 A
+wait ui=map_select timeout=240
+repeat @f60 @f30000 120 8 A
+wait ride timeout=300
+repeat @f0 @f30000 24 4 A
+repeat @f0 @f6000 600 200 ZL
+repeat @f0 @f30000 400 60 rx=0.25
+repeat @f200 @f30000 400 60 rx=-0.25
+wait film<=0 timeout=300
+repeat @f120 @f60000 90 8 A
+wait ui=photo_submit:FolderSelect timeout=400
+repeat @f100 @f900 90 8 Down if=!focus=AllCheck
+@f1000 8 A
+@f1150 8 Plus
+@f1260 8 Up
+@f1350 8 A
+wait ui=evaluation timeout=60
+repeat @f240 @f60000 90 8 A
+wait ui=evaluation:Score timeout=120
+repeat @f60 @f60000 90 8 A
+wait ui=evaluation:End timeout=240
+repeat @f60 @f3600 90 8 A
+repeat @f0 @f3600 45 1 shot=1
+end @f3700

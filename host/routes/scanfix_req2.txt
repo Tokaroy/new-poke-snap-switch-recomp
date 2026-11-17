@@ -1,0 +1,32 @@
+# fixture: story_complete
+# Requests check (scanfix 2026-11-17): Florio Day ride with blind shots on the story_complete save (29 requests, none completed), then evaluation, return to camp, LenTalk list (Completed Requests count).
+wait ui=title timeout=200
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=300
+@f240 6 A
+wait ui=map_select:CourseSelect timeout=60
+@f180 6 A
+wait ride timeout=300
+repeat @f0 @f60000 24 4 A
+repeat @f0 @f60000 400 60 rx=0.25
+repeat @f200 @f60000 400 60 rx=-0.25
+wait ui=photo_submit:FolderSelect timeout=500
+repeat @f100 @f900 90 8 Down if=!focus=AllCheck
+@f1000 8 A
+@f1150 8 Plus
+@f1260 8 Up
+@f1350 8 A
+wait ui=evaluation timeout=60
+repeat @f240 @f60000 90 8 A
+wait ui=evaluation:Score timeout=120
+repeat @f0 @f600 40 1 shot=1
+repeat @f60 @f60000 90 8 A
+wait ui=evaluation:End timeout=240
+repeat @f0 @f1800 90 1 shot=1
+repeat @f0 @f60000 90 8 Down
+repeat @f45 @f60000 90 8 A
+repeat @f20 @f60000 90 8 B if=ui=album_save
+wait ui=main_menu:MainMenu timeout=400
+@f300 10 Y
+repeat @f0 @f1000 50 1 shot=1
+end @f1100

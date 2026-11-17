@@ -1,0 +1,10 @@
+# fixture: story_complete
+# Requests probe (scanfix 2026-11-17): hub, Y opens the LenTalk list, A opens the first request, A again, frames every 40 route frames.
+repeat @f300 @f30000 120 8 A
+wait ui=main_menu:MainMenu timeout=500
+@f300 10 Y
+repeat @f0 @f2400 40 1 shot=1
+@f900 8 A
+@f1300 8 A
+@f1700 8 A
+end @f2500
