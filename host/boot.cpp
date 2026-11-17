@@ -663,12 +663,14 @@ static void bind_host_layers() {
     snap_audio_set_event_init_hook([](void *ev) { os_system_event_create((uint64_t)ev, 1); });   // audio device notification event (autoclear): the game's TryWaitSystemEvent on it fataled without this
 }
 
-// The musl thread-pointer hooks. Both modules have an empty PT_TLS, so the guest's thread-local words (tpidr_el0 + small
-// offsets: errno, a locale flag at +0x20, ...) live in a per-thread zeroed 64 KB block with tp in its middle. sdk's thread
+// The musl thread-pointer hooks. The imported ELFs have no PT_TLS, so the guest's thread-local words (tpidr_el0 + small
+// offsets: errno, a locale flag at +0x20, ...) live in a per-thread 64 KB block with tp in its middle, zeroed except for
+// main's 8-byte .tdata image at tp+0x10 (runtime/hle/guest_tls.h: without it the camera scan never finds a Pokemon). sdk's thread
 // trampoline (sdk+0x348e80) calls *nnmuslThreadPointerInitializer(x0 = ThreadType) before the entry and
 // reads TLR[0x1f0] into tpidr_el0 afterwards; the nothing in the lifted modules installs these pointers, so the host does.
 static void tp_init_hook(Cpu *c, Thunk *) {
     uint8_t *blk = (uint8_t *)VirtualAlloc(nullptr, 0x10000, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    init_guest_tls((uint64_t)(blk + 0x8000));   // main's .tdata image (runtime/hle/guest_tls.h)
     *(uint64_t *)(c->tpidrro + 0x1f0) = (uint64_t)(blk + 0x8000);   // runtime/os calls the hook itself with only x0 set
 }
 static void tp_destroy_hook(Cpu *c, Thunk *) {

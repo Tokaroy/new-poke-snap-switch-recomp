@@ -26,6 +26,7 @@
 #include "../../runtime/hle/access.h"
 #include "../../runtime/hle/btn_icons.h"
 #include "../../runtime/hle/freecam.h"
+#include "../../runtime/hle/guest_tls.h"
 #include "../../runtime/hle/modhooks.h"
 #include "../../runtime/hle/fs_core.h"
 #include "../../runtime/hle/hle.h"
@@ -2960,6 +2961,49 @@ int main(int argc, char** argv) {
       {"savebackup.running", sb_test::test_restore_refused_running},
     int before_checks = g_checks;
     try { t.fn(); }
+// ---- guest TLS image (runtime/hle/guest_tls.h): main's thread-local bounds slot must start at -1
+// Model of main+0x2a2970 (AddBounds): a thread with a negative slot appends an entry, then grows its own entry.
+static size_t model_add_bounds(const uint8_t* tp, std::vector<int>* list) {
+  int32_t slot;
+  std::memcpy(&slot, tp + hle::kTlsBlockOffset, 4);
+  if (slot < 0) { slot = (int32_t)list->size(); list->push_back(0); std::memcpy((uint8_t*)tp + hle::kTlsBlockOffset, &slot, 4); }
+  if ((size_t)slot < list->size()) (*list)[slot]++;   // a slot past the end (zeroed TLS, empty list) adds nothing
+  return list->size();
+}
+static void test_guest_tls_image() {
+  static const uint8_t image[hle::kMainTlsImageSize] = {0xff, 0xff, 0xff, 0xff, 0x95, 0x23, 0x73, 0x00};
+  std::vector<uint8_t> blk(0x10000, 0);
+  uint8_t* tp = blk.data() + 0x8000;
+  hle::guest_tls_init(tp, image, sizeof image);
+  int32_t slot; uint32_t hash;
+  std::memcpy(&slot, tp + 0x10, 4);
+  std::memcpy(&hash, tp + 0x14, 4);
+  CHECK_EQ(slot, -1);
+  CHECK_EQ(hash, 0x00732395u);
+  bool rest_zero = true;
+  for (size_t i = 0; i < blk.size(); i++)
+    if ((i < 0x8010 || i >= 0x8018) && blk[i]) rest_zero = false;
+  CHECK(rest_zero);   // TCB and .tbss untouched
+  std::vector<int> list;
+  CHECK_EQ(model_add_bounds(tp, &list), 1u);   // the image's -1: the first add appends this thread's entry
+  CHECK_EQ(model_add_bounds(tp, &list), 1u);
+  CHECK_EQ(list[0], 2);
+  std::vector<uint8_t> zero(0x10000, 0);
+  std::vector<int> list0;
+  model_add_bounds(zero.data() + 0x8000, &list0);
+  CHECK_EQ(list0.size(), 0u);                  // the old zeroed TLS: the list stays empty (the scan bug)
+  hle::guest_tls_init(nullptr, image, sizeof image);   // no block: no write, no crash
+  // The constants match the game's own bytes when the local import ELF is present (it is never committed).
+  stdfs::path elf = g_root / "analysis" / "import" / "v262144-main.elf";
+  if (stdfs::exists(elf)) {
+    std::ifstream f(elf, std::ios::binary);
+    f.seekg((std::streamoff)(0x1000 + hle::kMainTlsImageVaddr));   // this ELF maps vaddr 0 at file offset 0x1000
+    uint8_t got[hle::kMainTlsImageSize] = {};
+    f.read((char*)got, sizeof got);
+    CHECK(f.good() && std::memcmp(got, image, sizeof got) == 0);
+  }
+}
+
     catch (const std::exception& e) { std::printf("  FAIL [%s] exception: %s\n", t.name, e.what()); ++g_failed; }
     catch (...) { std::printf("  FAIL [%s] unknown exception\n", t.name); ++g_failed; }
     std::printf("%-22s %s (%d checks)\n", t.name, g_failed == before_failed ? "PASS" : "FAIL", g_checks - before_checks);
@@ -2969,3 +3013,4 @@ int main(int argc, char** argv) {
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed ? 1 : 0;
 }
+      {"tls.main_image", test_guest_tls_image},

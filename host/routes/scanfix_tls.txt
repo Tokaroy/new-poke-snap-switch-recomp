@@ -1,0 +1,7 @@
+# fixture: tut_cand_new4
+# scanfix2 TLS check: A taps through the lab dialogue up to the yard scan prompt, then X every 90 frames once the
+# "press Y" prompt is up (f7650..f8100); a frame every 16 route frames f7620..f8300 for the "?" marker and the name.
+repeat @f300 @f7400 60 6 A
+repeat @f7650 @f8100 90 8 X
+repeat @f7620 @f8300 16 1 shot=1
+end @f8320

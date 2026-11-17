@@ -103,6 +103,8 @@ struct GuestThread {
 };
 GuestThread *new_thread(size_t stack_size = 4u << 20);
 
+// Fill a fresh (zeroed) guest TLS block from main's .tdata image (runtime/hle/guest_tls.h); tp = the guest thread pointer.
+void init_guest_tls(uint64_t tp);
 // Call a guest function from host code. Aborts if an exception or longjmp escapes to the host (resuming set).
 uint64_t call_guest(Cpu *c, uint64_t fn, std::initializer_list<uint64_t> args = {});
 // Same, but for use inside a host override or inline hook that was itself called from lifted code. The guest state the
