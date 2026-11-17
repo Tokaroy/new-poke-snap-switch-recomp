@@ -925,6 +925,10 @@ extern "C" int snap_route_cond(const char* c, char* why, int n) {
   if (why && n > 0) std::snprintf(why, (size_t)n, "%s", w.c_str());
   return r ? 1 : 0;
 }
+extern "C" float snap_route_ride_progress() {   // rail progress of the current ride, -1 when none (the particle census in runtime/nvn/nvn_foliage.cpp tags presents with it)
+  std::lock_guard<std::mutex> lk(g_rs_mu);
+  return g_rail_cur >= 0 && (int)nvn::g_presentCount - g_rail[g_rail_cur].f_adv <= 20 ? g_rail[g_rail_cur].prog : -1.0f;
+}
 extern "C" void snap_input_force_buttons(const char* names) {   // space separated Switch button names ("A", "A B"); "" releases
   uint64_t m = 0;
   std::istringstream is(names ? names : "");
