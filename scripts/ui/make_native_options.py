@@ -295,15 +295,6 @@ TABS = [
             (('default', 'Off'), ('0.5', 'Light'), ('1', 'Medium'), ('2', 'Strong')),
             'Blur along the camera motion while the ride moves or you turn. Photos stay sharp.' + R),
     ]),
-]
-VISUAL_KEYS = {'gfx_sharpen': 'SNAP_SHARPEN', 'gfx_aniso': 'SNAP_ANISO', 'gfx_ui_font': 'SNAP_UI_FONT_SCALE',
-               'photo_export': 'SNAP_PHOTO_EXPORT', 'hd_photos': 'SNAP_HD_PHOTOS'}
-_VD = visual_defaults()
-for _t in TABS:
-    assert len(_t[2]) <= 6, (_t[0], 'a PC page has 6 row slots and no scrolling')
-    for _r in _t[2]:
-        if _r['key'] in VISUAL_KEYS:
-            _r['default'] = _VD[VISUAL_KEYS[_r['key']]]
     # Atmosphere effects (runtime/nvn/nvn_atmos.cpp, docs/atmosphere.md), display only, all off by default, never drawn in photos. Tab 11 (Shadows & AO) had one free slot
     # by the time these landed, so they take a tab of their own (tab 16, the first of a fourth set). Keys atmos_* -> SNAP_ATMOS_* (settings.cpp kEnvKeys)
     ('Atmosphere', 'Light, haze, glow, clouds and sky. Photos are unchanged.', [
@@ -332,6 +323,15 @@ for _t in TABS:
         row('Ocean waves', 'p', 'opt', 'water_ocean', 'default', (('default', 'Off'), ('1', 'On')),
             'Rolling sea waves from a GPU simulation: reflections follow the swell, whitecaps on crests. Photos unchanged.'),
     ]),
+]
+VISUAL_KEYS = {'gfx_sharpen': 'SNAP_SHARPEN', 'gfx_aniso': 'SNAP_ANISO', 'gfx_ui_font': 'SNAP_UI_FONT_SCALE',
+               'photo_export': 'SNAP_PHOTO_EXPORT', 'hd_photos': 'SNAP_HD_PHOTOS'}
+_VD = visual_defaults()
+for _t in TABS:
+    assert len(_t[2]) <= 6, (_t[0], 'a PC page has 6 row slots and no scrolling')
+    for _r in _t[2]:
+        if _r['key'] in VISUAL_KEYS:
+            _r['default'] = _VD[VISUAL_KEYS[_r['key']]]
             assert _r['default'] in [c[0] for c in _r['choices']], (_r['label'], _r['default'])
 
 RESET_NOTE = ' Restore Default Settings resets only this tab.'
