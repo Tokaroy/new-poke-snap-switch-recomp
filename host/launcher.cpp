@@ -412,7 +412,10 @@ static HANDLE spawn(const std::wstring& cmd, bool visible, const fs::path& out_f
   }
   std::wstring mutable_cmd = cmd;
   PROCESS_INFORMATION pi{};
-  BOOL ok = CreateProcessW(nullptr, mutable_cmd.data(), nullptr, nullptr, !visible, flags, nullptr, nullptr, &si, &pi);
+  // The builder never stands in the game's folder: an update renames out\, and Windows refuses that while a process has it as its
+  // working directory (2026-11-18: "used by another process" at the switch). The work folder is its parent.
+  const std::wstring cwd = g_work_dir.empty() ? std::wstring() : g_work_dir.wstring();
+  BOOL ok = CreateProcessW(nullptr, mutable_cmd.data(), nullptr, nullptr, !visible, flags, nullptr, cwd.empty() ? nullptr : cwd.c_str(), &si, &pi);
   if (out != INVALID_HANDLE_VALUE) CloseHandle(out);
   if (!ok) return nullptr;
   CloseHandle(pi.hThread);
