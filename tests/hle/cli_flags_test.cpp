@@ -101,6 +101,19 @@ int main() {
     CHECK(snap_cli::first_unknown(snap_cli::parse({"--updates"}).rest) == "--updates");   // ...and is named as unknown
     CHECK(snap_cli::parse({"--play"}).action.empty());
   }
+  {   // --restore-backup, --upscalers and --hdtex run without a window: what follows them is theirs, word for word
+    auto p = snap_cli::parse({"--data-dir", "D:\\Snap", "--restore-backup", "latest"});
+    CHECK(p.error.empty() && p.action == "restore-backup" && p.action_args == V({"latest"}) && p.data_dir == "D:\\Snap" && p.rest.empty());
+    p = snap_cli::parse({"--upscalers", "fsr", "--accept-license", "fsr"});
+    CHECK(p.error.empty() && p.action == "upscalers" && p.action_args == V({"fsr", "--accept-license", "fsr"}));
+    p = snap_cli::parse({"--hdtex", "--level", "hd", "--set", "creature.scale=4", "--dry-run"});   // --set here is the HD tool's, not the game's
+    CHECK(p.error.empty() && p.action == "hdtex" && p.action_args.size() == 5 && p.sets.empty() && p.rest.empty());
+    p = snap_cli::parse({"--hdtex"});
+    CHECK(p.error.empty() && p.action_args.empty());
+    CHECK(!snap_cli::parse({"--play", "--restore-backup", "latest"}).error.empty());
+    CHECK(!snap_cli::parse({"--check-install", "latest"}).error.empty());   // the other actions still take nothing
+    CHECK(snap_cli::action_takes_args("hdtex") && !snap_cli::action_takes_args("update"));
+  }
   if (g_fail) { std::printf("cli_flags_test: %d FAILED\n", g_fail); return 1; }
   std::printf("cli_flags_test: all passed\n");
   return 0;

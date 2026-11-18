@@ -73,9 +73,11 @@ Each of these does one launcher job without the launcher window. The game does n
 | `--update` | Installs the newest version. The update runs in its own window. Exit code 0 means it started, 1 means the builder is missing. |
 | `--check-install` | Checks the game files and prints the result. Exit code 0 when everything is in order, 1 when something is wrong. |
 | `--report` | Makes the problem report zip and prints its path. Nothing is uploaded. |
-| `--restore-backup` | Opens the list of save backups. |
-| `--upscalers` | Opens the DLSS, FSR and XeSS downloads. |
-| `--hdtex` | Opens the HD texture tools. |
+| `--restore-backup` | Prints the save backups, newest first. `--restore-backup latest` or `--restore-backup <number>` puts that one back; the current save is backed up first. Exit code 0 done, 1 not restored, 2 wrong argument. |
+| `--upscalers` | Prints DLSS, FSR and XeSS, whether each is installed, and where its license is. `--upscalers <name> --accept-license <name>` downloads that one from the vendor. Without `--accept-license` nothing is downloaded: the license is yours to accept. |
+| `--hdtex` | Prints the HD texture state. With options it runs the HD texture tool with them, for example `--hdtex --level hd --dry-run`; `builder\HD-TEXTURES.md` lists the options. The exit code is the tool's. |
+
+None of these opens a window. `--restore-backup`, `--upscalers` and `--hdtex` take everything after them as their own arguments, so put `--data-dir` and the other player flags before them.
 
 ## Setup flags
 
