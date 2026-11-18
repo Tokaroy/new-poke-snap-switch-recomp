@@ -159,7 +159,7 @@ const uint64_t kEventUpdate = 0x71003b5f10ull;
 const char* g_evtable;
 std::unordered_map<uint64_t, uint64_t> g_evcomp;   // owner actor -> event component
 
-// SNAP_AIM_EVTABLE=mis: every species once, only its request rows (a motion or photo event name with "Mis_").
+// SNAP_AIM_EVTABLE=mis: every species once, only its request rows (a motion or photo event name with "Mis_" or "_Sp_").
 bool g_evmis;
 std::set<std::string> g_evdumped;
 
@@ -179,7 +179,7 @@ void evtable(uint64_t own, const std::string& name) {
   for (int i = 0; i < 400 && readable((void*)node, 0x90); i++, node = *(const uint64_t*)node) {
     const uint64_t row = node + 0x18;
     const std::string m = stdstr_at(row + 0x10), ph = stdstr_at(row + 0x48), mc = stdstr_at(row + 0x28), pc = stdstr_at(row + 0x60);
-    if (g_evmis && m.find("Mis_") == std::string::npos && ph.find("Mis_") == std::string::npos) continue;
+    if (g_evmis && m.find("Mis_") == std::string::npos && ph.find("Mis_") == std::string::npos && m.find("_Sp_") == std::string::npos && ph.find("_Sp_") == std::string::npos) continue;
     trace("aim: evtable %s key=%u motion=%d/%d %s [%s] photo=%d %s [%s]", name.c_str(), *(const uint32_t*)(node + 0x10), *(const int*)row,
           *(const int*)(row + 8), m.empty() ? "-" : m.c_str(), mc.empty() ? "-" : mc.c_str(), *(const int*)(row + 0x40), ph.empty() ? "-" : ph.c_str(),
           pc.empty() ? "-" : pc.c_str());
