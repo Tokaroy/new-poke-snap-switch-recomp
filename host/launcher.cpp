@@ -1069,6 +1069,41 @@ static fs::path logs_dir() {
   return logs;
 }
 
+// One launcher action from the command line (host/cli_flags.h), without the launcher window. Returns the process exit code. A test run
+// (SNAP_LAUNCHER_AUTOPLAY) names what a window or the updater would do instead of opening it.
+static int run_action(const std::string& action, const fs::path& exe_dir, const fs::path& cfg_path, hle::Json& cfg, const hle::Json& data) {
+  const bool test = std::getenv("SNAP_LAUNCHER_AUTOPLAY") != nullptr;
+  auto say = [](const std::string& s) { std::fprintf(stdout, "%s\n", s.c_str()); std::fflush(stdout); };
+  if (action == "check-install") {   // host/mods/install_check.cpp; reads only
+    const snap_install::Report rep = snap_install::run(exe_dir);
+    say(snap_install::text(rep));
+    return rep.ok ? 0 : 1;
+  }
+  if (action == "report") {   // host/mods/problem_report.cpp: one zip on the Desktop; never uploads
+    char path[1024] = {}, why[512] = {};
+    if (!snap_problem_report("command line", path, (int)sizeof path, why, (int)sizeof why)) { say(std::string("The problem report could not be made: ") + why); return 1; }
+    say(std::string("The problem report is here: ") + path + "\nNothing was uploaded.");
+    return 0;
+  }
+  if (action == "update") {   // the same step as Updates > Install in the launcher; the builder waits for this process to end, then rebuilds
+    const std::string work = cfg.get("work") ? cfg.get("work")->str() : std::string();
+    const std::wstring cmd = builder_cmd(cfg, L"update apply" + channel_arg(cfg) + L" --work \"" + W(work) + L"\" --yes --wait-pid " + std::to_wstring(GetCurrentProcessId()));
+    if (cmd.empty()) { say("The updater could not be started (the builder folder is missing)."); return 1; }
+    if (test) { say("launcher: would run: " + U8(cmd)); return 0; }
+    HANDLE h = spawn(cmd, true, fs::path());
+    if (!h) { say("The updater could not be started."); return 1; }
+    CloseHandle(h);
+    say("The update runs in its own window.");
+    return 0;
+  }
+  if (test) { say("launcher: would open: " + action); return 0; }
+  if (action == "restore-backup") restore_backup_flow(cfg_path);
+  else if (action == "upscalers") offer_upscalers(exe_dir, data, false);
+  else if (action == "hdtex") hd_textures_flow(exe_dir, cfg_path, cfg);
+  else { say("unknown action " + action); return 2; }
+  return 0;
+}
+
 bool prepare(Result& r) {
   wchar_t mp[MAX_PATH * 2] = {};
   GetModuleFileNameW(nullptr, mp, (DWORD)(sizeof mp / sizeof mp[0]));
@@ -1085,6 +1120,7 @@ bool prepare(Result& r) {
   read_json(exe_dir / L"launcher_data.json", data);   // optional
   if (const hle::Json* w = cfg.get("work")) if (!w->str().empty()) g_work_dir = fs::u8path(w->str());
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+  if (!r.action.empty()) { r.exit_code = run_action(r.action, exe_dir, cfg_path, cfg, data); return true; }
   const bool autoplay = std::getenv("SNAP_LAUNCHER_AUTOPLAY") != nullptr;
   // First start: offer FSR (pre-selected, never accepted for the user). A test run skips this unless SNAP_UPSCALER_AUTOACCEPT is set.
   if (!cfg.get("upscalers_offered") && (!autoplay || std::getenv("SNAP_UPSCALER_AUTOACCEPT"))) {

@@ -11,6 +11,8 @@
 //   --profile <name or id>        the profile to play (also the profile of --import-save / --export-save)
 //   --set <key>=<value>           one settings key for this run only (repeatable); a name that starts with SNAP_ sets that variable
 //   --data-dir <folder>           one folder for saves, settings, mods, caches and logs
+//   --update | --check-install | --report | --restore-backup | --upscalers | --hdtex
+//                                 one launcher action without the launcher window (host/launcher.cpp run_action); the game does not start
 //   --help | -h | /?   --version
 #pragma once
 #include <cstdlib>
@@ -23,6 +25,7 @@ namespace snap_cli {
 struct Parsed {
   bool help = false, version = false, play = false, safe = false;
   std::string data_dir, profile;
+  std::string action;                                      // one launcher action (action_names) without its "--", or ""
   std::vector<std::pair<std::string, std::string>> env;    // variables to set for this run (window flags, --set SNAP_X=v)
   std::vector<std::pair<std::string, std::string>> sets;   // --set key=value, in order
   std::vector<std::string> rest;                           // everything else, in order, for the older handlers
@@ -33,6 +36,12 @@ inline bool is_number(const std::string& s) {
   if (s.empty() || s.size() > 6) return false;
   for (char c : s) if (c < '0' || c > '9') return false;
   return true;
+}
+
+// Launcher actions that have a flag of their own: "--" + name.
+inline const std::vector<std::string>& action_names() {
+  static const std::vector<std::string> k = {"update", "check-install", "report", "restore-backup", "upscalers", "hdtex"};
+  return k;
 }
 
 inline Parsed parse(const std::vector<std::string>& args) {
@@ -67,8 +76,16 @@ inline Parsed parse(const std::vector<std::string>& args) {
       const std::string k = v.substr(0, eq), val = v.substr(eq + 1);
       if (k.compare(0, 5, "SNAP_") == 0) p.env.push_back({k, val});
       else p.sets.push_back({k, val});
-    } else p.rest.push_back(a);
+    } else {
+      bool act = false;
+      if (a.compare(0, 2, "--") == 0) for (const std::string& n : action_names()) if (a.compare(2, std::string::npos, n) == 0) act = true;
+      if (!act) { p.rest.push_back(a); continue; }
+      if (!p.action.empty()) { p.error = "only one of --" + p.action + " and " + a + " at a time"; break; }
+      p.action = a.substr(2);
+    }
   }
+  if (p.error.empty() && !p.action.empty() && p.play) p.error = "--" + p.action + " does not start the game; leave out --play";
+  if (p.error.empty() && !p.action.empty() && !p.rest.empty()) p.error = "--" + p.action + " cannot be used with " + p.rest[0];
   return p;
 }
 
@@ -119,6 +136,14 @@ inline const char* help_text() {
          "  --set <key>=<value>          one setting for this start only, repeatable (keys: docs/command-line.md);\n"
          "                               a name that starts with SNAP_ sets that environment variable\n"
          "  --data-dir <folder>          keep saves, settings, mods, caches and logs in this folder\n"
+         "\n"
+         "Launcher actions without the launcher window (the game does not start):\n"
+         "  --update                     install the newest version; it runs in its own window (exit 0 = started)\n"
+         "  --check-install              check the game files and print the result (exit 0 = all good, 1 = something is wrong)\n"
+         "  --report                     make the problem report zip and print where it is; nothing is uploaded\n"
+         "  --restore-backup             open the list of save backups\n"
+         "  --upscalers                  open the DLSS / FSR / XeSS downloads\n"
+         "  --hdtex                      open the HD texture tools\n"
          "\n"
          "Other commands (no game window unless noted):\n"
          "  --import-save <folder or zip>, --export-save <folder>\n"

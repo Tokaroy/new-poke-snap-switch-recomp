@@ -86,6 +86,21 @@ int main() {
     CHECK(snap_cli::version_from_config("{\"builder_version\": 3}").empty());
     CHECK(snap_cli::version_from_config("{\"work\": \"w\"}").empty());
   }
+  {   // launcher actions: one at a time, never with --play or another command; the other player flags still apply
+    for (const std::string& n : snap_cli::action_names()) {
+      auto p = snap_cli::parse({"--" + n});
+      CHECK(p.error.empty() && p.action == n && p.rest.empty());
+      CHECK(std::strstr(snap_cli::help_text(), ("--" + n).c_str()) != nullptr);
+    }
+    auto p = snap_cli::parse({"--data-dir", "D:\\Snap", "--check-install", "--profile", "Ash"});
+    CHECK(p.error.empty() && p.action == "check-install" && p.data_dir == "D:\\Snap" && p.profile == "Ash");
+    CHECK(!snap_cli::parse({"--update", "--report"}).error.empty());
+    CHECK(!snap_cli::parse({"--update", "--play"}).error.empty());
+    CHECK(!snap_cli::parse({"--benchmark", "--hdtex"}).error.empty());
+    CHECK(snap_cli::parse({"--updates"}).action.empty());                       // a near miss is not an action...
+    CHECK(snap_cli::first_unknown(snap_cli::parse({"--updates"}).rest) == "--updates");   // ...and is named as unknown
+    CHECK(snap_cli::parse({"--play"}).action.empty());
+  }
   if (g_fail) { std::printf("cli_flags_test: %d FAILED\n", g_fail); return 1; }
   std::printf("cli_flags_test: all passed\n");
   return 0;

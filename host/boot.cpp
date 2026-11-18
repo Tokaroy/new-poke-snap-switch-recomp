@@ -1158,6 +1158,7 @@ int main(int argc, char **argv) {
     {   // launcher mode (builder release): no command of its own (player flags were taken off above) and a config.json next to the exe (host/launcher.cpp)
         snap_launcher::Result lr;
         lr.play = cli.play;
+        lr.action = cli.action;
         lr.notice = g_data_notice;
         const bool plain = argc == 1;
         if (plain && snap_launcher::prepare(lr)) {
@@ -1165,6 +1166,9 @@ int main(int argc, char **argv) {
             g_return_to_launcher = !getenv("SNAP_LAUNCHER_AUTOPLAY") && !cli.play;   // --play: another launcher started the game, so closing it ends the process
             g_o.main_elf = lr.main_elf; g_o.sdk_elf = lr.sdk_elf; g_o.cmd = "run"; g_o.trace_file = lr.trace_file;
             if (!getenv("SNAP_HLE_CONFIG")) _putenv_s("SNAP_HLE_CONFIG", lr.config_path.c_str());
+        } else if (!cli.action.empty()) {   // a development build, or a build that never finished: no config.json, so no launcher
+            fprintf(stderr, "SnapRecomp: --%s needs a finished build (no config.json next to the exe)\n", cli.action.c_str());
+            return 2;
         }
     }
     for (int i = 1; i < argc; i++) {

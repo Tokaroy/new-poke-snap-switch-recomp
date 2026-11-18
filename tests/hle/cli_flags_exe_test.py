@@ -93,6 +93,42 @@ def main():
         (dd / 'Local' / 'SnapRecomp' / 'logs' / 'launch.marker').write_text('pid=%d\r\nstart=1\r\nsafe=0\r\n' % dead_pid())
         code, out = run(['--data-dir', str(dd)])
         check('--data-dir: its own logs folder is read', 'safe mode offered' in out, (code, out))
+
+        # ---- launcher actions (--update, --check-install, --report, --restore-backup, --upscalers, --hdtex): no window, the game never starts
+        code, out = run(['--help'])
+        check('--help lists the launcher actions', all(w in out for w in ('--update', '--check-install', '--report', '--restore-backup', '--upscalers', '--hdtex')), out)
+        code, out = run(['--update'])
+        check('--update without a builder: exit 1 and says why', code == 1 and 'builder folder is missing' in out, (code, out))
+        fake = work / 'fake builder'
+        fake.mkdir()
+        (fake / 'snap_builder.py').write_text('')
+        (fake / 'python.exe').write_bytes(b'')
+        (game / 'config.json').write_text(json.dumps(dict(cfg, python=str(fake / 'python.exe'), builder_dir=str(fake), work=str(work / 'the work'), update_channel='testing')))
+        code, out = run(['--update'])
+        check('--update: the updater command (channel, work folder, --yes, waits for this process)',
+              code == 0 and all(w in out for w in ('would run:', 'snap_builder.py', 'update apply', '--channel testing', 'the work', '--yes', '--wait-pid')), (code, out))
+        (game / 'config.json').write_text(json.dumps(cfg))
+        code, out = run(['--check-install'])
+        check('--check-install: prints a result, exit 0 or 1, and no launcher start', code in (0, 1) and len(out.strip()) > 20 and 'launcher: game folder' not in out, (code, out))
+        rep = work / 'reports'
+        code, out = run(['--report'], {'SNAP_REPORT_DIR': str(rep)})
+        zips = list(rep.glob('*.zip')) if rep.exists() else []
+        check('--report: one zip, its path printed, nothing else started', code == 0 and len(zips) == 1 and str(zips[0]) in out and 'Nothing was uploaded' in out, (code, out, zips))
+        for a in ('--restore-backup', '--upscalers', '--hdtex'):
+            code, out = run([a])
+            check('%s: opens that window (named in a test run)' % a, code == 0 and 'would open: ' + a[2:] in out and 'launcher: game folder' not in out, (code, out))
+        code, out = run(['--update', '--report'])
+        check('two actions: exit 2', code == 2 and '--report' in out, (code, out))
+        code, out = run(['--play', '--hdtex'])
+        check('an action with --play: exit 2', code == 2 and '--play' in out, (code, out))
+        bare = work / 'bare'
+        bare.mkdir()
+        shutil.copy2(EXE, bare / 'SnapRecomp.exe')
+        for dll in EXE.parent.glob('*.dll'):
+            shutil.copy2(dll, bare / dll.name)
+        r = subprocess.run([str(bare / 'SnapRecomp.exe'), '--check-install'], cwd=bare, capture_output=True, text=True, timeout=60, creationflags=0x08000000,
+                           env=dict(os.environ, LOCALAPPDATA=str(work / 'local'), APPDATA=str(work / 'appdata'), SNAP_LAUNCHER_AUTOPLAY='1'))
+        check('an action without a finished build: exit 2 and says so', r.returncode == 2 and 'finished build' in r.stderr + r.stdout, (r.returncode, r.stderr + r.stdout))
     finally:
         shutil.rmtree(work, ignore_errors=True)
     print('cli flags exe test: %s' % ('PASS' if not fails else '%d FAILED' % fails))
