@@ -31,6 +31,7 @@ namespace hle::settings {
 namespace {
 std::mutex g_mu;
 std::map<std::string, std::string> g_kv;
+std::map<std::string, std::string> g_over;   // override_for_run (--set): wins over g_kv in get(), never saved
 std::string g_path;
 std::vector<std::string> g_exported;   // env vars this layer set (so a restart does not pass them on as if the user had set them)
 bool g_readonly = false;               // safe mode: the file on disk is never rewritten from the trimmed in-memory copy
@@ -211,8 +212,17 @@ void load() {
   apply(true);
 }
 
+void override_for_run(const std::string& key, const std::string& value) {
+  std::lock_guard<std::mutex> g(g_mu);
+  g_over[key] = value;
+}
+
 std::string get(const std::string& key, const std::string& def) {
   std::lock_guard<std::mutex> g(g_mu);
+  if (!g_over.empty()) {   // --set key=value: this run only, never written to the file; safe mode keeps only what it keeps from the file
+    auto ov = g_over.find(key);
+    if (ov != g_over.end() && (!safe_mode() || safe_keeps(key))) return ov->second;
+  }
   auto it = g_kv.find(key);
   return it == g_kv.end() ? def : it->second;
 }
@@ -225,6 +235,7 @@ float get_float(const std::string& key, float def) { return to_float(get(key, ""
 void set(const std::string& key, const std::string& value) {
   {
     std::lock_guard<std::mutex> g(g_mu);
+    g_over.erase(key);   // a choice made in the menu replaces a --set value for the rest of the run
     g_kv[key] = value;
     write_file();
   }
@@ -328,7 +339,7 @@ bool has(const std::string& key) {
 }
 
 void erase(const std::string& key) {
-  { std::lock_guard<std::mutex> g(g_mu); g_kv.erase(key); write_file(); }
+  { std::lock_guard<std::mutex> g(g_mu); g_over.erase(key); g_kv.erase(key); write_file(); }
   apply(false);
 }
 

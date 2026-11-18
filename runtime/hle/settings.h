@@ -17,7 +17,8 @@ bool get_bool(const std::string& key, bool def);
 float get_float(const std::string& key, float def);
 void set_bool(const std::string& key, bool v);
 void set_float(const std::string& key, float v);
-bool has(const std::string& key);               // the user has chosen a value for this key (it is in the file)
+void override_for_run(const std::string& key, const std::string& value);   // --set key=value (host/cli_flags.h): get() returns it for this run, the file is not touched; call before load()
+bool has(const std::string& key);             // the user has chosen a value for this key (it is in the file)
 void erase(const std::string& key);             // back to the default (key removed, saved)
 const char* env_name(const std::string& key);   // env var that carries this key into the game at start, or null (live-only keys)
 bool env_wins(const std::string& key);          // that env var is set by hand, so the saved value has no effect

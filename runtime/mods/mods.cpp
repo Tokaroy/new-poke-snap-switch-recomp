@@ -374,13 +374,22 @@ void tap_read(uint64_t id, const void* buf, size_t n) {
   g_ranges[b] = Range{e, h->second};
 }
 
+// The pack index loads on the first game file access, never before main(): --data-dir, portable.txt and --safe-mode are applied in
+// main() (host/boot.cpp), and a load in this static initializer read the mods folder of the data folder that was current before them.
+bool taps_live() {
+  static std::once_flag said;
+  std::call_once(g_once, init);
+  if (g_texdump_on) std::call_once(said, [] { fprintf(stderr, "[texdump] capture on: %s\n", mods::texdump_root().c_str()); });
+  return g_state.load() == 2 || g_texdump_on;
+}
+void lazy_tap_open(uint64_t id, const char* path) { if (taps_live()) tap_open(id, path); }
+void lazy_tap_close(uint64_t id) { if (taps_live()) tap_close(id); }
+void lazy_tap_read(uint64_t id, const void* buf, size_t n) { if (taps_live()) tap_read(id, buf, n); }
+
 struct Installer {
   Installer() {
-    std::call_once(g_once, init);
-    if (g_state.load() == 2 || g_texdump_on) { g_snap_fs_tap_open = tap_open; g_snap_fs_tap_close = tap_close; g_snap_fs_tap_read = tap_read; }
-    if (g_texdump_on) fprintf(stderr, "[texdump] capture on: %s\n", mods::texdump_root().c_str());
-    if (!g_index.rom_layers.empty())
-      g_snap_fs_extra_rom_layers = [] { std::vector<std::string> v; for (auto& l : g_index.rom_layers) v.push_back(l.first); return v; };
+    g_snap_fs_tap_open = lazy_tap_open; g_snap_fs_tap_close = lazy_tap_close; g_snap_fs_tap_read = lazy_tap_read;
+    g_snap_fs_extra_rom_layers = [] { std::call_once(g_once, init); std::vector<std::string> v; for (auto& l : g_index.rom_layers) v.push_back(l.first); return v; };
   }
 } g_installer;
 }  // namespace

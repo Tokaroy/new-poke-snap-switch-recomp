@@ -55,6 +55,8 @@ def portable_local(exe_dir):
 def data_root(work=None, env=None):
     """Where the player's data is: <out>\\portable_data\\Roaming\\SnapRecomp when out\\ holds portable.txt, else %APPDATA%\\SnapRecomp."""
     env = os.environ if env is None else env
+    if env.get('SNAP_DATA_DIR'):   # the game was started with --data-dir (host/portable.cpp): that folder wins, with or without portable.txt
+        return Path(env['SNAP_DATA_DIR']) / 'Roaming' / 'SnapRecomp'
     if work is not None and is_portable(Path(work) / 'out'):
         return portable_roaming(Path(work) / 'out') / 'SnapRecomp'
     base = env.get('SNAP_REAL_APPDATA') or env.get('APPDATA') or str(Path.home() / 'AppData' / 'Roaming')
@@ -64,6 +66,8 @@ def data_root(work=None, env=None):
 def update_state_dir(work=None, env=None):
     """The updater's own folder. Portable: <work>\\updates, because out\\ is swapped during an update and the state must not travel with it."""
     env = os.environ if env is None else env
+    if env.get('SNAP_DATA_DIR'):   # --data-dir: the launcher (host/launcher.cpp updates_dir) uses <work>\updates, the same as portable mode
+        return Path(work) / 'updates' if work is not None else Path(env['SNAP_DATA_DIR']) / 'Local' / 'SnapRecomp' / 'updates'
     if work is not None and is_portable(Path(work) / 'out'):
         return Path(work) / 'updates'
     base = env.get('SNAP_REAL_LOCALAPPDATA') or env.get('LOCALAPPDATA') or str(Path.home() / 'AppData' / 'Local')

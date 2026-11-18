@@ -1102,7 +1102,7 @@ bool prepare(Result& r) {
   if (!autoplay || std::getenv("SNAP_LAUNCHER_UPDATE_CHECK")) start_background_check(cfg, cfg_path);
   // Safe mode (docs/safe-mode.md): --safe-mode, the launcher's button, or an offer after a start that never reached the title screen.
   bool safe = [] { const char* e = std::getenv("SNAP_SAFE_MODE"); return e && e[0] == '1'; }();
-  bool play_now = false;   // the offer was accepted: skip the launcher window once
+  bool play_now = r.play;   // --play, or the safe-mode offer was accepted: skip the launcher window once
   {
     const fs::path lg = logs_dir();
     if (!lg.empty()) {

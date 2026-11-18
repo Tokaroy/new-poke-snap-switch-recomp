@@ -7,6 +7,8 @@
 #include "benchmark.h"
 #include "shaderprep.h"
 #include "portable.h"
+#include "cli_flags.h"
+#include "hle/settings.h"
 #include <filesystem>
 #include <tlhelp32.h>
 #include <shobjidl.h>
@@ -1056,19 +1058,60 @@ static void attach_parent_console() {
 
 int main(int argc, char **argv) {
     attach_parent_console();
-    snap_portable_init();   // portable.txt next to the exe: settings, saves, caches and update state live in <exe dir>\portable_data (host/portable.cpp)
+    // Player flags (host/cli_flags.h, docs/command-line.md) come off the command line first; what is left goes to the older handlers below.
+    static snap_cli::Parsed cli;
+    cli = snap_cli::parse(std::vector<std::string>(argv + 1, argv + argc));
+    if (cli.error.empty()) { const std::string u = snap_cli::first_unknown(cli.rest); if (!u.empty()) cli.error = "unknown option " + u; }
+    if (!cli.error.empty()) { fprintf(stderr, "SnapRecomp: %s (see --help)\n", cli.error.c_str()); return 2; }
+    if (cli.help) { fputs(snap_cli::help_text(), stdout); fflush(stdout); return 0; }
+    if (cli.version) {   // the builder writes its version into config.json next to the exe; a development build has none
+        wchar_t mp[MAX_PATH * 2] = {};
+        GetModuleFileNameW(nullptr, mp, (DWORD)(sizeof mp / sizeof mp[0]));
+        std::string text;
+        if (FILE* f = _wfopen((std::filesystem::path(mp).parent_path() / L"config.json").c_str(), L"rb")) {
+            char buf[4096]; size_t n;
+            while ((n = fread(buf, 1, sizeof buf, f)) > 0) text.append(buf, n);
+            fclose(f);
+        }
+        const std::string v = snap_cli::version_from_config(text);
+        printf("Snap Recomp %s\n", v.empty() ? "(development build)" : v.c_str());
+        fflush(stdout);
+        return 0;
+    }
+    {   // --data-dir, else portable.txt next to the exe: settings, saves, caches and update state live in one folder (host/portable.cpp)
+        std::wstring dd;
+        if (!cli.data_dir.empty()) {
+            const int n = MultiByteToWideChar(CP_ACP, 0, cli.data_dir.c_str(), -1, nullptr, 0);   // the manifest makes the ANSI code page UTF-8
+            dd.resize((size_t)(n > 0 ? n : 1));
+            if (n > 0) MultiByteToWideChar(CP_ACP, 0, cli.data_dir.c_str(), -1, dd.data(), n);
+            dd.resize(wcslen(dd.c_str()));
+        }
+        const bool redirected = snap_portable_init(dd.empty() ? nullptr : dd.c_str());
+        if (!dd.empty() && !redirected) { fprintf(stderr, "SnapRecomp: --data-dir: the folder %s could not be created or written\n", cli.data_dir.c_str()); return 2; }
+    }
+    for (auto& kv : cli.sets) {   // --set key=value: this run only (hle/settings.h); it also beats a variable of the same setting set by hand
+        if (const char* n = hle::settings::env_name(kv.first)) _putenv_s(n, "");
+        hle::settings::override_for_run(kv.first, kv.second);
+    }
+    for (auto& kv : cli.env) _putenv_s(kv.first.c_str(), kv.second.c_str());   // window flags and --set SNAP_X=value
+    if (!cli.profile.empty()) _putenv_s("SNAP_PROFILE", cli.profile.c_str());
+    if (cli.safe) _putenv_s("SNAP_SAFE_MODE", "1");   // docs/safe-mode.md: mods, HD packs, enhanced effects, frame generation, RT and the shader cache off for this run
+    static std::vector<char*> rest_argv;
+    rest_argv.assign(1, argv[0]);
+    for (auto& s : cli.rest) rest_argv.push_back(s.data());
+    argc = (int)rest_argv.size();
+    argv = rest_argv.data();
     wait_for_previous_run();
     snapshot_start_env();
     if (!cpu_has_v3()) { fprintf(stderr, "boot: this build needs an x86-64-v3 CPU (AVX2, BMI2, FMA); this CPU lacks it\n"); return 2; }
     static char errbuf[1 << 16];
     setvbuf(stderr, errbuf, _IOLBF, sizeof errbuf);   // MSVC stderr is unbuffered (one write per character when redirected): a log burst stalls the game threads
     {   // save import / export (hle/save_port.cpp): --import-save <folder|zip> | --export-save <folder> [--profile <name>]; no game is started
-        std::string cmd, path, profile;
+        std::string cmd, path, profile = cli.profile;
         for (int i = 1; i < argc; i++) {
             std::string a = argv[i];
             if (a == "--import-save" && i + 1 < argc) { cmd = "import"; path = argv[++i]; }
             else if (a == "--export-save" && i + 1 < argc) { cmd = "export"; path = argv[++i]; }
-            else if (a == "--profile" && i + 1 < argc) profile = argv[++i];
         }
         if (!cmd.empty()) {
             if (!getenv("SNAP_HLE_CONFIG")) {   // a release build keeps its settings in config.json next to the exe
@@ -1090,13 +1133,13 @@ int main(int argc, char **argv) {
         std::vector<std::string> args(argv + 1, argv + argc);
         return snap_shaderprep::run_cli(args);
     }
-    {   // launcher mode (builder release): no arguments and a config.json next to the exe (host/launcher.cpp)
+    {   // launcher mode (builder release): no command of its own (player flags were taken off above) and a config.json next to the exe (host/launcher.cpp)
         snap_launcher::Result lr;
-        const bool plain = argc == 1 || (argc == 2 && !strcmp(argv[1], "--safe-mode"));   // --safe-mode alone still opens the launcher
-        if (plain && !strcmp(argc == 2 ? argv[1] : "", "--safe-mode")) _putenv_s("SNAP_SAFE_MODE", "1");
+        lr.play = cli.play;
+        const bool plain = argc == 1;
         if (plain && snap_launcher::prepare(lr)) {
             if (!lr.proceed) return lr.exit_code;
-            g_return_to_launcher = !getenv("SNAP_LAUNCHER_AUTOPLAY");
+            g_return_to_launcher = !getenv("SNAP_LAUNCHER_AUTOPLAY") && !cli.play;   // --play: another launcher started the game, so closing it ends the process
             g_o.main_elf = lr.main_elf; g_o.sdk_elf = lr.sdk_elf; g_o.cmd = "run"; g_o.trace_file = lr.trace_file;
             if (!getenv("SNAP_HLE_CONFIG")) _putenv_s("SNAP_HLE_CONFIG", lr.config_path.c_str());
         }

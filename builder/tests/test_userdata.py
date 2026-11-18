@@ -249,6 +249,13 @@ class Portable(unittest.TestCase):
         self.assertEqual(userdata.data_root(self.t, env), self.t / 'real' / 'SnapRecomp')
         self.assertEqual(userdata.update_state_dir(self.t, env), self.t / 'reallocal' / 'SnapRecomp' / 'updates')
 
+    def test_data_dir_flag_wins(self):
+        # SnapRecomp.exe --data-dir <folder> sets SNAP_DATA_DIR: the builder must back up and restore that folder, not %APPDATA%
+        env = {'APPDATA': str(self.t / 'ro'), 'SNAP_REAL_APPDATA': str(self.t / 'real'), 'SNAP_DATA_DIR': str(self.t / 'dd')}
+        self.assertEqual(userdata.data_root(self.t, env), self.t / 'dd' / 'Roaming' / 'SnapRecomp')
+        self.assertEqual(userdata.update_state_dir(self.t, env), self.t / 'updates')
+        self.assertEqual(userdata.update_state_dir(None, env), self.t / 'dd' / 'Local' / 'SnapRecomp' / 'updates')
+
 
 class PromoteCarriesPortable(unittest.TestCase):
     """pipeline.promote switches out/ for a staged build; portable.txt and portable_data must end up in the new out/."""

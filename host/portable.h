@@ -4,4 +4,6 @@
 #pragma once
 
 // Returns true when portable mode is on (SNAP_PORTABLE=1 is then set in the environment).
-bool snap_portable_init();
+// data_dir (--data-dir, host/cli_flags.h): not null and not empty = that folder holds Roaming and Local, with or without portable.txt;
+// SNAP_DATA_DIR is then set to its absolute path so child processes and the builder (builder/snapbuild/userdata.py) find the same data.
+bool snap_portable_init(const wchar_t* data_dir = nullptr);
