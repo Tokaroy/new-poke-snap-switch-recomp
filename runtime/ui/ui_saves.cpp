@@ -159,6 +159,42 @@ void pick_folder_async() {
 // (--trace analysisoot\play_trace.log), so the relaunch uses the same directory even if something changed it since.
 const std::wstring g_start_cwd = [] { wchar_t b[MAX_PATH * 2]; DWORD n = GetCurrentDirectoryW(MAX_PATH * 2, b); return n && n < MAX_PATH * 2 ? std::wstring(b, n) : std::wstring(); }();
 
+// Spawn randomizer (docs/spawn-randomizer.md): when host\play.ps1 started this game (SNAP_PLAY_ROOT: the project tree with its Python venv), rebuild the
+// "spawn-randomizer" mod pack for the saved mode and seed before the relaunch, so "Apply and restart" shows a changed seed. Hidden, waits up to 120 s.
+// The mode and seed go through the generator's SNAP_SPAWN_RAND / SNAP_SPAWN_SEED variables (the active profile's values, which it cannot find by itself);
+// they are removed again so the relaunched game does not see them as set by hand. A failure leaves the old pack in place.
+static void regen_spawn_pack() {
+  const char* pr = std::getenv("SNAP_PLAY_ROOT");
+  if (!pr || !*pr) return;
+  namespace fs = std::filesystem;
+  const fs::path root = fs::u8path(pr);
+  const fs::path py = root / "tools" / "venv-recomp" / "Scripts" / "python.exe", gen = root / "scripts" / "mods" / "make_spawn_randomizer.py";
+  std::error_code ec;
+  if (!fs::exists(py, ec) || !fs::exists(gen, ec)) return;
+  if (std::getenv("SNAP_SPAWN_RAND") || std::getenv("SNAP_SPAWN_SEED")) return;   // set by hand: the generator reads those itself
+  std::string mode = hle::settings::get("spawn_rand", "off");
+  if (mode != "within" && mode != "all") mode = "off";
+  std::string seed = hle::settings::get("spawn_seed", "");
+  if (seed.empty()) seed = "snap";
+  SetEnvironmentVariableA("SNAP_SPAWN_RAND", mode.c_str());
+  SetEnvironmentVariableA("SNAP_SPAWN_SEED", seed.c_str());
+  std::wstring cmd = L"\"" + py.wstring() + L"\" -I \"" + gen.wstring() + L"\" --if-stale";
+  STARTUPINFOW si{};
+  si.cb = sizeof si;
+  PROCESS_INFORMATION pi{};
+  const std::wstring cwd = root.wstring();
+  if (CreateProcessW(nullptr, &cmd[0], nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, cwd.c_str(), &si, &pi)) {
+    WaitForSingleObject(pi.hProcess, 120000);
+    DWORD code = 1;
+    GetExitCodeProcess(pi.hProcess, &code);
+    hle::log("ui: restart: spawn randomizer pack (%s, seed \"%s\") exit %lu", mode.c_str(), seed.c_str(), (unsigned long)code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+  }
+  SetEnvironmentVariableA("SNAP_SPAWN_RAND", nullptr);
+  SetEnvironmentVariableA("SNAP_SPAWN_SEED", nullptr);
+}
+
 // Relaunch the game the way host\play.ps1 starts it: same exe and arguments, same working directory, same environment with the one-shot variables
 // removed (SNAP_INPUT_SCRIPT: the -SkipIntro script must not replay; SNAP_PROFILE_PICKER: no picker again), SNAP_PROFILE set to the chosen profile, and
 // the redirected log handles inherited. When play.ps1 launched this process (SNAP_PLAY_ROOT) the new pid is written to build\play.restart so play.ps1 keeps
@@ -175,6 +211,7 @@ void restart_now(const std::string& profile_name) {
   SetEnvironmentVariableW(L"SNAP_PROFILE_PICKER", L"0");
   SetEnvironmentVariableW(L"SNAP_INPUT_SCRIPT", nullptr);
   hle::settings::forget_exported_env();   // SNAP_LOOK / SNAP_SSAO_QUALITY come from the profile settings; the new process reads the saved values
+  regen_spawn_pack();
   if (const char* alt = std::getenv("SNAP_UI_TEST_RESTART")) if (*alt) SetEnvironmentVariableA("SNAP_UI_TEST", alt);   // the relaunched game runs the follow-up script
   STARTUPINFOW si{};
   si.cb = sizeof si;
