@@ -6,11 +6,11 @@ This builder turns your own copy of the game into a native Windows program. It r
 
 The project contains no game data and does not help you get any. You need a legal copy of the game, version 2.0.1, and you extract the files from it yourself with your own tools.
 
-You can build two ways. `SnapRecompSetup.exe` (on the release page) is a one-click window: pick your game folder and press Build (see "One-click setup" below). The command line, described in the rest of this file, does the same job. The finished `SnapRecomp.exe` is its own launcher with a window: Play, settings, saves, mods, HD textures, Add to Steam and updates (see "Starting the game" below).
+You can build two ways. `SnapRecomp.exe` (on the release page) is a one-click window until the game is built: pick your game folder and press Build (see "One-click setup" below). After the build the same exe starts the game. The command line, described in the rest of this file, does the same job. The finished `SnapRecomp.exe` is its own launcher with a window: Play, settings, saves, mods, HD textures, Add to Steam and updates (see "Starting the game" below).
 
 ## One-click setup
 
-`SnapRecompSetup.exe` finds your game files, downloads the pinned build tools, builds the game and adds a desktop and a Start menu shortcut. It needs no terminal, no Python and no Visual Studio. The game folder can hold the extracted `main`, `sdk` and RomFS, or your dumped base game (XCI or NSP), your update NSPs and your `prod.keys`. With a raw dump, setup picks the base game and the 2.0.1 update by title ID, ignores older updates and extracts only what it needs into its own work folder. It reads your dump and keys in place: keys are never copied and never written to a log. The Microsoft C runtime and Windows SDK files come from Microsoft after you accept their license in the wizard. Plan on about 30 GB of free disk space and about an hour for the first build. Setup also repairs and uninstalls.
+`SnapRecomp.exe` finds your game files, downloads the pinned build tools and builds the game into its own folder. It needs no terminal, no Python and no Visual Studio. Desktop and Start menu shortcuts are options that start unticked, and setup adds nothing to Windows' installed-apps list ([docs/install-folder.md](../docs/install-folder.md)). The game folder can hold the extracted `main`, `sdk` and RomFS, or your dumped base game (XCI or NSP), your update NSPs and your `prod.keys`. With a raw dump, setup picks the base game and the 2.0.1 update by title ID, ignores older updates and extracts only what it needs into its own work folder. It reads your dump and keys in place: keys are never copied and never written to a log. The Microsoft C runtime and Windows SDK files come from Microsoft after you accept their license in the wizard. Plan on about 30 GB of free disk space and about an hour for the first build. Setup also repairs and uninstalls.
 
 <p align="center">
   <img src="release/screenshots/setup_1_welcome.png" alt="Setup wizard, welcome page" width="49%">
@@ -59,7 +59,7 @@ python builder/snap_builder.py pyenv
 
 - `fetch` asks before every download, shows the URL and the size, checks the SHA-256 while the file arrives, and deletes the file if it does not match. `--yes` answers yes to every question. Without a terminal and without `--yes` it downloads nothing.
 - Files you already have are used without asking when their hash matches. `--offline-dir <folder>` points at a folder of downloaded files, so a PC without internet can use them.
-- Tools unpack into `%LOCALAPPDATA%\SnapRecomp\tools` (change it with `--tools-dir`). The builder looks there after its own `tools` folder.
+- Tools unpack into the `tools` folder next to the downloaded exe, or into `%LOCALAPPDATA%\SnapRecomp\tools` when the builder runs from a source checkout (change it with `--tools-dir`). An install with no `tools` folder yet reuses the tools an older version left in `%LOCALAPPDATA%`.
 - `winsdk --accept-license` fetches the Microsoft C runtime and Windows SDK files with the pinned xwin, from Microsoft's own servers, after you accept Microsoft's license (the license link is in `python builder/snap_builder.py winsdk --help`). Use it when Visual Studio Build Tools is not installed. `build --winsdk vs|xwin|auto` chooses the source, and `auto` (the default) takes Visual Studio first.
 - `pyenv` builds a Python with `capstone`, `pyelftools`, `numpy` and `lz4` from pinned wheels. pip runs with `--require-hashes`, `--no-deps` and `--no-index`, so it installs only the pinned files. It uses the pinned python.org embeddable Python, or `--base-python <python.exe>` makes a venv of Python 3.14 you already have.
 - The download sizes are large: LLVM is about 0.9 GB, Ghidra 0.6 GB and the JDK 0.2 GB. Ghidra, its Switch loader and the JDK are only needed when you do not pass `--maps`.
@@ -95,7 +95,7 @@ A rebuild never touches a working `out/` until the new build is proven. The buil
 
 Each step records what it used. If you run the builder again with the same work folder, finished steps are skipped, and an interrupted compile resumes where it stopped.
 
-The function lists and the generated C are also kept in a private cache, `%LOCALAPPDATA%\SnapRecomp\cache` (`--cache-dir` moves it, `--no-cache` skips it). Entries are keyed on the hashes of your game files and the builder's own inputs, so a new work folder with the same game files restores them instead of running Ghidra or the lifter again. The cache holds game-derived files on your PC only. It refuses a folder it did not create, keeps two entries per kind and stays under 1 GiB.
+The function lists and the generated C are also kept in a private cache, the `cache` folder next to the downloaded exe or `%LOCALAPPDATA%\SnapRecomp\cache` for a source checkout (`--cache-dir` moves it, `--no-cache` skips it). Entries are keyed on the hashes of your game files and the builder's own inputs, so a new work folder with the same game files restores them instead of running Ghidra or the lifter again. The cache holds game-derived files on your PC only. It refuses a folder it did not create, keeps two entries per kind and stays under 1 GiB.
 
 Binary patches are off in this release. If a `builder/patches/` folder ever holds patch files, the builder applies only those listed in `reviewed.json`, only to a module whose hash and build ID match, and only where the original bytes match.
 
@@ -117,7 +117,7 @@ Double-click `SnapRecomp.exe` in the `out` folder. With no command-line argument
 - A small window offers Play, "Change game folder...", "Open save folder", save import and export, upscalers and Updates.
 - Play passes the converted game files and the RomFS path to the game, with no arguments from you.
 - The first launch translates the game's shaders with the `shader_harness` program next to the exe (a self-contained build of the MIT-licensed Ryubing shader translator; its notice is in `shader_harness`). Translated shaders go to `%LOCALAPPDATA%\SnapRecomp\nvn_cache`, so the first start takes several minutes and later starts are fast. The log shows a progress line every 100 shaders.
-- Logs go to `%LOCALAPPDATA%\SnapRecomp\logs`. The icon is an original fallback icon, not the game's.
+- Logs go to `portable_data\Local\SnapRecomp\logs` next to the built exe (`%LOCALAPPDATA%\SnapRecomp\logs` for a development build). The icon is an original fallback icon, not the game's.
 
 ## Function lists
 

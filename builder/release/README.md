@@ -2,17 +2,17 @@
 
 Works with your own copy of New Pokémon Snap 2.0.1.
 
-This builder turns your own copy of the game into a native Windows program. It reads the files you supply, translates the game's code on your PC, compiles it and links it with the prebuilt runtime in this zip. The result is `SnapRecomp.exe` in the `out` folder of your work folder.
+This builder turns your own copy of the game into a native Windows program. It reads the files you supply, translates the game's code on your PC, compiles it and links it with the prebuilt runtime that ships inside `SnapRecomp.exe`. The result is `SnapRecomp.exe` in the `out` folder of your work folder.
 
-The easy way is `SnapRecompSetup.exe`: double-click it, pick your game folder, press Build. No terminal, no Python and no Visual Studio are needed. The manual command-line route further down still works and does the same job.
+The easy way is the downloaded `SnapRecomp.exe`: put it in a folder of its own, double-click it, pick your game folder, press Build. Everything it makes stays in that folder. No terminal, no Python and no Visual Studio are needed. The manual command-line route further down still works and does the same job.
 
-The program it makes, `SnapRecomp.exe`, opens a launcher window when you double-click it.
+Once the game is built, the same `SnapRecomp.exe` opens the game's launcher window when you double-click it.
 
 The download holds no game data and does not help you get any. You need a legal copy of the game, version 2.0.1, and you dump it yourself with your own tools.
 
 ## One-click setup
 
-1. Double-click `SnapRecompSetup.exe`.
+1. Double-click `SnapRecomp.exe`.
 2. Choose your game folder. Drop it on the window or press Browse. It can be:
    - a folder with the extracted `main`, `sdk` and RomFS, or
    - a folder with your dumped base game (XCI or NSP), your update NSPs and your `prod.keys`.
@@ -20,7 +20,7 @@ The download holds no game data and does not help you get any. You need a legal 
    Setup finds the files itself. With a raw dump it picks the base game and the 2.0.1 update (older updates in the folder are ignored) and extracts what it needs into its own work folder. Your dump is read in place and never changed. Keys are read where they are, never copied, and are not written to any log. If setup looks for `prod.keys` in an emulator folder, it asks first. If the 2.0.1 update is missing it says so and stops.
 3. Check the options and the disk-space line, then press Build. One bar shows the stage and the time left. "Show details" opens the log. If something fails, the message says what to do and Retry picks up where it stopped. Closing setup or a reboot loses nothing: start it again and it continues.
 4. Setup downloads the build tools from their publishers and checks every file against a pinned SHA-256 hash. The Windows SDK pieces come from Microsoft after you accept Microsoft's license in the wizard. They are not in the download.
-5. At the end you get a desktop and a Start menu shortcut and a Play now button. HD textures and upscalers are optional pages; each vendor license is shown before anything downloads.
+5. At the end you get a Play now button. Desktop and Start menu shortcuts are made only when you tick them on the options page. HD textures and upscalers are optional pages; each vendor license is shown before anything downloads.
 
 ![Setup: welcome](screenshots/setup_1_welcome.png)
 ![Setup: options and disk space](screenshots/setup_3_options.png)
@@ -29,7 +29,7 @@ The download holds no game data and does not help you get any. You need a legal 
 
 Setup remembers your game folder. A repair, a rebuild or an update reuses it without asking. "Change game folder" is on the maintenance page. If the files moved, it asks once.
 
-Run `SnapRecompSetup.exe` again later to Repair (rebuild with the same game files) or Uninstall (removes the shortcuts, the built program and the game data setup extracted; the build tools and your saves stay unless you tick the matching box; your own game files are never touched). Nothing is deleted behind your back while the game is installed: the extracted RomFS stays, because the game reads it every time it runs.
+Run `SnapRecomp.exe --setup` later to Repair (rebuild with the same game files) or Uninstall (removes the shortcuts, the built program and the game data setup extracted; the build tools and your saves stay unless you tick the matching box; your own game files are never touched). Nothing is deleted behind your back while the game is installed: the extracted RomFS stays, because the game reads it every time it runs.
 
 Time: the first build takes about an hour on a fast PC, most of it the Ghidra step (15 to 30 minutes) and the compile. The last step starts the new game once to check it reaches the title screen. That first start translates the game's shaders and takes about 8 minutes, so setup waits up to 20 minutes before it calls it a failure. A rebuild with the same game files takes a few minutes.
 
@@ -55,7 +55,7 @@ Everything above can be done from a terminal. The sections below describe that r
 | A Vulkan 1.3 graphics driver | Needed to run the game and for the last build step. |
 | Python 3.14 | Only to start the builder. The builder installs its own pinned Python packages with `pyenv`. Python 3.14 is what was tested. |
 | Microsoft C runtime and Windows SDK files | Either Visual Studio Build Tools 2022 (the "Desktop development with C++" workload, free from Microsoft), or the files that `python builder\snap_builder.py winsdk --accept-license` downloads from Microsoft after you accept their license. `build --winsdk auto` (the default) uses Visual Studio when it is installed. |
-| Your game files | For the command line: `main` and `sdk` from the game's program files, and the patched RomFS folder, all from version 2.0.1. `SnapRecompSetup.exe` also takes your dumped base game (XCI or NSP), the update NSPs and your `prod.keys`. |
+| Your game files | For the command line: `main` and `sdk` from the game's program files, and the patched RomFS folder, all from version 2.0.1. The one-click setup also takes your dumped base game (XCI or NSP), the update NSPs and your `prod.keys`. |
 | Disk and memory | About 15 GB free on the drive that holds the tools, the work folder and the caches (measured on a clean PC: the unpacked tools 5.5 GB plus 1.6 GB of kept downloads, the work folder 3 GB, the builder's caches 0.6 GB, and the shader cache about 2 GB after the first start). 16 GB of RAM for the Ghidra step, 8 GB without it. |
 | Internet, once | To download the pinned build tools and, if you choose, upscalers. |
 
@@ -97,7 +97,7 @@ The first start translates the game's shaders and takes several minutes. Later s
 
 ## What it never does
 
-- It never copies, uploads or ships your game files. It reads them and writes only inside the work folder and its own caches (`%LOCALAPPDATA%\SnapRecomp`).
+- It never copies, uploads or ships your game files. It reads them and writes only inside the folder the exe is in (a builder run from the command line: its work folder and `%LOCALAPPDATA%\SnapRecomp`).
 - It never downloads anything without asking, and it checks every download against a published hash.
 - Upscalers (FSR, DLSS, XeSS) are not in this zip. The launcher can fetch them from their publishers after you read and accept each license.
 

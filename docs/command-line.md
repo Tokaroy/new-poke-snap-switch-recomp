@@ -60,9 +60,45 @@ Other keys from `settings.cfg` work too. Safe mode still ignores the settings it
 
 ## Data folder
 
-`--data-dir <folder>` puts everything the game writes under that folder: `Roaming\SnapRecomp` holds saves, settings, profiles and mods, and `Local\SnapRecomp` holds caches and logs. Nothing is copied from the normal data folder, so a new folder starts with a fresh save. Import one with `--import-save` and the same `--data-dir`.
+A release build keeps everything the game writes in `portable_data` next to the built exe: `Roaming\SnapRecomp` holds saves, settings, profiles and mods, and `Local\SnapRecomp` holds caches and logs. The `portable.txt` file next to the built exe switches this on. [install-folder.md](install-folder.md) shows the whole folder.
 
-A `portable.txt` file next to the exe does the same with a `portable_data` folder beside the exe. `--data-dir` wins when both are present.
+`--data-dir <folder>` uses that folder in place of `portable_data`, with the same two subfolders. Nothing is copied into it, so a new folder starts with a fresh save. Import one with `--import-save` and the same `--data-dir`.
+
+## Launcher actions
+
+Each of these does one launcher job without the launcher window. The game does not start. Use one at a time, without `--play`.
+
+| Flag | What it does |
+| --- | --- |
+| `--update` | Installs the newest version. The update runs in its own window. Exit code 0 means it started, 1 means the builder is missing. |
+| `--check-install` | Checks the game files and prints the result. Exit code 0 when everything is in order, 1 when something is wrong. |
+| `--report` | Makes the problem report zip and prints its path. Nothing is uploaded. |
+| `--restore-backup` | Opens the list of save backups. |
+| `--upscalers` | Opens the DLSS, FSR and XeSS downloads. |
+| `--hdtex` | Opens the HD texture tools. |
+
+## Setup flags
+
+The `SnapRecomp.exe` you download answers these itself. Every other flag goes to the built game.
+
+| Flag | What it does |
+| --- | --- |
+| `--game <folder>` | The folder with your game files. Setup opens with it chosen. |
+| `--build-dir <folder>` | Where the build goes and where the exe looks for it. The default is the exe's own folder. |
+| `--yes` | Builds without questions: accepts Microsoft's C runtime license, uses the defaults and closes when done. Exit code 0 means built, 1 failed, 2 no `--game` given. |
+| `--setup` | Opens setup even when the game is built. |
+| `--repair` | Rebuilds from the game files chosen before. |
+| `--uninstall` | Removes the build. With `--yes` it does not ask, and it keeps saves and build tools. |
+| `--desktop-shortcut`, `--start-menu-shortcut` | With `--yes`: also make that shortcut. Neither is made by default. |
+
+A launcher that manages the game itself can build and start it with two lines:
+
+```
+SnapRecomp.exe --game D:\Dumps\Snap --build-dir D:\Games\Snap --yes
+SnapRecomp.exe --build-dir D:\Games\Snap --play --fullscreen
+```
+
+Before a build exists, `--help` and `--version` print the setup's own text.
 
 ## Other commands
 

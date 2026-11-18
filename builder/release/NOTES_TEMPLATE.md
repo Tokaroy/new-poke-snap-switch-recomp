@@ -24,4 +24,4 @@ Updating keeps your saves and settings. Before anything changes, the updater cop
 
 ## Install or update
 
-Run SnapRecompSetup.exe, or open the launcher and choose Updates. The Testing channel in the launcher's Updates page also offers early builds; Stable is the default.
+New install: put SnapRecomp.exe in a folder of its own and run it. Update: open the launcher and choose Updates. Version 1.2.0 and earlier cannot update to a one-exe release; download SnapRecomp.exe by hand, and your saves are copied over on the first start. The Testing channel in the launcher's Updates page also offers early builds; Stable is the default.

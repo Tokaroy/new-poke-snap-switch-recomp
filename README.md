@@ -208,7 +208,7 @@ Each pair is captured at the same point on the ride, so the camera matches; the 
 
 ## Build it yourself
 
-Snap Recomp Builder turns your own copy of New Pokémon Snap 2.0.1 into `SnapRecomp.exe`. The easy way is `SnapRecompSetup.exe` from the [latest release](https://github.com/finalpantasy/new-pokemon-snap-recomp/releases/latest): double-click it, pick your game folder and press Build. Setup takes a folder of extracted files (`main`, `sdk`, RomFS) or a folder with your dumped base game (XCI or NSP), the 2.0.1 update NSP and your `prod.keys`. It reads them in place and extracts only what it needs. The command-line route uses `SnapRecomp-Builder-v<version>-win-x64.zip` from the same page. Both hold only our code and prebuilt runtime objects, no game data. See the license and release-history notes below.
+The [latest release](https://github.com/finalpantasy/new-pokemon-snap-recomp/releases/latest) is one file, `SnapRecomp.exe`. Put it in a folder of its own and double-click it. The first time it is the setup: pick your game folder and press Build, and it turns your own copy of New Pokémon Snap 2.0.1 into the game. After that the same exe starts the game. The build, your saves, settings and logs all stay in that folder, so deleting the folder removes everything ([docs/install-folder.md](docs/install-folder.md)). Setup takes a folder of extracted files (`main`, `sdk`, RomFS) or a folder with your dumped base game (XCI or NSP), the 2.0.1 update NSP and your `prod.keys`. It reads them in place and extracts only what it needs. The exe holds only our code and prebuilt runtime objects, no game data. The command-line builder is inside it: setup unpacks it to `setup\app\<version>` next to the exe. See the license and release-history notes below.
 
 <p align="center">
   <img src="builder/release/screenshots/setup_1_welcome.png" alt="Setup wizard, welcome page" width="49%">
@@ -223,6 +223,8 @@ For the command-line route you need Windows 10 or 11 x64, a Vulkan 1.3 driver, P
    Without Visual Studio Build Tools, also run `python builder\snap_builder.py winsdk --accept-license` once.
 4. `python builder\snap_builder.py build --main <main> --sdk <sdk> --romfs <romfs folder> --work <new empty folder>`
 5. Double-click `<work folder>\out\SnapRecomp.exe`.
+
+Other launchers can do all of this without our windows: `SnapRecomp.exe --game <folder> --yes` builds, `SnapRecomp.exe --play` starts the game, and every launcher option has a flag ([docs/command-line.md](docs/command-line.md)).
 
 The first build takes 25 to 50 minutes, most of it Ghidra and compiling. The first start translates shaders and takes several minutes.
 
