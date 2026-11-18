@@ -469,6 +469,15 @@ def promote(work, stage, build_id, log):
             safedel.rmtree(prev, ignore_errors=True)
             _replace_retry(out, prev)
         _replace_retry(stage, out)
+        # Portable by default (release standard 2): every build keeps the player's data next to the exe. The file is written only after the
+        # switch, so the smoke run of a staged build never copies the player's data into a folder that may be thrown away. The game copies
+        # an existing %APPDATA%\SnapRecomp once on its first portable start (host/portable.cpp snap_portable_adopt).
+        flag = out / userdata.PORTABLE_FLAG
+        if not flag.exists():
+            try:
+                flag.write_text('Portable mode: saves, settings, mods, caches and logs stay in portable_data next to this file.\n', encoding='utf-8')
+            except OSError:
+                pass   # a read-only folder: the game keeps the per-user folders (host/portable.cpp falls back the same way)
     except OSError as e:
         if not out.exists() and prev.exists():   # put the old build back
             os.replace(prev, out)

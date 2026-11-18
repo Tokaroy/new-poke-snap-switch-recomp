@@ -236,6 +236,7 @@ bool load_result(const fs::path& p, Result& r) {
 
 std::string results_dir() {
   if (!env("SNAP_BENCH_DIR").empty()) return env("SNAP_BENCH_DIR");
+  if (env("SNAP_PORTABLE") == "1" && !env("APPDATA").empty()) return env("APPDATA") + "\\SnapRecomp\\benchmarks";   // portable or --data-dir (host/portable.h); runtime/ui/ui_bench.cpp reads the same folder
   PWSTR docs = nullptr;
   std::string d;
   if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &docs)) && docs) { d = U8(docs); CoTaskMemFree(docs); }

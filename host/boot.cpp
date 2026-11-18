@@ -532,6 +532,7 @@ extern "C" void snap_launchmark_clear();
 // turned into SNAP_* variables, the profile) does not leak into the next launcher window. Called on both ways out: the window close and
 // the game's own exit.
 static std::wstring g_start_env;           // the environment block at start (each "NAME=value" ends in NUL, one more NUL at the end)
+static std::string g_data_notice;           // set when this start copied the player's data into the portable folder (host/portable.h); the launcher shows it once
 static bool g_return_to_launcher = false;  // set when the launcher window opened this run
 static void snapshot_start_env() {
     if (LPWCH e = GetEnvironmentStringsW()) {
@@ -1088,6 +1089,26 @@ int main(int argc, char **argv) {
         }
         const bool redirected = snap_portable_init(dd.empty() ? nullptr : dd.c_str());
         if (!dd.empty() && !redirected) { fprintf(stderr, "SnapRecomp: --data-dir: the folder %s could not be created or written\n", cli.data_dir.c_str()); return 2; }
+        if (redirected && dd.empty()) {   // the first portable start of a player who has data in %APPDATA%: copy it once, never move it (host/portable.h)
+            std::wstring from, to;
+            bool no_mods = false;
+            std::string why;
+            const int a = snap_portable_adopt(&from, &to, &no_mods, &why);
+            auto u8 = [](const std::wstring& w) { return std::filesystem::path(w).u8string(); };
+            if (a < 0) {   // starting now would show an empty save in the new folder, so stop here; nothing was changed
+                const std::string m = "Your saves and settings could not be copied into the game's folder: " + why +
+                                      ".\n\nNothing was changed. Free some space and start again, or start with --data-dir <folder> to pick another place.";
+                fprintf(stderr, "SnapRecomp: %s\n", m.c_str());
+                if (!getenv("SNAP_LAUNCHER_AUTOPLAY") && !cli.play) MessageBoxA(nullptr, m.c_str(), "Snap Recomp", MB_OK | MB_ICONERROR);
+                return 2;
+            }
+            if (a > 0) {
+                g_data_notice = "Your saves and settings now live in the game's folder:\n" + u8(to) + "\n\nThey were copied from " + u8(from) +
+                                ". That folder was left as it was, so you can delete it once you have checked your save." +
+                                (no_mods ? "\n\nThe mods folder was too large for this drive and was not copied. Copy it by hand when there is room." : "");
+                fprintf(stderr, "SnapRecomp: data copied from %s to %s%s\n", u8(from).c_str(), u8(to).c_str(), no_mods ? " (mods left out: no room)" : "");
+            }
+        }
     }
     for (auto& kv : cli.sets) {   // --set key=value: this run only (hle/settings.h); it also beats a variable of the same setting set by hand
         if (const char* n = hle::settings::env_name(kv.first)) _putenv_s(n, "");
@@ -1136,6 +1157,7 @@ int main(int argc, char **argv) {
     {   // launcher mode (builder release): no command of its own (player flags were taken off above) and a config.json next to the exe (host/launcher.cpp)
         snap_launcher::Result lr;
         lr.play = cli.play;
+        lr.notice = g_data_notice;
         const bool plain = argc == 1;
         if (plain && snap_launcher::prepare(lr)) {
             if (!lr.proceed) return lr.exit_code;

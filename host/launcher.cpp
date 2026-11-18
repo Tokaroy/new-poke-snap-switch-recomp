@@ -1103,6 +1103,10 @@ bool prepare(Result& r) {
   // Safe mode (docs/safe-mode.md): --safe-mode, the launcher's button, or an offer after a start that never reached the title screen.
   bool safe = [] { const char* e = std::getenv("SNAP_SAFE_MODE"); return e && e[0] == '1'; }();
   bool play_now = r.play;   // --play, or the safe-mode offer was accepted: skip the launcher window once
+  if (!r.notice.empty()) {   // where the saves live now (host/portable.h): said once, before the window; never blocks a --play or test start
+    if (autoplay || r.play) std::fprintf(stderr, "launcher: %s\n", r.notice.c_str());
+    else message("Snap Recomp", r.notice);
+  }
   {
     const fs::path lg = logs_dir();
     if (!lg.empty()) {
@@ -1138,7 +1142,7 @@ bool prepare(Result& r) {
     if (choice == 10) {   // host/mods/problem_report.cpp: one zip on the Desktop; never uploads
       char path[1024] = {}, why[512] = {};
       if (snap_problem_report("launcher", path, (int)sizeof path, why, (int)sizeof why)) {
-        message("Snap Recomp", std::string("The problem report is on your Desktop:\n") + path + "\n\nOpen the zip to see exactly what is in it, then attach it to your bug report. Nothing was uploaded.", MB_ICONINFORMATION);
+        message("Snap Recomp", std::string("The problem report is here:\n") + path + "\n\nOpen the zip to see exactly what is in it, then attach it to your bug report. Nothing was uploaded.", MB_ICONINFORMATION);
         ShellExecuteW(nullptr, L"open", L"explorer.exe", (L"/select,\"" + W(path) + L"\"").c_str(), nullptr, SW_SHOWNORMAL);
       } else {
         message("Snap Recomp", std::string("The problem report could not be made: ") + why, MB_ICONWARNING);

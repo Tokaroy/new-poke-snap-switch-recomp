@@ -40,6 +40,8 @@ std::string g_msg;
 
 fs::path results_dir() {
   if (const char* e = std::getenv("SNAP_BENCH_DIR")) if (*e) return fs::u8path(e);
+  if (const char* pm = std::getenv("SNAP_PORTABLE"); pm && pm[0] == '1')   // portable or --data-dir: the same folder host/benchmark.cpp writes to
+    if (const char* a = std::getenv("APPDATA"); a && *a) return fs::u8path(a) / L"SnapRecomp" / L"benchmarks";
   PWSTR docs = nullptr;
   fs::path d;
   if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &docs)) && docs) { d = docs; CoTaskMemFree(docs); }

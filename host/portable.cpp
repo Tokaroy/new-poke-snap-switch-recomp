@@ -6,6 +6,8 @@
 #include <filesystem>
 #include <cstring>
 #include <string>
+#include <vector>
+#include <cstdint>
 
 namespace {
 
@@ -70,4 +72,72 @@ bool snap_portable_init(const wchar_t* data_dir) {
     if (!real_roaming.empty()) _putenv_s("SNAP_REAL_APPDATA", narrow(real_roaming).c_str());
     if (!real_local.empty()) _putenv_s("SNAP_REAL_LOCALAPPDATA", narrow(real_local).c_str());
     return true;
+}
+
+namespace {
+
+namespace pfs = std::filesystem;
+
+bool has_player_data(const pfs::path& d) {
+    std::error_code ec;
+    return pfs::is_directory(d / L"profiles", ec) || pfs::is_directory(d / L"save", ec) || pfs::is_regular_file(d / L"settings.cfg", ec);
+}
+
+unsigned long long tree_bytes(const pfs::path& d) {
+    std::error_code ec;
+    if (pfs::is_regular_file(d, ec)) { auto n = pfs::file_size(d, ec); return ec ? 0 : (unsigned long long)n; }
+    unsigned long long n = 0;
+    for (pfs::recursive_directory_iterator it(d, pfs::directory_options::skip_permission_denied, ec), end; !ec && it != end; it.increment(ec)) {
+        std::error_code e2;
+        if (it->is_regular_file(e2)) { auto s = it->file_size(e2); if (!e2) n += (unsigned long long)s; }
+    }
+    return n;
+}
+
+}  // namespace
+
+int snap_portable_adopt(std::wstring* from, std::wstring* to, bool* mods_skipped, std::string* why) {
+    if (mods_skipped) *mods_skipped = false;
+    if (env_w(L"SNAP_PORTABLE") != L"1" || !env_w(L"SNAP_DATA_DIR").empty()) return 0;   // --data-dir: a folder the caller chose starts empty
+    const std::wstring real = env_w(L"SNAP_REAL_APPDATA"), cur = env_w(L"APPDATA");
+    if (real.empty() || cur.empty()) return 0;
+    const pfs::path src = pfs::path(real) / L"SnapRecomp", dst = pfs::path(cur) / L"SnapRecomp", tmp = pfs::path(cur) / L"SnapRecomp.importing";
+    std::error_code ec;
+    if (pfs::exists(dst, ec) || !has_player_data(src)) return 0;
+    if (pfs::equivalent(pfs::path(real), pfs::path(cur), ec)) return 0;
+    auto fail = [&](const std::string& m) { std::error_code e; pfs::remove_all(tmp, e); if (why) *why = m; return -1; };
+    pfs::remove_all(tmp, ec);   // a copy that was stopped half way
+    ec.clear();
+    std::vector<pfs::path> items;
+    unsigned long long need = 0, mods = 0;
+    for (pfs::directory_iterator it(src, ec), end; !ec && it != end; it.increment(ec)) {
+        const std::wstring name = it->path().filename().wstring();
+        if (!_wcsicmp(name.c_str(), L"shadercache") || !_wcsicmp(name.c_str(), L"shadercache_safe") || !_wcsicmp(name.c_str(), L"update-backups")) continue;
+        const unsigned long long n = tree_bytes(it->path());
+        if (!_wcsicmp(name.c_str(), L"mods")) mods = n;
+        need += n;
+        items.push_back(it->path());
+    }
+    if (ec) return fail("the folder " + src.u8string() + " could not be read: " + ec.message());
+    const pfs::space_info sp = pfs::space(pfs::path(cur), ec);
+    const unsigned long long margin = 256ull << 20;
+    bool skip_mods = false;
+    if (!ec && sp.available != (std::uintmax_t)-1 && sp.available < need + margin) {
+        if (mods && sp.available >= need - mods + margin) skip_mods = true;   // saves and settings still fit: leave the mods where they are and say so
+        else return fail("not enough free space next to the game for a copy of your saves and settings (" + std::to_string((need >> 20) + 1) + " MB needed)");
+    }
+    ec.clear();
+    pfs::create_directories(tmp, ec);
+    if (ec) return fail("the folder " + tmp.u8string() + " could not be created: " + ec.message());
+    for (auto& p : items) {
+        if (skip_mods && !_wcsicmp(p.filename().c_str(), L"mods")) continue;
+        pfs::copy(p, tmp / p.filename(), pfs::copy_options::recursive, ec);
+        if (ec) return fail("copying " + p.u8string() + " failed: " + ec.message());
+    }
+    pfs::rename(tmp, dst, ec);
+    if (ec) return fail("the copy could not be put in place: " + ec.message());
+    if (from) *from = src.wstring();
+    if (to) *to = dst.wstring();
+    if (mods_skipped) *mods_skipped = skip_mods;
+    return 1;
 }

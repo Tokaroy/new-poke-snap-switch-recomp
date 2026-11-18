@@ -12,6 +12,7 @@ struct Result {
   bool proceed = false;   // start the game with the fields below; false = exit (quit, or a message was shown)
   int exit_code = 0;      // the process exit code when proceed is false (2 when the converted game files are empty or damaged)
   std::string main_elf, sdk_elf, config_path, trace_file;
+  std::string notice;     // in: a one-time line for the player (the data copy of the first portable start); a message box, or the log for --play
   bool play = false;      // in: --play (host/cli_flags.h): no launcher window, straight to the game-folder check and the start
 };
 

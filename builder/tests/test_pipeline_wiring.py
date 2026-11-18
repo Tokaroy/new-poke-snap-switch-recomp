@@ -242,6 +242,8 @@ class SelftestPromoteTests(unittest.TestCase):
         pipeline.promote(work, new, 'b1', self.log)
         self.assertTrue((work / 'out').exists())
         self.assertIsNone(json.loads((work / 'current.json').read_text())['previous'])
+        self.assertTrue((work / 'out' / 'portable.txt').is_file())   # portable by default: written after the switch, never into the staged folder
+        self.assertFalse((work / 'out' / 'portable_data').exists())  # the game makes it (and copies an existing %APPDATA% save) on its first start
 
     def test_failed_switch_restores_out(self):
         work = self.t / 'work'

@@ -65,6 +65,9 @@ std::string shot_dir() {
   if (const char* e = std::getenv("SNAP_SHOT_DIR"); e && *e) return e;
   std::string d = hle::settings::get("shot_dir", "");
   if (!d.empty()) return d;
+  // portable (the default for a built game, host/portable.h) or --data-dir: everything the game writes stays in the data folder
+  if (const char* pm = std::getenv("SNAP_PORTABLE"); pm && pm[0] == '1')
+    if (const char* a = std::getenv("APPDATA"); a && *a) return std::string(a) + "\\SnapRecomp\\screenshots";
   PWSTR p = nullptr;
   if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Pictures, 0, nullptr, &p)) && p) d = narrow(p) + "\\Snap Recomp";
   if (p) CoTaskMemFree(p);

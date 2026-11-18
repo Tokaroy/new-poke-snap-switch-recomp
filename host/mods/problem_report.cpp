@@ -353,6 +353,7 @@ bool make(const std::string& dir_in, const char* who, std::string* path, std::st
   fs::path dir;
   if (!dir_in.empty()) dir = fs::path(W(dir_in));
   else if (!env("SNAP_REPORT_DIR").empty()) dir = fs::path(W(env("SNAP_REPORT_DIR")));
+  else if (env("SNAP_PORTABLE") == "1" && !env("APPDATA").empty()) dir = fs::path(W(env("APPDATA"))) / L"SnapRecomp" / L"reports";   // portable or --data-dir (host/portable.h)
   else {
     PWSTR dp = nullptr;
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &dp)) && dp) { dir = dp; CoTaskMemFree(dp); }
