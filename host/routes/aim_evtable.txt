@@ -1,0 +1,13 @@
+# fixture: story_complete
+# Dev route for the event table dump (SNAP_AIM=1 SNAP_AIM_EVTABLE=1): enters the Florio ride and waits for the Ducklett request flight so its
+# event component has run, then ends. Read the "aim: evtable" lines in the run's boot_trace.log.
+wait ui=title timeout=200
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=420
+repeat @f240 @f6000 150 6 A
+wait ui=map_select:CourseSelect timeout=60
+repeat @f120 @f6000 150 6 A
+wait ride timeout=300
+wait_pose EV_Mot_Mis_Stage001_017_01 timeout=150
+@f60 1 shot=1
+end @f1500

@@ -1,0 +1,45 @@
+# fixture: story_complete
+# Request proof (needs SNAP_AIM=1, NEO-ONE speed 2): Florio Day request "Hide-and-Seek in the Flowers" (Mis_Stage001_006_01).
+# In the flower field aim at the Pichu hidden near x=-47 z=2.6, throw Illumina orbs at it until it pops up, and photograph it while its photo event is
+# EV_Mot_Mis_Stage001_006_01; then submit, sit through the evaluation and open the request list.
+wait ui=title timeout=200
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=420
+repeat @f240 @f6000 150 6 A
+wait ui=map_select:CourseSelect timeout=60
+@f180 6 A
+wait ride timeout=300
+@f200 4 A
+@f500 4 A
+wait ride>=94 timeout=200
+aim CH_006 near=-47,2.6 timeout=5 tol=0.2 up=0.2
+repeat @f0 @f60000 60 5 Y if=!act=EV_Mot_Mis_Stage001_006_01
+repeat @f10 @f60000 14 6 A if=act=EV_Mot_Mis_Stage001_006_01
+repeat @f0 @f60000 240 1 shot=1
+repeat @f4300 @f60000 60 6 A if=!ride
+wait ui=photo_submit:FolderSelect timeout=500
+repeat @f0 @f1400 350 1 shot=1
+repeat @f100 @f900 90 8 Down if=!focus=AllCheck
+@f1000 8 A
+@f1150 8 Plus
+@f1260 8 Up
+@f1350 8 A
+wait ui=evaluation timeout=150
+repeat @f240 @f60000 90 8 A
+wait ui=evaluation:Score timeout=150
+repeat @f0 @f600 150 1 shot=1
+repeat @f60 @f60000 90 8 A
+wait ui=evaluation:End timeout=240
+repeat @f0 @f1800 300 1 shot=1
+repeat @f600 @f60000 120 5 Down if=!ui=album_save
+repeat @f612 @f60000 120 5 Down if=!ui=album_save
+repeat @f45 @f599 90 8 A
+repeat @f660 @f60000 120 8 A if=!ui=album_save
+repeat @f20 @f60000 90 8 B if=ui=album_save
+repeat @f0 @f60000 90 8 B if=ui=map_select
+wait ui=main_menu:MainMenu timeout=400
+@f300 10 Y
+repeat @f500 @f1700 100 1 shot=1
+@f700 10 A
+@f1000 10 A
+end @f1700

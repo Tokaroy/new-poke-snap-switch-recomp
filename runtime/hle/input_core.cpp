@@ -48,6 +48,9 @@ extern "C" int snap_aim_ready(char* why, int n);              // the target sits
 extern "C" int snap_aim_stick(float* rx, float* ry);          // 1 = hold the right stick there this poll, 2 = and hold ZL (zoom)
 extern "C" void snap_aim_shot(void);                          // a `shoot` line fired: log target, offset, distance, pose
 extern "C" int snap_aim_pose(const char* text, char* why, int n);   // the target's current motion event name contains text
+extern "C" int snap_aim_act(const char* text, char* why, int n);    // the viewfinder is locked on an actor playing that event
+extern "C" int snap_aim_act_none(const char*, char* why, int n) { if (why && n > 0) std::snprintf(why, (size_t)n, "aim tool off"); return 0; }
+#pragma comment(linker, "/alternatename:snap_aim_act=snap_aim_act_none")
 extern "C" void snap_aim_set_none(const char*) {}
 extern "C" int snap_aim_ready_none(char* why, int n) { if (why && n > 0) std::snprintf(why, (size_t)n, "aim tool off"); return 1; }
 extern "C" int snap_aim_stick_none(float*, float*) { return 0; }
@@ -824,6 +827,7 @@ bool Hub::save(std::string* err) {
 //                              save=/load= line: they cannot miss a request that finished between two polls, `state=idle` can.
 //       aim                    the aim tool's target is centered and in range (below)
 //       pose=<text>            some actor's current pose event contains <text> (aim tool on)
+//       act=<text>             the game's viewfinder is locked on an actor playing that event: a photo taken now carries it
 // Aim tool (dev only, SNAP_AIM=1, host/mods/aim.cpp; without it these lines do nothing and time out):
 //   aim <species|nearest|pose:<text>|off> [timeout=<s>] [tol=] [range=<m>] [up=<m>] [zoom=1]
 //                                                  starts a segment that drives the right stick until the target is centered
@@ -922,6 +926,8 @@ bool route_cond(const std::string& c0, std::string* why) {
     std::snprintf(b, sizeof b, "film counter %d", g_film.load());
   } else if (c == "aim") {   // the `aim` line's target sits on the reticle (host/mods/aim.cpp)
     r = snap_aim_ready(b, (int)sizeof b) != 0;
+  } else if (c.rfind("act=", 0) == 0) {   // the game's viewfinder is locked on an actor playing that event (a photo now carries it)
+    r = snap_aim_act(c.c_str() + 4, b, (int)sizeof b) != 0;
   } else if (c.rfind("pose=", 0) == 0) {   // `wait_pose <text>`: the aim target's current motion event name contains text
     r = snap_aim_pose(c.c_str() + 5, b, (int)sizeof b) != 0;
   } else if (c == "state=idle") {   // no save/load request queued or running (runtime/os/os_state.cpp)

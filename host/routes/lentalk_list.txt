@@ -1,0 +1,16 @@
+# fixture: story_complete
+# Dev route: title -> research camp menu -> LenTalk request list, one screenshot per row scrolled, so the received requests can be read
+# (analysis\boot\route_lentalk_list_*.png).
+wait ui=title timeout=200
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=420
+repeat @f120 @f60000 90 8 B
+wait ui=main_menu:MainMenu timeout=120
+@f300 10 Y
+@f450 10 A
+@f640 1 shot=1
+repeat @f700 @f1100 120 8 R
+repeat @f760 @f1150 120 1 shot=1
+repeat @f1200 @f3000 120 8 Right
+repeat @f1260 @f3000 120 1 shot=1
+end @f3000

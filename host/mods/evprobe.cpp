@@ -7,6 +7,7 @@
 // side is one of those two literals, logs the event name found there:
 //   evprobe present=<n> rec=<addr> tag=<EV_Mot_...>      (a request or special pose tag)
 //   evprobe present=<n> rec=<addr> event=<EV_...>        (any other event name the evaluator checked)
+// SNAP_EVPROBE=2 adds "evprobe raw ..." lines: every compare with an EV_Mot_Mis / EV_Mot_Sp text on either side (both texts, length, result, caller).
 // One line per evaluated record (at most 6000 lines per run); rec is the address of the text. The tags are the names of
 // MissionData.misd events (EV_Mot_Mis_Stage001_097_01, EV_Mot_Sp_P016_03 ...), so the log shows which request pose each photo on
 // the film carries. Used to aim a ride at one request event. Pure logic: evprobe_core.h (tests/mods/evprobe_test.cpp).
@@ -52,12 +53,31 @@ void note(const char* p) {
   trace("evprobe present=%llu rec=%p %s=%s", (unsigned long long)snap_present_count(), (const void*)p, kind == 2 ? "tag" : "event", t.c_str());
 }
 
+int g_raw;       // SNAP_EVPROBE=2: also log every compare whose either side starts with EV_Mot_Mis / EV_Mot_Sp (both texts, length, result, caller)
+int g_raw_lines;
+
+bool ev_text(const void* p, size_t n) { return n >= 9 && !IsBadReadPtr(p, 10) && (memcmp(p, "EV_Mot_Mis", 10) == 0 || memcmp(p, "EV_Mot_Sp", 9) == 0); }
+std::string g_raw_last;
+
+void raw(const void* a, const void* b, size_t n, int r, uint64_t lr) {
+  if (!ev_text(a, n) && !ev_text(b, n)) return;
+  std::lock_guard<std::mutex> lk(g_mu);
+  if (g_raw_lines >= 20000) return;
+  g_raw_lines++;
+  const std::string ta = evprobe::name_at((const char*)a, readable((const char*)a)), tb = evprobe::name_at((const char*)b, readable((const char*)b));
+  const std::string key = ta + "|" + tb + "|" + std::to_string(lr);
+  if (key == g_raw_last) { g_raw_lines--; return; }
+  g_raw_last = key;
+  trace("evprobe raw present=%llu lr=%llx n=%zu r=%d a=%s b=%s", (unsigned long long)snap_present_count(), (unsigned long long)lr, n, r, ta.c_str(), tb.c_str());
+}
+
 void h_memcmp(Cpu* c) {
   const void* a = (const void*)(uintptr_t)c->x[0];
   const void* b = (const void*)(uintptr_t)c->x[1];
   const size_t n = (size_t)c->x[2];
   const int r = n ? memcmp(a, b, n) : 0;
   if ((n == 9 || n == 10) && !IsBadReadPtr(b, n) && evprobe::is_literal(b, n)) note((const char*)a);
+  if (g_raw) raw(a, b, n, r, c->x[30]);
   c->x[0] = (uint64_t)(int64_t)r;
 }
 
@@ -67,6 +87,7 @@ namespace loader {
 void snap_evprobe_install() {
   const char* e = getenv("SNAP_EVPROBE");
   if (!e || !*e || *e == '0') return;
+  g_raw = *e == '2';
   add_override("memcmp", h_memcmp);
   fprintf(stderr, "[evprobe] SNAP_EVPROBE=1: logging the motion-event name of every photo record the film evaluator checks\n");
 }
