@@ -159,7 +159,7 @@ class SetupEngineTests(unittest.TestCase):
         exe = self.fake_run_env(self.t / 'game')
         ev, buf = self.events()
         cfg = {'root': str(self.t / 'root'), 'tools_dir': str(self.t / 'tools'), 'game_dir': str(self.t / 'game'), 'kind': 'extracted',
-               'downloads_ok': True, 'accept_ms_license': True, 'setup_exe': str(self.t / 'SnapRecompSetup.exe'),
+               'downloads_ok': True, 'accept_ms_license': True, 'setup_exe': str(self.t / 'SnapRecomp.exe'),
                'shortcuts': {'desktop': True, 'start': True}}
         got = se.run(cfg, ev)
         self.assertEqual(Path(got), exe)
@@ -274,6 +274,25 @@ class SetupEngineTests(unittest.TestCase):
         se.save_settings({'root': str(self.t / 'root'), 'game': {}})
         se.uninstall(False, True, ev)   # the player asked for the saves to go too
         self.assertFalse(work.exists())
+
+    def test_shortcuts_start_the_one_exe(self):
+        top = self.t / 'Snap' / 'SnapRecomp.exe'
+        built = self.t / 'Snap' / 'work' / 'out' / 'SnapRecomp.exe'
+        built.parent.mkdir(parents=True)
+        top.write_bytes(b'MZ')
+        built.write_bytes(b'MZ')
+        made = []
+        note = lambda lnk, target, args='', **kw: made.append((Path(lnk).name, str(target), args, kw.get('workdir'), kw.get('icon')))   # noqa: E731
+        with mock.patch.object(se, 'special_folder', side_effect=lambda n: self.t / n), mock.patch.object(se, 'make_shortcut', side_effect=note):
+            se.create_shortcuts(built, str(top), True, True, lambda *_: None)
+            by = {m[0]: m for m in made}
+            self.assertEqual(len(made), 4)
+            self.assertTrue(all(m[1] == str(top) for m in made), made)             # every shortcut starts the downloaded exe
+            self.assertEqual(by['Snap Recomp.lnk'][3:], (str(top.parent), str(built)))   # its folder, the game's icon
+            self.assertEqual((by['Repair Snap Recomp.lnk'][2], by['Uninstall Snap Recomp.lnk'][2]), ('--repair', '--uninstall'))
+            made.clear()
+            se.create_shortcuts(built, None, True, False, lambda *_: None)          # a build without the exe (developer run)
+            self.assertEqual([(m[0], m[1]) for m in made], [('Snap Recomp.lnk', str(built))])
 
     def test_shortcuts_are_off_unless_asked_for_and_no_registry_entry_is_written(self):
         self.assertEqual(se.normalize_cfg({})['shortcuts'], {'desktop': False, 'start': False})

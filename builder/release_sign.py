@@ -48,8 +48,8 @@ def genkey(seed_file=SEED_FILE, pub_file=PUB_FILE):
 def sign_zip(zip_path, version, seed):
     zip_path = Path(zip_path)
     ver = update.norm_version(version)
-    if zip_path.name == 'SnapRecompSetup.exe':
-        pass   # the one-click installer: same signature format, the version comes from --version
+    if zip_path.name in ('SnapRecomp.exe', 'SnapRecompSetup.exe'):
+        pass   # the release exe (called SnapRecompSetup.exe up to v1.2.0): same signature format, the version comes from --version
     elif update.ZIP_RE.match(zip_path.name) is None or update.norm_version(update.ZIP_RE.match(zip_path.name).group(1)) != ver:
         raise SystemExit(f'the zip must be named SnapRecomp-Builder-v{ver}-win-x64.zip')
     digest, size = update.sha256_of(zip_path), zip_path.stat().st_size

@@ -1,4 +1,8 @@
-"""Build SnapRecompSetup.exe, the one-click installer (developer tool; run after release_prebuilt.py).
+"""Build SnapRecomp.exe, the one file a release ships (developer tool; run after release_prebuilt.py).
+
+It is the setup wizard with the builder inside. On the player's PC it builds the game into its own folder on the first start and
+starts that build on every later one (release standard 1: one exe; setup/setup_main.cpp HandOff). The builder zip is no longer a
+release asset: release_package.py still makes it for developers and the CI gate.
 
   python -I builder/release_setup.py [--prebuilt build/release/prebuilt] [--out build/release] [--llvm tools/llvm/bin]
                                      [--winsdk <xwin folder>] [--offline-dir <folder with the pinned archives>] [--sign]
@@ -11,7 +15,7 @@ The exe is a small Win32 wizard (setup/setup_main.cpp) followed by a zip payload
 
 Our code from v1.2.0 is GPL-3.0 with the section 7 additional permission in LICENSE. Releases up to v1.1.0 were MIT.
 Third-party components retain their own licenses. No game data, keys, vendor upscaler binaries or Microsoft files are inside. The finished exe is leak scanned like the builder zip.
-`--sign` writes SnapRecompSetup.exe.sig with the update key (release_sign.py)."""
+`--sign` writes SnapRecomp.exe.sig with the update key (release_sign.py)."""
 import argparse
 import hashlib
 import json
@@ -32,6 +36,9 @@ from snapbuild import fetch, winsdk  # noqa: E402
 from snapbuild import safedel  # noqa: E402
 
 MAGIC = b'SNPSET01'
+
+
+RELEASE_EXE = 'SnapRecomp.exe'   # the only file in a release download (plus its .sig)
 
 
 def pinned_table():
@@ -94,7 +101,7 @@ def main():
     stub = out / 'setup_stub.exe'
     compile_stub(a.llvm, stub, version, env)
     print(f'wizard compiled: {stub} {stub.stat().st_size / 1e3:.0f} KB')
-    final = out / 'SnapRecompSetup.exe'
+    final = out / RELEASE_EXE
     if a.stub_only:
         shutil.copyfile(stub, final)
         return
@@ -110,7 +117,7 @@ def main():
         fetch.extract(py_arc, pydir)
         zp = work / 'payload.zip'
         build_payload(a.prebuilt, zp, pydir, [ns_arc], version)
-        scanned = out / 'SnapRecompSetup.payload.zip'   # the payload alone, so the leak scan can read it (it reads zips, not PE files)
+        scanned = out / 'SnapRecomp.payload.zip'   # the payload alone, so the leak scan can read it (it reads zips, not PE files)
         # python/ and offline/ are the python.org and NSTool archives, checked by SHA-256 against versions.json (fetch_pin above);
         # their third-party binaries are not ours to scan, so the scan covers everything else in the payload
         with zipfile.ZipFile(zp) as zin, zipfile.ZipFile(scanned, 'w', zipfile.ZIP_DEFLATED) as zout:
@@ -135,7 +142,7 @@ def main():
     r = subprocess.run(cmd)
     if r.returncode != 0:
         final.unlink()
-        raise SystemExit('leak scan failed; SnapRecompSetup.exe was deleted')
+        raise SystemExit(f'leak scan failed; {RELEASE_EXE} was deleted')
     print('leak scan of the payload clean')
     if a.sign:
         r = subprocess.run([sys.executable, '-I', str(ROOT / 'builder' / 'release_sign.py'), '--zip', str(final), '--version', version])

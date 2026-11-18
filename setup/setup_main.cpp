@@ -6,7 +6,10 @@
 //
 // It never downloads, asks for or points to game files, keys or firmware: the player picks a folder, the engine reads it in place.
 //
-// Command line: (none) wizard | /repair | /uninstall | /folder <path> (preselect) | /auto (click through with defaults, tests only)
+// One exe (release standard 1): once work\out\SnapRecomp.exe exists this exe starts it with the same arguments (HandOff below).
+// Command line: --setup | --game <folder> | --build-dir <folder> | --yes | --repair | --uninstall | --desktop-shortcut |
+//               --start-menu-shortcut | --help | --version (SETUP_HELP below); the older /repair, /uninstall, /folder <path> still work.
+// Tests only:   /auto (click through with defaults), /hidden, /snapdir <dir>, /noshortcuts, /root <path>,
 //               /shot <dir> (render every page to BMP on a private hidden desktop, then exit)
 #ifndef UNICODE
 #define UNICODE
@@ -40,6 +43,9 @@ using std::max;
 #ifndef SETUP_VERSION
 #define SETUP_VERSION "1.1.0"
 #endif
+#define SETUP_WIDEN2(x) L##x
+#define SETUP_WIDEN(x) SETUP_WIDEN2(x)
+#define SETUP_VERSION_W SETUP_WIDEN(SETUP_VERSION)
 
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "gdiplus.lib")
@@ -306,6 +312,8 @@ static wstring g_stageT, g_etaT;
 static bool g_noShortcuts = false;
 static bool g_scanOk = false, g_needKeys = false, g_busy = false, g_repair = false, g_auto = false, g_showLog = false, g_uninstMode = false;
 static bool g_chkOn[16];
+static int g_exitCode = 0;                            // what the process returns (--yes: 0 = done, 1 = failed)
+static bool g_yes = false;                            // --yes: click through, close when finished
 static bool g_removed = false;                        // the uninstall finished
 static Proc g_proc;
 static std::mutex g_mu;
@@ -972,6 +980,11 @@ static void OnEngine(WPARAM kind, string* line) {
     if (g_page == P_GAME) {   // the scan prints exactly one JSON object
         string ok = JGet(l, "ok"), text = JGet(l, "text");
         g_scanOk = ok == "true";
+        if (g_yes && !g_scanOk) {   // nobody is there to pick another folder
+            fprintf(stderr, "SnapRecomp setup: %s\n", text.c_str());
+            g_exitCode = 1;
+            PostMessageW(g_wnd, WM_CLOSE, 0, 0);
+        }
         g_needKeys = JGet(l, "needs_keys") == "true";
         for (size_t i = 0; i < text.size(); i++) {}
         wstring wt = W(text);
@@ -1023,6 +1036,7 @@ static void PlayNow() {
     if (exe.empty() || !Exists(exe)) { MessageBoxW(g_wnd, L"The game program was not found. Choose Repair.", L"Snap Recomp", MB_ICONWARNING); return; }
     size_t sl = exe.rfind(L'\\');
     ShellExecuteW(g_wnd, L"open", exe.c_str(), nullptr, exe.substr(0, sl).c_str(), SW_SHOWNORMAL);
+    DestroyWindow(g_wnd);   // the setup is finished: from now on this exe starts the game
 }
 
 static void Cancel() {
@@ -1216,36 +1230,180 @@ static void ShotMode(const wstring& dir) {
     DestroyWindow(g_wnd);
 }
 
+// ------------------------------------------------------------------------------------------------ one exe: hand off to the built game
+// Release standard 1: the player downloads and starts one exe. Before a build exists it is the setup wizard; once the build is there
+// (work\out\SnapRecomp.exe with its config.json, in this exe's folder or in the --build-dir folder) it starts that program with the same
+// arguments, the same standard handles and the same environment, waits for it, and returns its exit code. The game runs in a job that
+// dies with this process, so a launcher that stops this exe stops the game too; a restart the game does itself stays in the job and is
+// waited for, and its background shader preparation leaves the job on purpose (CREATE_BREAKAWAY_FROM_JOB in host/shaderprep.cpp).
+static wstring QuoteArg(const wstring& a) {
+    if (!a.empty() && a.find_first_of(L" \t\"") == wstring::npos) return a;
+    wstring o = L"\"";
+    for (size_t i = 0;; i++) {
+        size_t bs = 0;
+        while (i < a.size() && a[i] == L'\\') { i++; bs++; }
+        if (i == a.size()) { o.append(bs * 2, L'\\'); break; }
+        if (a[i] == L'"') { o.append(bs * 2 + 1, L'\\'); o += L'"'; }
+        else { o.append(bs, L'\\'); o += a[i]; }
+    }
+    return o + L"\"";
+}
+
+// The built program for this install: <build dir>\work\out when --build-dir named one, else where settings.json says, else next to this exe.
+static wstring FindBuilt(const wstring& buildDir) {
+    wstring exe;
+    if (!buildDir.empty()) exe = buildDir + L"\\work\\out\\SnapRecomp.exe";
+    else {
+        exe = BuiltExe();
+        if (exe.empty() || !Exists(exe)) {   // no settings.json (a folder copied without its setup folder): the default place
+            wstring d = g_exe.substr(0, g_exe.find_last_of(L"\\/"));
+            exe = d + L"\\work\\out\\SnapRecomp.exe";
+        }
+    }
+    if (!Exists(exe)) return L"";
+    wstring dir = exe.substr(0, exe.find_last_of(L"\\/"));
+    if (!Exists(dir + L"\\config.json")) return L"";          // a build that was never finished
+    wchar_t full[MAX_PATH * 4];
+    if (GetFullPathNameW(exe.c_str(), MAX_PATH * 4, full, nullptr) && _wcsicmp(full, g_exe.c_str()) == 0) return L"";   // never start ourselves
+    return exe;
+}
+
+// Starts the built program and waits. Returns false when it could not be started (the wizard then opens); *code = its exit code.
+static bool HandOff(const wstring& exe, const std::vector<wstring>& args, int* code) {
+    wstring cmd = QuoteArg(exe);
+    for (auto& a : args) cmd += L" " + QuoteArg(a);
+    wstring dir = exe.substr(0, exe.find_last_of(L"\\/"));
+    SetEnvironmentVariableW(L"SNAP_TOP_EXE", g_exe.c_str());   // the exe the player starts (the game's updater and shortcuts name this one)
+    HANDLE job = CreateJobObjectW(nullptr, nullptr);
+    if (job) {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION li{};
+        li.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
+        SetInformationJobObject(job, JobObjectExtendedLimitInformation, &li, sizeof li);
+    }
+    STARTUPINFOW si{sizeof si};
+    HANDLE hin = GetStdHandle(STD_INPUT_HANDLE), hout = GetStdHandle(STD_OUTPUT_HANDLE), herr = GetStdHandle(STD_ERROR_HANDLE);
+    auto usable = [](HANDLE h) { return h && h != INVALID_HANDLE_VALUE && GetFileType(h) != FILE_TYPE_UNKNOWN; };
+    BOOL inherit = FALSE;
+    if (usable(hout) || usable(herr) || usable(hin)) {         // a launcher's pipes or a redirect: the game writes to the same ones
+        for (HANDLE h : {hin, hout, herr}) if (usable(h)) SetHandleInformation(h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+        si.dwFlags |= STARTF_USESTDHANDLES;
+        si.hStdInput = usable(hin) ? hin : nullptr; si.hStdOutput = usable(hout) ? hout : nullptr; si.hStdError = usable(herr) ? herr : nullptr;
+        inherit = TRUE;
+    }
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(exe.c_str(), &cmd[0], nullptr, nullptr, inherit, CREATE_SUSPENDED, nullptr, dir.c_str(), &si, &pi)) {
+        if (job) CloseHandle(job);
+        return false;
+    }
+    if (job) AssignProcessToJobObject(job, pi.hProcess);
+    ResumeThread(pi.hThread);
+    CloseHandle(pi.hThread);
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD ec = 0;
+    GetExitCodeProcess(pi.hProcess, &ec);
+    CloseHandle(pi.hProcess);
+    while (job) {   // the game restarted itself (a settings change, an update): stay until the job is empty, so nothing is cut off
+        JOBOBJECT_BASIC_ACCOUNTING_INFORMATION ai{};
+        if (!QueryInformationJobObject(job, JobObjectBasicAccountingInformation, &ai, sizeof ai, nullptr) || ai.ActiveProcesses == 0) break;
+        Sleep(250);
+    }
+    if (job) CloseHandle(job);
+    *code = (int)ec;
+    return true;
+}
+
+static void SayLine(const wstring& text) {   // to the caller's pipe or console when there is one, else a message box
+    HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
+    bool have = h && h != INVALID_HANDLE_VALUE && GetFileType(h) != FILE_TYPE_UNKNOWN;
+    if (!have && AttachConsole(ATTACH_PARENT_PROCESS)) { h = GetStdHandle(STD_OUTPUT_HANDLE); have = h && h != INVALID_HANDLE_VALUE; }
+    if (!have) { MessageBoxW(nullptr, text.c_str(), L"Snap Recomp", MB_OK); return; }
+    string u = U(text + L"\r\n");
+    DWORD n;
+    WriteFile(h, u.data(), (DWORD)u.size(), &n, nullptr);
+}
+
+static const wchar_t* const SETUP_HELP =
+    L"Snap Recomp " SETUP_VERSION_W L"\r\n"
+    L"\r\n"
+    L"Started with no build in its folder, this exe is the setup: it builds the game from your own game files.\r\n"
+    L"Once the build is there it starts the game, and every flag it does not list below goes to the game\r\n"
+    L"(--play, --fullscreen, --data-dir and the rest: docs/command-line.md, or --help after the build).\r\n"
+    L"\r\n"
+    L"  --setup               open the setup even when the game is built (repair, change game files, remove)\r\n"
+    L"  --game <folder>       the folder with your game files (the setup opens with it chosen)\r\n"
+    L"  --build-dir <folder>  where the build goes and is looked for (default: this exe's folder)\r\n"
+    L"  --yes                 no questions: accept Microsoft's C runtime license, use the defaults, close when done\r\n"
+    L"                        (exit code 0 = built, 1 = failed)\r\n"
+    L"  --repair              rebuild from the game files chosen before\r\n"
+    L"  --uninstall           remove the build (with --yes: without asking; saves and tools are kept)\r\n"
+    L"  --desktop-shortcut    with --yes: also make a desktop shortcut\r\n"
+    L"  --start-menu-shortcut with --yes: also make a Start menu shortcut\r\n"
+    L"  --help, --version     this text, the version\r\n";
+
 // ------------------------------------------------------------------------------------------------ main
 int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, PWSTR, int) {
     int argc;
     wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-    wchar_t me[MAX_PATH];
-    GetModuleFileNameW(nullptr, me, MAX_PATH);
+    wchar_t me[MAX_PATH * 4];
+    GetModuleFileNameW(nullptr, me, MAX_PATH * 4);
     g_exe = me;
     wstring preFolder, shotDir;
     int startPage = -1;
     bool repair = false, uninst = false;
     bool hidden = false;
     wstring snapDir;
+    bool setupAsked = false, wantDesk = false, wantStart = false, help = false, version = false;
+    wstring buildDir;
+    std::vector<wstring> pass;   // everything that is not a setup flag: handed to the built game unchanged
     for (int i = 1; i < argc; i++) {
         wstring a = argv[i];
+        bool mine = true;
         if (a == L"/hidden") hidden = true;                                   // test: run on a private hidden desktop
         else if (a == L"/snapdir" && i + 1 < argc) snapDir = argv[++i];       // test: save a BMP of every page change
         else if (a == L"/noshortcuts") g_noShortcuts = true;                  // test: leave the desktop and Start menu alone
-        else if (a == L"/repair") repair = true;
-        else if (a == L"/uninstall") uninst = true;
+        else if (a == L"/repair" || a == L"--repair") repair = true;
+        else if (a == L"/uninstall" || a == L"--uninstall") uninst = true;
         else if (a == L"/auto") g_auto = true;
-        else if (a == L"/folder" && i + 1 < argc) preFolder = argv[++i];
+        else if ((a == L"/folder" || a == L"--game") && i + 1 < argc) preFolder = argv[++i];
         else if (a == L"/root" && i + 1 < argc) g_scanRoot = argv[++i];
         else if (a == L"/shot" && i + 1 < argc) shotDir = argv[++i];
+        else if (a == L"--setup") {}
+        else if (a == L"--yes") { g_yes = true; g_auto = true; }
+        else if (a == L"--desktop-shortcut") wantDesk = true;
+        else if (a == L"--start-menu-shortcut") wantStart = true;
+        else mine = false;
+        if (mine) { setupAsked = true; continue; }
+        if (a == L"--build-dir" && i + 1 < argc) { buildDir = argv[++i]; continue; }   // names the place for both halves; not passed on
+        if (a == L"--help" || a == L"-h" || a == L"/?") help = true;
+        if (a == L"--version") version = true;
+        pass.push_back(a);
+    }
+    if (!buildDir.empty()) {
+        wchar_t full[MAX_PATH * 4];
+        if (GetFullPathNameW(buildDir.c_str(), MAX_PATH * 4, full, nullptr)) buildDir = full;
+        while (buildDir.size() > 3 && (buildDir.back() == L'\\' || buildDir.back() == L'/')) buildDir.pop_back();
+        g_scanRoot = buildDir;   // the engine's "root": work\ and game\ go there
+    }
+    if (!setupAsked) {
+        wstring built = FindBuilt(buildDir);
+        int code = 0;
+        if (!built.empty() && HandOff(built, pass, &code)) return code;
+        if (help) { SayLine(SETUP_HELP); return 0; }
+        if (version) { SayLine(L"Snap Recomp " SETUP_VERSION_W L" (not built yet)"); return 0; }
     }
     INITCOMMONCONTROLSEX ic{sizeof ic, ICC_PROGRESS_CLASS | ICC_STANDARD_CLASSES};
     InitCommonControlsEx(&ic);
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
+    if (g_yes && !uninst && !repair && preFolder.empty() && ReadAll(SetupDir() + L"\\settings.json").find("\"completed\": true") == string::npos) {
+        SayLine(L"--yes needs the game files: add --game <folder with your game files>.");
+        return 2;
+    }
     wstring err;
-    if (shotDir.empty() && !ExtractPayload(&err)) { MessageBoxW(nullptr, err.c_str(), L"Snap Recomp setup", MB_ICONERROR); return 1; }
+    if (shotDir.empty() && !ExtractPayload(&err)) {
+        if (g_yes) SayLine(err); else MessageBoxW(nullptr, err.c_str(), L"Snap Recomp setup", MB_ICONERROR);
+        return 1;
+    }
 
     WNDCLASSW wc{};
     wc.lpfnWndProc = WndProc; wc.hInstance = hi; wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
@@ -1268,6 +1426,9 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, PWSTR, int) {
     DragAcceptFiles(g_wnd, TRUE);
     CreateUi();
 
+    if (wantDesk) ChkSet(1, true);
+    if (wantStart) ChkSet(2, true);
+
     // which page first
     string settings = ReadAll(SetupDir() + L"\\settings.json");
     bool installed = settings.find("\"completed\": true") != string::npos;
@@ -1286,6 +1447,13 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, PWSTR, int) {
         if (m.message == WM_TIMER && m.hwnd == g_wnd && g_auto) {   // /auto: click through with the defaults (tests only)
             if (g_page == P_GAME && g_scanOk && !g_busy) { OnCommand(ID_NEXT); }
             else if (g_page == P_OPTIONS) { ChkSet(0, true); OnCommand(ID_NEXT); }
+            else if (g_yes) {   // --yes: no one to press the last button
+                static bool removing = false;
+                if (g_page == P_WELCOME) OnCommand(ID_NEXT);
+                else if (g_page == P_DONE || g_page == P_MAINT || g_removed) { g_exitCode = 0; DestroyWindow(g_wnd); }
+                else if (g_page == P_ERROR) { fprintf(stderr, "SnapRecomp setup: %s\n", U(g_err).c_str()); g_exitCode = 1; DestroyWindow(g_wnd); }
+                else if (g_page == P_UNINST && !removing) { removing = true; OnCommand(ID_NEXT); }
+            }
         }
         if (m.message == WM_TIMER && m.hwnd == g_wnd && g_showLog) RefreshLog();
         if (m.message == WM_TIMER && m.hwnd == g_wnd && !snapDir.empty()) {   // test screenshots: one per page change, one a minute on the build page
@@ -1311,5 +1479,5 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, PWSTR, int) {
     KillTimer(g_wnd, timer);
     if (g_thread.joinable()) g_thread.detach();
     G::GdiplusShutdown(g_gdip);
-    return 0;
+    return g_exitCode;
 }

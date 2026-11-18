@@ -1,4 +1,4 @@
-"""The engine behind SnapRecompSetup.exe: everything the one-click setup does, without any window.
+"""The engine behind the setup half of SnapRecomp.exe (setup/setup_main.cpp): everything the one-click setup does, without any window.
 
 The setup program (a small Windows program with the wizard pages) starts this with the builder's own Python:
     snap_builder.py setup scan   --folder <game folder> [--keys <prod.keys>]     -> one JSON object on stdout (what was found, what is missing)
@@ -459,21 +459,23 @@ def make_shortcut(lnk, target, args='', workdir=None, desc='', icon=None):
 def create_shortcuts(game_exe, setup_exe, want_desktop, want_start, say):
     made = []
     desc = 'Snap Recomp'
-    workdir = str(Path(game_exe).parent)
+    # one exe: a shortcut starts the exe the player downloaded (it hands off to the built game); the built exe only lends its icon
+    target = setup_exe if setup_exe and Path(setup_exe).exists() else game_exe
+    workdir = str(Path(target).parent)
     if want_desktop:
         d = special_folder('Desktop')
         if d:
-            make_shortcut(d / 'Snap Recomp.lnk', game_exe, workdir=workdir, desc=desc, icon=str(game_exe))
+            make_shortcut(d / 'Snap Recomp.lnk', target, workdir=workdir, desc=desc, icon=str(game_exe))
             made.append(str(d / 'Snap Recomp.lnk'))
     if want_start:
         p = special_folder('Programs')
         if p:
             folder = p / 'Snap Recomp'
-            make_shortcut(folder / 'Snap Recomp.lnk', game_exe, workdir=workdir, desc=desc, icon=str(game_exe))
+            make_shortcut(folder / 'Snap Recomp.lnk', target, workdir=workdir, desc=desc, icon=str(game_exe))
             made.append(str(folder / 'Snap Recomp.lnk'))
             if setup_exe and Path(setup_exe).exists():
-                make_shortcut(folder / 'Repair Snap Recomp.lnk', setup_exe, '/repair', desc='Rebuild Snap Recomp from your game files')
-                make_shortcut(folder / 'Uninstall Snap Recomp.lnk', setup_exe, '/uninstall', desc='Remove Snap Recomp')
+                make_shortcut(folder / 'Repair Snap Recomp.lnk', setup_exe, '--repair', desc='Rebuild Snap Recomp from your game files')
+                make_shortcut(folder / 'Uninstall Snap Recomp.lnk', setup_exe, '--uninstall', desc='Remove Snap Recomp')
                 made += [str(folder / 'Repair Snap Recomp.lnk'), str(folder / 'Uninstall Snap Recomp.lnk')]
     say(f'{len(made)} shortcut(s) made')
     return made

@@ -195,7 +195,7 @@ def main(argv=None):
     up.add_argument('--config', help='--startup: the launcher\'s config.json (holds the update_check switch)')
     up.add_argument('--yes', action='store_true', help='apply: install without the confirmation question')
     up.add_argument('--wait-pid', type=int, help='wait for this process (the launcher) to exit first')
-    st = sub.add_parser('setup', help='what SnapRecompSetup.exe runs: scan a game folder, run the whole setup (JSON-line progress), repair, uninstall')
+    st = sub.add_parser('setup', help='what the setup in SnapRecomp.exe runs: scan a game folder, run the whole setup (JSON-line progress), repair, uninstall')
     st.add_argument('action', choices=('scan', 'run', 'repair', 'uninstall'))
     st.add_argument('--folder', help='scan: the game folder the player chose')
     st.add_argument('--keys', help='scan: a prod.keys file to use instead of the one next to the game files')
