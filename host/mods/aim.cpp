@@ -314,6 +314,7 @@ std::map<std::string, int> g_act_hits;
 std::map<std::string, uint64_t> g_act_last;
 std::set<std::string> g_act_done;
 int g_act_cap = 5;
+bool g_cap_set;                // cap=<n> was given: an `act=` condition on a plain target also stops after n photos of one event
 bool act_spec() { return g_spec.compare(0, 4, "act:") == 0 || g_spec.compare(0, 3, "ev:") == 0; }
 // The event name of the actor that the sweep spec means, empty = no match. The spec text is a list of alternatives split by '|', each
 // `<text>` or `<name part>@<text>` (only actors whose model name holds the name part; an empty text then takes the actor whatever it
@@ -391,7 +392,8 @@ extern "C" void snap_aim_set(const char* spec) {
   if (const char* t = strstr(opts.c_str(), "range=")) g_range = (float)atof(t + 6);
   if (const char* t = strstr(opts.c_str(), "up=")) g_up = (float)atof(t + 3);
   if (const char* t = strstr(opts.c_str(), "near=")) { g_near = sscanf(t + 5, "%f,%f", &g_nx, &g_nz) == 2; }
-  if (const char* t = strstr(opts.c_str(), "cap=")) g_act_cap = atoi(t + 4);
+  g_cap_set = false;
+  if (const char* t = strstr(opts.c_str(), "cap=")) { g_act_cap = atoi(t + 4); g_cap_set = true; }
   if (const char* t = strstr(opts.c_str(), "zoom=")) { g_zoom = t[5] != '0'; g_zlatch = t[5] == '2'; }   // zoom=2: zoomed from the start
   g_spec = s == "off" ? "" : s;
   aim::Proj pr;
@@ -457,7 +459,7 @@ extern "C" int snap_aim_act(const char* text, char* why, int n) {
     }
     const std::string a = act_spec() ? sweep_event(ac.own, ac.name) : stdstr_at(ac.own + 0x450);
     if (!a.empty() && a.find(want) != std::string::npos) {
-      if (act_spec()) {
+      if (act_spec() || g_cap_set) {
         if (g_act_done.count(a)) continue;
         uint64_t& last = g_act_last[a];
         if (now - last >= 4 && ++g_act_hits[a] > g_act_cap) { g_act_done.insert(a); trace("aim: event %s done (%d photos)", a.c_str(), g_act_cap); continue; }   // a gap in the presses = the next photo
