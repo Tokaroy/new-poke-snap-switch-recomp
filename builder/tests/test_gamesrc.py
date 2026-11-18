@@ -77,7 +77,8 @@ class FakeTool:
         args = [str(a) for a in args]
         self.calls.append(args)
         if self.fail_keys:
-            return 1, 'Error: missing key master_key_0b'
+            return 0, ('[WARNING] Ticket "x" will not be imported. Could not decrypt title key.\n  Content Type:    Meta\n'
+                       '  Key Generation:  12\n[WARNING] NCA Partition 0 not readable. (AES-CTR Key was not determined)\n')
         if '--part0' in args:
             out = Path(args[args.index('--part0') + 1])
             nca = Path(args[-1])
@@ -246,7 +247,7 @@ class IdentifyPickTests(unittest.TestCase):
         self.assertIn('base game only', str(c.exception))
         with self.assertRaises(StepError) as c:
             gamesrc.pick(self.identified(with_base=False))
-        self.assertIn('no base game', str(c.exception))
+        self.assertIn('not the base game', str(c.exception))
 
     def test_key_failure_is_one_plain_message(self):
         d = self.t / 'src2'
@@ -256,8 +257,9 @@ class IdentifyPickTests(unittest.TestCase):
         gamesrc.identify_all(sc, FakeTool(fail_keys=True), self.scratch, say=lambda m: None)
         with self.assertRaises(StepError) as c:
             gamesrc.pick(sc)
-        self.assertEqual(str(c.exception), gamesrc.KEY_ERROR)
-        self.assertNotIn('master_key', str(c.exception))
+        self.assertTrue(c.exception.about_keys)
+        self.assertIn('"master_key_0b" (key generation 12)', str(c.exception))     # the key's name, never a value
+        self.assertEqual(str(c.exception).count('master_key_0b'), 1)
 
     def test_scrub_removes_hex(self):
         s = gamesrc.scrub('error 00112233445566778899aabbccddeeff00112233 done')
@@ -304,11 +306,13 @@ class ExtractTests(unittest.TestCase):
         class Bad(FakeTool):
             def run(self, args, timeout=0):
                 if '--part0' in [str(a) for a in args]:
-                    return 1, 'Error: could not decrypt (missing key)'
+                    return 0, ('  Content Type:    Program\n  Key Generation:  11\n'
+                               '[WARNING] NCA Partition 0 not readable. (AES-CTR Key was not determined)\n')
                 return super().run(args, timeout)
         with self.assertRaises(StepError) as c:
             gamesrc.extract(self.plan, Bad(), self.t / 'w' / 'game', say=lambda m: None)
-        self.assertEqual(str(c.exception), gamesrc.KEY_ERROR)
+        self.assertEqual(c.exception.code, 'keys_generation')
+        self.assertIn('master_key_0a', str(c.exception))
         self.assertFalse((self.t / 'w' / 'game' / '_scratch').exists())
 
     def test_space_estimate_says_romfs_stays(self):

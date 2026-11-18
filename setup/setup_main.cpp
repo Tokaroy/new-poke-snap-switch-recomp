@@ -944,7 +944,8 @@ static bool PickFolder(wstring* out, const wchar_t* title, bool file) {
     if (file) {
         OPENFILENAMEW o{sizeof o};
         o.hwndOwner = g_wnd; o.lpstrFile = buf; o.nMaxFile = MAX_PATH; o.lpstrTitle = title;
-        o.lpstrFilter = L"prod.keys\0prod.keys\0All files\0*.*\0";
+        // Windows hides the last ending, so a keys file is often really "prod.keys.txt": show those too.
+        o.lpstrFilter = L"Keys files (prod.keys, *.keys, *.keys.txt, keys.txt)\0*.keys;*.keys.txt;keys.txt;prod.txt\0All files\0*.*\0";
         o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
         if (!GetOpenFileNameW(&o)) return false;
         *out = buf;

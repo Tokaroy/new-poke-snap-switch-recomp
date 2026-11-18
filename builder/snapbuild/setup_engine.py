@@ -281,6 +281,19 @@ def scan_text(out):
     return '\n'.join(L)
 
 
+def scan_log(lines):
+    """Append what a scan found to setup-events.log (the file a problem report carries). File names, key names and the file reader's
+    filtered complaint only: no key values, no folder paths. Never fails the scan."""
+    try:
+        d = setup_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        with open(d / 'setup-events.log', 'a', encoding='utf-8') as f:
+            for ln in lines:
+                f.write(json.dumps({'t': 'log', 'text': str(ln), 'at': time.strftime('%Y-%m-%d %H:%M:%S')}, ensure_ascii=False) + '\n')
+    except OSError:
+        pass
+
+
 def scan_folder(folder, keys=None, nstool_exe=None, table=None, cfg=None):
     out = _scan_folder(folder, keys, nstool_exe, table, cfg)
     out['text'] = scan_text(out)
@@ -314,27 +327,45 @@ def _scan_folder(folder, keys=None, nstool_exe=None, table=None, cfg=None):
         return out
     if sc.kind == 'dump':
         if not sc.keys:
-            out['error'] = ('This folder has game files but no prod.keys file next to them. Put your own prod.keys in the same folder, '
-                            'or choose it below. If you have an emulator installed, its keys file may already be on this PC.')
+            out['error'] = ('This folder has game files but no prod.keys file next to them. Put your own prod.keys in the same folder '
+                            '(the file must be named prod.keys; Windows may hide a ".txt" ending), or choose it below. '
+                            'If you have an emulator installed, its keys file may already be on this PC.')
             out['needs_keys'] = True
+            out['error_code'] = 'keys_missing'
+            scan_log([f'scan {sc.folder.name}: no keys file found'])
             return out
         if not nstool_exe or not Path(nstool_exe).exists():
             out['error'] = 'the file reader (NSTool) is not available yet.'
             return out
+        lines = [f'scan: {len(sc.dumps)} game file(s)']
+        kinfo = gamesrc.inspect_keys(sc.keys)
+        if kinfo.problem:       # a file that cannot be a working keys file: say so before any game file is blamed
+            lines.append(kinfo.summary() if kinfo.names else f'Keys file "{kinfo.path.name}": {kinfo.problem}')
+            scan_log(lines)
+            out['error'] = kinfo.problem[0].upper() + kinfo.problem[1:]
+            out['error_code'] = kinfo.code
+            out['needs_keys'] = True
+            return out
         ns = gamesrc.NsTool(nstool_exe, sc.keys)
         scratch = setup_dir() / 'scratch_ident'
         try:
-            gamesrc.identify_all(sc, ns, scratch, say=lambda m: None)
+            gamesrc.identify_all(sc, ns, scratch, say=lines.append, keys=kinfo)
         finally:
             safedel.rmtree(scratch, ignore_errors=True)
         out['dumps'] = [{'name': d.path.name, 'size': d.size, 'titles': [{'title': t['title_id'], 'version': t['version'],
                                                                          'version_name': gamesrc.version_name(t['version'])} for t in d.titles],
-                         'error': d.error} for d in sc.dumps]
+                         'error': d.error, 'error_code': d.code, 'reason': d.reason} for d in sc.dumps]
         try:
             plan = gamesrc.pick(sc)
         except StepError as e:
             out['error'] = str(e)
+            out['error_code'] = getattr(e, 'code', 'step')
+            # a real keys problem brings back "Choose prod.keys..." so another file can be picked without moving files around
+            out['needs_keys'] = out['error_code'] in gamesrc.KEY_CODES
+            lines.append(f'scan result ({out["error_code"]}): {out["error"]}')
+            scan_log(lines)
             return out
+        scan_log(lines)
         out['plan'] = plan.brief()
         out['plan']['version_name'] = gamesrc.version_name(plan.patch[1]['version'])
         out['ok'] = True
@@ -690,10 +721,14 @@ def run(cfg, ev, opener=None):
                 sc.keys = Path(keys)
             if not sc.keys:
                 raise StepError('the keys file was not found next to the game files. Choose it in the setup again.')
+            kinfo = gamesrc.inspect_keys(sc.keys)
+            if kinfo.problem:
+                say(kinfo.summary() if kinfo.names else f'Keys file "{kinfo.path.name}": {kinfo.problem}')
+                raise gamesrc.GameFilesError(kinfo.problem, kinfo.code)
             ns = gamesrc.NsTool(ns_exe, sc.keys)
             scratch = setup_dir() / 'scratch_ident'
             try:
-                gamesrc.identify_all(sc, ns, scratch, say=say)
+                gamesrc.identify_all(sc, ns, scratch, say=say, keys=kinfo)
             finally:
                 safedel.rmtree(scratch, ignore_errors=True)
             plan = gamesrc.pick(sc)
@@ -708,7 +743,7 @@ def run(cfg, ev, opener=None):
                     raise StepError(f'not enough free space on {drive_of(root)}: extracting the game needs about {fmt_gb(need)} for a short time '
                                     f'and {fmt_gb(free)} is free. Choose another drive in the setup (the extracted game data stays: '
                                     f'{fmt_gb(gamesrc.space_estimate(plan)["stays"])}).')
-                paths = gamesrc.extract(plan, ns, game_dir, say=say, progress=game_progress(prog))
+                paths = gamesrc.extract(plan, ns, game_dir, say=say, progress=game_progress(prog), keys=kinfo)
                 hashes = paths.get('hashes', {})
             main, sdk, romfs = str(paths['main']), str(paths['sdk']), str(paths['romfs'])
             gamesrc.remember(settings, sc, plan, hashes, keys)
