@@ -5,7 +5,10 @@ starts, because the converted game files named in config.json do not exist. Chec
 still runs when player flags are on the command line, that --set with a SNAP_* name reaches the environment, and that --data-dir moves the
 data folders.
 
-Usage: tools/venv-recomp/Scripts/python -I tests/hle/cli_flags_exe_test.py [path\\to\\snap_boot.exe]
+Usage: tools/venv-recomp/Scripts/python -I tests/hle/cli_flags_exe_test.py [path\\to\\snap_boot.exe] [--rebuild]
+
+An exe older than the sources this test is about is refused (exit 3) instead of failing check after check: an old build\\snap\\snap_boot.exe
+once reported 27 failures that were only its age. --rebuild runs host/build_snap.py into the exe's folder first.
 """
 import json
 import os
@@ -16,7 +19,20 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-EXE = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / 'build' / 'snap' / 'snap_boot.exe'
+ARGS = [a for a in sys.argv[1:] if a != '--rebuild']
+EXE = Path(ARGS[0]) if ARGS else ROOT / 'build' / 'snap' / 'snap_boot.exe'
+# What the checks below exercise. An exe built before any of these changed cannot pass, whatever the code says now.
+SOURCES = ('host/cli_flags.h', 'host/launcher.cpp', 'host/launcher_upscalers.cpp', 'host/boot.cpp', 'host/portable.cpp')
+
+
+def stale_against(exe, sources, root=ROOT):
+    """The first source file newer than the exe (its path as given), or None when the exe is current."""
+    built = Path(exe).stat().st_mtime
+    for s in sources:
+        f = Path(root) / s
+        if f.is_file() and f.stat().st_mtime > built:
+            return s
+    return None
 
 
 def dead_pid():
@@ -26,9 +42,19 @@ def dead_pid():
 
 
 def main():
+    if '--rebuild' in sys.argv[1:]:
+        r = subprocess.run([sys.executable, '-I', str(ROOT / 'host' / 'build_snap.py'), '--out', str(EXE.parent), '--name', EXE.stem])
+        if r.returncode != 0:
+            print('the rebuild failed (exit code %d)' % r.returncode)
+            return 2
     if not EXE.exists():
         print('exe not found:', EXE)
         return 2
+    newer = stale_against(EXE, SOURCES)
+    if newer:
+        print('%s is older than %s, so it cannot pass. Build it again (add --rebuild, or run host/build_snap.py --out %s), or name a current exe.'
+              % (EXE, newer, EXE.parent))
+        return 3
     work = Path(tempfile.mkdtemp(prefix='snap_cli_'))
     fails = 0
     try:
