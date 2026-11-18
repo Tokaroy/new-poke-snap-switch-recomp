@@ -42,6 +42,8 @@ CHANNELS = ('stable', 'testing')
 USER_AGENT = 'SnapRecompUpdater'
 SIGN_PREFIX = b'snaprecomp-release-v1\n'
 ZIP_RE = re.compile(r'^SnapRecomp-Builder-v?(\d+(?:\.\d+){1,3})-win-x64\.zip$')
+RELEASE_EXE = 'SnapRecomp.exe'   # a release from the one-exe versions on ships this file and its .sig (builder/release_setup.py)
+PAYLOAD_MAGIC = b'SNPSET01'      # the exe ends with the builder as a zip, then its size (8 bytes, little endian) and this mark
 VERSION_RE = re.compile(r'^\d+(?:\.\d+){1,3}$')
 HEX64 = re.compile(r'^[0-9a-f]{64}$')
 HEX128 = re.compile(r'^[0-9a-f]{128}$')
@@ -168,18 +170,21 @@ def parse_release(doc, allow_pre=False):
     version = norm_version(tag)
     assets = {a.get('name'): a for a in doc.get('assets') or [] if isinstance(a, dict)}
     zips = [n for n in assets if isinstance(n, str) and ZIP_RE.match(n)]
-    if len(zips) != 1:
-        raise UpdateError('the release does not have exactly one builder zip (SnapRecomp-Builder-<version>-win-x64.zip)')
-    zname = zips[0]
-    if norm_version(ZIP_RE.match(zname).group(1)) != version:
-        raise UpdateError(f'the zip name {zname} does not match the release tag {tag}')
+    if RELEASE_EXE in assets:
+        zname = RELEASE_EXE   # the one exe: its version is the tag, and the signature file names the same version (verify_download)
+    elif len(zips) == 1:      # a release from before the one exe
+        zname = zips[0]
+        if norm_version(ZIP_RE.match(zname).group(1)) != version:
+            raise UpdateError(f'the zip name {zname} does not match the release tag {tag}')
+    else:
+        raise UpdateError(f'the release has no {RELEASE_EXE} (and not exactly one builder zip from an older version)')
     sig = assets.get(zname + '.sig')
     if not sig:
         raise UpdateError(f'the release has no {zname}.sig signature file; it is not trusted')
     z = assets[zname]
     size = z.get('size')
     if not isinstance(size, int) or size <= 0 or size > MAX_ZIP:
-        raise UpdateError('the zip has no usable size or is larger than 2 GiB')
+        raise UpdateError('the download has no usable size or is larger than 2 GiB')
     return Release(version, tag, clean_text(doc.get('body')), zname, str(z.get('browser_download_url') or ''), size,
                    str(sig.get('browser_download_url') or ''), str(doc.get('html_url') or ''))
 
@@ -557,6 +562,79 @@ def unpack(zpath, dest, version):
     return dest
 
 
+def payload_of(exe_path, dest_zip):
+    """Copy the builder zip out of a release exe (the bytes between the program and the 16-byte trailer) to dest_zip."""
+    exe_path, dest_zip = Path(exe_path), Path(dest_zip)
+    total = exe_path.stat().st_size
+    with open(exe_path, 'rb') as f:
+        if total < 16 + 22:
+            raise UpdateError('the downloaded exe is too small to hold the builder')
+        f.seek(total - 16)
+        tail = f.read(16)
+        size = int.from_bytes(tail[:8], 'little')
+        if tail[8:] != PAYLOAD_MAGIC or size <= 0 or size > total - 16:
+            raise UpdateError('the downloaded exe does not hold the builder (no payload mark at its end)')
+        f.seek(total - 16 - size)
+        left = size
+        with open(dest_zip, 'wb') as out:
+            while left:
+                b = f.read(min(1 << 20, left))
+                if not b:
+                    raise UpdateError('the downloaded exe ended early')
+                out.write(b)
+                left -= len(b)
+    return dest_zip
+
+
+def unpack_release(path, dest, version):
+    """unpack() for either kind of download: the one exe (its payload) or an older builder zip."""
+    path = Path(path)
+    if path.suffix.lower() != '.exe':
+        return unpack(path, dest, version)
+    tmp = path.with_name(path.name + '.payload.zip')
+    try:
+        return unpack(payload_of(path, tmp), dest, version)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def top_exe(env=None):
+    """The exe the player starts (SNAP_TOP_EXE, set by that exe when it hands off to the game), or None when the game was started directly."""
+    env = os.environ if env is None else env
+    p = env.get('SNAP_TOP_EXE')
+    return Path(p) if p and Path(p).is_file() else None
+
+
+def replace_top_exe(new_exe, top, log=None):
+    """Put the downloaded release exe in place of the one the player starts. That exe is running (it waits for the game), and Windows
+    lets a running exe be renamed but not overwritten: it moves aside to <name>.old (deleted by the new exe on its next start) and the
+    new file takes its name. On any failure the old exe is put back and False is returned: the game build is updated either way, and
+    the old exe still starts it."""
+    new_exe, top = Path(new_exe), Path(top)
+    old = top.with_name(top.name + '.old')
+    tmp = top.with_name(top.name + '.new')
+    try:
+        shutil.copyfile(new_exe, tmp)   # same folder as the target, so the last step is a rename
+        try:
+            old.unlink(missing_ok=True)
+        except OSError:
+            pass                        # still held by a run that has not ended: os.replace below fails and we report it
+        os.replace(top, old)
+        try:
+            os.replace(tmp, top)
+        except OSError:
+            os.replace(old, top)
+            raise
+    except OSError as e:
+        tmp.unlink(missing_ok=True)
+        if log:
+            log.write(f'the new {top.name} could not be put in place ({e}). The game itself is updated; download {top.name} again when convenient.')
+        return False
+    if log:
+        log.write(f'{top} replaced with the new version')
+    return True
+
+
 # ----------------------------------------------------------------------------------------------------------- rebuild
 
 REPLAY_FLAGS = ('maps', 'llvm', 'python', 'vulkan_lib', 'ghidra', 'jdk', 'harness', 'ghost', 'cache_dir')
@@ -617,7 +695,7 @@ def prune(state_dir, keep_dirs):
 
 
 def apply(builder_dir, work, state_dir, url=None, log=None, run=None, progress=None, confirm=None, wait_pid=None, channel='stable',
-          data_root=None):
+          data_root=None, top=None):
     """Download, verify, unpack, rebuild here, and switch only when the new build passes. Returns a result dict.
     `run(cmd, log)` runs the new builder (tests pass a fake). `confirm(info)` may return False to stop before downloading.
     Right after the signature is verified and before anything is rebuilt or switched, your saves and settings are copied to
@@ -654,11 +732,18 @@ def apply(builder_dir, work, state_dir, url=None, log=None, run=None, progress=N
         vdir = state_dir / 'versions' / version
         if vdir.exists():
             safedel.rmtree(vdir)
-        unpack(zpath, vdir, version)
-        zpath.unlink(missing_ok=True)
+        is_exe = zpath.suffix.lower() == '.exe'
+        try:
+            unpack_release(zpath, vdir, version)
+        except BaseException:
+            zpath.unlink(missing_ok=True)
+            raise
+        if not is_exe:
+            zpath.unlink(missing_ok=True)
         cmd, _ = build_command(vdir / 'builder', last)
         code = run(cmd, log)
         if code != 0:
+            zpath.unlink(missing_ok=True)
             safedel.rmtree(vdir, ignore_errors=True)
             prune(state_dir, [builder_dir])
             raise UpdateError(f'the rebuild with version {version} failed (exit code {code}). Your current game build was left exactly as it was. '
@@ -666,10 +751,16 @@ def apply(builder_dir, work, state_dir, url=None, log=None, run=None, progress=N
         st = load_state(state_dir)
         st.update(previous=installed, previous_dir=str(builder_dir), current=version, current_dir=str(vdir))
         save_state(state_dir, st)
+        exe_replaced = None
+        if is_exe:   # the build passed and is switched in: now the exe the player starts becomes the new version too
+            top = Path(top) if top else top_exe()
+            exe_replaced = replace_top_exe(zpath, top, log) if top else False
+            if not top:
+                log.write(f'this game was not started through {RELEASE_EXE}, so that file was not replaced')
         prune(state_dir, [vdir, builder_dir])
         log.write(f'updated {installed} -> {version}. The earlier build is in {work / "builds" / "previous"} (rollback restores it).')
         return {'updated': True, 'from': installed, 'to': version, 'builder_dir': str(vdir), 'channel': channel,
-                'backup': (bk or {}).get('name')}
+                'backup': (bk or {}).get('name'), 'exe_replaced': exe_replaced}
 
 
 def read_build_version(build_dir):

@@ -1347,6 +1347,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, PWSTR, int) {
     wchar_t me[MAX_PATH * 4];
     GetModuleFileNameW(nullptr, me, MAX_PATH * 4);
     g_exe = me;
+    DeleteFileW((g_exe + L".old").c_str());   // the version an update moved aside (snapbuild/update.py replace_top_exe); fails harmlessly while that one still runs
     wstring preFolder, shotDir;
     int startPage = -1;
     bool repair = false, uninst = false;

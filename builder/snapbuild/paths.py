@@ -35,6 +35,9 @@ def install_root(env=None, builder_dir=None):
     # <root>\setup\app\<version>\builder
     if len(b.parts) >= 5 and b.parent.parent.name.lower() == 'app' and b.parent.parent.parent.name.lower() == 'setup':
         return b.parents[3]
+    # after an update the builder runs from <root>\work\updates\versions\<version>\builder (snapbuild/update.py)
+    if len(b.parts) >= 6 and [x.name.lower() for x in (b.parents[1], b.parents[2], b.parents[3])] == ['versions', 'updates', 'work']:
+        return b.parents[4]
     return None
 
 

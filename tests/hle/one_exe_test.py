@@ -85,7 +85,10 @@ def main():
         dd = t / 'data with space'
         code, text = run(top, ['--data-dir', str(dd), '--windowed', '--width', '960'])
         check('built: values with spaces arrive whole', (dd / 'Roaming').is_dir() and 'launcher:' in text, (code, text))
-        check('built: no setup folder was unpacked for a start', not (a / 'setup' / 'app').exists(), list((a / 'setup').rglob('*'))[:5] if (a / 'setup').exists() else '')
+        (a / 'SnapRecomp.exe.old').write_bytes(b'the version an update moved aside')
+        run(top, ['--version'])
+        check('built: the exe an update moved aside (SnapRecomp.exe.old) is deleted on the next start', not (a / 'SnapRecomp.exe.old').exists())
+        check('built: no setup folder was unpacked for a start',not (a / 'setup' / 'app').exists(), list((a / 'setup').rglob('*'))[:5] if (a / 'setup').exists() else '')
 
         # ---- --build-dir: the build is somewhere else; the flag itself is not passed on (the game would refuse it)
         b = t / 'Elsewhere'
