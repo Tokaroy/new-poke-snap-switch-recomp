@@ -1,0 +1,348 @@
+// Route aim tool (project code, ours). Developer / test tool only: off unless SNAP_AIM=1, never set by the launcher or settings.
+// With it unset nothing here runs (the two entry points return on one flag test and the function hook stays off).
+//
+// What it does: lets a route (SNAP_INPUT_SCRIPT, host/README.md "Scripted input") point the ride camera at a Pokemon instead of
+// shooting blind.
+//   aim <CH_xxx|nearest|pose:<text>|off> [timeout=<s>] [tol=<half-screens>] [range=<m>] [up=<m>] [zoom=1]
+//                          up = how far above the actor's origin to aim (default 0.4 m), zoom=1 holds ZL while locked
+//                          (pose:<text> = the actor whose motion event name contains text, e.g. pose:EV_Mot_Mis_Stage001_017)
+//                          steer the right stick until that actor sits on the reticle (and is within range); the route goes on
+//                          when it does, or after the timeout (default 8 s; the run does not end). The target stays locked for
+//                          the lines that follow, until `aim off` or the next aim line.
+//   shoot                  press A for 4 presents and log the shot (target, screen offset, distance, pose); with NVN_FRAME_DUMP the
+//                          frame is saved too. A centered shot marks that species done, so `aim nearest` picks another one next.
+//   wait_pose <text> [timeout=<s>]
+//                          go on when the locked target's (or, without one, any actor's) current motion event name contains
+//                          <text>, e.g. wait_pose EV_Mot_Sp_P097_01
+// Log lines: "aim: ..." (lock, centered, timeout) and "aim: shot target=<name> off=<x>,<y> dist=<m> pose=<event>".
+//
+// How it reads the game:
+//  - camera: the ride camera builder's tanf call (main+0x296400, h_tanf in lodanim.cpp) hands over the camera object; eye /
+//    target / up are at +0xd0 / +0xe0 / +0xf0, the aspect at +0x12c, and the tanf argument is the half field of view.
+//  - actors: the collider component update (main+0x36f160: x0 = component, [x0+0x20] = owner actor, x2 = the owner's world
+//    matrix, translation at +0x30) runs for every actor with a collider. It is watched through the function-entry hook
+//    (g_fnprof, slow: about a fifth of guest CPU), which is why this is a test tool.
+//  - what is centered is the picture (the photo is the whole view), not the game's pointer, which can sit off-center.
+//  - SNAP_AIM_LOG=1 logs "aim: see <name> pose=<event> off=.. dist=.. pos=.." whenever a Pokemon's pose changes: the list of what
+//    a course offers and when, to write a route from.
+//  - SNAP_AIM_DISCOVER=1 logs the text found in each new actor's memory ("aim: actor ... str ..."), the way the name and pose
+//    offsets below were found.
+// Pure math: aim_core.h (tests/mods/aim_test.cpp).
+#include <windows.h>
+
+#include <atomic>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <mutex>
+#include <set>
+#include <string>
+#include <unordered_map>
+
+#include "loader.h"
+#include "aim_core.h"
+
+using namespace loader;
+
+extern "C" volatile int g_fnprof;
+extern "C" uint64_t snap_present_count();   // host/boot.cpp
+
+namespace {
+
+const uint64_t kCollUpdate = 0x710036f160ull;
+
+bool g_on, g_discover, g_census;   // g_census (SNAP_AIM_LOG=1): one line whenever a Pokemon's pose changes
+int g_census_n;
+std::mutex g_mu;
+
+struct Actor {
+  uint64_t own = 0;
+  aim::V3 pos{};
+  uint64_t present = 0;
+  std::string name, pose;
+  uint64_t checked = 0;   // present of the last name / pose read
+};
+std::unordered_map<uint64_t, Actor> g_act;
+aim::Cam g_cam;
+uint64_t g_cam_present = ~0ull;
+
+bool readable(const void* p, size_t n) { return p && !IsBadReadPtr(p, n); }
+bool ident(unsigned char ch) { return (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == '_' || ch == '.' || ch == '/'; }
+
+// Text at p when it looks like a name (4 to 63 name characters, at least one letter, then a NUL).
+std::string cstr_at(const char* p, size_t want = 0) {
+  std::string t;
+  if (!readable(p, 4)) return t;
+  bool letter = false;
+  for (int i = 0; i < 64; i++) {
+    if (!readable(p + i, 1)) return {};
+    const unsigned char ch = (unsigned char)p[i];
+    if (!ch) break;
+    if (!ident(ch) || i == 63) return {};
+    letter |= ch >= 'A';
+    t += (char)ch;
+  }
+  if (t.size() < 4 || !letter || (want && t.size() != want)) return {};
+  return t;
+}
+
+// A libc++ std::string at a (short: size*2 in byte 0, text from byte 1; long: capacity|1, size, pointer).
+std::string stdstr_at(uint64_t a) {
+  if (!readable((void*)a, 24)) return {};
+  const unsigned char b0 = *(const unsigned char*)a;
+  if (!(b0 & 1)) { const size_t n = b0 >> 1; return n >= 4 && n <= 22 ? cstr_at((const char*)a + 1, n) : std::string(); }
+  const uint64_t n = *(const uint64_t*)(a + 8), p = *(const uint64_t*)(a + 16);
+  return n >= 4 && n < 64 ? cstr_at((const char*)p, (size_t)n) : std::string();
+}
+
+// The actor's own name (CH_xxx...) and its current motion event name. Offsets from the discovery log.
+// Name: the model's skeleton name, a std::string at [actor+0x40]+0x28 ("SK_CH_034_00_0_A00"; CH_<n> is the Snap model number),
+// given without the "SK_". It is empty until the model has loaded. Pose: a std::string at actor+0x418 ("EV_Mot_Com_Ex_Sleep_01").
+std::string name_of(uint64_t own) {
+  if (!readable((void*)(own + 0x40), 8)) return {};
+  std::string n = stdstr_at(*(const uint64_t*)(own + 0x40) + 0x28);
+  if (n.compare(0, 3, "SK_") == 0) n.erase(0, 3);
+  return n;
+}
+std::string pose_of(uint64_t own) {
+  const std::string p = stdstr_at(own + 0x418);
+  return p.compare(0, 3, "EV_") == 0 ? p : std::string();
+}
+bool is_pokemon(const std::string& n) { return n.size() >= 6 && n.compare(0, 3, "CH_") == 0 && n[3] >= '0' && n[3] <= '9'; }
+
+void discover_block(uint64_t own, uint64_t base, size_t size, int depth, const char* path, std::set<std::string>& seen, int& budget) {
+  for (size_t o = 0; o + 8 <= size && budget > 0; o += 8) {
+    if (!readable((void*)(base + o), 8)) { o = (o | 0xfff) - 7; continue; }
+    std::string s = stdstr_at(base + o);
+    const char* kind = "str";
+    const uint64_t v = *(const uint64_t*)(base + o);
+    if (s.empty() && v > 0x10000 && (v >> 47) == 0) { s = cstr_at((const char*)v); kind = "ptr"; }
+    if (!s.empty()) {
+      char key[160];
+      snprintf(key, sizeof key, "%s+%#zx %s %s", path, o, kind, s.c_str());
+      if (seen.insert(key).second) { budget--; trace("aim: actor %llx %s", (unsigned long long)own, key); }
+      continue;
+    }
+    if (depth > 0 && v > 0x10000 && (v >> 47) == 0 && (v & 7) == 0 && (v >> 32) != 0x71 && readable((void*)v, 0x40)) {
+      char sub[64];
+      snprintf(sub, sizeof sub, "%s+%#zx>", path, o);
+      discover_block(own, v, 0x180, depth - 1, sub, seen, budget);
+    }
+  }
+}
+
+void discover(uint64_t own) {
+  static int actors;
+  if (actors >= 400) return;
+  actors++;
+  std::set<std::string> seen;
+  int budget = 60;
+  discover_block(own, own, 0x600, 1, "", seen, budget);
+}
+
+}  // namespace
+
+// loader.cpp fnprof_hit -> skips.cpp snap_skips_observe -> here, for every guest function entry while g_fnprof is set.
+extern "C" void snap_aim_observe(uint64_t a, uint64_t x0) {
+  if (!g_on || a != kCollUpdate) return;
+  Cpu* cc = loader::g_tls_cpu;
+  const uint64_t x2 = cc ? cc->x[2] : 0;
+  if (!readable((void*)(x0 + 0x20), 8) || !readable((void*)(x2 + 0x30), 12)) return;
+  const uint64_t own = *(const uint64_t*)(x0 + 0x20);
+  if (!own) return;
+  const float* t = (const float*)(x2 + 0x30);
+  bool fresh = false;
+  {
+    std::lock_guard<std::mutex> lk(g_mu);
+    Actor& ac = g_act[own];
+    fresh = !ac.own;
+    ac.own = own;
+    ac.pos = {t[0], t[1], t[2]};
+    ac.present = snap_present_count();
+    if (fresh || ac.present - ac.checked >= 8) {   // the model name arrives late and the pose changes: read them every 8 presents
+      ac.checked = ac.present;
+      if (ac.name.empty()) ac.name = name_of(own);
+      if (g_census && is_pokemon(ac.name)) {
+        std::string po = pose_of(own);
+        if (po != ac.pose) {
+          ac.pose = po;
+          aim::V3 p = ac.pos; p.y += 0.4f;
+          const aim::Proj pr = aim::project(g_cam, p);
+          if (g_census_n++ < 20000)
+            trace("aim: see %s (%llx) pose=%s off=%.2f,%.2f%s dist=%.1f pos=%.1f,%.1f,%.1f present=%llu", ac.name.c_str(), (unsigned long long)own, po.empty() ? "-" : po.c_str(),
+                  pr.x, pr.y, pr.front ? "" : " behind", pr.dist, ac.pos.x, ac.pos.y, ac.pos.z, (unsigned long long)ac.present);
+        }
+      }
+    }
+  }
+  if (fresh && g_discover) discover(own);
+}
+
+// lodanim.cpp h_tanf, at the ride camera builder's tanf call: x20 = camera object, half = the half field of view (radians).
+extern "C" void snap_aim_camera(Cpu* c, float half) {
+  if (!g_on) return;
+  if (((c->x[30] - 0x7100000000ull) & 0xffffffffull) != 0x296400) return;
+  const uint64_t obj = c->x[20];
+  if (!readable((void*)(obj + 0xd0), 0x30) || !readable((void*)(obj + 0x12c), 4)) return;
+  const float* f = (const float*)(obj + 0xd0);
+  if (g_discover && snap_present_count() % 10 == 0 && readable((void*)obj, 0x400)) {   // every camera object that comes through here, with its floats
+    static uint64_t lastp[8], objs[8];
+    int i = 0;
+    while (i < 8 && objs[i] && objs[i] != obj) i++;
+    if (i < 8 && (objs[i] != obj || lastp[i] != snap_present_count())) {
+      objs[i] = obj; lastp[i] = snap_present_count();
+      static char b[8000]; int o = 0;
+      for (int k = 0; k < 0x400; k += 4) { const float v = *(const float*)(obj + k); if (v != 0 && std::fabs(v) < 1e6f && std::fabs(v) > 1e-6f) o += snprintf(b + o, sizeof b - o, " %x:%.4g", k, v); }
+      trace("aim: camobj %d %llx present=%llu%s", i, (unsigned long long)obj, (unsigned long long)lastp[i], b);
+    }
+  }
+  std::lock_guard<std::mutex> lk(g_mu);
+  g_cam.eye = {f[0], f[1], f[2]};
+  g_cam.target = {f[4], f[5], f[6]};
+  g_cam.up = {f[8], f[9], f[10]};
+  g_cam.half_y = half;
+  const float asp = *(const float*)(obj + 0x12c);
+  if (asp > 0.5f && asp < 8.0f) g_cam.aspect = asp;
+  const uint64_t pr = snap_present_count();
+  if (g_discover && pr != g_cam_present && pr % 300 == 0)
+    trace("aim: camera eye=%.1f,%.1f,%.1f look=%.2f,%.2f,%.2f half=%.3f aspect=%.3f actors=%zu", g_cam.eye.x, g_cam.eye.y, g_cam.eye.z, g_cam.target.x - g_cam.eye.x,
+          g_cam.target.y - g_cam.eye.y, g_cam.target.z - g_cam.eye.z, half, g_cam.aspect, g_act.size());
+  g_cam_present = pr;
+}
+
+// ---- route interface (runtime/hle/input_core.cpp: the `aim`, `shoot` and `wait_pose` lines) ----
+namespace {
+std::string g_spec;            // "", "nearest" or a name (part of it is enough, case ignored)
+float g_tol = 0.06f, g_range = 0, g_up = 0.4f;
+bool g_zoom;                   // zoom=1: hold ZL (the camera zoom) while a target is locked
+uint64_t g_lock;               // the actor the target resolved to
+int g_flip_x = 1, g_flip_y = 1;
+std::set<std::string> g_done;  // species (CH_xxx) already shot on the reticle: `aim nearest` moves on to another one
+
+bool contains_nocase(const std::string& h, const std::string& n) {
+  if (n.empty()) return true;
+  for (size_t i = 0; i + n.size() <= h.size(); i++) {
+    size_t k = 0;
+    while (k < n.size() && tolower((unsigned char)h[i + k]) == tolower((unsigned char)n[k])) k++;
+    if (k == n.size()) return true;
+  }
+  return false;
+}
+
+// g_mu held. The actor the spec means right now: the locked one while it is still updating, else the closest match in front.
+const Actor* resolve(aim::Proj* out) {
+  if (g_spec.empty()) return nullptr;
+  const uint64_t now = snap_present_count();
+  const Actor* best = nullptr;
+  aim::Proj bp;
+  float bd = 1e30f;
+  for (const auto& kv : g_act) {
+    const Actor& ac = kv.second;
+    if (now - ac.present > 30 || ac.name.empty()) continue;
+    if (g_spec == "nearest") { if (!is_pokemon(ac.name) || g_done.count(ac.name.substr(0, 6))) continue; }
+    else if (g_spec.compare(0, 5, "pose:") == 0) { if (ac.own != g_lock && pose_of(ac.own).find(g_spec.c_str() + 5) == std::string::npos) continue; }
+    else if (!contains_nocase(ac.name, g_spec)) continue;
+    aim::V3 p = ac.pos;
+    p.y += g_up;
+    const aim::Proj pr = aim::project(g_cam, p);
+    if (ac.own == g_lock) { *out = pr; return &ac; }
+    if (pr.dist < 0.5f || (g_range > 0 && pr.dist > g_range)) continue;
+    const float score = pr.dist * (pr.front ? 1.0f : 3.0f);
+    if (score < bd) { bd = score; best = &ac; bp = pr; }
+  }
+  if (best) *out = bp;
+  return best;
+}
+}  // namespace
+
+extern "C" void snap_aim_set(const char* spec) {
+  if (!g_on) return;
+  std::lock_guard<std::mutex> lk(g_mu);
+  std::string s = spec ? spec : "";
+  g_tol = 0.06f; g_range = 0; g_up = 0.4f; g_lock = 0; g_zoom = false;
+  size_t sp = s.find(' ');
+  std::string opts = sp == std::string::npos ? "" : s.substr(sp);
+  if (sp != std::string::npos) s.resize(sp);
+  if (const char* t = strstr(opts.c_str(), "tol=")) g_tol = (float)atof(t + 4);
+  if (const char* t = strstr(opts.c_str(), "range=")) g_range = (float)atof(t + 6);
+  if (const char* t = strstr(opts.c_str(), "up=")) g_up = (float)atof(t + 3);
+  if (const char* t = strstr(opts.c_str(), "zoom=")) g_zoom = t[5] != '0';
+  g_spec = s == "off" ? "" : s;
+  aim::Proj pr;
+  const Actor* ac = resolve(&pr);
+  if (ac) g_lock = ac->own;
+  if (g_spec.empty()) trace("aim: off");
+  else if (ac) trace("aim: target '%s' locked on %s (%llx) off=%.2f,%.2f dist=%.1f present=%llu", g_spec.c_str(), ac->name.c_str(), (unsigned long long)ac->own, pr.x, pr.y, pr.dist, (unsigned long long)snap_present_count());
+  else trace("aim: target '%s': no such actor in sight yet (%zu actors known)", g_spec.c_str(), g_act.size());
+}
+
+extern "C" int snap_aim_stick(float* rx, float* ry) {
+  if (!g_on) return 0;
+  std::lock_guard<std::mutex> lk(g_mu);
+  aim::Proj pr;
+  const Actor* ac = resolve(&pr);
+  if (!ac) return 0;
+  if (!g_lock) { g_lock = ac->own; trace("aim: target '%s' locked on %s (%llx) off=%.2f,%.2f dist=%.1f", g_spec.c_str(), ac->name.c_str(), (unsigned long long)ac->own, pr.x, pr.y, pr.dist); }
+  const float zk = aim::zoom_gain(g_cam.half_y);
+  const aim::Stick st = aim::steer(pr, g_tol * 0.5f, 2.5f * zk, 0.22f * (zk < 0.5f ? 0.5f : zk));
+  *rx = st.rx * (float)g_flip_x;
+  *ry = st.ry * (float)g_flip_y;
+  return g_zoom ? 2 : 1;
+}
+
+extern "C" int snap_aim_ready(char* why, int n) {
+  if (!g_on) { if (why && n > 0) snprintf(why, (size_t)n, "SNAP_AIM is not set"); return 1; }
+  std::lock_guard<std::mutex> lk(g_mu);
+  if (g_spec.empty()) { if (why && n > 0) snprintf(why, (size_t)n, "no target"); return 1; }
+  aim::Proj pr;
+  const Actor* ac = resolve(&pr);
+  if (!ac) { if (why && n > 0) snprintf(why, (size_t)n, "target '%s' not in sight", g_spec.c_str()); return 0; }
+  if (why && n > 0) snprintf(why, (size_t)n, "%s off=%.2f,%.2f dist=%.1f", ac->name.c_str(), pr.x, pr.y, pr.dist);
+  return aim::centered(pr, g_tol, g_range) ? 1 : 0;
+}
+
+extern "C" void snap_aim_shot(void) {
+  if (!g_on) return;
+  std::lock_guard<std::mutex> lk(g_mu);
+  aim::Proj pr;
+  const Actor* ac = resolve(&pr);
+  if (!ac) { trace("aim: shot target=none present=%llu", (unsigned long long)snap_present_count()); return; }
+  const bool hit = aim::centered(pr, g_tol, g_range);
+  const std::string po = pose_of(ac->own);
+  trace("aim: shot target=%s off=%.2f,%.2f dist=%.1f pose=%s %s present=%llu", ac->name.c_str(), pr.x, pr.y, pr.dist, po.empty() ? "-" : po.c_str(), hit ? "centered" : "off-center",
+        (unsigned long long)snap_present_count());
+  if (hit && is_pokemon(ac->name)) g_done.insert(ac->name.substr(0, 6));
+}
+
+extern "C" int snap_aim_pose(const char* text, char* why, int n) {
+  if (!g_on) { if (why && n > 0) snprintf(why, (size_t)n, "SNAP_AIM is not set"); return 1; }
+  std::lock_guard<std::mutex> lk(g_mu);
+  const std::string want = text ? text : "";
+  const uint64_t now = snap_present_count();
+  std::string last;
+  for (const auto& kv : g_act) {
+    const Actor& ac = kv.second;
+    if (now - ac.present > 30 || ac.name.empty()) continue;
+    if (g_lock && ac.own != g_lock) continue;
+    last = pose_of(ac.own);
+    if (!last.empty() && last.find(want) != std::string::npos) { if (why && n > 0) snprintf(why, (size_t)n, "%s pose %s", ac.name.c_str(), last.c_str()); return 1; }
+  }
+  if (why && n > 0) snprintf(why, (size_t)n, "pose '%s' not seen (last %s)", want.c_str(), last.empty() ? "-" : last.c_str());
+  return 0;
+}
+
+namespace loader {
+void snap_aim_install() {
+  const char* e = getenv("SNAP_AIM");
+  if (!e || !*e || *e == '0') return;
+  g_on = true;
+  const char* d = getenv("SNAP_AIM_DISCOVER");
+  g_discover = d && *d && *d != '0';
+  const char* l = getenv("SNAP_AIM_LOG");
+  g_census = l && *l && *l != '0';
+  g_fnprof = 1;
+  fprintf(stderr, "[aim] SNAP_AIM=1: route aim tool on (function hook on: slower run)%s\n", g_discover ? ", discovery log" : "");
+}
+}  // namespace loader

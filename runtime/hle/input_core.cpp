@@ -12,6 +12,8 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <map>
+#include <set>
 #include <sstream>
 #include <vector>
 
@@ -22,9 +24,6 @@
 extern "C" void snap_audio_log_checks(void);   // runtime/audio/audio_out.cpp: the "[audio] checks:" counter line, printed before a route ends the run
 extern "C" void snap_audio_log_checks_none(void) {}   // test builds without the audio layer link this instead
 #pragma comment(linker, "/alternatename:snap_audio_log_checks=snap_audio_log_checks_none")
-extern "C" void snap_import_counts_dump(const char* tag);   // host/loader.cpp (debug, needs SNAP_IMPORT_COUNT=1): imports called since the last dump
-extern "C" void snap_import_counts_dump_none(const char*) {}
-#pragma comment(linker, "/alternatename:snap_import_counts_dump=snap_import_counts_dump_none")
 namespace nvn { extern int g_presentCount; extern int g_fdBurst; }   // runtime/nvn/nvn_tex_vk.cpp: frame clock for '@f' script times; nvn_vk.cpp: NVN_FRAME_DUMP burst (script token shot=<n>)
 
 namespace hle::input {
@@ -42,6 +41,26 @@ extern "C" int snap_state_count_none(const char*) { return 0; }
 #pragma comment(linker, "/alternatename:snap_state_request=snap_state_request_none")
 #pragma comment(linker, "/alternatename:snap_state_idle=snap_state_idle_none")
 #pragma comment(linker, "/alternatename:snap_state_count=snap_state_count_none")
+// Route aim tool (host/mods/aim.cpp, developer tool, needs SNAP_AIM=1): the `aim`, `shoot` and `wait_pose` route lines. Test builds
+// and runs without the tool get the stand-ins: no target, always "ready", no stick.
+extern "C" void snap_aim_set(const char* spec);               // "<target> [tol=<f>] [range=<m>]" or "off"
+extern "C" int snap_aim_ready(char* why, int n);              // the target sits on the reticle (1 when there is no target)
+extern "C" int snap_aim_stick(float* rx, float* ry);          // 1 = hold the right stick there this poll, 2 = and hold ZL (zoom)
+extern "C" void snap_aim_shot(void);                          // a `shoot` line fired: log target, offset, distance, pose
+extern "C" int snap_aim_pose(const char* text, char* why, int n);   // the target's current motion event name contains text
+extern "C" void snap_aim_set_none(const char*) {}
+extern "C" int snap_aim_ready_none(char* why, int n) { if (why && n > 0) std::snprintf(why, (size_t)n, "aim tool off"); return 1; }
+extern "C" int snap_aim_stick_none(float*, float*) { return 0; }
+extern "C" void snap_aim_shot_none(void) {}
+extern "C" int snap_aim_pose_none(const char*, char* why, int n) { if (why && n > 0) std::snprintf(why, (size_t)n, "aim tool off"); return 1; }
+#pragma comment(linker, "/alternatename:snap_aim_set=snap_aim_set_none")
+#pragma comment(linker, "/alternatename:snap_aim_ready=snap_aim_ready_none")
+#pragma comment(linker, "/alternatename:snap_aim_stick=snap_aim_stick_none")
+#pragma comment(linker, "/alternatename:snap_aim_shot=snap_aim_shot_none")
+#pragma comment(linker, "/alternatename:snap_aim_pose=snap_aim_pose_none")
+extern "C" void snap_import_counts_dump(const char* tag);   // host/loader.cpp (debug, needs SNAP_IMPORT_COUNT=1): imports called since the last dump
+extern "C" void snap_import_counts_dump_none(const char*) {}
+#pragma comment(linker, "/alternatename:snap_import_counts_dump=snap_import_counts_dump_none")
 
 // ---------------------------------------------------------------------------------------------------------------
 // names
@@ -803,6 +822,15 @@ bool Hub::save(std::string* err) {
 //       state=idle             no save-state request is queued or running (see the save=/load= tokens below)
 //       state=saves>=<n>       n saves finished ok since the start (also state=loads>=<n>; state=done>=<n> counts refused ones too). Use these after a
 //                              save=/load= line: they cannot miss a request that finished between two polls, `state=idle` can.
+//       aim                    the aim tool's target is centered and in range (below)
+//       pose=<text>            some actor's current pose event contains <text> (aim tool on)
+// Aim tool (dev only, SNAP_AIM=1, host/mods/aim.cpp; without it these lines do nothing and time out):
+//   aim <species|nearest|pose:<text>|off> [timeout=<s>] [tol=] [range=<m>] [up=<m>] [zoom=1]
+//                                                  starts a segment that drives the right stick until the target is centered
+//                                                  (species = part of the model name, e.g. CH_017); soft timeout (default 8 s):
+//                                                  the route goes on either way.
+//   wait_pose <text> [timeout=<s>]                 starts a segment when an actor enters that pose event (soft, default 30 s)
+//   shoot [<start>]                                takes a photo (A) and logs "aim: shot target=.. off=.. dist=.. pose=.."
 // Save states: the tokens save=<name> and load=<name> (once, when their entry starts) save the whole game to RAM / bring it back (one slot; docs/save-states.md).
 // They run on their own thread and drain the game first, so follow them with `wait state=idle`. The script's own clock and HLE route state keep running forward.
 // Frame timing (load-independent): write the start as @f<frame> (e.g. "@f600 30 A", "repeat @f0 @f3000 90 15 A") and the whole line counts
@@ -814,7 +842,7 @@ bool Hub::save(std::string* err) {
 // A token is a Switch button name (A B X Y L R ZL ZR Plus Minus Left Up Right Down StickL StickR ...) or an axis
 // lx=<f> ly=<f> rx=<f> ry=<f> with f in [-1, 1] (y up positive).
 namespace {
-struct ScriptEntry { bool has_mpos = false; float mx = 0, my = 0; double start, end, period, hold; uint64_t buttons; int32_t ax[4]; bool has_ax[4]; int seg; bool frames; float rumble_lo, rumble_hi; bool has_rumble; float gyro_yaw, gyro_pitch; bool has_gyro; bool is_end; int shot_n; bool screenshot; std::string cond; std::vector<std::string> fc; int state_op = 0; std::string state_name; mutable bool state_prev = false; std::vector<Source> src; std::string icount_tag; };
+struct ScriptEntry { bool is_shoot = false; bool has_mpos = false; float mx = 0, my = 0; double start, end, period, hold; uint64_t buttons; int32_t ax[4]; bool has_ax[4]; int seg; bool frames; float rumble_lo, rumble_hi; bool has_rumble; float gyro_yaw, gyro_pitch; bool has_gyro; bool is_end; int shot_n; bool screenshot; std::string cond; std::vector<std::string> fc; int state_op = 0; std::string state_name; mutable bool state_prev = false; std::vector<Source> src; std::string icount_tag; };
 struct Script {
   bool loaded = false;
   uint64_t t0 = 0;
@@ -822,6 +850,8 @@ struct Script {
   std::vector<std::string> seg_event;   // seg_event[k] raises segment k+1 ("?<cond>" = a "wait" line)
   std::vector<double> seg_timeout;       // seconds segment k may wait for seg_event[k] (0 = forever)
   std::vector<int> seg_hold;             // presents the wait condition must hold
+  std::map<int, std::string> seg_aim;    // `aim` lines: the target to lock when segment k starts waiting (host/mods/aim.cpp)
+  std::set<int> seg_soft;                // segments whose timeout starts the next segment instead of ending the run (aim, wait_pose)
   int load_seg = 0;                      // segment being parsed
   std::atomic<int> cur{0};               // segment running
   std::atomic<uint64_t> cur_t0{0};       // start time (ns) of the running segment
@@ -890,6 +920,10 @@ bool route_cond(const std::string& c0, std::string* why) {
   } else if (c.rfind("film<=", 0) == 0) {
     r = g_film.load() >= 0 && g_film.load() <= std::atoi(c.c_str() + 6);
     std::snprintf(b, sizeof b, "film counter %d", g_film.load());
+  } else if (c == "aim") {   // the `aim` line's target sits on the reticle (host/mods/aim.cpp)
+    r = snap_aim_ready(b, (int)sizeof b) != 0;
+  } else if (c.rfind("pose=", 0) == 0) {   // `wait_pose <text>`: the aim target's current motion event name contains text
+    r = snap_aim_pose(c.c_str() + 5, b, (int)sizeof b) != 0;
   } else if (c == "state=idle") {   // no save/load request queued or running (runtime/os/os_state.cpp)
     r = snap_state_idle() != 0;
     std::snprintf(b, sizeof b, "state worker %s", r ? "idle" : "busy");
@@ -1102,8 +1136,34 @@ void script_load() {
       ++g_script.load_seg;
       continue;
     }
+    if (w == "aim" || w == "wait_pose") {   // aim <CH_xxx|nearest|off> [timeout=<s>] [tol=<f>] [range=<m>] / wait_pose <text> [timeout=<s>] (host/mods/aim.cpp, SNAP_AIM=1)
+      std::string tgt, o;
+      double to = w == "aim" ? 8.0 : 30.0;
+      if (!(is >> tgt)) { log("input script: bad line '%s'", line.c_str()); continue; }
+      std::string spec = tgt;
+      while (is >> o) {
+        if (o.rfind("timeout=", 0) == 0) to = std::atof(o.c_str() + 8);
+        else if (w == "aim" && (o.rfind("tol=", 0) == 0 || o.rfind("range=", 0) == 0 || o.rfind("up=", 0) == 0 || o.rfind("zoom=", 0) == 0)) spec += " " + o;
+        else log("input script: unknown option '%s' in '%s'", o.c_str(), line.c_str());
+      }
+      if (w == "aim") g_script.seg_aim[g_script.load_seg] = spec;
+      g_script.seg_soft.insert(g_script.load_seg);
+      route_enable();
+      g_script.seg_event.push_back(w == "aim" ? std::string("?aim") : "?pose=" + tgt); g_script.seg_timeout.push_back(to); g_script.seg_hold.push_back(w == "aim" ? 3 : 1);
+      ++g_script.load_seg;
+      continue;
+    }
     ScriptEntry en{};
     en.seg = g_script.load_seg;
+    if (w == "shoot") {   // shoot [<start>]: A for 4 presents, and the aim tool logs the shot
+      std::string a;
+      if (!(is >> a)) a = "@f0";
+      en.start = en.end = script_num(a, &en.frames);
+      en.period = 1; en.hold = en.frames ? 4 : 0.07; en.buttons = 1ull << button_from_name("A"); en.is_shoot = true; en.shot_n = 1;
+      g_script.e.push_back(en);
+      ++n;
+      continue;
+    }
     if (w == "end") {   // end <start>: the route is done; the run exits with code 0 at that time of the segment
       std::string a;
       if (!(is >> a)) a = "0";
@@ -1156,6 +1216,8 @@ void script_check_wait(uint64_t now_ns_v) {
   if (k >= (int)g_script.seg_event.size()) return;
   const std::string& ev = g_script.seg_event[(size_t)k];
   const double el = (double)(now_ns_v - g_script.cur_t0.load()) * 1e-9;
+  { static int aim_k = -1;   // an `aim` line locks its target when its segment starts waiting
+    if (aim_k != k) { aim_k = k; const auto it = g_script.seg_aim.find(k); if (it != g_script.seg_aim.end()) snap_aim_set(it->second.c_str()); } }
   if (ev[0] == '?') {
     std::string why;
     const int f = nvn::g_presentCount;
@@ -1180,6 +1242,14 @@ void script_check_wait(uint64_t now_ns_v) {
     if (ev[0] == '?') route_cond(ev.substr(1), &why);
     log("input script: TIMEOUT after %.0f s waiting for %s '%s' (segment %d, %s); game state:", el, ev[0] == '?' ? "condition" : "event",
         ev.c_str() + (ev[0] == '?'), k, why.empty() ? "-" : why.c_str());
+    if (g_script.seg_soft.count(k)) {   // aim / wait_pose: the route goes on without it
+      const int f = nvn::g_presentCount;
+      g_script.cur_t0 = now_ns_v;
+      g_script.cur_f0 = f;
+      g_script.cur = k + 1;
+      log("input script: wait '%s' gave up at present %d, the route goes on: segment %d", ev.c_str() + 1, f, k + 1);
+      return;
+    }
     route_dump();
     const char* e = std::getenv("SNAP_ROUTE_TIMEOUT");
     if (e && !std::strcmp(e, "continue")) { g_script.seg_timeout[(size_t)k] = 0; return; }   // keep running (debug)
@@ -1214,6 +1284,7 @@ void script_apply(uint64_t now_ns_v, PadSample& p) {
     if (!en.cond.empty() && !route_cond(en.cond, nullptr)) continue;
     if (!en.icount_tag.empty() && !en.state_prev) { en.state_prev = true; snap_import_counts_dump(en.icount_tag.c_str()); }
     if (en.state_op && !en.state_prev) { en.state_prev = true; snap_state_request(en.state_op, en.state_name.c_str()); }   // edge: once per entry start
+    if (en.is_shoot && !en.state_prev) { en.state_prev = true; snap_aim_shot(); }
     if (en.is_end) {
       log("input script: end of route reached (segment %d, present %d); exiting", seg, nvn::g_presentCount);
       std::fflush(stdout);
@@ -1237,11 +1308,18 @@ void script_apply(uint64_t now_ns_v, PadSample& p) {
     for (int i = 0; i < 4; ++i) if (en.has_ax[i]) (&p.lx)[i] = en.ax[i];
     p.connected = true;
   }
+  { float ax = 0, ay = 0;   // a locked `aim` target steers the right stick (over any rx= / ry= token)
+    if (const int am = snap_aim_stick(&ax, &ay)) {
+      if (am == 2) { const uint64_t zl = 1ull << button_from_name("ZL"); cur |= zl; p.buttons |= zl; }   // zoom=1
+      p.rx = (int32_t)std::lround(std::clamp((double)ax, -1.0, 1.0) * 32767.0);
+      p.ry = (int32_t)std::lround(std::clamp((double)ay, -1.0, 1.0) * 32767.0);
+      p.connected = true;
+    } }
+  freecam::script_end();
   static bool shot_prev = false;
   if (shot_on && !shot_prev) g_shot_req = true;
   shot_prev = shot_on;
   if (const uint64_t ab = g_ab_buttons.load()) { cur |= ab; p.buttons |= ab; p.connected = true; }   // snap_input_force_buttons (A/B capture tool)
-  freecam::script_end();
   if (cur != last) { last = cur; log("input script: seg %d t=%.2f buttons=%#llx", seg, now, (unsigned long long)cur); }
 }
 }  // namespace

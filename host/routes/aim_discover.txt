@@ -1,0 +1,16 @@
+# fixture: story_complete
+# Aim tool discovery (scanfix 2026-11-17): a Florio Day ride with SNAP_AIM=1 SNAP_AIM_DISCOVER=1; small right-stick pushes with a
+# frame saved every 10 presents, to match the reticle on screen against the camera object's numbers ("aim: camobj" lines).
+wait ui=title timeout=200
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=420
+repeat @f240 @f6000 150 6 A
+wait ui=map_select:CourseSelect timeout=60
+@f180 6 A
+wait ride timeout=300
+repeat @f60 @f420 10 1 shot=1
+@f100 30 ry=1
+@f200 30 rx=-1
+@f300 30 ry=-1
+@f380 20 rx=1 ry=1
+end @f430

@@ -30,4 +30,20 @@ $p3 = Start-Process -FilePath $exe3 -NoNewWindow -PassThru
 $p3.PriorityClass = 'BelowNormal'
 if (-not $p3.WaitForExit(60000)) { taskkill /PID $p3.Id /T /F | Out-Null; throw "uismooth_test timed out" }
 if ($p3.ExitCode -ne 0) { $code = $p3.ExitCode }
+# Pose-event / request tag probe (host/mods/evprobe_core.h).
+$exe4 = Join-Path $out 'evprobe_test.exe'
+& clang++ -std=c++20 -O1 -g (Join-Path $PSScriptRoot 'evprobe_test.cpp') -o $exe4
+if ($LASTEXITCODE -ne 0) { throw "evprobe_test build failed" }
+$p4 = Start-Process -FilePath $exe4 -NoNewWindow -PassThru
+$p4.PriorityClass = 'BelowNormal'
+if (-not $p4.WaitForExit(60000)) { taskkill /PID $p4.Id /T /F | Out-Null; throw "evprobe_test timed out" }
+if ($p4.ExitCode -ne 0) { $code = $p4.ExitCode }
+# Route aim tool math (host/mods/aim_core.h).
+$exe5 = Join-Path $out 'aim_test.exe'
+& clang++ -std=c++20 -O1 -g (Join-Path $PSScriptRoot 'aim_test.cpp') -o $exe5
+if ($LASTEXITCODE -ne 0) { throw "aim_test build failed" }
+$p5 = Start-Process -FilePath $exe5 -NoNewWindow -PassThru
+$p5.PriorityClass = 'BelowNormal'
+if (-not $p5.WaitForExit(60000)) { taskkill /PID $p5.Id /T /F | Out-Null; throw "aim_test timed out" }
+if ($p5.ExitCode -ne 0) { $code = $p5.ExitCode }
 exit $code

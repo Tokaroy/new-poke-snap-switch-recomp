@@ -25,6 +25,7 @@ using namespace loader;
 
 extern "C" volatile int g_fnprof;
 extern "C" float nvnHostGetUltrawide(void);   // runtime/nvn/nvn_wide.cpp
+extern "C" void snap_aim_camera(Cpu *c, float half);   // host/mods/aim.cpp: SNAP_AIM route aim tool reads the ride camera here (returns at once when off)
 extern "C" bool snap_freecam_camera(Cpu *c, float *half, float *far_);   // host/mods/freecam.cpp: free camera at the ride camera's tanf call
 namespace hle::freecam { bool enabled(); }   // runtime/hle/freecam.cpp
 
@@ -284,6 +285,7 @@ void h_tanf(Cpu *c) {
         float far_ = 0;
         if (snap_freecam_camera(c, &xr, &far_)) { uint32_t fb; memcpy(&fb, &far_, 4); c->v[8] = (__uint128_t)fb; }
     }
+    snap_aim_camera(c, xr);
     float r = tanf(xr);
     uint32_t rb;
     memcpy(&rb, &r, 4);

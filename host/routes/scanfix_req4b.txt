@@ -1,0 +1,9 @@
+# fixture: scanfix_req4_after
+# scanfix request check (2026-11-17): from the lab hub after the scanfix_req4 ride, open LenTalk (Y) and the request list.
+repeat @f300 @f4000 90 8 A if=ui=title
+wait ui=main_menu:MainMenu timeout=500
+@f300 10 Y
+repeat @f0 @f1500 50 1 shot=1
+@f700 10 A
+@f1000 10 A
+end @f1600

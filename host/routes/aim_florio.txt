@@ -1,0 +1,83 @@
+# fixture: story_complete
+# Aim tool proof (scanfix 2026-11-17, needs SNAP_AIM=1): a Florio Day ride where `aim nearest` centers one Pokemon after another
+# and `shoot` photographs it. The log has one "aim: shot target=... off=... dist=... pose=..." line per photo.
+wait ui=title timeout=200
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=420
+@f240 6 A
+wait ui=map_select:CourseSelect timeout=60
+@f180 6 A
+wait ride timeout=300
+aim nearest timeout=6 range=30
+shoot @f2
+wait ride for=30 timeout=20
+aim nearest timeout=6 range=30
+shoot @f2
+wait ride for=30 timeout=20
+aim nearest timeout=6 range=30
+shoot @f2
+wait ride for=30 timeout=20
+aim nearest timeout=6 range=30
+shoot @f2
+wait ride for=30 timeout=20
+aim nearest timeout=6 range=30
+shoot @f2
+wait ride for=30 timeout=20
+aim nearest timeout=6 range=30
+shoot @f2
+wait ride for=30 timeout=20
+aim nearest timeout=6 range=30
+shoot @f2
+wait ride for=30 timeout=20
+aim nearest timeout=6 range=30
+shoot @f2
+wait ride for=30 timeout=20
+aim nearest timeout=6 range=30
+shoot @f2
+wait ride for=30 timeout=20
+aim nearest timeout=6 range=30
+shoot @f2
+wait ride for=30 timeout=20
+aim nearest timeout=6 range=30
+shoot @f2
+wait ride for=30 timeout=20
+aim nearest timeout=6 range=30
+shoot @f2
+wait ride for=30 timeout=20
+aim nearest timeout=6 range=30
+shoot @f2
+wait ride for=30 timeout=20
+aim nearest timeout=6 range=30
+shoot @f2
+wait ride for=30 timeout=20
+aim nearest timeout=6 range=30
+shoot @f2
+wait ride for=30 timeout=20
+aim nearest timeout=6 range=30
+shoot @f2
+wait ride for=30 timeout=20
+aim nearest timeout=6 range=30
+shoot @f2
+wait ride for=30 timeout=20
+aim nearest timeout=6 range=30
+shoot @f2
+wait ride for=30 timeout=20
+aim nearest timeout=6 range=30
+shoot @f2
+wait ride for=30 timeout=20
+aim nearest timeout=6 range=30
+shoot @f2
+wait ride for=30 timeout=20
+aim nearest timeout=6 range=30
+shoot @f2
+wait ride for=30 timeout=20
+aim nearest timeout=6 range=30
+shoot @f2
+wait ride for=30 timeout=20
+aim nearest timeout=6 range=30
+shoot @f2
+wait ride for=30 timeout=20
+aim nearest timeout=6 range=30
+shoot @f2
+wait ride for=30 timeout=20
+end @f60

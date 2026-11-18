@@ -7,8 +7,8 @@ wait ui=map_select:StageSelect timeout=300
 wait ui=map_select:CourseSelect timeout=60
 @f180 6 A
 wait ride timeout=300
-repeat @f0 @f60000 24 4 A
-repeat @f12 @f60000 36 4 B
+repeat @f0 @f60000 48 4 A
+repeat @f18 @f60000 30 4 B
 repeat @f0 @f60000 400 60 rx=0.25
 repeat @f200 @f60000 400 60 rx=-0.25
 wait ui=photo_submit:FolderSelect timeout=500
@@ -17,9 +17,9 @@ repeat @f100 @f900 90 8 Down if=!focus=AllCheck
 @f1150 8 Plus
 @f1260 8 Up
 @f1350 8 A
-wait ui=evaluation timeout=60
+wait ui=evaluation timeout=150
 repeat @f240 @f60000 90 8 A
-wait ui=evaluation:Score timeout=120
+wait ui=evaluation:Score timeout=150
 repeat @f0 @f600 40 1 shot=1
 repeat @f60 @f60000 90 8 A
 wait ui=evaluation:End timeout=240

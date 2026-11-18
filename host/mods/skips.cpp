@@ -108,9 +108,10 @@ extern "C" void rt_gm_skip_wait(Cpu* c) {
     if (g_skip_dlg) skip_wait(c->x[0]);
 }
 
+extern "C" void snap_aim_observe(uint64_t a, uint64_t x0);   // host/mods/aim.cpp (SNAP_AIM route aim tool; returns at once when off)
 extern "C" void snap_skips_observe(uint64_t a, uint64_t lr, uint64_t x0) {
     (void)lr;
-    (void)x0;
+    snap_aim_observe(a, x0);
     if (!g_rec) return;
     uint64_t fr = snap_present_count();
     if (fr < g_from) return;
@@ -130,7 +131,11 @@ extern "C" void snap_skips_observe(uint64_t a, uint64_t lr, uint64_t x0) {
 }
 
 namespace loader {
+void snap_evprobe_install();   // host/mods/evprobe.cpp (SNAP_EVPROBE: request pose-event tag log; registers only when asked)
+void snap_aim_install();       // host/mods/aim.cpp (SNAP_AIM: route aim tool; registers only when asked)
 void snap_skips_install() {
+    snap_evprobe_install();
+    snap_aim_install();
     const char* e = getenv("SNAP_SKIPS_REC");   // SNAP_SKIP_CUTSCENES is read lazily (skip_cfg_once)
     if (e && *e) {
         char out[260] = "analysis/mods/skips_rec.tsv";
