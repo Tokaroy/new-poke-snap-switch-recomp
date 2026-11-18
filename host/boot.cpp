@@ -1087,6 +1087,7 @@ int main(int argc, char **argv) {
             if (n > 0) MultiByteToWideChar(CP_ACP, 0, cli.data_dir.c_str(), -1, dd.data(), n);
             dd.resize(wcslen(dd.c_str()));
         }
+        if (snap_config_rebase()) fprintf(stderr, "SnapRecomp: the game folder was moved; config.json now points at the new place\n");   // host/portable.h
         const bool redirected = snap_portable_init(dd.empty() ? nullptr : dd.c_str());
         if (!dd.empty() && !redirected) { fprintf(stderr, "SnapRecomp: --data-dir: the folder %s could not be created or written\n", cli.data_dir.c_str()); return 2; }
         if (redirected && dd.empty()) {   // the first portable start of a player who has data in %APPDATA%: copy it once, never move it (host/portable.h)

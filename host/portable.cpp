@@ -8,6 +8,9 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <fstream>
+#include <sstream>
+#include "hle/json_lite.h"
 
 namespace {
 
@@ -140,4 +143,85 @@ int snap_portable_adopt(std::wstring* from, std::wstring* to, bool* mods_skipped
     if (to) *to = dst.wstring();
     if (mods_skipped) *mods_skipped = skip_mods;
     return 1;
+}
+
+// ---- a moved install (host/portable.h) ----
+namespace {
+
+std::wstring lower_w(std::wstring s) {
+    if (!s.empty()) CharLowerBuffW(s.data(), static_cast<DWORD>(s.size()));
+    return s;
+}
+
+std::wstring strip_sep(std::wstring s) {
+    for (auto& c : s) if (c == L'/') c = L'\\';
+    while (s.size() > 3 && s.back() == L'\\') s.pop_back();
+    return s;
+}
+
+// old root -> new root in every string below j; a match is the root itself or the root followed by a separator
+void rebase_strings(hle::Json& j, const std::wstring& old_root, const std::wstring& new_root, int* changed) {
+    if (j.type == hle::Json::Str) {
+        std::wstring v;
+        try { v = pfs::u8path(j.s).wstring(); } catch (...) { return; }
+        if (v.size() < old_root.size()) return;
+        if (lower_w(v.substr(0, old_root.size())) != lower_w(old_root)) return;
+        if (v.size() > old_root.size() && v[old_root.size()] != L'\\' && v[old_root.size()] != L'/') return;
+        j.s = pfs::path(new_root + v.substr(old_root.size())).u8string();
+        ++*changed;
+    } else if (j.type == hle::Json::Arr) {
+        for (auto& e : j.a) rebase_strings(e, old_root, new_root, changed);
+    } else if (j.type == hle::Json::Obj) {
+        for (auto& kv : j.o) rebase_strings(kv.second, old_root, new_root, changed);
+    }
+}
+
+}  // namespace
+
+bool snap_config_rebase() {
+    wchar_t buf[32768];
+    const DWORD n = GetModuleFileNameW(nullptr, buf, 32768);
+    if (!n || n >= 32768) return false;
+    std::error_code ec;
+    const pfs::path dir = pfs::path(buf).parent_path();
+    const pfs::path cfg_path = dir / L"config.json";
+    std::string text;
+    {
+        std::ifstream f(cfg_path, std::ios::binary);
+        if (!f) return false;
+        std::stringstream ss;
+        ss << f.rdbuf();
+        text = ss.str();
+    }
+    hle::Json cfg;
+    std::string err;
+    if (!hle::json_parse(text, cfg, err) || cfg.type != hle::Json::Obj) return false;
+    const hle::Json* jr = cfg.get("install_root");
+    const hle::Json* je = cfg.get("exe_rel");
+    if (!jr || !je || jr->str().empty() || je->str().empty()) return false;   // a build from before this, or one outside an install folder
+    std::wstring old_root, rel;
+    try {
+        old_root = strip_sep(pfs::u8path(jr->str()).wstring());
+        rel = strip_sep(pfs::u8path(je->str()).wstring());
+    } catch (...) { return false; }
+    const std::wstring here = strip_sep(dir.wstring());
+    // the exe must sit in <some root>\<exe_rel>; a staged copy (work\builds\<id>) does not, and keeps the paths it was built with
+    if (here.size() <= rel.size() + 1) return false;
+    if (lower_w(here.substr(here.size() - rel.size())) != lower_w(rel) || here[here.size() - rel.size() - 1] != L'\\') return false;
+    const std::wstring new_root = here.substr(0, here.size() - rel.size() - 1);
+    if (new_root.size() < 2 || lower_w(new_root) == lower_w(old_root)) return false;
+    int changed = 0;
+    for (auto& kv : cfg.o) if (kv.first != "exe_rel") rebase_strings(kv.second, old_root, new_root, &changed);
+    if (!changed) return false;
+    std::string out;
+    hle::json_dump(cfg, out);
+    const pfs::path tmp = dir / L"config.json.moving";
+    {
+        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+        if (!f) return false;
+        f << out << "\n";
+        if (!f.good()) { f.close(); pfs::remove(tmp, ec); return false; }
+    }
+    if (!MoveFileExW(tmp.c_str(), cfg_path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) { pfs::remove(tmp, ec); return false; }
+    return true;
 }

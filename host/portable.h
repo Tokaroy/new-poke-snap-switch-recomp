@@ -16,3 +16,9 @@ bool snap_portable_init(const wchar_t* data_dir = nullptr);
 // Returns 0 = nothing to do, 1 = copied (from/to filled; mods_skipped = the mods folder did not fit on the drive and was left out),
 // -1 = the copy failed (why filled; the portable folder is left without a SnapRecomp folder, so the next start tries again).
 int snap_portable_adopt(std::wstring* from, std::wstring* to, bool* mods_skipped, std::string* why);
+
+// A moved install: config.json next to the exe stores absolute paths plus "install_root" (the folder that held everything at build time) and
+// "exe_rel" (the exe's folder below it, "work\out"). When the exe now sits in <other root>\<exe_rel>, every stored path that starts with
+// the old root is rewritten to the new one (the file is replaced through a temporary file). Call before anything reads config.json.
+// Returns true when the file was rewritten. A staged build (work\builds\<id>) does not match exe_rel and is left alone.
+bool snap_config_rebase();

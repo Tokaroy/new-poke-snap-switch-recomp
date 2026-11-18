@@ -25,7 +25,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import fetch, gamesrc, pipeline, pyenv, toolchain, versioncheck as vc, winsdk
+from . import fetch, gamesrc, paths, pipeline, pyenv, toolchain, versioncheck as vc, winsdk
 from .util import Log, StepError
 from . import safedel
 
@@ -158,18 +158,30 @@ class EventLog(Log):
 # ------------------------------------------------------------------------------------------------ paths and settings
 
 def setup_dir():
-    return Path(os.environ.get('SNAP_SETUP_DIR') or (Path(os.environ.get('LOCALAPPDATA') or str(Path.home())) / 'SnapRecomp' / 'setup'))
+    return paths.setup_dir()   # <the exe's folder>\setup for an install; %LOCALAPPDATA%\SnapRecomp\setup for a source checkout
 
 
 def default_root():
-    return Path(os.environ.get('LOCALAPPDATA') or str(Path.home())) / 'SnapRecomp'
+    return paths.base_dir()    # the exe's folder: work\, game\, tools\ and cache\ all sit in it (snapbuild/paths.py)
 
 
 def load_settings():
-    return gamesrc.load_settings(setup_dir() / 'settings.json')
+    """settings.json, with its paths moved along when the install folder was moved since it was written (snapbuild/paths.py)."""
+    s = gamesrc.load_settings(setup_dir() / 'settings.json')
+    root = paths.install_root()
+    if root is not None and s.get('install_root') and paths.rebase(s, s['install_root'], root):
+        s['install_root'] = str(root)
+        try:
+            save_settings(s)
+        except OSError:
+            pass
+    return s
 
 
 def save_settings(s):
+    root = paths.install_root()
+    if root is not None:
+        s['install_root'] = str(root)
     gamesrc.save_settings(s, setup_dir() / 'settings.json')
 
 
@@ -533,7 +545,27 @@ def uninstall(remove_tools=False, remove_saves=False, ev=None):
     root = s.get('root')
     if root:
         work = Path(root) / 'work'
-        rm(work, 'the built game program (work folder)')
+        pdata = work / 'out' / 'portable_data'
+        if pdata.is_dir() and not remove_saves:
+            # portable mode keeps the saves inside the work folder: everything else in it goes, the saves stay where they are
+            for d in (work, work / 'out'):
+                for child in list(d.iterdir()):
+                    if child == work / 'out' or child == pdata:
+                        continue
+                    if child.is_dir():
+                        safedel.rmtree(child, ignore_errors=True)
+                    else:
+                        try:
+                            child.unlink()
+                        except OSError:
+                            pass
+                    if child.exists():
+                        left.append(str(child))
+            removed.append('the built game program (work folder)')
+            ev.emit(t='log', text='removed the built game program (work folder)')
+            kept.append(f'your saves and settings in {pdata}')
+        else:
+            rm(work, 'the built game program and, with it, any saves kept in its folder' if pdata.is_dir() else 'the built game program (work folder)')
         g = s.get('game') or {}
         if g.get('extracted_by_setup') and g.get('extract_dir'):
             rm(g['extract_dir'], 'the game data extracted by setup')
@@ -575,7 +607,7 @@ def normalize_cfg(cfg):
     c = dict(cfg)
     c['root'] = str(Path(c.get('root') or default_root()))
     c['tools_dir'] = str(Path(c.get('tools_dir') or fetch.default_tools_dir()))
-    c.setdefault('shortcuts', {'desktop': True, 'start': True})
+    c.setdefault('shortcuts', {'desktop': False, 'start': False})   # portable: nothing outside the folder unless asked for
     c.setdefault('offline_dirs', [])
     c.setdefault('upscalers', [])
     c.setdefault('accept_license', [])
@@ -736,8 +768,7 @@ def run(cfg, ev, opener=None):
         if sc_cfg.get('desktop') or sc_cfg.get('start'):
             shortcuts = create_shortcuts(game_exe, setup_exe, sc_cfg.get('desktop'), sc_cfg.get('start'), say)
         ver = pipeline.builder_version()
-        if setup_exe:
-            register_uninstall(setup_exe, root, ver, dir_size(work) if work.exists() else 0)
+        unregister_uninstall()   # an older version added an "Apps & features" entry; a portable folder has none (delete the folder to remove)
         settings.update({'completed': True, 'finished': time.strftime('%Y-%m-%d %H:%M:%S'), 'exe': str(game_exe), 'shortcuts': shortcuts,
                          'setup_exe': setup_exe, 'builder_version': ver, 'work': str(work)})
         save_settings(settings)

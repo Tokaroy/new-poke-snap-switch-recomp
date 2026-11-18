@@ -21,8 +21,8 @@ class CacheError(Exception):
 
 
 def default_root():
-    base = os.environ.get('LOCALAPPDATA') or str(Path.home() / 'AppData' / 'Local')
-    return Path(base) / 'SnapRecomp' / 'cache'
+    from . import paths   # <install root>\cache for an install (the exe's folder), the per-user folder for a source checkout
+    return paths.cache_dir()
 
 
 def _is_reparse(p):

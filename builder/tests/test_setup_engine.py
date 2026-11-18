@@ -254,6 +254,39 @@ class SetupEngineTests(unittest.TestCase):
         r2 = se.uninstall(False, True, ev)
         self.assertFalse((self.t / 'appdata' / 'SnapRecomp').exists())
 
+    def test_uninstall_keeps_portable_saves_inside_the_work_folder(self):
+        work = self.t / 'root' / 'work'
+        saves = work / 'out' / 'portable_data' / 'Roaming' / 'SnapRecomp' / 'profiles'
+        saves.mkdir(parents=True)
+        (saves / 's').write_bytes(b'save')
+        (work / 'out' / 'SnapRecomp.exe').write_bytes(b'MZ')
+        (work / 'out' / 'portable.txt').write_text('')
+        (work / 'obj').mkdir()
+        (work / 'obj' / 'a.o').write_bytes(b'x')
+        (work / 'builds' / 'previous').mkdir(parents=True)
+        se.save_settings({'root': str(self.t / 'root'), 'game': {}})
+        ev, buf = self.events()
+        r = se.uninstall(False, False, ev)
+        self.assertEqual((saves / 's').read_bytes(), b'save')
+        self.assertEqual(sorted(p.name for p in work.iterdir()), ['out'])
+        self.assertEqual(sorted(p.name for p in (work / 'out').iterdir()), ['portable_data'])
+        self.assertTrue(any('portable_data' in k for k in r['kept']))
+        se.save_settings({'root': str(self.t / 'root'), 'game': {}})
+        se.uninstall(False, True, ev)   # the player asked for the saves to go too
+        self.assertFalse(work.exists())
+
+    def test_shortcuts_are_off_unless_asked_for_and_no_registry_entry_is_written(self):
+        self.assertEqual(se.normalize_cfg({})['shortcuts'], {'desktop': False, 'start': False})
+        self.fake_run_env(self.t / 'game')
+        ev, buf = self.events()
+        with mock.patch.object(se, 'unregister_uninstall') as unreg:
+            se.run({'root': str(self.t / 'root'), 'tools_dir': str(self.t / 'tools'), 'game_dir': str(self.t / 'game'), 'kind': 'extracted',
+                    'setup_exe': str(self.t / 'SnapRecomp.exe')}, ev)
+            se.create_shortcuts.assert_not_called()
+            se.register_uninstall.assert_not_called()
+            unreg.assert_called_once()   # an entry an older version wrote is taken away
+        self.assertEqual(se.load_settings()['shortcuts'], [])
+
 
 if __name__ == '__main__':
     unittest.main()

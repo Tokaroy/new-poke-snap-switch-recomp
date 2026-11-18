@@ -48,11 +48,8 @@ def is_pinned(pin):
 
 def default_tools_dir():
     """%LOCALAPPDATA%\\SnapRecomp\\tools; SNAP_TOOLS_DIR moves it (setup tests, a player who wants the tools on another drive)."""
-    o = os.environ.get('SNAP_TOOLS_DIR')
-    if o:
-        return Path(o)
-    base = os.environ.get('LOCALAPPDATA') or str(Path.home() / 'AppData' / 'Local')
-    return Path(base) / 'SnapRecomp' / 'tools'
+    from . import paths   # <install root>\tools for an install (the exe's folder), the per-user folder for a source checkout
+    return paths.tools_dir()
 
 
 def default_download_dir():

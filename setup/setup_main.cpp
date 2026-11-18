@@ -1,7 +1,7 @@
 // SnapRecompSetup.exe: the one-click setup wizard (Win32 + GDI+, drawn in the launcher v2 look: analysis/launcher_v2/d_wizard.html).
 //
 // The exe carries a zip payload after the PE image: the bundled Python, the builder, the prebuilt runtime objects and NSTool.
-// On start it unpacks the payload once into %LOCALAPPDATA%\SnapRecomp\setup\app\<version> and then only drives the builder's
+// On start it unpacks the payload once into <this exe's folder>\setup\app\<version> (SetupDir() below) and then only drives the builder's
 // `setup` command (builder/snapbuild/setup_engine.py), which does the work and prints one JSON object per line.
 //
 // It never downloads, asks for or points to game files, keys or firmware: the player picks a folder, the engine reads it in place.
@@ -138,8 +138,40 @@ static string JEsc(const wstring& w) {
 static wstring SetupDir() {
     wstring d = Env(L"SNAP_SETUP_DIR");
     if (!d.empty()) return d;
-    wstring l = Env(L"LOCALAPPDATA");
-    return l + L"\\SnapRecomp\\setup";
+    // Portable by default: everything goes into the folder this exe sits in (setup, tools, cache, game and work folders next to it), so
+    // deleting or moving that folder deletes or moves the install. A folder that cannot be written (Program Files, a read-only share)
+    // falls back to the per-user folder used before.
+    static wstring cached;
+    if (!cached.empty()) return cached;
+    wchar_t me[MAX_PATH * 4];
+    DWORD n = GetModuleFileNameW(nullptr, me, MAX_PATH * 4);
+    wstring dir(me, n);
+    size_t sl = dir.find_last_of(L"\\/");
+    dir = sl == wstring::npos ? L"." : dir.substr(0, sl);
+    wstring here = dir + L"\\setup";
+    bool ok = Exists(here + L"\\settings.json");
+    if (!ok) {
+        CreateDirectoryW(here.c_str(), nullptr);
+        wstring probe = here + L"\\.write_test";
+        HANDLE h = CreateFileW(probe.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
+        if (h != INVALID_HANDLE_VALUE) { CloseHandle(h); ok = true; }
+        else RemoveDirectoryW(here.c_str());   // only goes when empty
+    }
+    cached = ok ? here : Env(L"LOCALAPPDATA") + L"\\SnapRecomp\\setup";
+    return cached;
+}
+// The built game: where settings.json says, or (the folder was moved since) work\out\SnapRecomp.exe next to the setup folder.
+static wstring BuiltExe() {
+    string s = ReadAll(SetupDir() + L"\\settings.json");
+    wstring exe = W(JGet(s, "exe"));
+    size_t p;
+    while ((p = exe.find(L"\\\\")) != wstring::npos) exe.erase(p, 1);
+    if (!exe.empty() && Exists(exe)) return exe;
+    wstring sd = SetupDir();
+    size_t sl = sd.find_last_of(L"\\/");
+    if (sl == wstring::npos) return exe;
+    wstring moved = sd.substr(0, sl) + L"\\work\\out\\SnapRecomp.exe";
+    return Exists(moved) ? moved : exe;
 }
 static wstring g_app;      // unpacked payload
 static wstring g_exe;      // this exe
@@ -465,7 +497,7 @@ static void DrawScene(G::Graphics& g) {
         struct Card { const wchar_t *t, *d; int icon; };
         Card cs[3] = {{L"Your files stay here", L"The game is read from your copy and built on this PC. Nothing is uploaded, and setup never asks for or downloads game files.", 0},
                       {L"About 1.7 GB", L"Free build tools (LLVM, Java and Ghidra) and Microsoft's C runtime files. They are downloaded once and reused.", 1},
-                      {L"About an hour", L"The first build is the slow one and mostly runs on its own. You get a desktop shortcut when it finishes.", 2}};
+                      {L"About an hour", L"The first build is the slow one and mostly runs on its own. The game ends up in this folder, next to this program.", 2}};
         for (int i = 0; i < 3; i++) {
             float cw = 253, cx = X + i * (cw + 28.5f), cy = 206, ch = 244;
             G::GraphicsPath p; RRect(p, cx, cy, cw, ch, 18);
@@ -770,7 +802,7 @@ static void Layout() {
         break;
     case P_DONE:
         t = L"Snap Recomp is ready";
-        b = L"A shortcut is on your desktop and in the Start menu. The first start translates the game's shaders and can take 5 to 10 minutes. Later starts are quick.";
+        b = L"The game lives in the folder you ran this from: move or delete that folder to move or remove it. The first start translates the game's shaders and can take 5 to 10 minutes. Later starts are quick.";
         Place(Ctl(ID_PLAY), 108, 224, 816, 92);
         PlacePrimary(Ctl(ID_CLOSE));
         Show(Ctl(ID_PLAY), true); Show(Ctl(ID_CLOSE), true);
@@ -796,7 +828,7 @@ static void Layout() {
         break;
     case P_UNINST:
         t = L"Remove Snap Recomp";
-        b = L"This removes the shortcuts, the work folder and the game data setup extracted. Your own game files are never touched.";
+        b = L"This removes the work folder, the game data setup extracted and any shortcuts it made. Your own game files are never touched.";
         for (int i : {6, 7}) { Place(g_chk[i], 108, 204 + (i - 6) * 60, 816, 50); Show(g_chk[i], true); }
         SetWindowTextW(g_next, L"Remove");
         PlaceBack(g_cancel);
@@ -987,12 +1019,7 @@ static void OnEngine(WPARAM kind, string* line) {
 
 static void PlayNow() {
     wstring exe = g_exePlay;
-    if (exe.empty()) {
-        string s = ReadAll(SetupDir() + L"\\settings.json");
-        exe = W(JGet(s, "exe"));
-        size_t p;
-        while ((p = exe.find(L"\\\\")) != wstring::npos) exe.erase(p, 1);
-    }
+    if (exe.empty() || !Exists(exe)) exe = BuiltExe();
     if (exe.empty() || !Exists(exe)) { MessageBoxW(g_wnd, L"The game program was not found. Choose Repair.", L"Snap Recomp", MB_ICONWARNING); return; }
     size_t sl = exe.rfind(L'\\');
     ShellExecuteW(g_wnd, L"open", exe.c_str(), nullptr, exe.substr(0, sl).c_str(), SW_SHOWNORMAL);
@@ -1113,8 +1140,8 @@ static void CreateUi() {
                             L"Also install Intel XeSS (Intel's license applies, downloaded from Intel)",
                             L"Also delete the downloaded build tools (about 5 GB)", L"Also delete my saves and settings"};
     for (int i = 0; i < 8; i++) g_chk[i] = MkBtn(chk[i], BK_CHECK, CHK_ID[i]);
-    ChkSet(1, true);
-    ChkSet(2, true);
+    ChkSet(1, false);   // shortcuts are off unless asked for: a portable folder leaves nothing outside itself
+    ChkSet(2, false);
     g_msurl = MkBtn(L"View", BK_HEXPILL, ID_MSURL);
     g_detBtn = MkBtn(L"Show details", BK_LINK, ID_DETAILS);
     g_log = MkEdit(WS_VSCROLL | ES_MULTILINE | ES_READONLY, g_fontMono);

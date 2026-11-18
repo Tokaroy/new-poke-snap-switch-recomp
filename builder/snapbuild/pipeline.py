@@ -15,6 +15,7 @@ from . import versioncheck as vc
 from .util import BELOW_NORMAL, CREATE_NO_WINDOW, Stamps, StepError, files_digest, run, sha256_file, sha256_text
 from . import safedel
 from . import userdata
+from . import paths
 
 REPO = Path(__file__).resolve().parents[2]   # builder/snapbuild/pipeline.py -> repo root (same layout in the release zip)
 BUILDER = REPO / 'builder'
@@ -346,6 +347,7 @@ def build(opt, log):
     # builder_version, builder_dir, python and work let the launcher's updater find this builder again.
     conf = {'romfs_root': str(Path(res.romfs_root).resolve()), 'main_elf': str(elf_dir / 'main.elf'), 'sdk_elf': str(elf_dir / 'sdk.elf'),
             'builder_version': builder_version(), 'builder_dir': str(BUILDER), 'python': str(py), 'work': str(work.resolve())}
+    conf.update(move_keys(work))
     try:   # settings the launcher itself wrote into the old config.json survive a rebuild
         old_conf = json.loads((out / 'config.json').read_text(encoding='utf-8'))
         for k in LAUNCHER_KEYS:
@@ -452,6 +454,20 @@ def _replace_retry(src, dst, tries=15, delay=1.0):
             if i == tries - 1:
                 raise
             time.sleep(delay)
+
+
+def move_keys(work, inst=None):
+    """config.json keys for a moved install: the exe compares its own place with install_root + exe_rel and moves the stored paths along
+    (host/portable.cpp snap_config_rebase). install_root is the install folder when the work folder is inside it, else the work folder's
+    parent (so a work folder moved on its own still starts); {} when the work folder sits in a drive's root."""
+    wr = Path(work).resolve()
+    inst = paths.install_root() if inst is None else inst
+    inst = Path(inst).resolve() if inst is not None else None
+    if inst is None or inst not in wr.parents:
+        inst = wr.parent if wr.parent.parent != wr.parent else None
+    if inst is None:
+        return {}
+    return {'install_root': str(inst), 'exe_rel': str((wr / 'out').relative_to(inst))}
 
 
 def promote(work, stage, build_id, log):
