@@ -22,6 +22,9 @@
 extern "C" void snap_audio_log_checks(void);   // runtime/audio/audio_out.cpp: the "[audio] checks:" counter line, printed before a route ends the run
 extern "C" void snap_audio_log_checks_none(void) {}   // test builds without the audio layer link this instead
 #pragma comment(linker, "/alternatename:snap_audio_log_checks=snap_audio_log_checks_none")
+extern "C" void snap_import_counts_dump(const char* tag);   // host/loader.cpp (debug, needs SNAP_IMPORT_COUNT=1): imports called since the last dump
+extern "C" void snap_import_counts_dump_none(const char*) {}
+#pragma comment(linker, "/alternatename:snap_import_counts_dump=snap_import_counts_dump_none")
 namespace nvn { extern int g_presentCount; extern int g_fdBurst; }   // runtime/nvn/nvn_tex_vk.cpp: frame clock for '@f' script times; nvn_vk.cpp: NVN_FRAME_DUMP burst (script token shot=<n>)
 
 namespace hle::input {
@@ -811,7 +814,7 @@ bool Hub::save(std::string* err) {
 // A token is a Switch button name (A B X Y L R ZL ZR Plus Minus Left Up Right Down StickL StickR ...) or an axis
 // lx=<f> ly=<f> rx=<f> ry=<f> with f in [-1, 1] (y up positive).
 namespace {
-struct ScriptEntry { bool has_mpos = false; float mx = 0, my = 0; double start, end, period, hold; uint64_t buttons; int32_t ax[4]; bool has_ax[4]; int seg; bool frames; float rumble_lo, rumble_hi; bool has_rumble; float gyro_yaw, gyro_pitch; bool has_gyro; bool is_end; int shot_n; bool screenshot; std::string cond; std::vector<std::string> fc; int state_op = 0; std::string state_name; mutable bool state_prev = false; std::vector<Source> src; };
+struct ScriptEntry { bool has_mpos = false; float mx = 0, my = 0; double start, end, period, hold; uint64_t buttons; int32_t ax[4]; bool has_ax[4]; int seg; bool frames; float rumble_lo, rumble_hi; bool has_rumble; float gyro_yaw, gyro_pitch; bool has_gyro; bool is_end; int shot_n; bool screenshot; std::string cond; std::vector<std::string> fc; int state_op = 0; std::string state_name; mutable bool state_prev = false; std::vector<Source> src; std::string icount_tag; };
 struct Script {
   bool loaded = false;
   uint64_t t0 = 0;
@@ -1046,6 +1049,7 @@ bool script_token(const std::string& t, ScriptEntry& en) {
       size_t c = t.find(',', eq); en.my = c == std::string::npos ? 0.5f : (float)std::atof(t.c_str() + c + 1);
       return true;
     }
+    if (k == "icount") { en.icount_tag = t.substr(eq + 1); return true; }   // icount=<tag>: once when the entry starts, log the imports called since the last dump (debug, needs SNAP_IMPORT_COUNT=1)
     if (k == "shot") {   // shot=<n>: while the entry is active, ask NVN_FRAME_DUMP for a frame every n presents (needs NVN_FRAME_DUMP; test evidence aid)
       en.shot_n = std::max(1, std::atoi(t.c_str() + eq + 1));
       return true;
@@ -1208,6 +1212,7 @@ void script_apply(uint64_t now_ns_v, PadSample& p) {
     }
     if (!on) { en.state_prev = false; continue; }
     if (!en.cond.empty() && !route_cond(en.cond, nullptr)) continue;
+    if (!en.icount_tag.empty() && !en.state_prev) { en.state_prev = true; snap_import_counts_dump(en.icount_tag.c_str()); }
     if (en.state_op && !en.state_prev) { en.state_prev = true; snap_state_request(en.state_op, en.state_name.c_str()); }   // edge: once per entry start
     if (en.is_end) {
       log("input script: end of route reached (segment %d, present %d); exiting", seg, nvn::g_presentCount);

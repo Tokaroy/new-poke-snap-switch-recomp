@@ -5,12 +5,17 @@
 #include "hle/guest_tls.h"
 
 #include <windows.h>
+#include <tlhelp32.h>
 
 #include <algorithm>
 #include <cstdarg>
 #include <atomic>
 #include <mutex>
 #include <unordered_set>
+#include <unordered_map>
+#include <map>
+#include <string>
+#include <vector>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -65,6 +70,7 @@ static void die(const char *msg) {
 
 FILE *g_trace_file = nullptr;
 bool g_trace_imports = false;
+static const bool g_count_imports = std::getenv("SNAP_IMPORT_COUNT") != nullptr;   // debug: per-import call counts, dumped by the route token icount=<tag>
 uint64_t g_svc_counts[0x80];
 uint64_t g_exc_count = 0;
 void (*g_spin_gate_fn)(Cpu *, uint64_t) = nullptr;
@@ -422,12 +428,12 @@ GuestThread *new_thread(size_t stack_size) {
     *(uint64_t *)(tt + 0x50) = (uint64_t)stack;     // stack, stack size
     *(uint64_t *)(tt + 0x58) = stack_size;
     t->c->tpidr = (uint64_t)(tls + 0x8000);
+    init_guest_tls(t->c->tpidr);
     t->c->tpidrro = (uint64_t)tlr;
     t->c->sp = (t->stack_hi - 64) & ~15ull;
     t->c->excl_addr = ~0ull;
     rt_fpcr_sync(t->c);
     g_cur = t;
-    init_guest_tls(t->c->tpidr);
     return t;
 }
 
@@ -718,7 +724,9 @@ static void unused_fnprof_marker() {}
 // Debug: SNAP_FNTRACE=0xaddr[,0xaddr...] logs every entry (and its caller) of those lifted functions (FN_ENTER hook).
 static uint64_t g_fntrace[8];
 static int g_fntrace_n;
+static void fnpeek_parse();
 void loader_enable_fntrace() {
+    fnpeek_parse();
     const char *e = getenv("SNAP_FNTRACE");
     while (e && *e && g_fntrace_n < 8) {
         char *end;
@@ -727,14 +735,433 @@ void loader_enable_fntrace() {
     }
     if (g_fntrace_n) g_fnprof = 1;
 }
+// Debug: SNAP_FNPEEK=<fn addr>@<path>|<path>... logs guest values read from x0 at each entry of one lifted function, only when they
+// change (first 4000 lines). A path is hex offsets joined by '>' (load a pointer at p+off, go on) and an optional ':n' (read n qwords
+// at the last address, default 1). Example: 0x71003853f0@2bc|48>70>0>30:4 . Guest memory is identity mapped.
+static uint64_t g_fnpeek_fn;
+static std::vector<std::pair<std::vector<uint64_t>, int>> g_fnpeek_paths;
+static std::vector<uint64_t> g_fnwatch_path;   // SNAP_FNWATCH, below
+static bool g_hwwatch;                          // SNAP_HWWATCH, below
+static uint64_t g_collptr;                      // SNAP_COLLARGS: the Volcarona-area collider whose box-update args get logged
+static bool g_collwatch;                        // SNAP_COLLWATCH=1 (with SNAP_HWWATCH, SNAP_PAIRTRACK): watch the first tracked collider's box (+0x70)
+static void fnpeek_parse() {
+    const char *e = getenv("SNAP_FNPEEK");
+    if (!e || !*e) return;
+    char *end;
+    g_fnpeek_fn = strtoull(e, &end, 0);
+    if (*end != '@') { g_fnpeek_fn = 0; return; }
+    e = end + 1;
+    while (*e) {
+        std::vector<uint64_t> offs;
+        int n = 1;
+        for (;;) {
+            offs.push_back(strtoull(e, &end, 16));
+            e = end;
+            if (*e == '>') { e++; continue; }
+            if (*e == ':') { n = (int)strtol(e + 1, &end, 10); e = end; }
+            break;
+        }
+        if (n < 1) n = 1;
+        if (n > 16) n = 16;
+        g_fnpeek_paths.push_back({offs, n});
+        if (*e != '|') break;
+        e++;
+    }
+    if (g_fnpeek_fn) g_fnprof = 1;
+    if (const char *w = getenv("SNAP_FNWATCH")) {
+        while (*w) {
+            g_fnwatch_path.push_back(strtoull(w, &end, 16));
+            if (*end != '>') break;
+            w = end + 1;
+        }
+    }
+    g_hwwatch = getenv("SNAP_HWWATCH") != nullptr;
+    g_collwatch = getenv("SNAP_COLLWATCH") != nullptr;
+}
+static void fnpeek_hit(uint64_t x0) {
+    static std::string last;
+    static int lines;
+    if (lines >= 4000) return;
+    std::string s;
+    char buf[64];
+    for (auto &pp : g_fnpeek_paths) {
+        uint64_t p = x0;
+        bool ok = true;
+        for (size_t i = 0; i + 1 < pp.first.size() && ok; i++) {
+            uint64_t q = p + pp.first[i];
+            if (!p || IsBadReadPtr((void *)q, 8)) ok = false; else p = *(const uint64_t *)q;
+        }
+        uint64_t q = p + pp.first.back();
+        s += " [";
+        if (!ok || !p || IsBadReadPtr((void *)q, 8 * pp.second)) s += "bad";
+        else for (int k = 0; k < pp.second; k++) { snprintf(buf, sizeof buf, k ? " %llx" : "%llx", (unsigned long long)((const uint64_t *)q)[k]); s += buf; }
+        s += "]";
+    }
+    if (s == last) return;
+    last = s;
+    lines++;
+    loader::trace("fnpeek x0=%#llx%s", (unsigned long long)x0, s.c_str());
+}
+// Debug: SNAP_FNWATCH=<path> (with SNAP_FNPEEK set): the address the path names (from the SNAP_FNPEEK function's x0, re-read at each of
+// its entries) is watched, 16 bytes; at every lifted function entry the bytes are compared and a change is logged with the function
+// entered and its caller (first 2000 changes). Function-entry granularity: the writer is the logged function or the one that called it.
+static uint64_t g_fnwatch_addr;
+static uint8_t g_fnwatch_last[16];
+// SNAP_HWWATCH=1 (with SNAP_FNWATCH): x64 debug-register write breakpoints instead of the entry compare: DR0 = addr (8 bytes),
+// DR1 = addr+8 (8 bytes), DR2 = addr-0x20 (4 bytes), armed on every thread of the process; each hit logs the bytes and the lifted
+// function last entered on the writing thread.
+static thread_local uint64_t t_lastfn, t_lastlr, t_lrring[8];
+static thread_local unsigned t_lrpos;
+static LONG CALLBACK hwwatch_veh(EXCEPTION_POINTERS *e) {
+    if (e->ExceptionRecord->ExceptionCode != EXCEPTION_SINGLE_STEP) return EXCEPTION_CONTINUE_SEARCH;
+    DWORD64 dr6 = e->ContextRecord->Dr6;
+    if (!(dr6 & 7)) return EXCEPTION_CONTINUE_SEARCH;
+    static volatile LONG hits, logged;
+    uint64_t q = g_fnwatch_addr;
+    uint64_t v40 = q ? *(const uint64_t *)q : 0, v48 = q ? *(const uint64_t *)(q + 8) : 0;
+    uint32_t v20 = q ? *(const uint32_t *)(q - 0x20) : 0;
+    // The first 40 hits, then only unusual values (a flag set or a state other than 0/1), at most 2000 lines.
+    bool odd = (v40 & 0xff) || (v48 & 0xffffffffull) || v20 > 1;
+    if (q && (InterlockedIncrement(&hits) <= 40 || odd) && InterlockedIncrement(&logged) <= 2000) {
+        std::string ring;
+        for (unsigned i = 1; i <= 8; i++) {
+            uint64_t lr = t_lrring[(t_lrpos - i) & 7];
+            if (lr) { ring += " < "; ring += loader::symbolize(lr); }
+        }
+        loader::trace("hwwatch dr6=%llx rip=%#llx +40=%016llx +48=%016llx +20=%08x in fn %#llx callers%s", (unsigned long long)dr6,
+                      (unsigned long long)e->ContextRecord->Rip, (unsigned long long)v40, (unsigned long long)v48, v20,
+                      (unsigned long long)t_lastfn, ring.c_str());
+    }
+    e->ContextRecord->Dr6 = 0;
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+static DWORD WINAPI hwwatch_arm(void *arg) {
+    uint64_t q = (uint64_t)arg;
+    HANDLE s = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (s == INVALID_HANDLE_VALUE) return 0;
+    THREADENTRY32 te;
+    te.dwSize = sizeof te;
+    DWORD pid = GetCurrentProcessId(), me = GetCurrentThreadId();
+    int armed = 0;
+    for (BOOL ok = Thread32First(s, &te); ok; ok = Thread32Next(s, &te)) {
+        if (te.th32OwnerProcessID != pid || te.th32ThreadID == me) continue;
+        HANDLE h = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE, te.th32ThreadID);
+        if (!h) continue;
+        if (SuspendThread(h) != (DWORD)-1) {
+            CONTEXT c;
+            memset(&c, 0, sizeof c);
+            c.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+            if (GetThreadContext(h, &c)) {
+                c.Dr0 = q; c.Dr1 = q + 8; c.Dr2 = q - 0x20; c.Dr6 = 0;
+                c.Dr7 = q ? (1 | 4 | 16 | (1ull << 16) | (2ull << 18) | (1ull << 20) | (2ull << 22) | (1ull << 24) | (3ull << 26)) : 0;
+                if (SetThreadContext(h, &c)) armed++;
+            }
+            ResumeThread(h);
+        }
+        CloseHandle(h);
+    }
+    CloseHandle(s);
+    loader::trace("hwwatch: armed %d threads at %#llx", armed, (unsigned long long)q);
+    return 0;
+}
+static void hwwatch_request(uint64_t q) {
+    static bool veh;
+    if (!veh) { AddVectoredExceptionHandler(1, hwwatch_veh); veh = true; }
+    HANDLE t = CreateThread(nullptr, 0, hwwatch_arm, (void *)q, 0, nullptr);
+    if (t) CloseHandle(t);
+}
+static void fnwatch_resolve(uint64_t x0) {
+    if (g_fnwatch_path.empty()) return;
+    uint64_t p = x0;
+    for (size_t i = 0; i + 1 < g_fnwatch_path.size(); i++) {
+        uint64_t q = p + g_fnwatch_path[i];
+        if (!p || IsBadReadPtr((void *)q, 8)) return;
+        p = *(const uint64_t *)q;
+    }
+    uint64_t q = p ? p + g_fnwatch_path.back() : 0;
+    static unsigned entries;
+    if (g_hwwatch && q && q == g_fnwatch_addr && ++entries % 600 == 0) hwwatch_request(q);   // threads started since the last arm
+    if (q == g_fnwatch_addr) return;
+    if (!q || IsBadReadPtr((void *)q, 16)) { g_fnwatch_addr = 0; return; }
+    g_fnwatch_addr = q;
+    if (g_hwwatch) hwwatch_request(q);
+    memcpy(g_fnwatch_last, (const void *)q, 16);
+    loader::trace("fnwatch: watching %#llx", (unsigned long long)q);
+}
+static void fnwatch_check(uint64_t a, uint64_t lr) {
+    static int changes;
+    uint64_t q = g_fnwatch_addr;
+    if (!q || changes >= 2000) return;
+    if (memcmp(g_fnwatch_last, (const void *)q, 16) == 0) return;
+    uint8_t now[16];
+    memcpy(now, (const void *)q, 16);
+    char o[40], n[40];
+    for (int i = 0; i < 16; i++) { snprintf(o + 2 * i, 3, "%02x", g_fnwatch_last[i]); snprintf(n + 2 * i, 3, "%02x", now[i]); }
+    memcpy(g_fnwatch_last, now, 16);
+    changes++;
+    loader::trace("fnwatch %#llx: %s -> %s at entry of %#llx from %s", (unsigned long long)q, o, n, (unsigned long long)a,
+                  loader::symbolize(lr).c_str());
+}
+// Debug: SNAP_SONARPROBE=1 reads the tutorial condition evaluator (main+0x29d6d0) at each entry: its first condition and the
+// "Sonar" / "System_PlayerRay" entries of the owner's system map (+0x250), logged on change; with SNAP_HWWATCH the Sonar state
+// word (+0x18 of the map value) gets the debug-register watch.
+static bool g_sonarprobe = getenv("SNAP_SONARPROBE") != nullptr;
+static bool rd(uint64_t a, uint64_t &v) { if (!a || IsBadReadPtr((void *)a, 8)) return false; v = *(const uint64_t *)a; return true; }
+static void sonarprobe_hit(uint64_t x0) {
+    static std::map<uint64_t, std::string> lastby;
+    static int lines;
+    if (lines >= 3000) return;
+    std::string &last = lastby[x0];
+    uint64_t map, start, size;
+    if (!rd(x0 + 8, map) || !rd(x0 + 0x20, start) || !rd(x0 + 0x28, size) || !size) return;
+    for (uint64_t i = start; i < start + size && i < start + 32; i++) {
+    uint64_t blk, c;
+    if (!rd(map + ((i >> 8) << 3), blk) || !rd(blk + (i & 0xff) * 16, c) || !c) return;
+    char buf[512];
+    uint64_t t0, t4, t40, t48, owner = 0;
+    rd(c, t0); rd(c + 0x40, t40); rd(c + 0x48, t48); rd(c + 0x10, owner); rd(c + 4, t4);
+    if ((uint32_t)t0 != 5) continue;   // the search (scan) condition only
+    uint64_t tc = 0; rd(c + 0xc, tc);
+    int n = snprintf(buf, sizeof buf, "x0=%llx n=%llu cond type=%u id=%08x r=%08x need=%08x t44=%08x f48=%02x", (unsigned long long)x0,
+                     (unsigned long long)size, (unsigned)t0, (unsigned)(t0 >> 32), (unsigned)(t4 >> 32), (unsigned)tc,
+                     (unsigned)(t40 >> 32), (unsigned)(t48 & 0xff));
+    uint64_t node = 0, sonar_state = 0, msz = 0, vt = 0;
+    rd(owner + 0x268, msz); rd(owner, vt);
+    n += snprintf(buf + n, sizeof buf - n, " owner=%llx vt=%s msz=%llu", (unsigned long long)owner, loader::symbolize(vt).c_str(), (unsigned long long)msz);
+    // SNAP_SONARPROBE=watch: the debug-register watch goes on the map's first-node/size words of the condition named by SNAP_SONARPROBE_ID
+    static const uint32_t watch_id = getenv("SNAP_SONARPROBE_ID") ? (uint32_t)strtoul(getenv("SNAP_SONARPROBE_ID"), nullptr, 16) : 0;
+    if (g_hwwatch && !g_collwatch && watch_id && (uint32_t)(t0 >> 32) == watch_id && owner && owner + 0x260 != g_fnwatch_addr) {
+        g_fnwatch_addr = owner + 0x260; hwwatch_request(owner + 0x260);
+    }
+    if (owner && rd(owner + 0x260, node))
+        for (int k = 0; node && k < 64; k++) {
+            uint64_t key, val, st = 0;
+            if (!rd(node + 0x10, key) || !rd(node + 0x20, val)) break;
+            uint32_t h = (uint32_t)key;
+            if (k < 12) n += snprintf(buf + n, sizeof buf - n, " k%08x", h);
+            if (h == 0x5a70098fu || h == 0xacf0713eu) {
+                rd(val + 0x18, st);
+                n += snprintf(buf + n, sizeof buf - n, " %s@%llx=%u", h == 0x5a70098fu ? "Sonar" : "Ray", (unsigned long long)val, (unsigned)st);
+                if (h == 0x5a70098fu) sonar_state = val + 0x18;
+            }
+            if (!rd(node, node)) break;
+        }
+    if (g_hwwatch && !g_collwatch && !watch_id && sonar_state && sonar_state != g_fnwatch_addr) { g_fnwatch_addr = sonar_state; hwwatch_request(sonar_state); }
+    if (last == buf) continue;
+    last = buf;
+    lines++;
+    loader::trace("sonarprobe %s", buf);
+    }
+}
 void fnprof_hit(uint64_t a, uint64_t lr, uint64_t x0) {
+    if (g_sonarprobe && a == 0x710029d6d0ull) sonarprobe_hit(x0);
+    if (g_sonarprobe && (a == 0x71002a2970ull || a == 0x710036f160ull)) {   // world bounds add (x1 = box max, min) and its caller
+        static int n;
+        Cpu *cc = loader::g_tls_cpu;
+        uint64_t x1 = cc ? cc->x[1] : 0;
+        if (n++ < 400) {
+            if (a == 0x71002a2970ull && x1 && !IsBadReadPtr((void *)x1, 32)) {
+                const float *f = (const float *)x1;
+                loader::trace("addbounds world=%llx box=(%g %g %g)..(%g %g %g) from %s", (unsigned long long)x0, f[0], f[1], f[2], f[4], f[5], f[6], loader::symbolize(lr).c_str());
+            } else loader::trace("fn %#llx x0=%llx x1=%llx from %s", (unsigned long long)a, (unsigned long long)x0, (unsigned long long)x1, loader::symbolize(lr).c_str());
+        }
+    }
+    if (g_sonarprobe && a == 0x71002a0810ull) {   // broadphase pair walker: [x0+0x20] = {records (0x108 each), count}; first chunk only
+        static int n;
+        static std::string last;
+        uint64_t g = 0, arr = 0, cnt = 0, first = 0;
+        rd(x0 + 0x28, first);
+        if ((uint32_t)first == 0 && rd(x0 + 0x20, g) && rd(g, arr) && rd(g + 8, cnt) && cnt < 100000 && n < 1500) {
+            std::string s;
+            char b[256];
+            for (uint64_t i = 0; i < cnt; i++) {
+                uint64_t r = arr + i * 0x108, col = 0, h = 0, c0 = 0, c1 = 0, ex = 0;
+                if (!rd(r + 8, col) || !rd(col + 0x68, h)) continue;
+                rd(r + 0xf0, c0); rd(r + 0xf8, c1); rd(r + 0x20, ex);
+                uint64_t ty = 0; rd(col + 0x60, ty);
+                const float *bb = (const float *)(col + 0x70);
+                bool sonar = (uint32_t)h == 0x5a70098fu;
+                snprintf(b, sizeof b, " [%llu/%llu %s h=%08x id=%08x type=%u x=%d..%d y=%d..%d extra=%llu", (unsigned long long)i, (unsigned long long)cnt,
+                         sonar ? "SONAR" : "", (unsigned)h, (unsigned)ty, (unsigned)(ty >> 32), (int)c0, (int)(c0 >> 32), (int)c1, (int)(c1 >> 32), (unsigned long long)ex);
+                s += b;
+                if (sonar && !IsBadReadPtr(bb, 32)) {
+                    snprintf(b, sizeof b, " aabb=(%g %g %g)..(%g %g %g)", bb[0], bb[1], bb[2], bb[4], bb[5], bb[6]);
+                    s += b;
+                }
+                s += "]";
+            }
+            if (s.find("SONAR") == std::string::npos) s = " none";
+            else if (!IsBadReadPtr((void *)(g + 0x680), 32)) {   // world bounds the grid spans: max at +0x680, min at +0x690
+                const float *wb = (const float *)(g + 0x680);
+                uint64_t lb = 0, le = 0;
+                rd(0x7100cfb1d8ull, lb); rd(0x7100cfb1e0ull, le);
+                snprintf(b, sizeof b, " world max=(%g %g %g %g) min=(%g %g %g %g) boxes=%lld", wb[0], wb[1], wb[2], wb[3], wb[4], wb[5], wb[6], wb[7],
+                         (long long)((le - lb) / 32));
+                s += b;
+                for (uint64_t p = lb; p && p < le && p < lb + 32 * 8; p += 32) {
+                    const float *f = (const float *)p;
+                    snprintf(b, sizeof b, " box(%g %g %g | %g %g %g)", f[0], f[1], f[2], f[4], f[5], f[6]);
+                    s += b;
+                }
+            }
+            if (s != last) { last = s; n++; loader::trace("sonarproxy x0=%llx%s", (unsigned long long)x0, s.c_str()); }
+        }
+    }
+    if (g_sonarprobe && a == 0x71002a0d30ull) {   // collider pair dispatcher: a = [[[x0]]+8], b = [x1+8]; collider +0x60 id, +0x64 type, +0x68 name hash
+        static int n;
+        Cpu *cc = loader::g_tls_cpu;
+        uint64_t p, q, ca = 0, cb = 0, x1 = cc ? cc->x[1] : 0;
+        if (rd(x0, p) && rd(p, q) && rd(q + 8, ca) && rd(x1 + 8, cb) && ca && cb) {
+            uint64_t ta = 0, tb = 0, ha = 0, hb = 0;
+            rd(ca + 0x60, ta); rd(cb + 0x60, tb); rd(ca + 0x68, ha); rd(cb + 0x68, hb);
+            static const bool allc = getenv("SNAP_PAIRKEY") && !strcmp(getenv("SNAP_PAIRKEY"), "all");
+            if (allc) {   // SNAP_PAIRKEY=all: log each collider the first time it shows up in any pair (pointer, id, type, name hash, flags)
+                static std::unordered_set<uint64_t> seenc; static int nall;
+                for (int side = 0; side < 2 && nall < 20000; side++) {
+                    uint64_t c = side ? cb : ca, t = side ? tb : ta, h = side ? hb : ha, fl = 0;
+                    if (seenc.insert(c).second) { rd(c + 0x90, fl); nall++; loader::trace("collider c=%llx id=%08x type=%u hash=%08x f=%08x", (unsigned long long)c, (unsigned)t, (unsigned)(t >> 32), (unsigned)h, (unsigned)(fl >> 24)); }
+                }
+            }
+            // SNAP_PAIRTRACK=1: after the Player's ray collider (acf0713e) first pairs (course start), log the pk-side collider's
+            // floats at most once per second per collider, to see whether a collider moves with its actor over the ride
+            static const bool track = getenv("SNAP_PAIRTRACK") != nullptr; static bool started;
+            if (track && ((uint32_t)ha == 0xacf0713eu || (uint32_t)hb == 0xacf0713eu)) started = true;
+            if (track) {
+                // SNAP_PAIRKEY = comma list of name hashes; logs each matching collider's box (collider +0x70..+0x88: two xyz corners)
+                static uint32_t tks[8]; static int ntk = -1;
+                if (ntk < 0) { ntk = 0; const char *e = getenv("SNAP_PAIRKEY"); while (e && *e && ntk < 8) { tks[ntk++] = (uint32_t)strtoul(e, (char **)&e, 16); if (*e == ',') e++; else break; } if (!ntk) tks[ntk++] = 0x486b73a0u; }
+                static std::unordered_map<uint64_t, uint64_t> lastt; static int nt; static SRWLOCK lk = SRWLOCK_INIT;
+                for (int side = 0; started && side < 2 && nt < 40000; side++) {
+                    uint64_t c = side ? cb : ca, h = side ? hb : ha, t = side ? tb : ta, now = GetTickCount64();
+                    bool want = false; for (int i = 0; i < ntk; i++) if ((uint32_t)h == tks[i]) want = true;
+                    if (!want) continue;
+                    uint32_t per = ((uint32_t)h == 0x740a86c9u || (uint32_t)h == 0x42abde07u) ? 100 : 1000;   // fruit/orb boxes 10x per second
+                    AcquireSRWLockExclusive(&lk); uint64_t &lt = lastt[c]; bool skip = lt && now - lt < per; if (!skip) { lt = now; nt++; } ReleaseSRWLockExclusive(&lk);
+                    if (skip) continue;
+                    float f[8]; for (int k = 0; k < 8; k++) { uint64_t v = 0; rd(c + 0x70 + k * 4, v); uint32_t u = (uint32_t)v; memcpy(&f[k], &u, 4); }
+                    uint64_t oh = side ? ha : hb;
+                    // SNAP_COLLWATCH: arm the debug-register watch on the first Sight (486b73a0) collider seen after course start
+                    static const bool cw = getenv("SNAP_COLLWATCH") != nullptr, ca2 = getenv("SNAP_COLLARGS") != nullptr; if (cw || ca2) g_hwwatch = g_collwatch = true;
+                    if (ca2 && (uint32_t)h == 0x486b73a0u && c != g_collptr && fabsf((f[0] + f[4]) / 2 + 11) < 8 && fabsf((f[2] + f[6]) / 2 + 30) < 8 && fabsf((f[1] + f[5]) / 2 - 11) < 3) { g_collptr = c; loader::trace("collargs: collider %llx", (unsigned long long)c); }
+                    if (cw && (uint32_t)h == 0x486b73a0u && c + 0x70 != g_fnwatch_addr && fabsf((f[0] + f[4]) / 2 + 11) < 8 && fabsf((f[2] + f[6]) / 2 + 30) < 8 && fabsf((f[1] + f[5]) / 2 - 11) < 3) {   /* Volcano Illumina Volcarona box near (-11,11,-30) */ g_fnwatch_addr = c + 0x70; hwwatch_request(c + 0x70); loader::trace("collwatch: watching %llx", (unsigned long long)(c + 0x70)); }
+                    loader::trace("track c=%llx id=%08x h=%08x other=%08x box %.2f %.2f %.2f | %.2f %.2f %.2f", (unsigned long long)c, (unsigned)t, (unsigned)h, (unsigned)oh, f[0], f[1], f[2], f[4], f[5], f[6]);
+                }
+            }
+            static const uint32_t pk = getenv("SNAP_PAIRKEY") ? (uint32_t)strtoul(getenv("SNAP_PAIRKEY"), nullptr, 16) : 0x5a70098fu;   // name hash to log pairs for (default "Sonar")
+            if (!track && ((uint32_t)ha == pk || (uint32_t)hb == pk) && (uint32_t)ha != (uint32_t)hb && (uint32_t)ha != 0x9fb57f53u && (uint32_t)hb != 0x9fb57f53u && n < 5000) {
+                // dedupe per other-side collider: first 4 pairs each; m = type matrix main+0xcfca04 [type_a][type_b] (0 = never contacts)
+                static uint64_t combo[512]; static uint8_t cnt[512]; static int nc;
+                uint64_t ck = ((uint32_t)ha == pk) ? cb : ca; int ci = -1;   // per other-side collider (many actors share one name hash)
+                for (int i = 0; i < nc; i++) if (combo[i] == ck) { ci = i; break; }
+                if (ci < 0 && nc < 512) { ci = nc++; combo[ci] = ck; cnt[ci] = 0; }
+                static bool dumped;
+                if (!dumped) {   // one-time dump of the collider type matrix main+0xcfca04 (row = type a, column = type b)
+                    dumped = true;
+                    for (int r = 0; r < 16; r++) {
+                        char line[160]; int o = 0;
+                        for (int c = 0; c < 16; c++) { uint64_t v = 0; rd(0x7100cfca04ull + c * 4 + r * 0x40, v); o += snprintf(line + o, sizeof line - o, " %d", (int)(uint32_t)v); }
+                        loader::trace("typematrix row %2d:%s", r, line);
+                    }
+                }
+                if (ci >= 0 && cnt[ci] < (getenv("SNAP_PAIRMAX") ? atoi(getenv("SNAP_PAIRMAX")) : 4)) {
+                    cnt[ci]++; n++;
+                    uint32_t tya = (uint32_t)(ta >> 32), tyb = (uint32_t)(tb >> 32); uint64_t mv = 0, fa = 0, fb = 0;
+                    if (tya < 16 && tyb < 16) rd(0x7100cfca04ull + tyb * 4 + tya * 0x40, mv);
+                    rd(ca + 0x90, fa); rd(cb + 0x90, fb);   // bytes +0x93 trigger?, +0x94, +0x96 narrowphase
+                    {   // raw floats of the pk-side collider (+0x00..+0x5c), to find its position / bounds
+                        uint64_t pc = ((uint32_t)ha == pk) ? ca : cb; char fl[400]; int o = 0;
+                        for (int k = 0; k < 0x60; k += 4) { uint64_t v = 0; rd(pc + k, v); float fv; uint32_t u = (uint32_t)v; memcpy(&fv, &u, 4); o += snprintf(fl + o, sizeof fl - o, " %g", fv); }
+                        loader::trace("pairfloats c=%llx:%s", (unsigned long long)pc, fl);
+                    }
+                    loader::trace("sonarpair a=%llx id=%08x type=%u hash=%08x f=%08x | b=%llx id=%08x type=%u hash=%08x f=%08x | m=%d", (unsigned long long)ca, (unsigned)ta,
+                                  tya, (unsigned)ha, (unsigned)(fa >> 24), (unsigned long long)cb, (unsigned)tb, tyb, (unsigned)hb, (unsigned)(fb >> 24), (int)(uint32_t)mv);
+                }
+            }
+        }
+    }
+    if (g_sonarprobe && a == 0x710036f160ull && getenv("SNAP_COLLOWNERS")) {   // every collider component update: owner, matrix offset, world translation (once per 2 s per owner)
+        static std::unordered_map<uint64_t, uint64_t> lo; static SRWLOCK lk2 = SRWLOCK_INIT; static int nn;
+        Cpu *cc = loader::g_tls_cpu; uint64_t x2 = cc ? cc->x[2] : 0, own = 0, col = 0, now = GetTickCount64(); rd(x0 + 0x20, own); rd(x0 + 0x48, col);
+        AcquireSRWLockExclusive(&lk2); uint64_t &l = lo[own]; bool go = (!l || now - l >= 2000) && nn < 30000; if (go) { l = now; nn++; } ReleaseSRWLockExclusive(&lk2);
+        if (go && x2) { float t3[3]; for (int k = 0; k < 3; k++) { uint64_t v = 0; rd(x2 + 0x30 + k * 4, v); uint32_t u = (uint32_t)v; memcpy(&t3[k], &u, 4); } uint64_t h = 0; rd(col + 0x68, h);
+            loader::trace("collowner own=%llx off=%lld col=%llx h=%08x t=%.2f %.2f %.2f", (unsigned long long)own, (long long)(x2 - own), (unsigned long long)col, (unsigned)h, t3[0], t3[1], t3[2]); }
+    }
+    if (g_sonarprobe && a == 0x710036f160ull && g_collptr) {   // collider component update: x0 = component (+0x48 collider, +0x20/+0x28 owner weak ptr), x2 = world matrix
+        uint64_t col = 0; rd(x0 + 0x48, col);
+        if (col == g_collptr) {
+            static uint64_t lastt; static int nl; uint64_t now = GetTickCount64();
+            if (now - lastt >= 2000 && nl < 400) {
+                lastt = now; nl++;
+                Cpu *cc = loader::g_tls_cpu; uint64_t x1 = cc ? cc->x[1] : 0, x2 = cc ? cc->x[2] : 0, own = 0; rd(x0 + 0x20, own);
+                std::string ring; for (unsigned i = 1; i <= 6; i++) { uint64_t l = t_lrring[(t_lrpos - i) & 7]; if (l) { ring += " < "; ring += loader::symbolize(l); } }
+                { static char ab[24000]; int o = 0; for (int k = 0; k < 0x800; k += 4) { uint64_t v = 0; rd(own + k, v); float fv; uint32_t u = (uint32_t)v; memcpy(&fv, &u, 4); o += snprintf(ab + o, sizeof ab - o, " %.4g", fv); }
+                  loader::trace("collactor %llx:%s", (unsigned long long)own, ab); }
+                loader::trace("collcomp comp=%llx owner=%llx x1=%llx x2=%llx (x2-owner=%lld) lr=%s ring%s", (unsigned long long)x0, (unsigned long long)own, (unsigned long long)x1,
+                              (unsigned long long)x2, (long long)(x2 - own), loader::symbolize(lr).c_str(), ring.c_str());
+            }
+        }
+    }
+    if (g_sonarprobe && a == 0x71004eb690ull && g_collptr && x0 == g_collptr) {   // collider shape/box update (x1 actor world matrix, x2/x3 joint matrices or 0)
+        static uint64_t lastt; static int nl; uint64_t now = GetTickCount64();
+        if (now - lastt >= 1000 && nl < 2000) {
+            lastt = now; nl++;
+            Cpu *cc = loader::g_tls_cpu; uint64_t x1 = cc ? cc->x[1] : 0, x2 = cc ? cc->x[2] : 0, x3 = cc ? cc->x[3] : 0, x4 = cc ? cc->x[4] : 0;
+            float m[16] = {}; for (int k = 0; k < 16; k++) { uint64_t v = 0; rd(x1 + k * 4, v); uint32_t u = (uint32_t)v; memcpy(&m[k], &u, 4); }
+            uint64_t map = 0, st = 0, sz = 0; rd(x0 + 8, map); rd(x0 + 0x20, st); rd(x0 + 0x28, sz);
+            char sh[256]; int o = 0;
+            for (uint64_t i = st; i < st + sz && i < st + 6; i++) { uint64_t blk = 0, ji = 0; rd(map + (i / 0x13) * 8, blk); rd(blk + (i % 0x13) * 0xd0 + 0x28, ji); o += snprintf(sh + o, sizeof sh - o, " j%d/k%u", (int)(uint32_t)ji, (unsigned)(ji >> 32)); }
+            float j[4] = {}; if (x2) { uint64_t ji = 0, blk = 0; rd(map + (st / 0x13) * 8, blk); rd(blk + (st % 0x13) * 0xd0 + 0x28, ji); if ((int)(uint32_t)ji >= 0) for (int k = 0; k < 4; k++) { uint64_t v = 0; rd(x2 + (uint32_t)ji * 0x40 + 0x30 + k * 4, v); uint32_t u = (uint32_t)v; memcpy(&j[k], &u, 4); } }
+            if (x2) { static uint64_t lp; if (now - lp >= 3000) { lp = now; static char pb[16000]; int o = 0;
+                for (int i = 0; i < 160; i++) { float v3[3]; for (int k = 0; k < 3; k++) { uint64_t v = 0; rd(x2 + i * 0x40 + 0x30 + k * 4, v); uint32_t u = (uint32_t)v; memcpy(&v3[k], &u, 4); } o += snprintf(pb + o, sizeof pb - o, " %d:%.1f,%.1f,%.1f", i, v3[0], v3[1], v3[2]); }
+                loader::trace("collpalette %llx:%s", (unsigned long long)x2, pb); } }
+            loader::trace("collargs c=%llx world t=(%.2f %.2f %.2f) r=(%.2f %.2f %.2f) x2=%llx x3=%llx x4=%llx shapes=%llu%s joint0 t=(%.2f %.2f %.2f)", (unsigned long long)x0, m[12], m[13], m[14], m[3], m[7], m[11],
+                          (unsigned long long)x2, (unsigned long long)x3, (unsigned long long)x4, (unsigned long long)sz, sh, j[0], j[1], j[2]);
+        }
+    }
+    if (g_sonarprobe && a == 0x71004043c0ull) {   // actor contact callback (x0 = actor, x1 = event: +0x10 other's name hash, +0x18 phase, +0x1c id)
+        static int n;
+        static uint64_t seen[256];
+        Cpu *cc = loader::g_tls_cpu;
+        uint64_t ev = cc ? cc->x[1] : 0, k = 0, ph = 0;
+        rd(ev + 0x10, k); rd(ev + 0x18, ph);
+        uint64_t sig = x0 ^ (k << 20) ^ (ph << 52);
+        bool dup = false;
+        for (auto s : seen) if (s == sig) { dup = true; break; }
+        if (((uint32_t)k == 0x740a86c9u || (uint32_t)k == 0x42abde07u) && (uint32_t)ph == 0) dup = false;   // "Food" (fluffruit) / "LightBall" (orb): log every hit start
+        if (!dup && n < 20000) { seen[n & 255] = sig; n++; loader::trace("contact actor=%llx key=%08x self=%08x phase=%u id=%08x from %s", (unsigned long long)x0, (unsigned)k, (unsigned)(k >> 32), (unsigned)ph, (unsigned)(ph >> 32), loader::symbolize(lr).c_str()); }
+    }
+    if (g_hwwatch) { t_lastfn = a; t_lastlr = lr; t_lrring[t_lrpos++ & 7] = lr; }
+    else if (g_fnwatch_addr) fnwatch_check(a, lr);
+    if (g_fnpeek_fn == a) { fnpeek_hit(x0); fnwatch_resolve(x0); }
     loader_init_hit(a);
     snap_fn_observe(a, lr, x0);   // host/mods/lodanim.cpp (SNAP_TRACE_LOD); returns at once when unused
     snap_skips_observe(a, lr, x0);   // host/mods/skips.cpp (SNAP_SKIPS_REC)
     snap_neo_observe(a, lr, x0);   // host/mods/neofilm.cpp (dev tracer SNAP_NEO_CAMFN)
     snap_highfps_observe(a, lr, x0);   // host/mods/highfps.cpp (SNAP_FPS_TRACE / SNAP_FPS_MSWATCH)
     for (int i = 0; i < g_fntrace_n; i++)
-        if (g_fntrace[i] == a) { loader::trace("fn %#llx entered from %s x0=%#llx", (unsigned long long)a, loader::symbolize(lr).c_str(), (unsigned long long)x0); return; }
+        if (g_fntrace[i] == a) {
+            // SNAP_FNTRACE_STACK=n (debug): also thread id, x1 and the guest frame-pointer chain (n return addresses as main offsets; the callee has not
+            // run its prologue yet, so x29 is the caller's frame record).
+            static const int stack_n = [] { const char *e = getenv("SNAP_FNTRACE_STACK"); return e ? atoi(e) : 0; }();
+            if (stack_n > 0) {
+                Cpu *cc = loader::g_tls_cpu;
+                char chain[512];
+                int len = snprintf(chain, sizeof chain, "tid=%lu x1=%#llx lr=m+%#llx chain:", (unsigned long)GetCurrentThreadId(), (unsigned long long)(cc ? cc->x[1] : 0),
+                                   (unsigned long long)(lr - 0x7100000000ull));
+                uint64_t fp = cc ? cc->x[29] : 0, prev = 0;
+                for (int k = 0; k < stack_n && fp && !(fp & 7) && fp > prev && len < 480; k++) {
+                    uint64_t nfp = 0, nlr = 0;
+                    if (!rd(fp, nfp) || !rd(fp + 8, nlr)) break;
+                    len += snprintf(chain + len, sizeof chain - len, " m+%#llx", (unsigned long long)(nlr - 0x7100000000ull));
+                    prev = fp;
+                    fp = nfp;
+                }
+                loader::trace("fn %#llx %s x0=%#llx", (unsigned long long)a, chain, (unsigned long long)x0);
+                return;
+            }
+            loader::trace("fn %#llx entered from %s x0=%#llx", (unsigned long long)a, loader::symbolize(lr).c_str(), (unsigned long long)x0);
+            return;
+        }
 }
 void rt_spin_gate(Cpu *c, uint64_t head) { if (g_spin_gate_fn) g_spin_gate_fn(c, head); }
 uint64_t rt_ticks(void) {
@@ -787,6 +1214,7 @@ void rt_dispatch(Cpu *c) {
         // writes its Thunk on every call from several threads (opt 2026-11-13)
         uint64_t n = th->calls;
         if (__builtin_expect(n < 2, 0)) th->calls = n + 1;
+        if (__builtin_expect(g_count_imports, 0)) __atomic_fetch_add(&th->total, 1, __ATOMIC_RELAXED);
         if (n == 0 && g_trace_imports)
             trace("import %s called from %s x0=%#llx x1=%#llx x2=%#llx x3=%#llx", th->name.c_str(), symbolize(c->x[30]).c_str(),
                   (unsigned long long)c->x[0], (unsigned long long)c->x[1], (unsigned long long)c->x[2], (unsigned long long)c->x[3]);
@@ -795,6 +1223,25 @@ void rt_dispatch(Cpu *c) {
         return;
     }
     rt_unresolved(c, pc, "indirect branch/call (rt_dispatch): not a function start");
+}
+
+// Debug (SNAP_IMPORT_COUNT=1, route token icount=<tag>): every host import and svc called since the last dump, with its call count, to stderr.
+void snap_import_counts_dump(const char *tag) {
+    static std::vector<uint64_t> last;
+    static uint64_t last_svc[0x80];
+    if (!g_count_imports) { trace("[icount %s] SNAP_IMPORT_COUNT is not set\n", tag); return; }
+    if (last.size() < g_thunks.size()) last.resize(g_thunks.size(), 0);
+    std::vector<std::pair<uint64_t, size_t>> rows;
+    for (size_t i = 0; i < g_thunks.size(); i++) {
+        uint64_t t = __atomic_load_n(&g_thunks[i]->total, __ATOMIC_RELAXED);
+        if (t != last[i]) rows.push_back({t - last[i], i});
+        last[i] = t;
+    }
+    std::sort(rows.begin(), rows.end(), [](auto &a, auto &b) { return a.first > b.first; });
+    trace("[icount %s] %zu imports called since the last dump\n", tag, rows.size());
+    for (auto &r : rows) trace("[icount %s] %8llu %s\n", tag, (unsigned long long)r.first, g_thunks[r.second]->name.c_str());
+    for (int i = 0; i < 0x80; i++)
+        if (g_svc_counts[i] != last_svc[i]) { trace("[icount %s] %8llu svc %#x %s\n", tag, (unsigned long long)(g_svc_counts[i] - last_svc[i]), i, svc_name(i)); last_svc[i] = g_svc_counts[i]; }
 }
 
 void rt_import_call(Cpu *c, uint32_t idx) {

@@ -44,6 +44,12 @@ void rt_hook_longjmp(Cpu *c) {
     const uint64_t *jb = (const uint64_t *)c->x[0];
     const uint32_t w1 = (uint32_t)c->x[1];   // longjmp(jmp_buf, int): musl tests w1, and setjmp's result is an int in w0
     const uint64_t val = w1 ? w1 : 1;
+    {   // Debug: SNAP_LJ_TRACE=1 logs each longjmp (Lua errors are thrown with longjmp): caller and target, first 500
+        static const bool on = getenv("SNAP_LJ_TRACE") != nullptr;
+        static int n;
+        if (on && n++ < 500)
+            trace("longjmp #%d from %s to %s val=%u", n, symbolize(c->x[30]).c_str(), symbolize(jb[11]).c_str(), (unsigned)val);
+    }
     for (int i = 0; i < 10; i++) c->x[19 + i] = jb[i];
     c->x[29] = jb[10];
     c->x[30] = jb[11];

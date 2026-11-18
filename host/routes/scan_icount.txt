@@ -1,0 +1,33 @@
+# fixture: tut_cand_new4
+# Debug: scan prompt at f7450, X at f7500, import-call counts (SNAP_IMPORT_COUNT=1) dumped every 40 frames from f7440 into the boot trace log.
+repeat @f300 @f7400 60 6 A
+@f7500 8 X
+@f7770 6 A
+@f7970 6 A
+@f7440 4 icount=f7440
+@f7480 4 icount=f7480
+@f7520 4 icount=f7520
+@f7560 4 icount=f7560
+@f7600 4 icount=f7600
+@f7640 4 icount=f7640
+@f7680 4 icount=f7680
+@f7720 4 icount=f7720
+@f7760 4 icount=f7760
+@f7800 4 icount=f7800
+@f7840 4 icount=f7840
+@f7880 4 icount=f7880
+@f7920 4 icount=f7920
+@f7960 4 icount=f7960
+@f8000 4 icount=f8000
+@f8040 4 icount=f8040
+@f8080 4 icount=f8080
+@f8120 4 icount=f8120
+@f8160 4 icount=f8160
+@f8200 4 icount=f8200
+@f8240 4 icount=f8240
+@f8280 4 icount=f8280
+@f8320 4 icount=f8320
+@f8360 4 icount=f8360
+@f8400 4 icount=f8400
+repeat @f7440 @f8400 100 1 shot=1
+end @f8420
