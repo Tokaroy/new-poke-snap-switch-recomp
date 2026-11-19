@@ -26,7 +26,7 @@ if ($Case) {
     if ($c.Unset) { $Unset = @($c.Unset) }
 }
 if (-not $Rows.Count -or -not $Expect.Count) { Write-Host 'give -Case <name>, or -Rows <key=value> and -Expect <regex>'; exit 2 }
-if (Test-Path (Join-Path $root 'build\play.lock')) { Write-Host 'build\play.lock is there (someone is playing): not starting'; exit 2 }
+if ((Test-Path (Join-Path $root 'build\play.lock')) -and $env:SNAP_RUN_WHILE_PLAYING -ne '1') { Write-Host 'build\play.lock is there (someone is playing): not starting'; exit 2 }
 
 $name = if ($Case) { $Case } else { 'rows' }
 $pdir = Join-Path $root 'build\testprofiles_saved'

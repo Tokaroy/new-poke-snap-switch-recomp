@@ -13,16 +13,17 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "live.h"   // the Lighting preset row applies with no restart
+
 namespace snaplight {
 inline int level() {
-  static const int v = [] {
+  return SNAP_LIVE(int, ([] {
     const char* l = getenv("SNAP_LIGHTING");
     if (!l || !*l) return 0;
     if (!_stricmp(l, "high") || !_stricmp(l, "enhanced")) return 1;
     if (!_stricmp(l, "ultra") || !_stricmp(l, "maximum")) return 2;
     return 0;
-  }();
-  return v;
+  }()));
 }
 // SNAP_LIGHT_AB=<P> (test aid): the lighting features (shadow distance and fade, bias, filter, SSAO force) are on only in odd blocks of P presents,
 // off in even ones: same-view A/B pairs inside one run. Unset = always on.

@@ -47,8 +47,8 @@ float Strength(const char* name) {
   const float v = (float)atof(e);
   return v > 0.f ? std::min(v, 4.f) : 0.f;
 }
-float DofStrength() { static const float v = Strength("SNAP_BOKEH_DOF"); return v; }
-float MblurStrength() { static const float v = Strength("SNAP_MOTION_BLUR"); return v; }
+float DofStrength() { return SNAP_LIVE(float, Strength("SNAP_BOKEH_DOF")); }       // live rows (hle/live.h)
+float MblurStrength() { return SNAP_LIVE(float, Strength("SNAP_MOTION_BLUR")); }
 bool LogOn() { static const bool on = getenv("SNAP_LENS_LOG") != nullptr; return on; }
 
 struct PcFocus { float dp[4], sz[4], ms[4]; };

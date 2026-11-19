@@ -38,6 +38,12 @@ extern "C" uint64_t snap_present_count();
 extern "C" int snap_route_cond(const char* c, char* why, int n);
 extern "C" void snap_input_force_buttons(const char* names);
 namespace nvn { extern int g_fdBurst; bool FxIsPhotoFrame(); uint64_t FxRanCount(); uint64_t FxRanOnPhotoCount(); }
+namespace snap::ui {   // the options rows, set the way the menu sets them (runtime/ui/ui_options.cpp)
+bool options_test_set(const std::string& key, const std::string& value);
+std::string options_test_get(const std::string& key);
+std::string options_test_default(const std::string& key);
+bool options_test_option_when(const std::string& key, std::string* when);
+}
 
 namespace {
 
@@ -48,7 +54,7 @@ struct Plan {
 };
 
 struct Req { std::string kind; int state; std::string value; uint64_t present; int photoFlag; };
-struct State { std::string value; uint64_t setP = 0, winP0 = 0, winP1 = 0; double gpuBusy = -1; std::vector<std::pair<std::string, double>> passes; };
+struct State { std::string value, info; uint64_t setP = 0, winP0 = 0, winP1 = 0; double gpuBusy = -1; std::vector<std::pair<std::string, double>> passes; };
 struct PhotoRun { std::string value; int photoPresents = 0, dumps = 0; bool timeRunning = false, filmEmpty = false; uint64_t ran = 0, ranOnPhoto = 0; };
 std::vector<PhotoRun> g_photoRuns;
 Plan g_plan;
@@ -76,7 +82,8 @@ std::vector<std::string> split(const std::string& s, char c) {
 bool load_plan(const char* path) {
     FILE* f = std::fopen(path, "r");
     if (!f) return false;
-    char line[1024];
+    char line[4096];
+    std::string rawValues;
     while (std::fgets(line, sizeof line, f)) {
         std::string l = line;
         while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
@@ -84,12 +91,13 @@ bool load_plan(const char* path) {
         if (eq == std::string::npos || l[0] == '#') continue;
         const std::string k = l.substr(0, eq), v = l.substr(eq + 1);
         if (k == "moment") g_plan.moment = v; else if (k == "effect") g_plan.effect = v; else if (k == "out") g_plan.out = v;
-        else if (k == "values") g_plan.values = split(v, ',');
+        else if (k == "values") rawValues = v;
         else if (k == "hold") g_plan.hold = std::atoi(v.c_str()); else if (k == "settle") g_plan.settle = std::atoi(v.c_str());
         else if (k == "window") g_plan.window = std::atoi(v.c_str()); else if (k == "photo") g_plan.photo = std::atoi(v.c_str());
         else if (k == "timeout") g_plan.timeout = std::atoi(v.c_str());
     }
     std::fclose(f);
+    g_plan.values = split(rawValues, g_plan.effect == "opts" ? '|' : ',');   // option values hold commas ("ssaa2,smaa")
     return !g_plan.moment.empty() && !g_plan.effect.empty() && !g_plan.values.empty();
 }
 
@@ -106,8 +114,24 @@ bool dev_value(const std::string& v, double* out) {
     if (end == v.c_str() || *end) return false;
     *out = d; return true;
 }
+//   opts                     rows of the options menu, set the way the menu sets them: each value is <key>=<value> ("-" = the row's default), values
+//                            separated by '|'. Proves a row applies with no restart: the frame after the change differs from the one before.
+std::string g_info;   // what the last apply() did to an options row (result file "info")
 void apply(const std::string& value) {
     const std::string& e = g_plan.effect;
+    g_info.clear();
+    if (e == "opts") {
+        const size_t eq = value.find('=');
+        if (eq == std::string::npos) { g_info = "same"; return; }   // a bare word: change nothing (a control frame)
+        const std::string k = value.substr(0, eq);
+        std::string v = value.substr(eq + 1), when = "unknown";
+        if (v == "-") v = snap::ui::options_test_default(k);
+        snap::ui::options_test_option_when(k, &when);
+        const bool ok = snap::ui::options_test_set(k, v);
+        g_info = when + (ok ? "" : " set-failed") + " now=" + snap::ui::options_test_get(k);
+        say("option %s = '%s' (%s)", k.c_str(), v.c_str(), g_info.c_str());
+        return;
+    }
     if (e == "lighting" || e == "all" || e == "ab") { snaplight::ab_force().store(truthy(value) ? 1 : 0); return; }
     double d;
     if (dev_on() && dev_value(value, &d) && dev_param_set(e.c_str(), d)) { say("dev param %s = %g", e.c_str(), d); return; }
@@ -140,7 +164,7 @@ void write_result(const char* status) {
     std::fprintf(f, "{\n \"status\": \"%s\",\n \"effect\": \"%s\",\n \"moment\": \"%s\",\n \"settle\": %d, \"window\": %d,\n", status, g_plan.effect.c_str(), g_plan.moment.c_str(), g_plan.settle, g_plan.window);
     std::fprintf(f, " \"moment_present\": %llu, \"freeze_present\": %llu, \"end_present\": %llu,\n \"states\": [", (unsigned long long)g_momentP, (unsigned long long)g_freezeP, (unsigned long long)g_endP);
     for (size_t i = 0; i < g_states.size(); i++) {
-        std::fprintf(f, "%s\n  {\"i\": %zu, \"value\": \"%s\", \"set_present\": %llu, \"win_from\": %llu, \"win_to\": %llu, \"dev_gpu_busy_ms\": %.4f, \"dev_passes\": {", i ? "," : "", i, g_states[i].value.c_str(),
+        std::fprintf(f, "%s\n  {\"i\": %zu, \"value\": \"%s\", \"info\": \"%s\", \"set_present\": %llu, \"win_from\": %llu, \"win_to\": %llu, \"dev_gpu_busy_ms\": %.4f, \"dev_passes\": {", i ? "," : "", i, g_states[i].value.c_str(), g_states[i].info.c_str(),
                      (unsigned long long)g_states[i].setP, (unsigned long long)g_states[i].winP0, (unsigned long long)g_states[i].winP1, g_states[i].gpuBusy);
         for (size_t k = 0; k < g_states[i].passes.size(); k++) std::fprintf(f, "%s\"%s\": %.4f", k ? ", " : "", g_states[i].passes[k].first.c_str(), g_states[i].passes[k].second);
         std::fprintf(f, "}}");
@@ -192,7 +216,7 @@ void worker() {
     // 3. each value: set, settle, timing window, one frame
     for (size_t i = 0; i < g_plan.values.size(); i++) {
         State st; st.value = g_plan.values[i];
-        apply(st.value); st.setP = pc();
+        apply(st.value); st.setP = pc(); st.info = g_info;
         say("state %zu: %s = %s", i, g_plan.effect.c_str(), st.value.c_str());
         if (!wait_presents((uint64_t)g_plan.settle)) finish(4, "stall");
         st.winP0 = pc();

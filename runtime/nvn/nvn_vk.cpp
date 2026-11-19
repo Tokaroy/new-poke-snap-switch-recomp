@@ -1820,6 +1820,7 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
   FxOnPresent();   // [fx]
   UpscaleOnPresent();   // [upscale]
   snap_rt::OnPresent();   // [rt]
+  if (snap_hdr::LiveChanged()) w->needRecreate = true;   // HDR output / peak / paper white rows, no restart
   if (g_hooks.on_present) g_hooks.on_present(g_hooks.user, slot, src->b.width, src->b.height);
 
   // [framegen] With frame generation a game frame presents twice: pass 0 the interpolated frame (previous real frame -> this one,

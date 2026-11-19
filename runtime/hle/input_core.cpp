@@ -924,6 +924,9 @@ bool route_cond(const std::string& c0, std::string* why) {
   } else if (c.rfind("film<=", 0) == 0) {
     r = g_film.load() >= 0 && g_film.load() <= std::atoi(c.c_str() + 6);
     std::snprintf(b, sizeof b, "film counter %d", g_film.load());
+  } else if (c.rfind("present>=", 0) == 0) {   // a fixed present (a cutscene shot of a frame-timed route; host/ab_capture.ps1 -Moment 'present>=4400')
+    r = (int)nvn::g_presentCount >= std::atoi(c.c_str() + 9);
+    std::snprintf(b, sizeof b, "present %d", (int)nvn::g_presentCount);
   } else if (c == "aim") {   // the `aim` line's target sits on the reticle (host/mods/aim.cpp)
     r = snap_aim_ready(b, (int)sizeof b) != 0;
   } else if (c.rfind("act=", 0) == 0) {   // the game's viewfinder is locked on an actor playing that event (a photo now carries it)

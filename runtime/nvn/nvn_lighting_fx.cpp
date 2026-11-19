@@ -55,7 +55,7 @@ bool Configured() {   // the preset / SNAP_LIGHT_FX say yes (not looking at the 
   return mode >= 0 ? mode == 1 : snaplight::enhanced();
 }
 bool SsgiOn() {   // SNAP_SSGI=1: screen-space bounce light, its own switch (the "Bounce light" row), independent of the lighting preset
-  static const bool v = [] { const char* e = getenv("SNAP_SSGI"); return e && *e && atoi(e) != 0; }();
+  const bool v = SNAP_LIVE(bool, ([] { const char* e = getenv("SNAP_SSGI"); return e && *e && atoi(e) != 0; }()));   // live row (hle/live.h)
   return v && !g.giFailed;
 }
 bool Enabled() { return (Configured() || SsgiOn()) && !g.failed && snaplight::ab_on((unsigned long long)g_presentCount); }

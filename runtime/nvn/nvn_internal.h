@@ -209,7 +209,10 @@ void MarkGpuWritten(PoolImpl* p, uint64_t off, uint64_t size);   // the GPU writ
 
 // ownPool: the guest passed no memory pool (its GPU arena was full, crash B1) and the host gave the buffer private storage
 struct BufferImpl { PoolImpl* pool = nullptr; int64_t offset = 0; uint64_t size = 0; uint64_t acctVa = 0; bool ownPool = false; int arenaSlot = -1; int arenaBorn = 0; };
-struct SamplerImpl { Host* host = nullptr; VkSampler sampler = VK_NULL_HANDLE; SamplerBuilder b{}; };
+struct SamplerImpl { Host* host = nullptr; VkSampler sampler = VK_NULL_HANDLE; SamplerBuilder b{}; unsigned policyGen = 0; };
+VkSampler SamplerLive(SamplerImpl* s);   // replay thread: the sampler, made again first when the texture filtering / mip bias options changed (nvn_gfx.cpp)
+bool SamplerPolicyReparse();             // SNAP_ANISO / SNAP_LOD_BIAS read again; true when a value moved (nvn_entry.cpp)
+extern std::atomic<unsigned> g_samplerPolicyGen;   // moves when samplers have to be made again (the options above, the render scale)
 // seq is a sequence lock: odd while TexturePoolRegisterTexture rewrites the slot, so ResolveHandle (replay thread) always copies a
 // matching {tex, view} pair (re-registration of a live id during replay used to be able to pair the old texture with the new view).
 struct TexSlot { std::atomic<uint32_t> seq{0}; TextureImpl* tex = nullptr; TexView view{}; bool hasView = false; };
