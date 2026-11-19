@@ -2065,6 +2065,7 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
     vkCmdPipelineBarrier2(cb, &di);
     imgBarrier(dst, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
   }   // overlay: image stays TRANSFER_DST
+  RetargetAtPresent(h, cb, w->scExtent.width, w->scExtent.height);   // live size rows: the frame is copied out, so its targets can be made again now (nvn_retarget.cpp)
   imgBarrier(dst, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
   if (perfSlot >= 0) PerfGpuEnd(h, cb, perfSlot);
   vkEndCommandBuffer(cb);
@@ -2083,6 +2084,7 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
   si.signalSemaphoreInfoCount = 2; si.pSignalSemaphoreInfos = sig;
   { snap_perf::Scope perfScope(snap_perf::C_QSUBMIT); VKCHK(vkQueueSubmit2(h->queue, 1, &si, VK_NULL_HANDLE)); }
   PerfGpuSubmitted(perfSlot, v);
+  RetargetAfterSubmit();   // the old images go to the graveyard behind this submit
   if (spRecorded) { spFlight = true; spVal = v; }   // the starting-note sample above is readable once the timeline reaches v
   q->inflight.push_back({v, cb, nullptr});
   if (fdBuf && fdHdr) {

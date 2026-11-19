@@ -106,6 +106,7 @@ void MemBar(VkCommandBuffer cb) {
   vkCmdPipelineBarrier2(cb, &di);
 }
 bool MakeImg(Host* h, Img& o, uint32_t w, uint32_t hh, VkFormat fmt) {
+  if (o.img || o.view || o.mem) { RetireVkImage(h, o.img, o.view, o.mem); o = Img{}; }   // a size change: the old image goes once the GPU is past it
   VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
   ci.imageType = VK_IMAGE_TYPE_2D; ci.format = fmt; ci.extent = {w, hh, 1}; ci.mipLevels = 1; ci.arrayLayers = 1; ci.samples = VK_SAMPLE_COUNT_1_BIT;
   ci.tiling = VK_IMAGE_TILING_OPTIMAL; ci.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT; ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -211,7 +212,7 @@ bool Setup(Host* h, VkFormat sceneFmt) {
 
 bool EnsureImages(Host* h, uint32_t w, uint32_t hh) {
   if (g.w == w && g.h == hh && g.chain[0].img) return true;
-  if (g.chain[0].img) fprintf(stderr, "atmos: render size changed to %ux%u, the old images are kept until exit\n", w, hh);   // a command buffer may still read them
+  if (g.chain[0].img) fprintf(stderr, "atmos: render size changed to %ux%u\n", w, hh);   // a command buffer may still read them
   const VkFormat f16 = VK_FORMAT_R16G16B16A16_SFLOAT, f32 = VK_FORMAT_R32G32B32A32_SFLOAT;
   for (int i = 0; i < kLevels; i++) {
     const uint32_t s = 2u << i;

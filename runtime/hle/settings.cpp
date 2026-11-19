@@ -163,6 +163,7 @@ const char* const kLiveKeys[] = {
     "gfx_lod_bias", "gfx_aniso",                                                                 // nvn_gfx.cpp (samplers are made again)
     "gfx_lod_dist", "gfx_lod_force0", "gfx_draw_dist", "gfx_full_rate_anim",                     // host/mods/lodanim.cpp
     "fps_target",                                                                                // host/mods/highfps.cpp
+    "gfx_render_scale", "gfx_aa", "gfx_shadow_res", "gfx_ultrawide",                             // nvn_retarget.cpp (render targets are made again at a present)
     "gfx_hdr_expand", "gfx_hdr", "gfx_hdr_peak", "gfx_hdr_paper",                                                                            // nvn_hdr.cpp
 };
 bool live_key(const char* key) {

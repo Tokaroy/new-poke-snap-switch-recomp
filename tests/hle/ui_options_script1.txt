@@ -3,7 +3,7 @@
 25 key F1 1
 27 expect_open 1
 27.5 expect_pending 0
-28 expect_when gfx_render_scale restart
+28 expect_when gfx_render_scale live
 28.1 expect_when frame_cap live
 28.2 expect_when gfx_upscale_quality restart
 28.4 expect_when win_mode live

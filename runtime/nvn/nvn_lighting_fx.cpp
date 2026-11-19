@@ -81,6 +81,7 @@ void ImgBar(VkCommandBuffer cb, Img& im, VkImageLayout to) {
   im.layout = to;
 }
 bool MakeImg(Host* h, Img& o, uint32_t w, uint32_t hh, VkFormat fmt) {
+  if (o.img || o.view || o.mem) { RetireVkImage(h, o.img, o.view, o.mem); o = Img{}; }   // a size change: the old image goes once the GPU is past it
   VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
   ci.imageType = VK_IMAGE_TYPE_2D; ci.format = fmt; ci.extent = {w, hh, 1}; ci.mipLevels = 1; ci.arrayLayers = 1; ci.samples = VK_SAMPLE_COUNT_1_BIT;
   ci.tiling = VK_IMAGE_TILING_OPTIMAL; ci.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT; ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -136,10 +137,10 @@ bool Setup(Host* h, VkFormat sceneFmt) {
 
 bool EnsureImages(Host* h, uint32_t w, uint32_t hh) {
   if (g.w == w && g.h == hh && g.raw.img) return true;
-  if (g.raw.img) fprintf(stderr, "lighting: render size changed to %ux%u, the old images are kept until exit\n", w, hh);   // a command buffer may still read them
+  if (g.raw.img) fprintf(stderr, "lighting: render size changed to %ux%u\n", w, hh);   // a command buffer may still read them
   if (!MakeImg(h, g.raw, w, hh, VK_FORMAT_R8G8_UNORM) || !MakeImg(h, g.hist[0], w, hh, VK_FORMAT_R16G16B16A16_SFLOAT) || !MakeImg(h, g.hist[1], w, hh, VK_FORMAT_R16G16B16A16_SFLOAT)) return false;
   g.w = w; g.h = hh; g.haveHist = false; g.cur = 0;
-  g.rawHalf = Img{}; g.halfW = g.halfH = 0;   // made again at the new size (the old one is kept until exit like the others)
+  RetireVkImage(h, g.rawHalf.img, g.rawHalf.view, g.rawHalf.mem); g.rawHalf = Img{}; g.halfW = g.halfH = 0;   // made again at the new size
   return true;
 }
 bool EnsureHalf(Host* h) {
@@ -201,7 +202,7 @@ bool SetupGi(Host* h, VkFormat sceneFmt) {
 
 bool EnsureGiImages(Host* h, uint32_t w, uint32_t hh) {
   if (g.giW == w && g.giH == hh && g.giRaw.img) return true;
-  if (g.giRaw.img) fprintf(stderr, "lighting: bounce light render size changed to %ux%u, the old images are kept until exit\n", w, hh);
+  if (g.giRaw.img) fprintf(stderr, "lighting: bounce light render size changed to %ux%u\n", w, hh);
   if (!MakeImg(h, g.giRaw, w, hh, VK_FORMAT_R16G16B16A16_SFLOAT) || !MakeImg(h, g.giHist[0], w, hh, VK_FORMAT_R16G16B16A16_SFLOAT) || !MakeImg(h, g.giHist[1], w, hh, VK_FORMAT_R16G16B16A16_SFLOAT)) return false;
   g.giW = w; g.giH = hh; g.giHaveHist = false; g.giCur = 0;
   return true;

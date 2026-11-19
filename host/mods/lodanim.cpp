@@ -213,7 +213,7 @@ namespace {
 struct WideSite { uint64_t off; int reg; };
 WideSite g_wide_sites[8] = {{0x296400, 9}};   // ride and lab camera (builder 0x295170)
 int g_wide_nsites = 1;
-float wide_k() { static const float k = nvnHostGetUltrawide(); return k; }
+float wide_k() { return nvnHostGetUltrawide(); }   // not cached: the Ultrawide row applies with no restart (runtime/nvn/nvn_retarget.cpp)
 void wide_camera(Cpu *c, uint64_t off) {
     int reg = -1;
     for (int i = 0; i < g_wide_nsites; i++) if (g_wide_sites[i].off == off) { reg = g_wide_sites[i].reg; break; }

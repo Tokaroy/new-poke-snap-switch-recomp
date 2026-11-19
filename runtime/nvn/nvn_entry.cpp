@@ -264,7 +264,9 @@ Boolean TextureInitialize(void* tex, const void* b) {
     uint64_t chain[8] = {}; const int nChain = GuestCallChain(chain, 8);
     if (!tag) for (int i = 0; i < nChain; i++) if (chain[i] == kGuestMain + kEvalDepthRet) tag = kTagEvalDepth;   // call-site tag
     t->scale = g_scale.For(*tb, tag);
+    const float policyScale = t->scale;
     { uint64_t rel[8]; for (int i = 0; i < nChain; i++) rel[i] = chain[i] - kGuestMain; t->scale *= FoliageParticleBoost(t, tb->width, tb->height, tb->format, rel, nChain); }   // [foliage] SNAP_SOFT_PARTICLES: full-resolution particle targets
+    RetargetNote(t, tag, policyScale > 0.f ? t->scale / policyScale : 1.0f);   // live size rows (nvn_retarget.cpp)
     if (tag == kTagEvalDepth) ModelNoteEvalDepth(t);   // nvn_model.cpp: the evaluation pass draws original meshes
     { uint64_t rel[8]; for (int i = 0; i < nChain; i++) rel[i] = chain[i] - kGuestMain; UpscaleTagTexture(t, rel, nChain, tag); }   // [upscale]
     if (g_scale.scale != 1.0f || g_scale.shadowRes) { static const bool lg = getenv("SNAP_SCALE_LOG") != nullptr; if (lg && (tb->width >= 192 || t->scale != 1.0f)) {
@@ -295,6 +297,7 @@ void TextureFinalize(void* tex) {
   if (auto* t = Impl<TextureImpl>(tex, MAGIC_TEXTURE)) {
     if (t->acctPool) PoolAcct(t->acctPool, t->acctVa, -t->acctBytes);
     if (t->arenaSlot >= 0) ArenaUnacct(t->arenaSlot, t->arenaBytes);
+    RetargetGone(t);            // live size rows
     TexPrefetchForget(t);       // [perf] a prefetch job may be reading its guest data: stop it now (the guest frees the storage)
     UpscaleForgetTexture(t);    // [upscale]
     FoliageTextureGone(t);      // [foliage]

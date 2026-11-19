@@ -47,6 +47,7 @@ extern "C" void snap_vsync_set(const char* mode);   // runtime/nvn/nvn_vk.cpp [v
 extern "C" const char* snap_vsync_get();
 extern "C" void snap_contact_shadows_set(int on);   // runtime/nvn/nvn_contact.cpp: live, the next scene frame
 extern "C" int snap_contact_shadows_get();
+extern "C" int snap_live_size_blocked(void);   // runtime/nvn/nvn_retarget.cpp: bit 0 the anti-aliasing mode, bit 1 the size rows could not follow (restart)
 extern "C" void snap_water_fx_set(int which, int on);   // runtime/nvn/nvn_ssr.cpp: 0 reflections, 1 caustics, 2 foam; live, the next scene frame
 extern "C" int snap_water_fx_get(int which);
 extern "C" void snap_hud_scale_set(const char* v);   // runtime/nvn/nvn_hud.cpp: live, the next frame ("auto", "100".."200")
@@ -403,12 +404,12 @@ std::vector<Opt>& graphics_opts() {
        "Changing any row by hand shows Custom. Draw distance and full-rate animation are not part of any preset.",
        "normal",
        {{"verylow", "Very Low"}, {"low", "Low"}, {"normal", "Default"}, {"high", "High"}, {"ultra", "Ultra"}, {"maximum", "Maximum"}, {"custom", "Custom"}}, 0, 0, "", nullptr, get_preset, set_preset},
-      {"gfx_render_scale", "Internal resolution", kChoice, kRestart,
+      {"gfx_render_scale", "Internal resolution", kChoice, kLive,
        "How many pixels the 3D picture is drawn with, as a size over the game's own 1920 x 1080. Automatic lets the Look and the Anti-aliasing row decide (the Enhanced look draws it supersampled); "
        "a size sets it yourself. Higher is crisper and slower. Below 1920 x 1080 the scene is drawn smaller and stretched: blurrier, but much lighter for a weak graphics card. "
        "Photo scoring still uses the original-size data. Saved photos stay 1080 x 720 but are as sharp as the scene they were taken from.",
        "auto", {}, 0, 0, "", "SNAP_RENDER_SCALE", nullptr, nullptr, res_choices, nullptr, note_res},
-      {"gfx_aa", "Anti-aliasing", kChoice, kRestart,
+      {"gfx_aa", "Anti-aliasing", kChoice, kLive,
        "Smooths jagged edges. FXAA is what the game ships with. SMAA keeps more detail. 2x supersampling draws at twice the window height first (capped at 3x the game's size): very sharp, and costs a lot of GPU time. The Enhanced look sizes it to your screen instead, so 4K stays smooth. "
        "DLAA, FSR and XeSS use an upscaler at full size; they appear when their files are installed (the launcher's Install upscalers button).",
        "default", {}, 0, 0, "", "SNAP_AA", get_aa, set_aa, aa_choices, "SNAP_AA", note_aa},
@@ -434,7 +435,7 @@ std::vector<Opt>& graphics_opts() {
        "Picks which texture detail level is used. Automatic sharpens textures when the render scale is above 1 and leaves the game alone at 1. Sharper values can shimmer.",
        "auto", {{"auto", "Automatic"}, {"-2", "Sharpest (-2.0)"}, {"-1.5", "-1.5"}, {"-1", "Sharper (-1.0)"}, {"-0.5", "A little sharper (-0.5)"}, {"0", "As the game ships (0)"},
                 {"0.25", "+0.25"}, {"0.5", "Softer (+0.5)"}, {"1", "Much softer (+1.0)"}, {"2", "Softest (+2.0)"}}, 0, 0, "", "SNAP_LOD_BIAS"},
-      {"gfx_shadow_res", "Shadow resolution", kChoice, kRestart,
+      {"gfx_shadow_res", "Shadow resolution", kChoice, kLive,
        "Size of the moving shadow map. The game uses 1024. Higher gives crisper shadow edges and uses more video memory.", "default",
        {{"512", "512 (fast, blocky shadows)"}, {"default", "1024 (the game's own)"}, {"2048", "2048"}, {"4096", "4096"}, {"8192", "8192 (very heavy)"}}, 0, 0, "", "SNAP_SHADOW_RES"},
       // in kPresetKeys (2026-11-14): High/Ultra/Maximum double it with the shadow resolution, so shadow detail per meter stays the game's own
@@ -609,7 +610,7 @@ std::vector<Opt>& display_opts() {
       {"win_size", "Windowed size", kChoice, kRestart,
        "The size of the picture area when the game is windowed. Without a choice the game remembers the size you dragged it to. Output resolution of the finished picture follows the window.",
        "", {{"", "Remembered"}, {"1280x720", "1280 x 720"}, {"1600x900", "1600 x 900"}, {"1920x1080", "1920 x 1080"}, {"2560x1440", "2560 x 1440"}, {"3840x2160", "3840 x 2160"}}, 0, 0, "", "SNAP_WINDOW_W"},
-      {"gfx_ultrawide", "Ultrawide", kChoice, kRestart,
+      {"gfx_ultrawide", "Ultrawide", kChoice, kLive,
        "On a screen wider than 16:9, Auto shows more of the world at the sides with the same height of view. Menus, the interface and your photos stay 16:9 in the middle. Off shows the 16:9 picture with side bars.",
        "auto", {{"auto", "Auto (wider 3D view)"}, {"off", "Off (16:9 with side bars)"}}, 0, 0, "", "SNAP_ULTRAWIDE"},
       {"hud_scale", "HUD scale", kChoice, kLive,
@@ -797,9 +798,28 @@ void capture_start() {
   g_mods_start = mods_state();
 }
 
+// The size rows (Internal resolution, Anti-aliasing, Shadow resolution, Ultrawide) apply with no restart (runtime/nvn/nvn_retarget.cpp) except where
+// the running game cannot follow: an upscaler or frame generation in use, or a switch to or from an upscaler or the game's own FXAA. Those
+// changes keep the restart note.
+bool live_blocked(const Opt& o) {
+  const bool aa = !std::strcmp(o.key, "gfx_aa");
+  if (!aa && std::strcmp(o.key, "gfx_render_scale") && std::strcmp(o.key, "gfx_shadow_res") && std::strcmp(o.key, "gfx_ultrawide")) return false;
+  if (env_set_by_hand(o)) return false;
+  auto it = g_start.find(o.key);
+  if (it == g_start.end()) return false;
+  const std::string cur = cur_of(o);
+  if (same_value(o, it->second, cur)) return false;
+  const int b = snap_live_size_blocked();
+  if (b & 2) return true;
+  if (!aa) return false;
+  auto up = [](const std::string& v) { return v == "dlaa" || v == "fsr" || v == "xess"; };
+  return (b & 1) || up(it->second) || up(cur);
+}
+
 struct Pend { std::vector<std::string> names; };
 
 void pend_one(const Opt& o, void* u) {
+  if (live_blocked(o)) { ((Pend*)u)->names.push_back(tr(o.label)); return; }
   if (o.when != kRestart || env_set_by_hand(o)) return;
   auto it = g_start.find(o.key);
   if (it != g_start.end() && !same_value(o, it->second, cur_of(o))) ((Pend*)u)->names.push_back(tr(o.label));
@@ -807,6 +827,7 @@ void pend_one(const Opt& o, void* u) {
 
 // look strength has no effect on a neutral look: do not count it alone
 bool is_pending(const Opt& o) {
+  if (live_blocked(o)) return true;
   if (o.when != kRestart || env_set_by_hand(o)) return false;
   auto it = g_start.find(o.key);
   if (it == g_start.end() || same_value(o, it->second, cur_of(o))) return false;
@@ -831,6 +852,7 @@ void row_tag(const Opt& o, const SkinRow& r) {
     if (is_pending(o)) { t = tr("Restart to apply"); c = p.warn; }
     else t = tr("Restart needed");
   }
+  if (!t && live_blocked(o)) { t = tr("Restart to apply"); c = p.warn; }
   if (!t) return;
   const ImVec2 ts = ImGui::CalcTextSize(t);
   const float s2 = 0.82f;

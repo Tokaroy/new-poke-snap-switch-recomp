@@ -22,6 +22,8 @@ $groups = [ordered]@{
     light = @{ Rows = 'ssao_quality=ultra|ssao_quality=-|gfx_ssao_samples=256|gfx_ssao_samples=-|gfx_ssao_hbao=32,128|gfx_ssao_hbao=-|gfx_lighting=maximum|gfx_lighting=-|gfx_bounce=1|gfx_bounce=-|gfx_shadow_dist=8|gfx_shadow_dist=-'; Same = 'ssao_quality,gfx_ssao_samples,gfx_ssao_hbao,gfx_shadow_dist' }   # no visible change in this frozen frame
     tex   = @{ Rows = 'gfx_aniso=0|gfx_aniso=-|gfx_lod_bias=2|gfx_lod_bias=-|foliage_aa=1|foliage_aa=-|leaf_translucency=1|leaf_translucency=-|gfx_pom=high|gfx_pom=-' }
     view  = @{ Rows = 'gfx_lod_dist=8|gfx_lod_dist=-|gfx_lod_force0=1|gfx_lod_force0=-|gfx_draw_dist=8.00|gfx_draw_dist=-'; Same = 'gfx_draw_dist' }   # nothing beyond the default distance in this view
+    # size rows (runtime/nvn/nvn_retarget.cpp): the render targets are made again mid-ride; no frame over the resize may take more than 100 ms
+    size  = @{ Rows = 'gfx_render_scale=1.50|gfx_render_scale=-|gfx_render_scale=0.50|gfx_render_scale=-|gfx_aa=smaa|gfx_aa=none|gfx_aa=-|gfx_shadow_res=4096|gfx_shadow_res=-'; Same = 'gfx_shadow_res'; Resizes = 6 }
     # rows whose picture cannot move in a frozen frame: the check is the live flag plus the log line each one writes
     quiet = @{ Rows = 'gfx_motion_blur=2|gfx_motion_blur=-|gfx_bokeh_dof=1.6|gfx_bokeh_dof=-|gfx_full_rate_anim=1|gfx_full_rate_anim=-|fps_target=120|fps_target=-|gfx_hdr_expand=1.00|gfx_hdr_expand=-'; Same = 'gfx_motion_blur,gfx_bokeh_dof,gfx_full_rate_anim,fps_target,gfx_hdr_expand' }
 }
@@ -35,6 +37,7 @@ if ($Group) {
     if (-not $Route -and $g.Route) { $Route = $g.Route }
     if (-not $Moment -and $g.Moment) { $Moment = $g.Moment }
 }
+if ($Group -and $groups[$Group].Env) { foreach ($kv in $groups[$Group].Env.Split(';')) { $n, $v = $kv.Split('=', 2); [Environment]::SetEnvironmentVariable($n, $v, 'Process') } }
 if (-not $Rows) { Write-Host 'give -Group <name> or -Rows <key=value|key=value>'; exit 2 }
 if (-not $Route) { $Route = 'core_florio_a' }
 if (-not $Moment) { $Moment = 'ride40' }
@@ -59,6 +62,7 @@ $work = Join-Path $root "build\w\abcap_run_$stamp"
 $shots = Join-Path $root "analysis\boot\route__abcap_${stamp}_$runId"
 $c = @('-I', (Join-Path $root 'tests\live\live_opts_check.py'), '--result', (Join-Path $work 'result.json'), '--shots', $shots)
 if ($Same) { $c += @('--same', $Same) }
+if ($Group -and $groups[$Group].Resizes) { $c += @('--log', (Join-Path $root "analysis\boot\runs\$runId\boot_stderr.log"), '--resizes', "$($groups[$Group].Resizes)") }
 & (Join-Path $root 'tools\venv-recomp\Scripts\python.exe') @c 2>&1 | Tee-Object -FilePath (Join-Path $outDir "check_$name.txt") | ForEach-Object { Write-Host "$_" }
 $code = $LASTEXITCODE
 Write-Host "live opts: group $name, run $runId, frames $shots`_NN.png, verdicts $(Join-Path $outDir "check_$name.txt")"

@@ -390,6 +390,7 @@ float AaParseEnv() {
     g_aaSharpen = std::clamp((float)atof(snapdef::get("SNAP_SHARPEN")), 0.0f, 1.0f);
     SmaaPreset(getenv("SNAP_SMAA_QUALITY"));
     for (auto& ch : s) { ch = (char)tolower((unsigned char)ch); if (ch == '+') ch = ','; }
+    g_aaMode = AA_FXAA;   // a second parse (AaReparseLive) starts from the same state as the first
     size_t pos = 0;
     while (pos <= s.size()) {
       size_t c = s.find(',', pos); if (c == std::string::npos) c = s.size();
@@ -404,6 +405,21 @@ float AaParseEnv() {
   fprintf(stderr, "aa: mode %s, sharpen %.2f, ssaa render scale %.3f, smaa threshold %.2f steps %.0f/%.0f corners %.0f\n", g_aaMode == AA_SMAA ? "smaa" : g_aaMode == AA_OFF ? "off" : "fxaa",
           g_aaSharpen, scale, g_smaaQ[0], g_smaaQ[1], g_smaaQ[2], g_smaaQ[3]);
   g_ssaaScale = scale;
+  return scale;
+}
+
+// Live options: the Anti-aliasing row changed while the game runs. SMAA, none and the supersampling scale follow at once (the scale through
+// nvn_retarget.cpp). The game's own FXAA cannot be switched on or off here: AaPatchFragment below patches its shaders when they are built, so
+// that change keeps the mode in force and reports *blocked (the options menu keeps its restart note).
+float AaReparseLive(bool* blocked) {
+  if (!g_parsed) return AaParseEnv();
+  const int was = g_aaMode;
+  g_parsed = false;
+  const float scale = AaParseEnv();
+  if ((was == AA_FXAA) != (g_aaMode == AA_FXAA)) {
+    g_aaMode = was; if (blocked) *blocked = true;
+    fprintf(stderr, "aa: live: switching to or from the game's own FXAA needs a restart, mode kept\n");
+  }
   return scale;
 }
 

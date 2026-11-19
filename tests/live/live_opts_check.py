@@ -100,9 +100,34 @@ def diff(a, b):
     return float(d.mean()), float((d.max(axis=2) > 2).mean() * 100)
 
 
+def resized(a, b):
+    """Two frames of different sizes (a size row made the render targets again): mean absolute difference with the larger one sampled down to the
+    smaller one's grid, or None when either frame is missing or the sizes are equal. A small value means the same picture at a new size."""
+    if a is None or b is None or a.shape == b.shape:
+        return None
+    if a.shape[0] * a.shape[1] < b.shape[0] * b.shape[1]:
+        a, b = b, a
+    ys = (np.arange(b.shape[0]) * a.shape[0] // b.shape[0]).astype(np.int64)
+    xs = (np.arange(b.shape[1]) * a.shape[1] // b.shape[1]).astype(np.int64)
+    return float(np.abs(a[ys][:, xs] - b).mean())
+
+
+def hitches(log_path):
+    """The longest frame the game measured over each live resize (runtime/nvn/nvn_retarget.cpp log lines), in ms."""
+    out = []
+    try:
+        for line in open(log_path, errors='replace'):
+            if '[live]' in line and 'longest frame over the resize' in line:
+                out.append(float(line.rsplit(':', 1)[1].split()[0]))
+    except OSError:
+        pass
+    return out
+
+
 def verdicts(states, frames, same=()):
     """One row per state: (value, kind, ok, text). `frames` maps state index -> image array (or None)."""
     pairs = {i: diff(frames.get(i), frames.get(i - 1)) for i in range(1, len(states))}
+    sized = {i: resized(frames.get(i), frames.get(i - 1)) for i in range(1, len(states))}
     controls = [pairs[i] for i in range(1, len(states)) if '=' not in states[i]['value'] and pairs[i]]
     if not controls:
         return None, []
@@ -120,6 +145,11 @@ def verdicts(states, frames, same=()):
             rows.append((v, 'row', False, 'the row is not live or the set failed (%s)' % info))
             continue
         p = pairs.get(i)
+        if p is None and sized.get(i) is not None:   # the frame has a new size: the row applied; the picture must still be the same scene
+            a, b = frames[i - 1], frames[i]
+            text = 'frame size %dx%d -> %dx%d, same picture within %.2f of 255 (limit 12)' % (a.shape[1], a.shape[0], b.shape[1], b.shape[0], sized[i])
+            rows.append((v, 'row', sized[i] < 12.0 and float(b.mean()) > 2.0, text))
+            continue
         if p is None:
             rows.append((v, 'row', False, 'no frame to compare'))
             continue
@@ -137,6 +167,9 @@ def main():
     ap.add_argument('--result', required=True)
     ap.add_argument('--shots', required=True)
     ap.add_argument('--same', default='')
+    ap.add_argument('--log', default='', help="the run's stderr log: every live resize must stay under --hitch-ms")
+    ap.add_argument('--hitch-ms', type=float, default=100.0)
+    ap.add_argument('--resizes', type=int, default=0, help='least number of live resizes the log must show')
     a = ap.parse_args()
     result = json.load(open(a.result))
     if result.get('status') != 'ok':
@@ -155,6 +188,12 @@ def main():
             print('     %-34s %s' % (value, text))
             continue
         print('%s %-34s %s' % ('ok  ' if ok else 'FAIL', value, text))
+        fails += not ok
+    if a.log:
+        hs = hitches(a.log)
+        bad = [h for h in hs if h > a.hitch_ms]
+        ok = not bad and len(hs) >= a.resizes
+        print('%s live resizes: %d (needs %d), longest frame over one %.1f ms (limit %.0f ms)' % ('ok  ' if ok else 'FAIL', len(hs), a.resizes, max(hs) if hs else 0.0, a.hitch_ms))
         fails += not ok
     print('live options check:', 'PASS' if not fails else '%d FAILED' % fails)
     return 1 if fails else 0

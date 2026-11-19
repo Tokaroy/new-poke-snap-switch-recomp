@@ -422,6 +422,7 @@ All off by default; developer switches only (no options rows yet; rows wanted ar
 | `SNAP_FX_PHOTO_HOLD=1` | Effects also switch off for 3 presents at every photo taken on a ride (the behaviour before 2026-11-19). Default 0: only the Evaluation passes (photo select, scoring) switch them off. |
 | `SNAP_RT_DEMAND=0` | The ray tracing scene capture runs every frame again. Default: it pauses after 120 presents in which no reflection, bounce light or AO pass traced the scene (no water in view, Bounce light off) and resumes on the next pass that needs it. Saves 2 to 4 ms of GPU time per frame at 2880x1620 while paused. |
 | `SNAP_LIGHT_HALF=0` | Enhanced lighting works out AO and contact shadows for every pixel each frame again. Default: one pixel of every 2x2 block per frame, spread by depth and accumulated (about 1 ms less GPU time at 2880x1620). |
+| `SNAP_LIVE_SIZE=0` | The Internal resolution, Anti-aliasing, Shadow resolution and Ultrawide rows need a restart again. Default: a change makes the affected render targets again at the next frame (`runtime/nvn/nvn_retarget.cpp`; about 20 to 40 ms for that frame at 4K). Still restart-only: switching an upscaler or frame generation on or off, and switching to or from the game's own FXAA. |
 | `SNAP_HDPHOTO_PLAIN_COPY=1` | HD photo captures are read back with a plain memory copy again (60 to 80 ms on the game thread per shot; the default streaming copy takes about 5 ms). |
 | `SNAP_FX_SHUTTER_DUMP=<n>` | Test aid, needs `NVN_FRAME_DUMP`: dumps every present of the n after an A press on a ride (first 4 presses, 240 presents apart). |
 | `SNAP_FX_LOG=1` | Logs frame phases, camera, shadow caster capture, photo holds and effect runs (`fx:` lines on stderr). |
@@ -547,7 +548,7 @@ Named before / after hooks on game functions, no regeneration of `main`: the fun
 
 ## Ultrawide (2026-11-15, `runtime/nvn/nvn_wide.cpp`, on by default for windows wider than 16:9; `docs/ultrawide.md`)
 
-- `SNAP_ULTRAWIDE=auto|off` (default auto; settings key `gfx_ultrawide`; F1 > Graphics and the launcher, restart). Auto widens the 3D view by k = window aspect / (16/9), capped at 4, with the same vertical field of view; the HUD, menus, videos and photos stay 16:9 in the middle. Off, or a window at 16:9 or narrower, leaves every path as before. Log lines: `ultrawide: auto, window client WxH, factor k`, and at the first photo Evaluation `ultrawide: photo Evaluation uses the 16:9 projection`.
+- `SNAP_ULTRAWIDE=auto|off` (default auto; settings key `gfx_ultrawide`; F1 > Graphics and the launcher, applies live). Auto widens the 3D view by k = window aspect / (16/9), capped at 4, with the same vertical field of view; the HUD, menus, videos and photos stay 16:9 in the middle. Off, or a window at 16:9 or narrower, leaves every path as before. Log lines: `ultrawide: auto, window client WxH, factor k`, and at the first photo Evaluation `ultrawide: photo Evaluation uses the 16:9 projection`.
 - Developer switches: `SNAP_WIDE_LOG=1|2|3` (decisions; `SNAP_WIDE_LOG_FROM=<present>`), `SNAP_WIDE_TRACE=1` (camera callers), `SNAP_WIDE_SITES=0xOFF:reg,...` (extra camera sites), `SNAP_WIDE_NO_C3=1` (16:9 effect cameras stay narrow).
 
 ## Scheduler switches (nn::os review fixes, 2026-11-13; `analysis\core\review_os.md`, `runtime\os\os_kernel.cpp`)

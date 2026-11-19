@@ -87,7 +87,12 @@ bool SkyGate(ReplayCtx& cx, TextureImpl* z, float nearZ) {
     if (!ok) { sky.failed = true; fprintf(stderr, "contact: sky gate buffer failed, gate off\n"); }
   }
   if (sky.failed) return true;
-  if (z->HW() != sky.w || z->HH() / sky.step != sky.rows) return false;   // render scale changed: skip until the next rebuild (rare)
+  if (z->HW() != sky.w || z->HH() / sky.step != sky.rows) {   // render scale changed (live options): the buffer is made again at the next call
+    VkDevice d = cx.h->device; VkBuffer b = sky.buf; VkDeviceMemory m = sky.mem;
+    RetireFn([d, b, m] { if (b) vkDestroyBuffer(d, b, nullptr); if (m) vkFreeMemory(d, m, nullptr); });
+    sky.buf = VK_NULL_HANDLE; sky.mem = VK_NULL_HANDLE; sky.map = nullptr; sky.issued = -1;
+    return false;
+  }
   const int now = g_presentCount;
   if (sky.issued >= 0 && now - sky.issued >= 6) {   // the copy was submitted a few presents ago
     const float thr = nearZ / 150.0f;   // the sky dome sits beyond ~150 view units (reversed infinite Z: depth = near / distance)
