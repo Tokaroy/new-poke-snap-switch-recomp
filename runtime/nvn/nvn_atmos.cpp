@@ -72,11 +72,13 @@ struct Wants { bool shafts, fog, expo, bloom, clouds, sky; };
 // The four switches are plain bools read every frame; with SNAP_DEV=1 they are live params (host\ab_capture.ps1 -Effect SNAP_ATMOS_SHAFTS -Values 0,1).
 bool g_want[6];
 Wants GetWants() {
-  static bool init = false;
-  if (!init) {
-    init = true;
+  static std::atomic<unsigned> seen{0};   // live rows (hle/live.h): read at the first use and again when a setting changed
+  static bool registered = false;
+  if (hle::live::changed(seen)) {
+    hle::live::EnvRead r;
     static const char* const names[6] = {"SNAP_ATMOS_SHAFTS", "SNAP_ATMOS_FOG", "SNAP_ATMOS_EXPOSURE", "SNAP_ATMOS_BLOOM", "SNAP_ATMOS_CLOUDS", "SNAP_ATMOS_SKY"};
-    for (int i = 0; i < 6; i++) { g_want[i] = Want(names[i]); dev_param_b(names[i], &g_want[i], g_want[i]); }
+    for (int i = 0; i < 6; i++) { g_want[i] = Want(names[i]); if (!registered) dev_param_b(names[i], &g_want[i], g_want[i]); }
+    registered = true;
   }
   return {g_want[0], g_want[1], g_want[2], g_want[3], g_want[4], g_want[5]};
 }
@@ -325,7 +327,8 @@ void Pre(ReplayCtx& cx) {
   u.shaft[2] = dev_envf("SNAP_ATMOS_SHAFT_LENGTH", 0.45f, 0.05f, 1.5f);
   u.shaft[3] = (float)dev_envi("SNAP_ATMOS_SHAFT_STEPS", 24, 4, 64);
   u.shaftB[0] = dev_envf("SNAP_ATMOS_SHAFT_G", 0.55f, 0.f, 0.95f); u.shaftB[1] = dev_envf("SNAP_ATMOS_SHAFT_AIR", 0.03f, 0.f, 1.f);
-  u.shaftB[2] = dev_envf("SNAP_ATMOS_SHAFT_CONTRAST", 2.0f, 0.5f, 6.f); u.shaftB[3] = 0.f;
+  u.shaftB[2] = dev_envf("SNAP_ATMOS_SHAFT_CONTRAST", 2.0f, 0.5f, 6.f);
+  u.shaftB[3] = dev_envf("SNAP_ATMOS_SHAFT_NIGHT", 0.08f, -1.f, 4.f);   // sky luminance below which there is no sun to make shafts (night courses); 0 = never fade
   u.sunCol[0] = 1.0f; u.sunCol[1] = 0.88f; u.sunCol[2] = 0.65f;
   if (const char* sc = getenv("SNAP_ATMOS_SUN")) { float a, b, d; if (sscanf(sc, "%f,%f,%f", &a, &b, &d) == 3) { u.sunCol[0] = a; u.sunCol[1] = b; u.sunCol[2] = d; } }
   u.expo[0] = dev_envf("SNAP_ATMOS_EXPOSURE_KEY", 1.f, -8.f, 4.f); u.expo[1] = dev_envf("SNAP_ATMOS_EXPOSURE_STRENGTH", 0.5f, 0.f, 1.f);
