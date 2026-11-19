@@ -24,6 +24,8 @@ $groups = [ordered]@{
     view  = @{ Rows = 'gfx_lod_dist=8|gfx_lod_dist=-|gfx_lod_force0=1|gfx_lod_force0=-|gfx_draw_dist=8.00|gfx_draw_dist=-'; Same = 'gfx_draw_dist' }   # nothing beyond the default distance in this view
     # size rows (runtime/nvn/nvn_retarget.cpp): the render targets are made again mid-ride; no frame over the resize may take more than 100 ms
     size  = @{ Rows = 'gfx_render_scale=1.50|gfx_render_scale=-|gfx_render_scale=0.50|gfx_render_scale=-|gfx_aa=smaa|gfx_aa=none|gfx_aa=-|gfx_shadow_res=4096|gfx_shadow_res=-'; Same = 'gfx_shadow_res'; Resizes = 6 }
+    # Ultrawide on a 21:9 window: the frame gets wider and narrower again, and the 16:9 picture is the middle of the wide one
+    wide  = @{ Rows = 'gfx_ultrawide=off|gfx_ultrawide=-|gfx_ultrawide=off|gfx_ultrawide=auto'; Env = 'SNAP_WINDOW_W=3440;SNAP_WINDOW_H=1440;SNAP_WINDOW_MODE=windowed'; Resizes = 4 }
     # rows whose picture cannot move in a frozen frame: the check is the live flag plus the log line each one writes
     quiet = @{ Rows = 'gfx_motion_blur=2|gfx_motion_blur=-|gfx_bokeh_dof=1.6|gfx_bokeh_dof=-|gfx_full_rate_anim=1|gfx_full_rate_anim=-|fps_target=120|fps_target=-|gfx_hdr_expand=1.00|gfx_hdr_expand=-'; Same = 'gfx_motion_blur,gfx_bokeh_dof,gfx_full_rate_anim,fps_target,gfx_hdr_expand' }
 }

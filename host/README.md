@@ -424,6 +424,7 @@ All off by default; developer switches only (no options rows yet; rows wanted ar
 | `SNAP_LIGHT_HALF=0` | Enhanced lighting works out AO and contact shadows for every pixel each frame again. Default: one pixel of every 2x2 block per frame, spread by depth and accumulated (about 1 ms less GPU time at 2880x1620). |
 | `SNAP_LIVE_SIZE=0` | The Internal resolution, Anti-aliasing, Shadow resolution and Ultrawide rows need a restart again. Default: a change makes the affected render targets again at the next frame (`runtime/nvn/nvn_retarget.cpp`; about 20 to 40 ms for that frame at 4K). Still restart-only: switching an upscaler or frame generation on or off, and switching to or from the game's own FXAA. |
 | `SNAP_HDPHOTO_PLAIN_COPY=1` | HD photo captures are read back with a plain memory copy again (60 to 80 ms on the game thread per shot; the default streaming copy takes about 5 ms). |
+| `SNAP_CONTACT_SKY_WC=1` | The contact shadow sky check reads its depth rows from write-combined GPU memory again (10 to 14 ms of one frame in every 20 at 2880x1620). Default: cached host memory, 0.2 ms. `SNAP_FX_LOG=1` prints the time of each count. |
 | `SNAP_FX_SHUTTER_DUMP=<n>` | Test aid, needs `NVN_FRAME_DUMP`: dumps every present of the n after an A press on a ride (first 4 presses, 240 presents apart). |
 | `SNAP_FX_LOG=1` | Logs frame phases, camera, shadow caster capture, photo holds and effect runs (`fx:` lines on stderr). |
 | `SNAP_FX_TIME=1` | GPU time of the whole pre-tonemap Fx block (timestamps; avg/max logged every 300 blocks). |

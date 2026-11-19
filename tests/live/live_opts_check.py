@@ -107,7 +107,13 @@ def resized(a, b):
         return None
     if a.shape[0] * a.shape[1] < b.shape[0] * b.shape[1]:
         a, b = b, a
-    ys = (np.arange(b.shape[0]) * a.shape[0] // b.shape[0]).astype(np.int64)
+    # the Ultrawide row changes the shape: the 16:9 picture is the middle of the wider one (same height of view), so compare that middle
+    wa, wb = a.shape[1] * b.shape[0], b.shape[1] * a.shape[0]
+    if wa > wb * 1.02:
+        w = a.shape[0] * b.shape[1] // b.shape[0]; x0 = (a.shape[1] - w) // 2; a = a[:, x0:x0 + w]
+    elif wb > wa * 1.02:
+        w = b.shape[0] * a.shape[1] // a.shape[0]; x0 = (b.shape[1] - w) // 2; b = b[:, x0:x0 + w]
+    ys =(np.arange(b.shape[0]) * a.shape[0] // b.shape[0]).astype(np.int64)
     xs = (np.arange(b.shape[1]) * a.shape[1] // b.shape[1]).astype(np.int64)
     return float(np.abs(a[ys][:, xs] - b).mean())
 
