@@ -325,18 +325,24 @@ void Pre(ReplayCtx& cx) {
   // a dropped history is a visible pop (the AO starts over): logged so a run shows how often the scene pass went missing (photo holds are 3 presents, under the limit)
   { static int n, runs; runs++; if (g.haveHist && !histOk && n++ < 40) fprintf(stderr, "lighting: AO history dropped at p%d (gap %d presents, pass %d)\n", g_presentCount, g_presentCount - g.lastPresent, runs); }
   PcRes pr{};
+  double viewMove = 0, reprojOff = 0;   // largest change of the view matrix since the last scene frame; how far reproj is from the identity
+  for (int r = 0; r < 4; r++) for (int k = 0; k < 4; k++) viewMove = std::max(viewMove, fabs(g.prevVp[r][k] - cam->vp[r][k]));
   {
     double R[4][4];   // reproj = prevVP * ivp: this frame's (ndc, depth, 1) -> the previous frame's clip space
     for (int r = 0; r < 4; r++) for (int k = 0; k < 4; k++) { double s = 0; for (int j = 0; j < 4; j++) s += g.prevVp[r][j] * cam->ivp[j][k]; R[r][k] = s; }
     for (int r = 0; r < 4; r++) for (int k = 0; k < 4; k++) pr.reproj[k * 4 + r] = (float)R[r][k];
+    for (int r = 0; r < 4; r++) for (int k = 0; k < 4; k++) reprojOff = std::max(reprojOff, fabs(R[r][k] / R[3][3] - (r == k ? 1.0 : 0.0)));
   }
+  if (getenv("SNAP_FX_LOG") && nTot % 120 < 3) fprintf(stderr, "lighting: p%d view change since the last scene frame %.3g, reprojection off the identity by %.3g\n", g_presentCount, viewMove, reprojOff);
   pr.size[0] = (float)g.w; pr.size[1] = (float)g.h; pr.size[2] = histOk ? 1.f : 0.f; pr.size[3] = cam->nearZ;
   pr.q[0] = EnvF("SNAP_LIGHT_ALPHA", 0.1f);
+  pr.q[1] = EnvF("SNAP_LIGHT_STILL", 256.f, 1.f, 2047.f);   // frames a still view accumulates before its AO stands (a still picture stops flickering); 10 = the old fixed weight
+  pr.q[2] = viewMove == 0.0 ? 1.f : 0.f;   // the view did not move: the history is read at the same pixel (no reprojection, no resampling)
   PcComp pk{};
   pk.k[0] = wantAo ? EnvF("SNAP_LIGHT_AO_STRENGTH", 0.85f) : 0.f; pk.k[1] = contact ? EnvF("SNAP_LIGHT_CONTACT_STRENGTH", 0.6f) : 0.f;
   pk.k[2] = EnvF("SNAP_LIGHT_FADE", 60.f); pk.k[3] = EnvF("SNAP_LIGHT_AO_POWER", 1.6f);
-  pk.size[0] = (float)g.w; pk.size[1] = (float)g.h; pk.size[2] = EnvF("SNAP_LIGHT_DEBUG", 0.f, 0.f, 3.f);
-  const bool rawDbg = pk.size[2] > 2.5f;   // 3: the raw AO factor, no resolve (shows what the denoise removes)
+  pk.size[0] = (float)g.w; pk.size[1] = (float)g.h; pk.size[2] = EnvF("SNAP_LIGHT_DEBUG", 0.f, 0.f, 4.f);
+  const bool rawDbg = pk.size[2] > 2.5f && pk.size[2] < 3.5f;   // 3: the raw AO factor, no resolve (shows what the denoise removes)
   if (rawDbg) pk.size[2] = 1.f;
 
   static int logged; if (logged++ < 3) fprintf(stderr, "lighting: p%d %ux%u AO %d contact %d light toward (%.3f %.3f %.3f) history %d\n", g_presentCount, g.w, g.h, (int)wantAo, (int)contact, L[0], L[1], L[2], (int)histOk);
