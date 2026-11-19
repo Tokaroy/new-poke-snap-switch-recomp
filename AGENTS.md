@@ -409,7 +409,7 @@ User NSP/XCI
 - **Textures:** anisotropic filtering, mip bias for native 4K, and texture-pack replacement through the mod loader (higher-resolution textures).
 - **Knob findings (2026-11-11, static; `analysis/enhancements/knobs.md`):**
   - **Sampler choke point:** `0x9216d0` (cache `0x3206d0`). Anisotropy is 1 today and LOD bias about 0, so anisotropic filtering is the cheapest visual win.
-  - **Render targets:** all fixed-size: scene and SSAO 1920x1080 in `0x5bd940`, the 960x540 mip chain, bloom 192x108 in `0x5c23a0`. There is no dynamic resolution.
+  - **Render targets:** all fixed-size: scene and SSAO 1920x1080 in `0x5bd940`, the 960x540 mip chain, bloom 192x108 in `0x5c23a0`. The scene targets also exist as a step-down ladder (1728x972, 1536x864, 1344x756): the game has dynamic resolution (controller `main+0x5d6be8`, step in `[ctx+0xce8]`; a frame over 16.6 ms steps down). `host/mods/gamemods.cpp` locks it at full size (commit 899e2f2), `SNAP_DYNRES=1` gives the game's behavior back.
   - **Docked and handheld:** both modes render the scene at 1080p. Handheld presents at 720p, and `[ctx+0xcec]`=1 selects handheld pass variants at about 50 sites. The host reports docked.
   - **Shadows:** the dynamic shadow is one 1024² map (`0x5bdd20`), and the static shadow is 3x1024² (`0x4d12a8`).
   - **Draw distance:** per-course fog and atmosphere distances in the ENV levelb data are the best pop-in mask. There are 2,794 meshes with LOD1 and LOD2 variants.
