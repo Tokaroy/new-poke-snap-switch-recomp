@@ -260,6 +260,10 @@ void FxAfterDraw(ReplayCtx& cx, const char* key) {
   for (const FxEffect* e : Effects()) if (e->postTonemap && e->enabled && e->enabled()) e->postTonemap(cx, key);
 }
 
+// Submits that held a photo pass (Evaluation or 360x240), whether or not the effects were held for it: host\ab_capture.ps1 reads it to know a photo was taken
+static std::atomic<uint64_t> g_photoPasses{0};
+uint64_t FxPhotoPassCount() { return g_photoPasses.load(std::memory_order_relaxed); }
+
 // SNAP_FX_PHOTO_HOLD: which photo passes switch the effects off. 0 (default): only the Evaluation passes. 1: a 360x240 photo pass too, and the two
 // presents after it (the behaviour before 2026-11-19: the effects dropped out for 3 presents at every photo of a ride).
 int PhotoHoldMode() { static const int m = [] { const char* e = getenv("SNAP_FX_PHOTO_HOLD"); return e && *e ? atoi(e) : 0; }(); return m; }
@@ -290,6 +294,7 @@ void FxBeforeSubmit(int n, CmdList* const* lists) {
   const bool photo = eval || (thumb && PhotoHoldMode() >= 1);
   if (Log() && (eval || thumb)) fprintf(stderr, "fx: p%d photo submit (%s%s%s): %s; draws into%s\n", g_presentCount, eval ? "Evaluation depth" : "", eval && thumb ? " + " : "",
                                         thumb ? "360x240" : "", photo ? "Fx held" : "Fx stays on", seen);
+  if (eval || thumb) g_photoPasses++;
   F.submitPhoto = photo;
   if (!photo) return;
   F.photoSubmits++;
@@ -297,7 +302,7 @@ void FxBeforeSubmit(int n, CmdList* const* lists) {
   if (F.phase == 1) F.frameHold = true;
 }
 
-// Counters for host\ab_capture.ps1 (docs/ab-capture.md): effect passes that drew, and how many of those drew on a photo frame (a gating bug; must stay 0)
+// Counters for host\ab_capture.ps1 (docs/ab-capture.md): effect passes that drew, and how many of those drew on a held frame (FxIsPhotoFrame; a gating bug; must stay 0)
 static std::atomic<uint64_t> g_ranTotal{0}, g_ranOnPhoto{0};
 uint64_t FxRanCount() { return g_ranTotal.load(std::memory_order_relaxed); }
 uint64_t FxRanOnPhotoCount() { return g_ranOnPhoto.load(std::memory_order_relaxed); }

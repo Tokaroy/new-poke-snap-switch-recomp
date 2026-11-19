@@ -13,8 +13,8 @@
 //   3. for each value in the list, sets the effect (snaplight::ab_force for `lighting`, or a live environment variable), lets the temporal
 //      state settle, records the present range of a timing window (per-pass GPU ms come from the SNAP_PERF_SHARED / SNAP_GPU_PASSES
 //      csv files, read by the driver), then asks NVN_FRAME_DUMP for one full-size frame (g_fdBurst);
-//   4. photo-frame check: presses the shutter (snap_input_force_buttons) with each value and dumps the presents that FxIsPhotoFrame() marks
-//      as photo frames; the driver compares their hashes;
+//   4. photo-frame check: presses the shutter (snap_input_force_buttons) with each value, counts the photo passes (FxPhotoPassCount) and dumps the presents
+//      that FxIsPhotoFrame() holds (Evaluation frames; a ride photo holds none since 2026-11-19); the driver compares their hashes and the gating counters;
 //   5. unfreezes, lets the game run for a few presents, writes the result file and exits.
 //
 // Plan file (key=value lines): moment=<cond> hold=<n presents the condition must hold> effect=<name> values=<a,b,c> settle=<presents>
@@ -37,7 +37,7 @@ extern "C" void os_time_pause(int on);
 extern "C" uint64_t snap_present_count();
 extern "C" int snap_route_cond(const char* c, char* why, int n);
 extern "C" void snap_input_force_buttons(const char* names);
-namespace nvn { extern int g_fdBurst; bool FxIsPhotoFrame(); uint64_t FxRanCount(); uint64_t FxRanOnPhotoCount(); }
+namespace nvn { extern int g_fdBurst; bool FxIsPhotoFrame(); uint64_t FxRanCount(); uint64_t FxRanOnPhotoCount(); uint64_t FxPhotoPassCount(); }
 namespace snap::ui {   // the options rows, set the way the menu sets them (runtime/ui/ui_options.cpp)
 bool options_test_set(const std::string& key, const std::string& value);
 std::string options_test_get(const std::string& key);
@@ -55,7 +55,7 @@ struct Plan {
 
 struct Req { std::string kind; int state; std::string value; uint64_t present; int photoFlag; };
 struct State { std::string value, info; uint64_t setP = 0, winP0 = 0, winP1 = 0; double gpuBusy = -1; std::vector<std::pair<std::string, double>> passes; };
-struct PhotoRun { std::string value; int photoPresents = 0, dumps = 0; bool timeRunning = false, filmEmpty = false; uint64_t ran = 0, ranOnPhoto = 0; };
+struct PhotoRun { std::string value; int photoPresents = 0, dumps = 0; bool timeRunning = false, filmEmpty = false; uint64_t ran = 0, ranOnPhoto = 0, passes = 0; };
 std::vector<PhotoRun> g_photoRuns;
 Plan g_plan;
 std::vector<Req> g_reqs;
@@ -177,8 +177,8 @@ void write_result(const char* status) {
     for (size_t i = 0; i < g_photoSeen.size(); i++) std::fprintf(f, "%s[%llu,%d]", i ? "," : "", (unsigned long long)g_photoSeen[i].first, g_photoSeen[i].second);
     std::fprintf(f, "],\n \"photo_runs\": [");
     for (size_t i = 0; i < g_photoRuns.size(); i++)
-        std::fprintf(f, "%s\n  {\"value\": \"%s\", \"photo_presents\": %d, \"dumps\": %d, \"time_running\": %d, \"film_empty\": %d, \"effect_draws\": %llu, \"effect_draws_on_photo_frames\": %llu}", i ? "," : "",
-                     g_photoRuns[i].value.c_str(), g_photoRuns[i].photoPresents, g_photoRuns[i].dumps, g_photoRuns[i].timeRunning ? 1 : 0, g_photoRuns[i].filmEmpty ? 1 : 0, (unsigned long long)g_photoRuns[i].ran, (unsigned long long)g_photoRuns[i].ranOnPhoto);
+        std::fprintf(f, "%s\n  {\"value\": \"%s\", \"photo_presents\": %d, \"dumps\": %d, \"time_running\": %d, \"film_empty\": %d, \"effect_draws\": %llu, \"effect_draws_on_photo_frames\": %llu, \"photo_passes\": %llu}", i ? "," : "",
+                     g_photoRuns[i].value.c_str(), g_photoRuns[i].photoPresents, g_photoRuns[i].dumps, g_photoRuns[i].timeRunning ? 1 : 0, g_photoRuns[i].filmEmpty ? 1 : 0, (unsigned long long)g_photoRuns[i].ran, (unsigned long long)g_photoRuns[i].ranOnPhoto, (unsigned long long)g_photoRuns[i].passes);
     std::fprintf(f, "\n ]\n}\n");
     std::fclose(f);
 }
@@ -241,10 +241,10 @@ void worker() {
             if (!wait_presents((uint64_t)g_plan.settle / 2 + 2)) finish(4, "stall");
             PhotoRun pr; pr.value = g_plan.values[i];
             pr.filmEmpty = snap_route_cond("film<=0", nullptr, 0) != 0;   // the shutter does nothing with no film: the route's A taps may have used it up before the moment
-            const uint64_t ran0 = nvn::FxRanCount(), photoRan0 = nvn::FxRanOnPhotoCount();
+            const uint64_t ran0 = nvn::FxRanCount(), photoRan0 = nvn::FxRanOnPhotoCount(), pass0 = nvn::FxPhotoPassCount();
             // the shutter with time frozen first (identical scene for every value: the photo hashes compare); the game's photo flow needs game time,
             // so when no photo frame shows up, once more with time running (the scenes then differ: only the gating counters mean something)
-            for (int attempt = 0; attempt < 2 && pr.photoPresents == 0; attempt++) {
+            for (int attempt = 0; attempt < 2 && pr.photoPresents == 0 && nvn::FxPhotoPassCount() == pass0; attempt++) {   // a photo pass: held presents, or (ride photo, effects stay on) the pass count
                 const bool run = attempt == 1;
                 if (run) { os_time_pause(0); g_froze = false; wait_presents(4); }
                 char fw[96] = ""; snap_route_cond("film<=99999", fw, sizeof fw);
@@ -268,8 +268,8 @@ void worker() {
                 say("photo %zu (%s): %d photo presents, %d dumps; %s -> %s", i, run ? "time running" : "time frozen", pr.photoPresents, dumps, fw, fa);
                 if (run) { wait_presents(10); os_time_pause(1); g_froze = true; }
             }
-            pr.ran = nvn::FxRanCount() - ran0; pr.ranOnPhoto = nvn::FxRanOnPhotoCount() - photoRan0;
-            say("photo %zu: effect passes drew %llu times, %llu of them on photo frames", i, (unsigned long long)pr.ran, (unsigned long long)pr.ranOnPhoto);
+            pr.ran = nvn::FxRanCount() - ran0; pr.ranOnPhoto = nvn::FxRanOnPhotoCount() - photoRan0; pr.passes = nvn::FxPhotoPassCount() - pass0;
+            say("photo %zu: %llu photo passes; effect passes drew %llu times, %llu of them on held frames", i, (unsigned long long)pr.passes, (unsigned long long)pr.ran, (unsigned long long)pr.ranOnPhoto);
             g_photoRuns.push_back(pr);
             if (!wait_presents(30)) finish(4, "stall");
         }
