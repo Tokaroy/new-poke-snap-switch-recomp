@@ -322,6 +322,8 @@ void Pre(ReplayCtx& cx) {
 
   // history: usable when the previous result is from a recent scene frame at the same size (photo / menu gaps reset it)
   const bool histOk = g.haveHist && g_presentCount - g.lastPresent <= 4;
+  // a dropped history is a visible pop (the AO starts over): logged so a run shows how often the scene pass went missing (photo holds are 3 presents, under the limit)
+  { static int n, runs; runs++; if (g.haveHist && !histOk && n++ < 40) fprintf(stderr, "lighting: AO history dropped at p%d (gap %d presents, pass %d)\n", g_presentCount, g_presentCount - g.lastPresent, runs); }
   PcRes pr{};
   {
     double R[4][4];   // reproj = prevVP * ivp: this frame's (ndc, depth, 1) -> the previous frame's clip space

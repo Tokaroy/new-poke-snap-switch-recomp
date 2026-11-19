@@ -244,9 +244,30 @@ void ao_force_visit(Cpu* c, uint8_t* ent, uint8_t* pass, const std::string& name
 
 // Pass loop (main+0x988fe0, entries of 32 bytes at [ctx+0x1b8, ctx+0x1c0)): at main+0x989048 x20 = the entry, [x20+8] = the pass object, whose
 // byte at +0xf0 is the enable flag the loop copies to +0xf1 and tests. Names: pass_name (libc++ string at +0x40).
+// The game's dynamic resolution (controller at main+0x5d6be8, on while a course runs): a frame-time sample above 16.6 ms held for a moment steps the
+// scene targets down a ladder made at boot (1920x1080, 1728x972, 1536x864, 1344x756; ctx+0xce8 = the step), and 0.5 s under 14.94 ms steps back up.
+// On PC it only does harm: every enhanced effect, ray tracing and the upscalers key on the 1920x1080 scene, so each step switched them off and on
+// (lighting and shadows popping during a ride, worst when the frame time sits near the two limits). The step-down limit is one double with one
+// reader (main+0x5d6c0c reads main+0xb0b5d0); raised out of reach, the scene stays at full size. SNAP_DYNRES=1 keeps the game's behavior.
+static void dynres_lock() {
+    static bool done;
+    if (done) return;
+    done = true;
+    const char* e = getenv("SNAP_DYNRES");
+    if (e && atoi(e) != 0) { fprintf(stderr, "[gamemods] dynamic resolution: the game's own (SNAP_DYNRES=1)\n"); return; }
+    double* lim = (double*)(kMainBase + 0xb0b5d0);
+    if (!readable((uint8_t*)lim, 8) || *lim != (double)16.6f) { fprintf(stderr, "[gamemods] dynamic resolution: limit not found at main+0xb0b5d0, left alone\n"); return; }
+    DWORD old = 0;
+    if (!VirtualProtect(lim, 8, PAGE_READWRITE, &old)) { fprintf(stderr, "[gamemods] dynamic resolution: the limit's page cannot be written, left alone\n"); return; }
+    *lim = 1e30;
+    VirtualProtect(lim, 8, old, &old);
+    fprintf(stderr, "[gamemods] dynamic resolution: locked at full size (step-down limit 16.6 ms -> off)\n");
+}
+
 extern "C" void rt_gm_pass(Cpu* c) {
     init();
     if (!g_pass_dump && g_pass_off.empty() && !g_ao_force) return;
+    dynres_lock();
     uint8_t* ent = (uint8_t*)c->x[20];
     if (!ent || !readable(ent, 16)) return;
     uint8_t* pass = *(uint8_t**)(ent + 8);
