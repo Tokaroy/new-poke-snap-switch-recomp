@@ -386,10 +386,7 @@ std::vector<Opt>& graphics_opts() {
   static std::vector<Opt> v = {
       {"", "Picture quality", kSection, kLive, "", ""},
       {"gfx_profile", "Graphics preset", kChoice, kRestart,
-       "Sets the picture rows below together. Original: the game as it shipped. Balanced: the Enhanced look made lighter (SMAA or your best installed upscaler at Quality, 8x filtering, medium SMAA). "
-       "Enhanced: what a new install runs (every row at its default). Max: DLAA when DLSS is installed (else 2x supersampling with SMAA), the Maximum lighting preset, Ultra SMAA and occlusion, "
-       "leaf and particle upgrades, light bokeh, the atmosphere and water effects, bounce light and 120 fps; it needs a fast graphics card and CPU. Changing any single row afterwards shows Custom. Draw distance, frame generation, "
-       "motion blur, HDR, color, the frame rate limit and vsync are not part of any preset.",
+       "Sets the picture rows below together. Original: the game as it shipped. Balanced: the Enhanced look, made lighter. Enhanced: what a new install runs. Max: the highest quality; it needs a fast graphics card and CPU. Changing any single row afterwards shows Custom. Draw distance, frame generation, motion blur, HDR, color, the frame rate limit and vsync are not part of any preset.",
        "enhanced", {{"original", "Original"}, {"balanced", "Balanced"}, {"enhanced", "Enhanced"}, {"max", "Max"}, {"custom", "Custom"}}, 0, 0, "", nullptr, get_profile, set_profile},
       {"gfx_look", "Look", kChoice, kRestart,
        "Enhanced is the look new installs start with: supersampling sized to your screen (2x at 1080p, 1.5x at 1440p, none extra at 4K) with SMAA, sharpening 0.30, 16x anisotropic filtering, sharper menu text, a PNG file for every photo and HD photos. "
@@ -1019,9 +1016,9 @@ void draw_row(const Opt& o, bool inline_help) {
   if (over_bar && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId)) g_help = &o;
   if (o.note) {   // which value is in effect when another row overrides this one
     const std::string n = o.note();
-    if (!n.empty()) { ImGui::Indent(px(24)); ImGui::TextColored(theme().title, "%s", tx(n).c_str()); ImGui::Unindent(px(24)); }
+    if (!n.empty()) { ImGui::Indent(px(24)); ImGui::TextColored(theme().title, "%s", tx(n).c_str()); ImGui::Unindent(px(24)); ImGui::Dummy(ImVec2(0, px(4))); }
   }
-  if (env_set_by_hand(o)) ImGui::TextColored(theme().error, tr("    %s is set in the environment and wins over this choice."), st::env_name(o.key) ? st::env_name(o.key) : o.env);
+  if (env_set_by_hand(o)) { ImGui::TextColored(theme().error, tr("    %s is set outside the game and wins over this choice."), st::env_name(o.key) ? st::env_name(o.key) : o.env); ImGui::Dummy(ImVec2(0, px(4))); }
   if (inline_help) {
     ImGui::Indent(px(24));
     ImGui::PushStyleColor(ImGuiCol_Text, theme().text_dim);
@@ -1058,8 +1055,7 @@ void draw_help(const std::vector<Opt>& list, const Opt** remembered) {
   const std::string dl = default_label(*o);
   if (!dl.empty()) add(sub(tr("Default: %s"), tx(dl, o->dyn && !o->note)));
   if (o->key && std::strcmp(o->key, "gfx_render_scale") == 0) add(sub(tr("Now: scene drawn at %s"), snappic::dims(snappic::effective(pic_cfg(), pic_ctx()).scene)));
-  const char* en = st::env_name(o->key) ? st::env_name(o->key) : o->env;
-  if (en) add(sub(tr("Environment variable: %s"), en));
+  // (the environment variable name is not shown here: it is for the command line and is listed in docs/command-line.md)
   skin_help_set(tr(o->help), extra, o->when == kRestart);
 }
 
