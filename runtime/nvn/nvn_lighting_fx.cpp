@@ -36,6 +36,7 @@ struct G {
   VkSampler nearest = VK_NULL_HANDLE, linear = VK_NULL_HANDLE;
   VkPipeline pipeAo = VK_NULL_HANDLE, pipeRes = VK_NULL_HANDLE, pipeComp = VK_NULL_HANDLE, pipeDbg = VK_NULL_HANDLE; VkFormat sceneFmt = VK_FORMAT_UNDEFINED;
   Img raw, hist[2]; uint32_t w = 0, h = 0; int cur = 0;
+  Img rawHalf; uint32_t halfW = 0, halfH = 0;   // SNAP_LIGHT_HALF: the AO / contact pass at half resolution (made at first use)
   bool haveHist = false; int lastPresent = -1000; double prevVp[4][4] = {};
   // bounce light (SNAP_SSGI): own pipelines and images, same helpers
   bool giReady = false, giFailed = false;
@@ -61,7 +62,7 @@ bool SsgiOn() {   // SNAP_SSGI=1: screen-space bounce light, its own switch (the
 bool Enabled() { return (Configured() || SsgiOn()) && !g.failed && snaplight::ab_on((unsigned long long)g_presentCount); }
 
 struct PcAo { float ivp[16]; float dclip[4]; float light[4]; float size[4]; float q[4]; };
-struct PcRes { float reproj[16]; float size[4]; float q[4]; };
+struct PcRes { float reproj[16]; float size[4]; float q[4]; float h[4]; };
 struct PcComp { float k[4]; float size[4]; };
 struct PcGi { float ivp[16]; float size[4]; float q[4]; uint64_t tlas, avg; };   // tlas, avg: the RT gather only (scene TLAS and per-instance colour cache, device addresses)
 struct PcGiComp { float k[4]; float size[4]; };
@@ -138,19 +139,30 @@ bool EnsureImages(Host* h, uint32_t w, uint32_t hh) {
   if (g.raw.img) fprintf(stderr, "lighting: render size changed to %ux%u, the old images are kept until exit\n", w, hh);   // a command buffer may still read them
   if (!MakeImg(h, g.raw, w, hh, VK_FORMAT_R8G8_UNORM) || !MakeImg(h, g.hist[0], w, hh, VK_FORMAT_R16G16B16A16_SFLOAT) || !MakeImg(h, g.hist[1], w, hh, VK_FORMAT_R16G16B16A16_SFLOAT)) return false;
   g.w = w; g.h = hh; g.haveHist = false; g.cur = 0;
+  g.rawHalf = Img{}; g.halfW = g.halfH = 0;   // made again at the new size (the old one is kept until exit like the others)
+  return true;
+}
+bool EnsureHalf(Host* h) {
+  if (g.rawHalf.img) return true;
+  static bool failed = false;
+  if (failed) return false;
+  g.halfW = (g.w + 1) / 2; g.halfH = (g.h + 1) / 2;
+  if (!MakeImg(h, g.rawHalf, g.halfW, g.halfH, VK_FORMAT_R8G8_UNORM)) { failed = true; g.rawHalf = Img{}; fprintf(stderr, "lighting: the half-resolution AO image could not be made, full resolution stays\n"); return false; }
+  fprintf(stderr, "lighting: AO and contact shadows at half resolution (%ux%u of %ux%u), SNAP_LIGHT_HALF=0 for full\n", g.halfW, g.halfH, g.w, g.h);
   return true;
 }
 
 // One full-screen pass into one of our own images (whole image, contents not needed), then a memory barrier like EndRendering.
-void DrawTo(ReplayCtx& cx, Img& t, VkPipeline pipe, VkDescriptorSet set, const void* pc, uint32_t pcBytes) {
+void DrawTo(ReplayCtx& cx, Img& t, VkPipeline pipe, VkDescriptorSet set, const void* pc, uint32_t pcBytes, uint32_t tw = 0, uint32_t th = 0) {
   VkCommandBuffer cb = cx.cb;
+  if (!tw) { tw = g.w; th = g.h; }
   ImgBar(cb, t, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
   VkRenderingAttachmentInfo ca{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
   ca.imageView = t.view; ca.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; ca.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; ca.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
   VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
-  ri.renderArea = {{0, 0}, {g.w, g.h}}; ri.layerCount = 1; ri.colorAttachmentCount = 1; ri.pColorAttachments = &ca;
+  ri.renderArea = {{0, 0}, {tw, th}}; ri.layerCount = 1; ri.colorAttachmentCount = 1; ri.pColorAttachments = &ca;
   vkCmdBeginRendering(cb, &ri);
-  VkViewport vp{0, 0, (float)g.w, (float)g.h, 0, 1}; VkRect2D sc{{0, 0}, {g.w, g.h}};
+  VkViewport vp{0, 0, (float)tw, (float)th, 0, 1}; VkRect2D sc{{0, 0}, {tw, th}};
   vkCmdSetViewport(cb, 0, 1, &vp); vkCmdSetScissor(cb, 0, 1, &sc);
   vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
   vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g.pl, 0, 1, &set, 0, nullptr);
@@ -363,12 +375,23 @@ void Pre(ReplayCtx& cx) {
       pa.q[0] = EnvF("SNAP_RT_AO_RADIUS", 1.5f);
       pa.light[3] = (float)((g_presentCount & 1023) + 1024 * (int)EnvF("SNAP_RT_AO_RAYS", 2.f, 1.f, 16.f));
     }
-    dev_pass_begin(cx.cb, rtAo ? "lfx ao rt" : "lfx ao"); DrawTo(cx, g.raw, rtAo ? g.pipeAoRt : g.pipeAo, s1, &pa, sizeof pa);
+    // Half resolution (default; SNAP_LIGHT_HALF=0 = one result per pixel as before): the pass works out one pixel of every 2x2 block per frame, a quarter
+    // of the work, and the resolve spreads it by depth and accumulates. Not for the ray traced AO (its push block has no room for the block pixel).
+    const bool half = !rtAo && EnvF("SNAP_LIGHT_HALF", 1.f, 0.f, 1.f) > 0.5f && EnsureHalf(cx.h);
+    Img& raw = half ? g.rawHalf : g.raw;
+    if (half) {
+      static unsigned seq; static const int order[4] = {0, 3, 1, 2};   // (0,0) (1,1) (1,0) (0,1): the diagonal first
+      const int o = order[seq++ & 3];
+      pa.q[3] += 16.f * (float)(o + 1);
+      pr.h[0] = 1.f; pr.h[1] = (float)(o & 1); pr.h[2] = (float)(o >> 1);
+    }
+    dev_pass_begin(cx.cb, rtAo ? "lfx ao rt" : "lfx ao");
+    if (half) DrawTo(cx, raw, g.pipeAo, s1, &pa, sizeof pa, g.halfW, g.halfH); else DrawTo(cx, raw, rtAo ? g.pipeAoRt : g.pipeAo, s1, &pa, sizeof pa);
     Bind(cx.h, s2, 0, g.nearest, dv, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
-    Bind(cx.h, s2, 1, g.nearest, g.raw.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    Bind(cx.h, s2, 1, g.nearest, raw.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     Bind(cx.h, s2, 2, g.linear, old.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     dev_pass_begin(cx.cb, "lfx resolve"); DrawTo(cx, out, g.pipeRes, s2, &pr, sizeof pr);
-    Bind(cx.h, s3, 0, g.nearest, rawDbg ? g.raw.view : out.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    Bind(cx.h, s3, 0, g.nearest, rawDbg && !half ? g.raw.view : out.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     if (rawDbg) pk.k[2] = 1e9f;
     const bool dbg = pk.size[2] > 0.5f;
     dev_pass_begin(cx.cb, "lfx comp"); FxDrawFullscreen(cx, c, dbg && g.pipeDbg ? g.pipeDbg : g.pipeComp, g.pl, s3, &pk, sizeof pk); dev_pass_end(cx.cb, "lfx comp");

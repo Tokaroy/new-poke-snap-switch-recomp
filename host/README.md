@@ -420,6 +420,9 @@ All off by default; developer switches only (no options rows yet; rows wanted ar
 | `SNAP_FX_AB=<P>` | Effects run only while (present count / P) is odd: same-view A/B in one run (dump frames N and N+1 at a block edge). |
 | `SNAP_FX_SPLIT=1` | The left half of the frame keeps the game's own picture, the right half gets the effects (one-frame A/B). |
 | `SNAP_FX_PHOTO_HOLD=1` | Effects also switch off for 3 presents at every photo taken on a ride (the behaviour before 2026-11-19). Default 0: only the Evaluation passes (photo select, scoring) switch them off. |
+| `SNAP_RT_DEMAND=0` | The ray tracing scene capture runs every frame again. Default: it pauses after 120 presents in which no reflection, bounce light or AO pass traced the scene (no water in view, Bounce light off) and resumes on the next pass that needs it. Saves 2 to 4 ms of GPU time per frame at 2880x1620 while paused. |
+| `SNAP_LIGHT_HALF=0` | Enhanced lighting works out AO and contact shadows for every pixel each frame again. Default: one pixel of every 2x2 block per frame, spread by depth and accumulated (about 1 ms less GPU time at 2880x1620). |
+| `SNAP_HDPHOTO_PLAIN_COPY=1` | HD photo captures are read back with a plain memory copy again (60 to 80 ms on the game thread per shot; the default streaming copy takes about 5 ms). |
 | `SNAP_FX_SHUTTER_DUMP=<n>` | Test aid, needs `NVN_FRAME_DUMP`: dumps every present of the n after an A press on a ride (first 4 presses, 240 presents apart). |
 | `SNAP_FX_LOG=1` | Logs frame phases, camera, shadow caster capture, photo holds and effect runs (`fx:` lines on stderr). |
 | `SNAP_FX_TIME=1` | GPU time of the whole pre-tonemap Fx block (timestamps; avg/max logged every 300 blocks). |

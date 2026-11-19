@@ -5,13 +5,15 @@
 // contact.frag. One full-screen triangle at render resolution; output r = AO visibility, g = contact-shadow visibility (1 = lit). Both are noisy by design
 // (per-pixel slice rotation and step jitter, shifted every frame): lfx_resolve.frag filters and accumulates them.
 // World positions come from the scene depth (reversed infinite Z, the upscaler viewport jitter undone like upscale_mv.comp).
+// Half resolution (q.w >> 4 = 1..4): the target has half the width and height and each of its pixels works out one pixel of its 2x2 block of the
+// picture, a different one each frame (q.w >> 4 picks it), so over four frames every pixel gets its own result; lfx_resolve.frag spreads and accumulates.
 layout(set = 0, binding = 0) uniform sampler2D depthTex;
 layout(push_constant) uniform P {
     mat4 ivp;     // (ndc.xy, depth, 1) -> homogeneous world, w = 1 / clip.w
     vec4 dclip;   // VP * (L, 0): clip-space change per world unit toward the sun (contact shadows)
     vec4 light;   // xyz: unit world direction toward the sun, w: frame counter
     vec4 size;    // xy: render size in pixels, zw: scene viewport jitter in pixels
-    vec4 q;       // x: AO radius (world units), y: contact ray length (0 = no contact shadows), z: contact thickness, w: AO quality (slices)
+    vec4 q;       // x: AO radius (world units), y: contact ray length (0 = no contact shadows), z: contact thickness, w: AO quality (slices) + 16 * (0 full resolution, 1..4 half resolution: the pixel of the 2x2 block + 1)
 } pc;
 layout(location = 0) out vec4 outV;
 
@@ -32,7 +34,10 @@ vec3 posAt(ivec2 p, out float w) {
 
 void main() {
     outV = vec4(1.0);
+    int qw = int(pc.q.w), hm = qw >> 4;
     ivec2 p = ivec2(gl_FragCoord.xy);
+    if (hm > 0) p = min(p * 2 + ivec2((hm - 1) & 1, (hm - 1) >> 1), ivec2(pc.size.xy) - 1);
+    vec2 fc = vec2(p) + 0.5;   // the picture pixel this result is for
     float d = texelFetch(depthTex, p, 0).r;
     if (d <= 0.0) return;   // sky / infinity (reversed Z)
     float wC, wR, wL, wU, wD;
@@ -54,8 +59,8 @@ void main() {
 
     float frame = pc.light.w;
     float fr = fract(frame * 0.6180339887);
-    float n1 = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))) + fr);
-    float n2 = fract(0.7548776662 * gl_FragCoord.x + 0.5698402910 * gl_FragCoord.y + fr * 3.7);
+    float n1 = fract(52.9829189 * fract(dot(fc, vec2(0.06711056, 0.00583715))) + fr);
+    float n2 = fract(0.7548776662 * fc.x + 0.5698402910 * fc.y + fr * 3.7);
 
     // ---- ambient occlusion -------------------------------------------------------------------------------------------------------------------------
     float ao = 1.0;
@@ -86,7 +91,7 @@ void main() {
                 }
             }
             const int STEPS = 8;
-            int slices = int(pc.q.w);
+            int slices = qw & 15;
             float falloffRange = 0.4 * radius, falloffFrom = radius - falloffRange;
             float falloffMul = -1.0 / falloffRange, falloffAdd = falloffFrom / falloffRange + 1.0;
             float vis = 0.0;
