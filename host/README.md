@@ -419,6 +419,8 @@ All off by default; developer switches only (no options rows yet; rows wanted ar
 | `SNAP_FX=0` | Forces every Fx effect off. Unset or 1: an effect runs only when its own switch is on. |
 | `SNAP_FX_AB=<P>` | Effects run only while (present count / P) is odd: same-view A/B in one run (dump frames N and N+1 at a block edge). |
 | `SNAP_FX_SPLIT=1` | The left half of the frame keeps the game's own picture, the right half gets the effects (one-frame A/B). |
+| `SNAP_FX_PHOTO_HOLD=1` | Effects also switch off for 3 presents at every photo taken on a ride (the behaviour before 2026-11-19). Default 0: only the Evaluation passes (photo select, scoring) switch them off. |
+| `SNAP_FX_SHUTTER_DUMP=<n>` | Test aid, needs `NVN_FRAME_DUMP`: dumps every present of the n after an A press on a ride (first 4 presses, 240 presents apart). |
 | `SNAP_FX_LOG=1` | Logs frame phases, camera, shadow caster capture, photo holds and effect runs (`fx:` lines on stderr). |
 | `SNAP_FX_TIME=1` | GPU time of the whole pre-tonemap Fx block (timestamps; avg/max logged every 300 blocks). |
 | `SNAP_CONTACT_SHADOWS=1` | Screen-space contact shadows (`nvn_contact.cpp`, `shaders/contact.frag`). Tuning (test aids): `SNAP_CONTACT_STRENGTH` (0.5), `SNAP_CONTACT_LEN` (0.4 world units), `SNAP_CONTACT_THICK` (0.15), `SNAP_CONTACT_FADE` (45 view units), `SNAP_CONTACT_LSIGN` (+1/-1 forces the light direction sign), `SNAP_CONTACT_DEBUG` (2 tints, 3 view distance, 4 normal, 5 sun facing, 6 depth, 7 the factor itself, 100 cycles). |
