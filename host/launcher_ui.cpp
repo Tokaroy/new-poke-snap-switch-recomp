@@ -37,6 +37,7 @@
 #include "hle/presets.h"
 #include "hle/discord_app.h"
 #include "hle/visual_defaults.h"
+#include "steamdeck.h"
 #include "mods/mods_core.h"
 #include "shaderprep.h"
 
@@ -126,7 +127,7 @@ struct JsonFile {
 
 // ---------------------------------------------------------------------------------------------------------------- settings model
 enum Store { S_CFG, S_WIN, S_AUD };
-enum Kind { K_CHOICE, K_PRESET, K_ACTION, K_LOOK, K_PACING, K_AA, K_PERF, K_PROFILE, K_INFO };   // K_INFO: a read-only row (label and a line of text in cur), e.g. the key bindings summary   // K_PRESET / K_LOOK / K_PACING / K_AA / K_PERF / K_PROFILE are worked out from or write several stored values
+enum Kind { K_CHOICE, K_PRESET, K_ACTION, K_LOOK, K_PACING, K_AA, K_PERF, K_PROFILE, K_DEVICE, K_INFO };   // K_INFO: a read-only row (label and a line of text in cur), e.g. the key bindings summary   // K_PRESET / K_LOOK / K_PACING / K_AA / K_PERF / K_PROFILE are worked out from or write several stored values
 enum Enc { E_STR, E_INT, E_VOL, E_BOOL };   // how a window.json / audio.json value is stored
 
 struct Ch {
@@ -411,6 +412,32 @@ void set_preset(const std::string& v) {
   }
 }
 
+// The Device row (host/steamdeck.h, docs/steam-deck.md): "steamdeck" writes the whole Steam Deck table, "desktop" erases it again. The row shows
+// Steam Deck only while every value of the table is stored, so changing any one of them afterwards shows Desktop.
+std::string get_device() {
+  for (const snapdeck::Kv& kv : snapdeck::cfg()) if (g.cfg.get(kv.key, "") != kv.val) return "desktop";
+  const hle::Json* m = g.win.j.get("mode");
+  const hle::Json* w = g.win.j.get("width");
+  const hle::Json* h = g.win.j.get("height");
+  if (!m || m->type != hle::Json::Str || m->s != snapdeck::window_mode()) return "desktop";
+  if (!w || w->type != hle::Json::Num || (int)w->n != snapdeck::kWidth || !h || h->type != hle::Json::Num || (int)h->n != snapdeck::kHeight) return "desktop";
+  return "steamdeck";
+}
+void set_device(const std::string& v) {
+  if (v == "steamdeck") {
+    for (const snapdeck::Kv& kv : snapdeck::cfg()) g.cfg.set(kv.key, kv.val);
+    g.win.j.set("mode", hle::Json::string(snapdeck::window_mode()));
+    g.win.j.set("width", hle::Json::number(snapdeck::kWidth));
+    g.win.j.set("height", hle::Json::number(snapdeck::kHeight));
+    g.win.j.set("maximized", hle::Json::boolean_(false));
+  } else if (v == "desktop") {
+    for (const snapdeck::Kv& kv : snapdeck::cfg()) g.cfg.erase(kv.key);
+    g.win.j.set("mode", hle::Json::string("windowed"));
+  } else return;
+  g.cfg.save();
+  g.win.save();
+}
+
 // ---- the display (for VRR and "fit to display") ----------------------------------------------------------------------
 BOOL CALLBACK mon_handle_cb(HMONITOR m, HDC, LPRECT, LPARAM lp) { ((std::vector<HMONITOR>*)lp)->push_back(m); return TRUE; }
 void read_display() {
@@ -533,6 +560,7 @@ void set_profile(const std::string& v) {
 
 std::string read_value(const Item& it) {
   if (it.kind == K_PROFILE) return get_profile();
+  if (it.kind == K_DEVICE) return get_device();
   if (it.kind == K_AA) return snappic::aa_row(pic_cfg());
   if (it.kind == K_PERF) return snappic::perf_row(pic_cfg());
   if (it.kind == K_PRESET) return get_preset();
@@ -555,6 +583,7 @@ std::string read_value(const Item& it) {
 
 void write_value(Item& it, const std::string& val) {
   if (it.kind == K_PROFILE) { set_profile(val); return; }
+  if (it.kind == K_DEVICE) { set_device(val); return; }
   if (it.kind == K_AA) { pic_store(snappic::with_aa(pic_cfg(), val)); return; }
   if (it.kind == K_PERF) { pic_store(snappic::with_perf(pic_cfg(), val, pic_ctx())); return; }
   if (it.kind == K_PRESET) { set_preset(val); return; }
@@ -711,7 +740,7 @@ void choose(Item& it, int idx) {
     if (was_vrr) set_pacing("vrr");
     refresh_defaults();
   }
-  if (it.kind == K_LOOK || it.kind == K_AA || it.kind == K_PERF || it.kind == K_PROFILE) refresh_defaults();
+  if (it.kind == K_LOOK || it.kind == K_AA || it.kind == K_PERF || it.kind == K_PROFILE || it.kind == K_DEVICE) refresh_defaults();
   if (it.key.rfind("access_", 0) == 0) access_changed();
   // a preset, the Look, the pacing, the monitor and the render scale each change what other rows show
   refresh_values();
@@ -730,7 +759,7 @@ void cycle(Item& it, int dir) {
 
 void reset_page(Page& p) {
   for (Item& it : p.items) {
-    if (it.kind == K_ACTION || it.kind == K_PROFILE || it.kind == K_INFO) continue;   // the Graphics preset is worked out from the rows reset below
+    if (it.kind == K_ACTION || it.kind == K_PROFILE || it.kind == K_DEVICE || it.kind == K_INFO) continue;   // the Graphics preset is worked out from the rows reset below
     if (it.kind == K_PRESET) { set_preset("normal"); continue; }
     if (it.kind == K_AA) { g.cfg.erase("gfx_aa"); g.cfg.erase("gfx_upscaler"); g.cfg.erase("gfx_upscale_quality"); continue; }
     if (it.kind == K_PERF) { g.cfg.erase("gfx_upscale_quality"); if (g.cfg.get("gfx_upscaler", "") == "dlss") g.cfg.set("gfx_upscaler", "dlaa"); continue; }
@@ -794,6 +823,11 @@ void build_pages() {
   // Display
   {
     Page p; p.name = "Display";
+    Item dv = choice("Device", "", S_CFG, "desktop", {{"desktop", "Desktop"}, {"steamdeck", "Steam Deck (1280 x 800, controller only)"}},
+                     "Steam Deck sets a borderless 1280 x 800 window, a lighter 3D picture (1440 x 810, SMAA, 4x filtering), a 150% HUD with sharper menu text and Xbox button icons, all at once. "
+                     "Desktop puts those rows back to their defaults. Changing any one of them afterwards shows Desktop again. Command line: --steam-deck.");
+    dv.kind = K_DEVICE;
+    p.items.push_back(dv);
     p.items.push_back(choice("Window mode", "mode", S_WIN, "windowed", {{"windowed", "Windowed"}, {"borderless", "Borderless fullscreen"}},
                              "Windowed, or borderless fullscreen. F11 and Alt+Enter switch it in the game too."));
     std::vector<Mon> mons;

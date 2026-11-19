@@ -35,6 +35,17 @@ int main() {
     CHECK(p.data_dir == "D:\\snap data");
     CHECK(p.sets.size() == 1 && p.sets[0].first == "fps_target" && p.sets[0].second == "120");
   }
+  {   // --steam-deck: 1280 x 800 borderless, the handheld rows; flags after it win
+    auto p = snap_cli::parse({"--play", "--steam-deck", "--set", "hud_scale=200", "--width", "1920"});
+    CHECK(p.error.empty() && p.rest.empty() && p.play);
+    CHECK(env_of(p, "SNAP_WINDOW_MODE") == "borderless");
+    CHECK(env_of(p, "SNAP_WINDOW_W") == "1920" && env_of(p, "SNAP_WINDOW_H") == "800");
+    std::string hud, icons, scale;
+    for (auto& kv : p.sets) { if (kv.first == "hud_scale") hud = kv.second; if (kv.first == "button_icons") icons = kv.second; if (kv.first == "gfx_render_scale") scale = kv.second; }
+    CHECK(hud == "200" && icons == "xbox" && scale == "0.75");   // the last hud_scale (the player's own) is the one boot.cpp leaves in force
+    auto q = snap_cli::parse({"--steam-deck"});
+    CHECK(q.error.empty() && env_of(q, "SNAP_WINDOW_W") == "1280" && env_of(q, "SNAP_WINDOW_H") == "800" && q.sets.size() == snapdeck::cfg().size());
+  }
   {   // window mode: the last flag wins; --borderless is the same as --fullscreen
     auto p = snap_cli::parse({"--fullscreen", "--windowed"});
     CHECK(env_of(p, "SNAP_WINDOW_MODE") == "windowed");

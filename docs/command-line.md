@@ -15,6 +15,7 @@ SnapRecomp.exe --play [options]     start the game without the launcher window
 | `--safe-mode` | One start with mods, HD packs, enhanced effects and the shader cache off ([safe-mode.md](safe-mode.md)). |
 | `--fullscreen`, `--borderless` | Borderless full-screen window. Both names do the same thing. |
 | `--windowed` | Normal window. |
+| `--steam-deck` | The Steam Deck preset: borderless 1280 x 800, a lighter 3D picture, a 150% HUD and Xbox button icons ([steam-deck.md](steam-deck.md)). Flags after it win. |
 | `--monitor <n>` | Monitor number. 0 is the first. |
 | `--width <px>`, `--height <px>` | Window size. |
 | `--profile <name>` | The profile to play, or the one `--import-save` and `--export-save` use. |
@@ -33,6 +34,7 @@ A mistyped flag stops the start: the exe prints `SnapRecomp: unknown option --na
 
 ```
 SnapRecomp.exe --play --fullscreen --monitor 1
+SnapRecomp.exe --play --steam-deck
 SnapRecomp.exe --play --windowed --width 1280 --height 720 --profile Ash
 SnapRecomp.exe --play --set fps_target=120 --set fps_overlay=fps
 SnapRecomp.exe --play --data-dir D:\SnapData

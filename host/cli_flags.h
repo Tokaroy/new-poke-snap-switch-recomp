@@ -8,6 +8,8 @@
 //   --fullscreen | --borderless   borderless full-screen window on the chosen monitor (the game has no exclusive mode)
 //   --windowed                    a normal window
 //   --monitor <n>  --width <px>  --height <px>
+//   --steam-deck                  the Steam Deck preset (host/steamdeck.h, docs/steam-deck.md): borderless 1280 x 800, handheld picture settings,
+//                                 bigger HUD, Xbox button icons. Flags after it win (--set hud_scale=200, --width ...).
 //   --profile <name or id>        the profile to play (also the profile of --import-save / --export-save)
 //   --set <key>=<value>           one settings key for this run only (repeatable); a name that starts with SNAP_ sets that variable
 //   --data-dir <folder>           one folder for saves, settings, mods, caches and logs
@@ -21,6 +23,8 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "steamdeck.h"
 
 namespace snap_cli {
 
@@ -67,6 +71,10 @@ inline Parsed parse(const std::vector<std::string>& args) {
     else if (a == "--safe-mode") p.safe = true;
     else if (a == "--fullscreen" || a == "--borderless") p.env.push_back({"SNAP_WINDOW_MODE", "borderless"});
     else if (a == "--windowed") p.env.push_back({"SNAP_WINDOW_MODE", "windowed"});
+    else if (a == "--steam-deck") {
+      for (auto& kv : snapdeck::env()) p.env.push_back(kv);
+      for (const snapdeck::Kv& kv : snapdeck::cfg()) p.sets.push_back({kv.key, kv.val});
+    }
     else if (a == "--monitor" || a == "--width" || a == "--height") {
       if (!value(i, &v)) break;
       if (!is_number(v)) { p.error = a + " needs a whole number, got \"" + v + "\""; break; }
