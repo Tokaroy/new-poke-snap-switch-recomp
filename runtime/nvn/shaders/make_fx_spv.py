@@ -28,3 +28,5 @@ if (here / 'lfx_ao.frag').exists():
 if (here / 'lfx_gi.frag').exists():
     emit(here.parent / 'nvn_ssgi_spv.h', 'lfx_gi.frag, lfx_gires.frag, lfx_gicomp.frag',
          [('kLfxGiFrag', 'lfx_gi.frag', 'frag'), ('kLfxGiResFrag', 'lfx_gires.frag', 'frag'), ('kLfxGiCompFrag', 'lfx_gicomp.frag', 'frag')])
+if (here / 'sparkle.frag').exists():
+    emit(here.parent / 'nvn_sparkle_spv.h', 'sparkle.frag', [('kSparkleFrag', 'sparkle.frag', 'frag')])

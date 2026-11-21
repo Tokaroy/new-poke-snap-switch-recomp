@@ -480,6 +480,10 @@ std::vector<Opt>& graphics_opts() {
       {"leaf_translucency", "Leaf translucency", kChoice, kLive,
        "Sunlight glows through leaves when you look at them from the shade side. Off is the game's own look. Photos are unchanged.", "default",
        {{"default", "Off (the game's own)"}, {"0.5", "Subtle"}, {"1", "Strong"}}, 0, 0, "", "SNAP_LEAF_TRANSLUCENCY"},
+      // image stability in motion (runtime/nvn/nvn_motionaa.cpp, docs/advanced-graphics-options.md): display only, photos keep the game's own draw; live
+      {"specular_aa", "Specular sparkle filter", kChoice, kLive,
+       "Calms the single-pixel glints that flicker on shiny or wet surfaces and Pokemon while the camera moves. Nothing is blurred. Photos are unchanged.", "default",
+       {{"default", "Off (the game's own)"}, {"1", "On"}}, 0, 0, "", "SNAP_SPECULAR_AA"},
       {"gfx_pom", "Parallax detail", kChoice, kLive,
        "Gives ground, rock and bark real depth: the surface shifts with your viewing angle and its crevices shade themselves (runtime/nvn/nvn_pom.cpp). Costs GPU time on the nearest terrain. Silhouettes, collision and photo scores are unchanged. Off is the game's own look.", "default",
        {{"default", "Off (the game's own)"}, {"low", "Low"}, {"high", "High"}}, 0, 0, "", "SNAP_POM"},

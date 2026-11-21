@@ -932,6 +932,9 @@ void build_pages() {
     p.items.push_back(choice("HD effects", "gfx_hd_effects", S_CFG, snapdef::def("SNAP_HD_EFFECTS"),
                              {{"0", "Off (the game's own)"}, {"1", "On"}},
                              "Draws the sea, splashes, dust and glow at the scene's full resolution instead of half, so they stay sharp at 1440p and 4K. Photo scoring is untouched."));
+    p.items.push_back(choice("Specular sparkle filter", "specular_aa", S_CFG, "default",
+                             {{"default", "Off (the game's own)"}, {"1", "On"}},
+                             "Calms the single-pixel glints that flicker on shiny or wet surfaces and Pokemon while the camera moves. Nothing is blurred. Photos are unchanged."));
     g.pages.push_back(p);
   }
   // Upscaling

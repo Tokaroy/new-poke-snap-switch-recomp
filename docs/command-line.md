@@ -53,7 +53,7 @@ SnapRecomp.exe --play --data-dir D:\SnapData
 | --- | --- |
 | Frame rate | `fps_target`, `vsync`, `frame_generation`, `gfx_full_rate_anim`, `fps_overlay`, `fps_overlay_corner` |
 | Resolution and upscaling | `gfx_render_scale`, `gfx_upscaler`, `gfx_upscale_quality`, `gfx_aa`, `gfx_smaa_quality`, `gfx_sharpen`, `gfx_ultrawide` |
-| Detail | `gfx_aniso`, `gfx_lod_bias`, `gfx_draw_dist`, `gfx_lod_dist`, `gfx_lod_force0`, `gfx_pom`, `foliage_aa`, `leaf_translucency`, `soft_particles` |
+| Detail | `gfx_aniso`, `gfx_lod_bias`, `gfx_draw_dist`, `gfx_lod_dist`, `gfx_lod_force0`, `gfx_pom`, `foliage_aa`, `leaf_translucency`, `soft_particles`, `specular_aa` |
 | Lighting and shadows | `gfx_lighting`, `gfx_bounce`, `gfx_shadow_res`, `gfx_shadow_dist`, `contact_shadows`, `ssao_quality`, `gfx_ssao_samples`, `gfx_ssao_hbao` |
 | Ray tracing | `rt_reflect`, `rt_gi`, `rt_gi_rays` |
 | HDR | `gfx_hdr`, `gfx_hdr_peak`, `gfx_hdr_paper`, `gfx_hdr_expand` |

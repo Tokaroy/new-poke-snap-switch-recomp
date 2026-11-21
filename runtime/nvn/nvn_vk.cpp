@@ -24,6 +24,7 @@
 #include "nvn_pace.h"   // [pace] frame clock for the limiter and the guest vsync (SNAP_PACE=legacy restores the old limiter)
 #include "upscale/upscale_nvn.h"   // [upscale] DLSS / FSR / XeSS (SNAP_UPSCALER)
 #include "nvn_framegen.h"          // [framegen] FSR frame generation (SNAP_FRAMEGEN)
+#include "nvn_motionaa.h"          // [motionaa] image stability rows, SNAP_AA_PROBE test pan
 #include "nvn_shot.h"              // screenshot key (F12)
 #include "os/perf.h"   // SNAP_PERF instrumentation (off unless the env var is set)
 // runtime/os: give the virtual core back while pacing. Standalone nvn builds (tests/nvn) have no os layer: the alternatename
@@ -1304,6 +1305,7 @@ static void EmitViewport(ReplayCtx& cx, int i) {
   VkViewport vp = MakeNvnViewport(cx.h->originMode, v[0], v[1], v[2], v[3], cx.vpScale);
   if (cx.vpSx != cx.vpScale || cx.vpOx != 0.0f) { vp.x = cx.vpOx + v[0] * cx.vpSx; vp.width = v[2] * cx.vpSx; }
   { float jx, jy; UpscaleViewportJitter(cx, &jx, &jy); vp.x += jx; vp.y += jy; }   // [upscale] sub-pixel jitter of the scene's draws
+  { float px, py; MotionAaProbeOffset(cx, &px, &py); vp.x += px; vp.y += py; }       // [motionaa] SNAP_AA_PROBE test pan (dev loop only)
   vkCmdSetViewport(cx.cb, (uint32_t)i, 1, &vp);
 }
 static void EmitScissor(ReplayCtx& cx, int i) {
@@ -1363,7 +1365,7 @@ static void Replay(ReplayCtx& cx, const CmdList& list) {
         // render scale changed: viewports / scissors set for the previous targets are re-applied at the new scale
         if (FxOnSetRenderTargets(cx)) { for (int i = 0; i < 4; i++) { if (cx.vpHave & (1u << i)) EmitViewport(cx, i); if (cx.scHave & (1u << i)) EmitScissor(cx, i); } }   // [fx] pre-tonemap slot, before the upscaler reads the scene colour; its passes changed the viewport / scissor state
         { const bool jit = UpscaleOnSetRenderTargets(cx);   // [upscale] scene / upscale point; jitter changed: re-emit viewports
-          if (jit && cx.vpHave) for (int i = 0; i < 4; i++) if (cx.vpHave & (1u << i)) EmitViewport(cx, i); }
+          if ((jit || MotionAaProbeMoving()) && cx.vpHave) for (int i = 0; i < 4; i++) if (cx.vpHave & (1u << i)) EmitViewport(cx, i); }
         if (cx.vpHave && (RtScale(cx) != cx.vpScale || g_wideK > 1.0f)) for (int i = 0; i < 4; i++) if (cx.vpHave & (1u << i)) EmitViewport(cx, i);   // [wide] x mapping may differ per target
         if (cx.scHave && (RtScale(cx) != cx.scScale || g_wideK > 1.0f)) for (int i = 0; i < 4; i++) if (cx.scHave & (1u << i)) EmitScissor(cx, i);
         break;
