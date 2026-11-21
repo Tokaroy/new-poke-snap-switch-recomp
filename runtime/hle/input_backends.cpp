@@ -9,6 +9,9 @@
 #include <vector>
 #include <cmath>
 #include <cstdlib>
+#include <atomic>
+#include <mutex>
+#include <thread>
 
 #include "hle.h"
 #include "input_core.h"
@@ -67,7 +70,18 @@ void merge_pad(RawInput& dst, const RawInput& src) {
 struct SdlPads {
   bool inited = false;
   uint64_t last_scan_ns = 0;
+  // `pads` is read by poll/rumble and changed by scan under pads_mu. The device scan (SDL_GetJoysticks and SDL_OpenGamepad, slow on
+  // some drivers) runs on scan_thread_ by default, so the game thread never waits for it while it holds the input hub lock;
+  // SNAP_SDL_SCAN_THREAD=0 scans inline in poll() once a second as before. scan() has one caller at a time (the thread or poll()).
   std::vector<SDL_Gamepad*> pads;
+  std::mutex pads_mu;
+  std::thread scan_thread_;
+  std::atomic<bool> stop_{false};
+  bool scan_threaded_ = [] { const char* e = std::getenv("SNAP_SDL_SCAN_THREAD"); return !(e && *e == '0'); }();
+  ~SdlPads() {
+    stop_.store(true);
+    if (scan_thread_.joinable()) scan_thread_.join();
+  }
   std::vector<SDL_JoystickID> seen;   // joystick ids already reported
   std::vector<SDL_JoystickID> failed; // gamepads SDL_OpenGamepad refused: not retried (nor logged) until the id disappears
 
@@ -106,11 +120,13 @@ struct SdlPads {
     int n = 0;
     SDL_JoystickID* ids = SDL_GetJoysticks(&n);
     // drop closed or unplugged pads
+    // (scan() is the only writer of `pads`, so reading it here needs no lock; removal and publishing take pads_mu)
     for (size_t i = 0; i < pads.size();) {
       if (!SDL_GamepadConnected(pads[i])) {
-        say("sdl gamepad removed: '%s'", SDL_GetGamepadName(pads[i]));
-        SDL_CloseGamepad(pads[i]);
-        pads.erase(pads.begin() + (long)i);
+        SDL_Gamepad* gone = pads[i];
+        say("sdl gamepad removed: '%s'", SDL_GetGamepadName(gone));
+        { std::lock_guard<std::mutex> lk(pads_mu); pads.erase(pads.begin() + (long)i); }
+        SDL_CloseGamepad(gone);   // no longer reachable from poll/rumble
       } else ++i;
     }
     for (int k = 0; k < n; ++k) {
@@ -132,7 +148,7 @@ struct SdlPads {
       if (!is_pad) continue;
       if (std::find(failed.begin(), failed.end(), id) != failed.end()) continue;
       if (SDL_Gamepad* g = SDL_OpenGamepad(id)) {
-        pads.push_back(g);
+        { std::lock_guard<std::mutex> lk(pads_mu); pads.push_back(g); }
         say("sdl gamepad opened: '%s' gyro=%s rumble=%s", SDL_GetGamepadName(g), SDL_GamepadHasSensor(g, SDL_SENSOR_GYRO) ? "yes" : "no",
             SDL_GetBooleanProperty(SDL_GetGamepadProperties(g), SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false) ? "yes" : "no");
       }
@@ -154,8 +170,16 @@ struct SdlPads {
   bool poll(RawInput& out) {
     init();
     uint64_t t = (uint64_t)SDL_GetTicksNS();
-    if (!last_scan_ns || t - last_scan_ns > 1000000000ull) { last_scan_ns = t; scan(); }
+    if (scan_threaded_) {
+      if (!scan_thread_.joinable()) scan_thread_ = std::thread([this] {
+        while (!stop_.load()) {
+          scan();
+          for (int i = 0; i < 10 && !stop_.load(); ++i) SDL_Delay(100);
+        }
+      });
+    } else if (!last_scan_ns || t - last_scan_ns > 1000000000ull) { last_scan_ns = t; scan(); }
     SDL_UpdateGamepads();
+    std::lock_guard<std::mutex> lk(pads_mu);
     for (SDL_Gamepad* pad : pads) {
       RawInput r;
       r.pad_connected = true;
@@ -189,6 +213,7 @@ struct SdlPads {
   bool rumble(float low, float high) {
     bool any = false;
     const Uint16 lo = (Uint16)(std::clamp(low, 0.0f, 1.0f) * 65535), hi = (Uint16)(std::clamp(high, 0.0f, 1.0f) * 65535);
+    std::lock_guard<std::mutex> lk(pads_mu);
     for (SDL_Gamepad* pad : pads) {
       if (!SDL_GetBooleanProperty(SDL_GetGamepadProperties(pad), SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false)) continue;
       if (SDL_RumbleGamepad(pad, lo, hi, (lo || hi) ? 500 : 0)) any = true;   // 500 ms: the game repeats while it wants rumble
