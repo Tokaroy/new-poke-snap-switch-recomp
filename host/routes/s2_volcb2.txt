@@ -1,5 +1,5 @@
 # fixture: unlock_all
-# sweep2 route volcb2 nav=R R R R U entry=1 level=0 mode=F:/AI/Recomps/new-pokemon-snap/analysis/core/aim_volcill_fruit2.txt (mk_routes2.py)
+# sweep2 route volcb2 nav=R R R R U entry=1 level=0 mode=A:/AI/Recomps/new-pokemon-snap/analysis/core/aim_volcill_fruit2.txt (mk_routes2.py)
 wait ui=title timeout=200
 repeat @f60 @f30000 40 4 A
 wait ui=map_select:StageSelect timeout=300

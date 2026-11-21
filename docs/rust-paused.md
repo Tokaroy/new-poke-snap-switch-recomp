@@ -5,7 +5,7 @@ can resume later. The full record is the "Rust fork" section of `AGENTS.md` on b
 
 ## What exists
 
-- Branch `rust-fork`, worktree `F:\AI\Recomps\new-pokemon-snap-rust`. It is not pushed and the tree is clean;
+- Branch `rust-fork`, worktree `A:\AI\Recomps\new-pokemon-snap-rust`. It is not pushed and the tree is clean;
   the last commit is 079eb74.
 - The whole recompilation in Rust:
   - `snap-gen` is the lifter and crate writer. Its output is byte-identical to `recomp/rs_gen.py`.

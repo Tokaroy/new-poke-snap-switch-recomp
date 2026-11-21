@@ -1,6 +1,6 @@
 # usage: run_hd.ps1 <route> <rideStartPresent> <modsDir> [ab=1] [step=200] [n=45]
 param([string]$Route, [int]$Start, [string]$Mods, [int]$Ab = 1, [int]$Step = 200, [int]$N = 45, [int]$Timeout = 590)
-$root = 'F:\AI\Recomps\new-pokemon-snap'
+$root = 'A:\AI\Recomps\new-pokemon-snap'
 $at = @(); for ($i = 1; $i -le $N; $i++) { $p = $Start + $i * $Step; $at += $p; $at += ($p + 1) }
 $env:NVN_FRAME_DUMP_AT = ($at -join ',')
 $env:NVN_FRAME_DUMP_FULL = '1'

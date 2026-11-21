@@ -774,7 +774,7 @@ Fx verdict (2026-11-14, worker "fx"): contact shadows DROPPED as a user option (
 
 ## Release standards: one exe, portable, CLI flags (2026-11-17, worker "cliflags")
 
-Owner decisions of 2026-11-17, following `F:\AI\Recomps\AGENTS.md`. Player docs: `docs/install-folder.md`, `docs/command-line.md`.
+Owner decisions of 2026-11-17, following `A:\AI\Recomps\AGENTS.md`. Player docs: `docs/install-folder.md`, `docs/command-line.md`.
 
 - **One exe.** The release asset is `SnapRecomp.exe` plus `SnapRecomp.exe.sig` (`builder/release_setup.py`): the setup program (`setup/setup_main.cpp`), then the builder as a zip, then a 16-byte trailer (payload size, `SNPSET01`). With no finished build in its folder (`work\out\SnapRecomp.exe` and `config.json`) it is the setup. With one it starts the built exe in a job object and passes flags, standard output and the exit code through. The builder zip is no longer a release asset.
 - **Portable by default.** The builder writes `portable.txt` into `out`, so saves, settings, mods, caches and logs live in `work\out\portable_data`. The setup folder, tools, cache and updater state sit under the exe's folder (`builder/snapbuild/paths.py`). The first portable start copies `%APPDATA%\SnapRecomp` (copy, never move) and says where saves now live (`host/portable.cpp`). A moved folder is corrected on the next start (`install_root` and `exe_rel` in `config.json`).

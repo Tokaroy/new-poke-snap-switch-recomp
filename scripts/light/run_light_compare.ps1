@@ -3,7 +3,7 @@
 # Dumps present pairs (N, N+1) with N even from the ride start: N shows the Enhanced frame, N+1 the original (a frame dumped as p<N> carries the effects of present count N-1), one frame of rail motion apart.
 # Pairs land in analysis\boot\runs\<id>\route_<route>_<id>_NN.png; scripts\light\pair_light.py copies them to analysis\lighting\compare\.
 param([string]$Route, [int]$Start, [string]$BuildDir = '', [string]$Lighting = 'enhanced', [int]$Step = 300, [int]$N = 4, [int]$Timeout = 590, [string[]]$Extra = @())
-$root = 'F:\AI\Recomps\new-pokemon-snap'
+$root = 'A:\AI\Recomps\new-pokemon-snap'
 $at = @(); for ($i = 1; $i -le $N; $i++) { $p = $Start + $i * $Step; if ($p % 2) { $p++ }; $at += $p; $at += ($p + 1) }
 $env:NVN_FRAME_DUMP_AT = ($at -join ',')
 $env:NVN_FRAME_DUMP_FULL = '1'

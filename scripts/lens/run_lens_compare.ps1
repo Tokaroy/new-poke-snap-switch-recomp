@@ -5,7 +5,7 @@
 # 4K output at render scale 2, 3x NEO-ONE speed is NOT used (the zoom timing in lens_zoom.txt is in presents, so the ride runs at its own speed).
 # Frames land in analysis\boot\runs\<id>\route_<route>_<id>_NN.png; scripts\lens\strip_lens.py joins them into the Off/On strip in analysis\lens\.
 param([string]$Route, [string]$At, [string]$BuildDir = '', [string]$Effect = 'dof', [int]$Timeout = 590, [string[]]$Extra = @())
-$root = 'F:\AI\Recomps\new-pokemon-snap'
+$root = 'A:\AI\Recomps\new-pokemon-snap'
 $pairs = @(); foreach ($p in ($At -split ',')) { $n = [int]$p; if ($n % 2) { $n++ }; $pairs += $n; $pairs += ($n + 1) }
 $env:NVN_FRAME_DUMP_AT = ($pairs -join ',')
 $env:NVN_FRAME_DUMP_FULL = '1'

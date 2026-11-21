@@ -66,7 +66,7 @@ disk at HD. Measured for all of them (2026-11-16, CPU only, three runs because o
 | Progress bar | 0.9.20 | JSON progress events; launcher row pending |
 
 Result on Florio Day (crops of the same texture, original at 4x nearest | plain Lanczos | Stage A): Stage A keeps the
-game's edges where Lanczos blurs them and is smoother than nearest. `D:\snap-hdshadows\cmp_stageA.png` (local only).
+game's edges where Lanczos blurs them and is smoother than nearest. `A:\AI\Recomps\snap-hdshadows\cmp_stageA.png` (local only).
 
 ### In-game check (Florio Day, 2026-11-15)
 

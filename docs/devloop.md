@@ -54,7 +54,7 @@ Commands: `set NAME VALUE` (clamped; bool takes 0/1/on/off), `get NAME`, `reset 
 PowerShell:
 
 ```powershell
-$pid_ = 12345; $d = 'F:\AI\Recomps\new-pokemon-snap\build\ctl'
+$pid_ = 12345; $d = 'A:\AI\Recomps\new-pokemon-snap\build\ctl'
 "set SNAP_LIGHT_AO_RADIUS 1.5`ntiming on" | Set-Content "$d\$pid_.cmd.tmp"; Move-Item "$d\$pid_.cmd.tmp" "$d\$pid_.cmd"
 while (Test-Path "$d\$pid_.cmd") { Start-Sleep -Milliseconds 50 }; Get-Content "$d\$pid_.out"
 ```
