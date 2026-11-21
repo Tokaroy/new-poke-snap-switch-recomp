@@ -40,7 +40,7 @@ std::atomic<int> g_blocked{0};                     // bit 0: the anti-aliasing m
 bool On() { static const bool on = [] { const char* e = getenv("SNAP_LIVE_SIZE"); return !(e && e[0] == '0'); }(); return on; }
 
 void SizeFor(const TextureImpl* t, const Rec& r, float* scale, float* wide, uint32_t* hw, uint32_t* hh) {
-  *scale = g_scale.For(t->b, r.tag) * FoliageParticleBoostLive(t, r.boost);
+  *scale = g_scale.For(t->b, r.tag) * std::max(FoliageParticleBoostLive(t, r.boost), HdfxBoost(t, t->b, r.tag));   // HD effects never stack on the particle boost
   *wide = WideFor(t->b, r.tag);
   *hw = *hh = 0;
   if (*scale != 1.0f || *wide != 1.0f) {   // as TextureInitialize
@@ -117,7 +117,7 @@ int Swap(Host* h, VkCommandBuffer cb, TextureImpl* t, float scale, float wide, u
 // What the size rows say now, as one string: the work below runs only when this moves.
 std::string Sig() {
   std::string s;
-  for (const char* k : {"SNAP_RENDER_SCALE", "SNAP_AA", "SNAP_SHADOW_RES", "SNAP_LIGHTING", "SNAP_ULTRAWIDE"}) { const char* e = getenv(k); s += e ? e : ""; s += '|'; }
+  for (const char* k : {"SNAP_RENDER_SCALE", "SNAP_AA", "SNAP_SHADOW_RES", "SNAP_LIGHTING", "SNAP_ULTRAWIDE", "SNAP_HD_EFFECTS"}) { const char* e = getenv(k); s += e ? e : ""; s += '|'; }
   s += std::to_string(snapdef::saved_look().load(std::memory_order_relaxed));   // the Look row moves the defaults of the rows above
   return s;
 }
@@ -160,15 +160,16 @@ void RetargetAtPresent(Host* h, VkCommandBuffer cb, uint32_t scW, uint32_t scH) 
     prevT = now;
   }
   static std::atomic<unsigned> seen{0};
-  if (!hle::live::changed(seen)) return;
+  const bool abFlip = HdfxAbFlip(g_presentCount);   // SNAP_HD_EFFECTS_AB: same-view on/off pairs in one run
+  if (!hle::live::changed(seen) && !abFlip) return;
   hle::live::EnvRead er;
   static std::string last;
   static std::string lastWide;
   static bool first = true;
   const std::string sig = Sig();
   { const char* uw = getenv("SNAP_ULTRAWIDE"); const std::string w = uw ? uw : ""; if (first) lastWide = w; }
-  if (first) { first = false; last = sig; return; }   // the values the game started with are in force already
-  if (sig == last) return;
+  if (first) { first = false; last = sig; if (!abFlip) return; }   // the values the game started with are in force already
+  if (sig == last && !abFlip) return;
   last = sig;
   const auto t0 = std::chrono::steady_clock::now();
 
@@ -197,13 +198,14 @@ void RetargetAtPresent(Host* h, VkCommandBuffer cb, uint32_t scW, uint32_t scH) 
     }
   }
   g_blocked.store(aaBlocked ? 1 : 0);
-  if (sc == g_scale.scale && sr == g_scale.shadowRes && wk == g_wideK) return;
+  const float hd = HdfxFactorNow();
+  if (sc == g_scale.scale && sr == g_scale.shadowRes && wk == g_wideK && hd == g_scale.hd) return;
 
   int changed = 0, copied = 0;
-  const float sc0 = g_scale.scale, wk0 = g_wideK; const int sr0 = g_scale.shadowRes;
+  const float sc0 = g_scale.scale, wk0 = g_wideK, hd0 = g_scale.hd; const int sr0 = g_scale.shadowRes;
   {
     std::lock_guard<std::mutex> lk(g_mu);
-    g_scale.scale = sc; g_scale.shadowRes = sr; g_wideK = wk;
+    g_scale.scale = sc; g_scale.shadowRes = sr; g_wideK = wk; g_scale.hd = hd;
     for (auto& kv : g_recs) {
       TextureImpl* t = kv.first;
       float s, w; uint32_t hw, hh;
@@ -215,8 +217,8 @@ void RetargetAtPresent(Host* h, VkCommandBuffer cb, uint32_t scW, uint32_t scH) 
   }
   watch = 4; worst = 0;
   if (SamplerPolicyReparse() || (sc != sc0 && g_lodBiasAuto)) g_samplerPolicyGen.fetch_add(1, std::memory_order_relaxed);   // the automatic mip bias follows the render scale
-  fprintf(stderr, "[live] p%d render targets resized: scale %.3f -> %.3f, shadow map %d -> %d, ultrawide %.3f -> %.3f; %d textures (%d kept their contents), %.1f ms\n",
-          g_presentCount, sc0, sc, sr0 ? sr0 : 1024, sr ? sr : 1024, wk0, wk, changed, copied,
+  fprintf(stderr, "[live] p%d render targets resized: scale %.3f -> %.3f, shadow map %d -> %d, ultrawide %.3f -> %.3f, HD effects %.2f -> %.2f; %d textures (%d kept their contents), %.1f ms\n",
+          g_presentCount, sc0, sc, sr0 ? sr0 : 1024, sr ? sr : 1024, wk0, wk, hd0, hd, changed, copied,
           std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
 }
 

@@ -154,7 +154,7 @@ const struct { const char* key; const char* env; } kEnvKeys[] = {
     {"ui_smooth", "SNAP_UI_SMOOTH"},            // "0" or unset: smooth interface above 60 fps off / on (runtime/nvn/nvn_uismooth.h; live in F1)
     {"hud_scale", "SNAP_HUD_SCALE"},            // auto | 100 | 125 | 150 | 175 | 200 (runtime/nvn/nvn_hud.cpp)
     {"frame_generation", "SNAP_FRAMEGEN"},   // Frame generation row ("fsr" or the older "1" = FSR, "dlss" = NVIDIA DLSS, unset = off; runtime/nvn/nvn_framegen.cpp; restart)
-    {"foliage_aa", "SNAP_FOLIAGE_AA"}, {"leaf_translucency", "SNAP_LEAF_TRANSLUCENCY"}, {"soft_particles", "SNAP_SOFT_PARTICLES"},   // foliage / particle rows (runtime/nvn/nvn_foliage.cpp; restart)
+    {"foliage_aa", "SNAP_FOLIAGE_AA"}, {"leaf_translucency", "SNAP_LEAF_TRANSLUCENCY"}, {"soft_particles", "SNAP_SOFT_PARTICLES"}, {"gfx_hd_effects", "SNAP_HD_EFFECTS"},   // foliage / particle rows (runtime/nvn/nvn_foliage.cpp; restart)
     {"gfx_pom", "SNAP_POM"},   // Parallax detail row (off | low | high; runtime/nvn/nvn_pom.cpp, docs/pom.md; restart)
     {"gfx_bokeh_dof", "SNAP_BOKEH_DOF"}, {"gfx_motion_blur", "SNAP_MOTION_BLUR"},   // lens effect rows (runtime/nvn/nvn_lens_fx.cpp; strength, unset = off; restart)
     {"spawn_rand", "SNAP_SPAWN_RAND"}, {"spawn_seed", "SNAP_SPAWN_SEED"},   // Spawn randomizer rows (off | within | all; seed text): read by scripts/mods/make_spawn_randomizer.py, which builds the pack
@@ -183,7 +183,7 @@ const char* const kLiveKeys[] = {
     "gfx_lod_bias", "gfx_aniso",                                                                 // nvn_gfx.cpp (samplers are made again)
     "gfx_lod_dist", "gfx_lod_force0", "gfx_draw_dist", "gfx_full_rate_anim",                     // host/mods/lodanim.cpp
     "fps_target",                                                                                // host/mods/highfps.cpp
-    "gfx_render_scale", "gfx_aa", "gfx_shadow_res", "gfx_ultrawide",                             // nvn_retarget.cpp (render targets are made again at a present)
+    "gfx_render_scale", "gfx_aa", "gfx_shadow_res", "gfx_ultrawide", "gfx_hd_effects",           // nvn_retarget.cpp (render targets are made again at a present)
     "gfx_hdr_expand", "gfx_hdr", "gfx_hdr_peak", "gfx_hdr_paper",                                                                            // nvn_hdr.cpp
 };
 bool live_key(const char* key) {

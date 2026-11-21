@@ -551,6 +551,8 @@ struct ScalePolicy {
   float displayScale = 0.0f;                          // [upscale] > 0: window textures take this scale (the upscaler's output), not `scale`
   ScalePolicy();
   float For(const TextureBuilder& b, uint32_t tag) const;   // 1.0 when the texture is not scaled
+  bool Follows(const TextureBuilder& b, uint32_t tag) const;   // a plain render target that takes `scale` (For's last rule)
+  float hd = 1.0f;                                    // HD effects (nvn_hdfx.cpp): extra factor for the game's reduced-size effect targets
 };
 extern ScalePolicy g_scale;
 // [wide] ultrawide (nvn_wide.cpp, docs/ultrawide.md)
@@ -680,6 +682,14 @@ void Retire(GraveKind k, void* obj);   // destroyed once every queue's timeline 
 // nvn_retarget.cpp: the size rows (Internal resolution, Shadow resolution, Ultrawide, supersampling) applied with no restart
 void RetargetNote(TextureImpl* t, uint32_t tag, float boost);   // TextureInitialize: what its size was decided from
 void RetargetGone(TextureImpl* t);                              // TextureFinalize
+// nvn_hdfx.cpp: HD effects and the SNAP_RT_AUDIT render-target list
+void HdfxInit();                                          // ApplyHostEnvPolicy: g_scale.hd from SNAP_HD_EFFECTS
+float HdfxFactorNow();                                    // the factor the settings ask for now (1 = off)
+float HdfxBoost(const void* tex, const TextureBuilder& b, uint32_t tag);   // extra size factor of a texture under g_scale.hd (1 = none)
+bool HdfxAbFlip(int present);                             // RetargetAtPresent: the A/B block or the dev override moved (resize now)
+void HdfxAuditCreate(const TextureImpl* t, const uint64_t* chainRel, int n);   // TextureInitialize
+void HdfxAuditGone(const TextureImpl* t);                                      // TextureFinalize
+void HdfxAuditTargets(TextureImpl* const* rt);                                 // SetRenderTargets replay: rt[0..8]
 void RetargetAtPresent(Host* h, VkCommandBuffer cb, uint32_t scW, uint32_t scH);   // queue mutex held, the present's command buffer outside a render pass
 void RetargetSubmitFailed();                                    // the present submit failed: drop the blit state of this present
 void RetargetAfterSubmit();                                     // after that command buffer was submitted

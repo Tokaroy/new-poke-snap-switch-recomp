@@ -458,6 +458,10 @@ std::vector<Opt>& graphics_opts() {
       {"soft_particles", "Soft particles", kChoice, kRestart,
        "Dust, splashes and pollen fade out where they meet the ground and objects instead of cutting a hard line, and draw at full resolution. Photos are unchanged.", "default",
        {{"default", "Off (the game's own)"}, {"1", "On"}}, 0, 0, "", "SNAP_SOFT_PARTICLES"},
+      // runtime/nvn/nvn_hdfx.cpp: the game's half-size and smaller effect targets grow toward the scene size; live (nvn_retarget.cpp)
+      {"gfx_hd_effects", "HD effects", kChoice, kLive,
+       "The sea, splashes, dust and glow are drawn at the scene's full resolution instead of half, so they stay sharp at 1440p and 4K. Photo scoring is unchanged.",
+       snapdef::def("SNAP_HD_EFFECTS"), {{"0", "Off (the game's own)"}, {"1", "On"}}, 0, 0, "", "SNAP_HD_EFFECTS", nullptr, nullptr, nullptr, "SNAP_HD_EFFECTS"},
       // lens effects (runtime/nvn/nvn_lens_fx.cpp): display only, never in the photo or in anything photo scoring reads; restart to apply
       {"gfx_bokeh_dof", "Zoom bokeh", kChoice, kLive,
        "While you zoom, the background blurs into round bokeh like a telephoto lens, focused on what is under the reticle. The strength grows with the zoom and it is off when you are not zoomed. Photos stay sharp and scores are unchanged.", "default",

@@ -1357,6 +1357,7 @@ static void Replay(ReplayCtx& cx, const CmdList& list) {
           const size_t o = (size_t)k * (1 + sizeof(TexView));
           if (rt[k] && c.blob.size() >= o + 1 + sizeof(TexView) && c.blob[o]) { memcpy(&cx.rtView[k], &c.blob[o + 1], sizeof(TexView)); cx.rtHasView[k] = true; }
         }
+        HdfxAuditTargets(rt);   // SNAP_RT_AUDIT (before the block-compressed stand-ins replace rt[k])
         RedirectCompressedTargets(cx);
         if (DebugDrawLogActive()) DebugDrawLog("SetRenderTargets rt0=%p(%dx%d f%x) depth=%p\n", (void*)rt[0], rt[0] ? rt[0]->b.width : 0, rt[0] ? rt[0]->b.height : 0, rt[0] ? rt[0]->b.format : 0, (void*)rt[8]);
         // render scale changed: viewports / scissors set for the previous targets are re-applied at the new scale
