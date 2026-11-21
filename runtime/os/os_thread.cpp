@@ -345,8 +345,10 @@ void ov_GetThreadAvailableCoreMask(Cpu *c) {
     c->x[0] = g_cfg.app_cores > 0 && g_cfg.app_cores < 64 ? (1ull << g_cfg.app_cores) - 1 : 7;   // guest cores only (spare cores hidden)
 }
 extern "C" __attribute__((weak)) void snap_fs_drain_for_exit(int ms);   // runtime/hle/fs.cpp (host build); null where it is not linked (tests/os)
+extern "C" __attribute__((weak)) void snap_perf_flush(int crash);       // runtime/os/perf.cpp
 void ov_QuickExit(Cpu *) {
     log("guest QuickExit / ExitProcess");
+    if (snap_perf_flush) snap_perf_flush(0);   // TerminateProcess skips atexit: write the events still in the perf ring
     fflush(nullptr);
     if (snap_fs_drain_for_exit) snap_fs_drain_for_exit(3000);   // let a save commit / photo export in flight finish (bounded) before the process ends
     TerminateProcess(GetCurrentProcess(), 0);

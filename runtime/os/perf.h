@@ -133,5 +133,9 @@ struct Scope {
 void frame_mark(uint64_t present_no, double gpu_busy_ms, double gpu_span_ms, int gpu_cbs);
 // A named occurrence with a duration (pipeline compiles, shader translations, texture uploads over 2 ms ...).
 void event(const char* kind, double ms, const char* detail);
+// Drains the event ring to the file and flushes it (atexit, exit and crash paths). crash: try-locks only, never blocks.
+void flush_events(bool crash);
 
 }  // namespace snap_perf
+
+extern "C" void snap_perf_flush(int crash);   // the same, for callers that do not include this header's C++ API

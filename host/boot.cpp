@@ -132,11 +132,13 @@ static void crash_host_stack(const CONTEXT *src) {
 }
 extern "C" void snap_crashlog_seh(EXCEPTION_POINTERS *ep, const char *guest, int stage);   // host/mods/crashlog.cpp: _crash.txt (stage 1 early, 2 after the stack was printed)
 extern "C" void snap_launcher_crash_return();   // below, with maybe_return_to_launcher
+extern "C" void snap_perf_flush(int crash);      // runtime/os/perf.cpp: writes the SNAP_PERF event ring (crash: try-lock only)
 static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep) {
     Cpu *g_cpu_dbg = g_tls_cpu ? g_tls_cpu : ::g_cpu_dbg;
     char crash_guest[400] = "";
     if (g_cpu_dbg) snprintf(crash_guest, sizeof crash_guest, "thread type %#llx, x0=%#llx x1=%#llx sp=%#llx", (unsigned long long)os_current_thread_type(), (unsigned long long)g_cpu_dbg->x[0], (unsigned long long)g_cpu_dbg->x[1], (unsigned long long)g_cpu_dbg->sp);
     snap_crashlog_seh(ep, crash_guest, 1);   // first report before anything that can fail (symbolize); the stage 2 call below has x30 too
+    snap_perf_flush(1);   // the perf events still in the ring (SNAP_PERF runs); never blocks
     if (g_cpu_dbg) { const size_t n = strlen(crash_guest); snprintf(crash_guest + n, sizeof crash_guest - n, " x30=%s", symbolize(g_cpu_dbg->x[30]).c_str()); }
     fprintf(stderr, "CRASH on guest thread type %#llx (tid %lu)\n", (unsigned long long)os_current_thread_type(), GetCurrentThreadId());
     fprintf(stderr, "HOST CRASH code=%#lx at host %p, accessed %p\n", ep->ExceptionRecord->ExceptionCode,
@@ -591,7 +593,7 @@ static void wait_for_previous_run() {
 }
 static LRESULT CALLBACK game_wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
     { LRESULT wr = 0; if (snap_window_proc(h, m, w, l, &wr)) return wr; }   // host/window_opts.cpp: F11, focus, mute, remembered placement
-    if (m == WM_CLOSE || m == WM_DESTROY) { snap_audio_log_checks(); snap_launchmark_clear(); fflush(stderr); nvnHostShotDrain(5000); snap_fs_drain_for_exit(5000); maybe_return_to_launcher(); ExitProcess(0); }   // waits (5 s) for a save commit in progress
+    if (m == WM_CLOSE || m == WM_DESTROY) { snap_audio_log_checks(); snap_launchmark_clear(); snap_perf_flush(0); fflush(stderr); nvnHostShotDrain(5000); snap_fs_drain_for_exit(5000); maybe_return_to_launcher(); ExitProcess(0); }   // waits (5 s) for a save commit in progress
     if (m == WM_TIMER) { snap_capture_window(h); return 0; }
     return DefWindowProcW(h, m, w, l);
 }

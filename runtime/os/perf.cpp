@@ -112,9 +112,10 @@ static SRWLOCK g_ev_push = SRWLOCK_INIT;
 static uint32_t g_ev_head, g_ev_tail;   // head: next write, tail: next read (free-running)
 static uint64_t g_ev_dropped, g_ev_dropped_written;
 static const bool g_ev_sync = [] { const char* e = std::getenv("SNAP_PERF_EVENT_SYNC"); return e && *e == '1'; }();
-static void ev_drain_locked() {   // caller holds g_ev_mu
+static void ev_drain_locked(bool crash = false) {   // caller holds g_ev_mu; crash: never block on the ring lock
     uint32_t n = 0;
-    AcquireSRWLockExclusive(&g_ev_push);
+    if (crash) { if (!TryAcquireSRWLockExclusive(&g_ev_push)) return; }   // the crashed thread may hold it mid-push
+    else AcquireSRWLockExclusive(&g_ev_push);
     while (g_ev_tail != g_ev_head) g_ev_out[n++] = g_ev_ring[g_ev_tail++ % kEvRing];
     const uint64_t dropped = g_ev_dropped;
     ReleaseSRWLockExclusive(&g_ev_push);
@@ -254,7 +255,26 @@ static void init() {
         fprintf(g_waits, "\n");
     }
     os_get_stats(&g_prev_os);
+    std::atexit([] { flush_events(false); });   // a normal exit; ExitProcess / TerminateProcess paths call snap_perf_flush first
     std::thread(sampler).detach();
+}
+
+// Writes the events still in the ring (the sampler drains it only once a second) and flushes the event and frame files.
+// crash: called from the crash filter, so it only try-locks (g_ev_mu and the ring lock) and gives up rather than block.
+void flush_events(bool crash) {
+    if (!on || !g_events) return;
+    if (crash) {
+        if (!g_ev_mu.try_lock()) return;
+        ev_drain_locked(true);
+        fflush(g_events);
+        if (g_frames) fflush(g_frames);   // written only under g_ev_mu (frame_mark)
+        g_ev_mu.unlock();
+        return;
+    }
+    std::lock_guard<std::mutex> lk(g_ev_mu);
+    ev_drain_locked();
+    fflush(g_events);
+    if (g_frames) fflush(g_frames);
 }
 
 void frame_mark(uint64_t present_no, double gpu_busy_ms, double gpu_span_ms, int gpu_cbs) {
@@ -339,3 +359,6 @@ void event(const char* kind, double ms, const char* detail) {
 }
 
 }  // namespace snap_perf
+
+// C entry for the exit and crash paths (boot.cpp WM_CLOSE, os QuickExit, the crash filter). crash != 0: never blocks.
+extern "C" void snap_perf_flush(int crash) { snap_perf::flush_events(crash != 0); }
