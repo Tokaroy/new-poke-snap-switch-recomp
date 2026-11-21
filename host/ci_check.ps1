@@ -50,7 +50,11 @@ function Invoke-Logged([string]$name, [string]$exe, [string[]]$argv, [int]$timeo
             return @{ rc = 124; log = $log; seconds = $sw.Elapsed.TotalSeconds; timeout = $true }
         }
         $p.WaitForExit()
-        if (Test-Path $err) { Get-Content $err -ErrorAction SilentlyContinue | Add-Content $log }
+        if (Test-Path $err) {   # a child that outlives the process we waited for can still hold the log for a moment: retry
+            for ($i = 0; $i -lt 20; $i++) {
+                try { Get-Content $err -ErrorAction Stop | Add-Content $log -ErrorAction Stop; break } catch { Start-Sleep -Milliseconds 250 }
+            }
+        }
         return @{ rc = $p.ExitCode; log = $log; seconds = $sw.Elapsed.TotalSeconds; timeout = $false }
     } finally {
         foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k]) }
