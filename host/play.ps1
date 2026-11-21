@@ -36,7 +36,14 @@ function Take-Lock([string]$path, [string]$text, [int]$waitMinutes, [int]$staleM
             $text | Set-Content $path
             return
         } catch {
-            if ((Test-Path $path) -and ((Get-Date) - (Get-Item $path).LastWriteTime).TotalMinutes -gt $staleMinutes) { Remove-Item $path -Force -ErrorAction SilentlyContinue; continue }
+            # stale = the PID recorded in the lock is gone; the age check only covers a lock whose PID cannot be read
+            if (Test-Path $path) {
+                $txt = (Get-Content $path -ErrorAction SilentlyContinue) -join ' '
+                $stale = $false
+                if ($txt -match 'pid=(\d+)') { $stale = -not [bool](Get-Process -Id ([int]$Matches[1]) -ErrorAction SilentlyContinue) }
+                else { $item = Get-Item $path -ErrorAction SilentlyContinue; if ($item -and ((Get-Date) - $item.LastWriteTime).TotalMinutes -gt $staleMinutes) { $stale = $true } }
+                if ($stale) { Remove-Item $path -Force -ErrorAction SilentlyContinue; continue }
+            }
             if ((Get-Date) -gt $deadline) { throw "gave up waiting for $path" }
             Write-Host "waiting for $path ($((Get-Content $path -ErrorAction SilentlyContinue) -join ' '))..."
             Start-Sleep -Seconds 30
@@ -53,12 +60,13 @@ if (Test-Path $playLock) {
 }
 
 # 1. copy under heavy.lock (no build or test boot can run, and snap_boot.exe cannot change under us)
-Take-Lock $heavy "$Name pid=$PID $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') (play.ps1 copy)" $LockWaitMinutes 20
+Take-Lock $heavy "$Name pid=$PID $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') (play.ps1 copy)" $LockWaitMinutes 45   # 45 min: only for a lock with no readable PID; holders may run 30
 try {
     # pipeline_keys_seed.bin (perf, 2026-11-19): the startup precompile reads it from the exe folder (SNAP_PIPELINE_SEED=0 turns it off), so
     # first course starts (beach, cave) find their pipelines ready; before this it never reached build\play
     foreach ($f in 'snap_boot.exe', 'SDL3.dll', 'snap_boot.pdb', 'pipeline_keys_seed.bin') { if (Test-Path "$src\$f") { Copy-Item "$src\$f" "build\play\$f" -Force } }
-    if (Test-Path "$src\nvn_cache") { robocopy "$src\nvn_cache" 'build\play\nvn_cache' /E /MT:8 /NFL /NDL /NJH /NJS /NP | Out-Null }   # exit codes below 8 are success
+    if (-not (Test-Path "$src\pipeline_keys_seed.bin")) { Remove-Item 'build\play\pipeline_keys_seed.bin' -Force -ErrorAction SilentlyContinue }   # no stale seed from an older build
+    if (Test-Path "$src\nvn_cache") { robocopy "$src\nvn_cache" 'build\play\nvn_cache' /MIR /MT:8 /NFL /NDL /NJH /NJS /NP | Out-Null }   # exit codes below 8 are success
 } finally {
     Remove-Item $heavy -Force -ErrorAction SilentlyContinue
 }
