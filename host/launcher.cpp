@@ -751,23 +751,32 @@ static int hd_run_with_bar(const hle::Json& cfg, const std::wstring& args, const
 // HD shadows: sharper shadow textures for every course, built from the game archives of the player's own romfs (no play-through), as its own pack
 // (hd-shadows) next to the HD textures pack. Same builder, other arguments: --cats shadow --from-romfs <folder> --pack-id hd-shadows. The build is long
 // (about 27 minutes at HD), resumable, and waits while the game runs (--pause-game). Its stdout JSON lines feed the same real progress bar.
+// Three choices: Off, Upscaled (Stage A: the game's maps enlarged, pack hd-shadows) and Re-baked (Stage B: --shadow-source rebaked, re-traced on
+// the GPU from the course geometry with the measured sun, upscaled maps where a re-bake does not match; pack hd-shadows-rebaked). Same CLI:
+// --hdtex --cats shadow --pack-id hd-shadows --from-romfs <folder> --level hd --shadow-source rebaked|upscaled (docs/command-line.md).
 static void hd_shadows_flow(const hle::Json& cfg) {
   const std::string romfs = cfg.get("romfs_root") ? cfg.get("romfs_root")->str() : std::string();
   if (romfs.empty()) { message("Snap Recomp", "The game folder is not set, so the shadows cannot be read. Pick the game folder first.", MB_ICONWARNING); return; }
   const std::wstring common = L" --cats shadow --from-romfs \"" + W(romfs) + L"\" --pack-id hd-shadows";
   for (;;) {
-    int sel = choose(L"HD shadows", L"Sharper shadows on every course, made from your own game files on this PC. Nothing is uploaded. It runs as its own pack, so your HD textures are not touched.",
-                     {L"Sharp\nQuickest",
-                      L"HD (suggested)\nAbout 5 GB of disk and about 27 minutes, once",
-                      L"Ultra\nMost detail. Slowest and the largest",
-                      L"Off\nTurn the HD shadows off. Nothing is deleted"});
-    if (sel < 0) return;
-    if (sel == 3) {
+    int src = choose(L"HD shadows", L"Sharper shadows on every course, made from your own game files on this PC. Nothing is uploaded. It runs as its own pack, so your HD textures are not touched.",
+                     {L"Off\nTurn the HD shadows off. Nothing is deleted",
+                      L"Upscaled\nThe game's own shadows, enlarged and cleaned up",
+                      L"Re-baked (sharpest)\nShadows traced again on your graphics card from the course shapes. Needs a card with ray tracing; takes longer"});
+    if (src < 0) return;
+    if (src == 0) {
       hle::Json d;
       if (hd_json(cfg, L"--level off --pack-id hd-shadows", "done", d)) message("Snap Recomp", "The HD shadows are off. Nothing was deleted; pick a level again to turn them back on.");
       else message("Snap Recomp", "Could not turn the HD shadows off.", MB_ICONWARNING);
       continue;
     }
+    const bool rebaked = src == 2;
+    const std::wstring source = rebaked ? L" --shadow-source rebaked" : L" --shadow-source upscaled";
+    int sel = choose(rebaked ? L"Re-baked HD shadows" : L"Upscaled HD shadows", L"Pick the size. Larger is sharper and takes longer.",
+                     {L"Sharp\nQuickest",
+                      L"HD (suggested)\nAbout 5 GB of disk and about 27 minutes, once",
+                      L"Ultra\nMost detail. Slowest and the largest"});
+    if (sel < 0) continue;
     const std::string level = sel == 0 ? "sharp" : sel == 1 ? "hd" : "ultra";
     hle::Json plan;
     HCURSOR old = SetCursor(LoadCursor(nullptr, IDC_WAIT));
@@ -777,9 +786,10 @@ static void hd_shadows_flow(const hle::Json& cfg) {
     auto n = [&](const char* k) { return plan.get(k) ? plan.get(k)->num() : 0.0; };
     if (plan.get("fits") && !plan.get("fits")->boolean(true)) { message("Snap Recomp", "That level does not fit on this PC. Pick a lower level.", MB_ICONWARNING); continue; }
     std::wstring q = L"Level " + W(level) + L": " + std::to_wstring((long long)n("textures")) + L" shadow textures, " + std::to_wstring((long long)n("to_build")) +
-                     L" to build, " + minutes_text(n("seconds")) + L", " + gb_text(n("disk_bytes")) + L" of disk.\n\nThe build waits while the game runs, and a rebuild only redoes what changed.\n\nStart?";
+                     L" to build, " + minutes_text(n("seconds")) + L", " + gb_text(n("disk_bytes")) + L" of disk." +
+                     (rebaked ? L" Re-baking every course on the graphics card adds about an hour." : L"") + L"\n\nThe build waits while the game runs, and a rebuild only redoes what changed.\n\nStart?";
     if (MessageBoxW(nullptr, q.c_str(), L"Snap Recomp", MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND) != IDYES) continue;
-    const int code = hd_run_with_bar(cfg, L"--level " + W(level) + common + L" --pause-game --yes", L"Making the HD shadows",
+    const int code = hd_run_with_bar(cfg, L"--level " + W(level) + common + source + L" --pause-game --yes", L"Making the HD shadows",
                                     L"Starting. Reading the course archives takes a minute or two, then the shadows are built. You can cancel; what is finished is kept.");
     if (code < 0) { message("Snap Recomp", "The HD shadows build could not be started.", MB_ICONWARNING); continue; }
     if (code == 1223) { message("Snap Recomp", "The HD shadows build was cancelled. What was finished is kept; pick the level again to continue."); continue; }

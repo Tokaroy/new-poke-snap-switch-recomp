@@ -939,14 +939,32 @@ fn bake(a: &Args, gpu: &mut vk::Gpu, course: &str, l: &Level, masks: &mut MaskSe
         }
         let stem = f.trim_end_matches(".nutexb").to_string();
         let dst = a.out.join(format!("{stem}.png"));
-        if a.skip_existing && dst.exists() {
+        let care_p = a.out.join(format!("{stem}.care.png"));
+        if a.skip_existing && dst.exists() && care_p.exists() {
             continue;
         }
         let orig = read_png_gray(&a.orig.join(format!("{stem}.png")));
+        // the bake and its score are square; the few non-square maps (15 over all courses) keep the Stage A map
+        if orig.as_ref().map_or(false, |x| x.0 != x.1) {
+            continue;
+        }
         let osz = orig.as_ref().map(|x| x.0).unwrap_or(512);
         let size = (osz * a.scale).min(a.max_size).max(osz);
         let us = uvset_of(a, o);
         let two = is_card(o, masks);
+        // where the bake counts: covered texels that face the sun (and solid parts of cards). The packer keeps the Stage A
+        // value everywhere else (back faces, gutters), so what the game shows there stays as it was.
+        let mut care = vec![0u8; (size * size) as usize];
+        for t in texels(a, o, size, masks, &|_, _| true) {
+            if faces(t.nrm, sv) {
+                care[t.index] = 255;
+            }
+        }
+        write_png_gray(&care_p, size, size, &care);
+        if a.skip_existing && dst.exists() {
+            done += 1;
+            continue;
+        }
         let tb = tri_table(o, us, a.flipv, two);
         let t0 = std::time::Instant::now();
         let tt = raster(&o.uvs[us].1, &o.idx, size, a.flipv, 2);

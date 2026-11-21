@@ -588,6 +588,64 @@ class PackStateTests(unittest.TestCase):
         self.assertEqual(C.work_dir(p.parse_args(['--level', 'hd', '--pack-id', 'hd-shadows', '--work', 'x'])), Path('x'))
 
 
+class RebakeTests(unittest.TestCase):
+    """HD shadows Stage B (--shadow-source rebaked): the sun table, the per-map Stage A fallback and the pack switch."""
+    def parser(self):
+        import argparse
+        from snapbuild import hdtex_cli as C
+        p = argparse.ArgumentParser()
+        C.add_args(p)
+        return C, p
+
+    def test_shadow_source_flag(self):
+        _, p = self.parser()
+        self.assertEqual(p.parse_args(['--level', 'hd']).shadow_source, 'upscaled')
+        self.assertEqual(p.parse_args(['--level', 'hd', '--shadow-source', 'rebaked']).shadow_source, 'rebaked')
+        with self.assertRaises(SystemExit):
+            p.parse_args(['--level', 'hd', '--shadow-source', 'other'])
+
+    def test_sun_table(self):
+        from snapbuild import hdshadows_rebake as RB
+        t = Path(tempfile.mkdtemp()) / 'sun.tsv'
+        t.write_text('level\taz\tel\tradius\tbias\tinvert\tflags\tbacc\ttwo_sided\n'
+                     'LC_001_A:LV_ENV_001_1_A\t5.25\t47\t0.27\t0.1\t0\t3\t0.84\t\n'
+                     'LC_001_A:LV_ENV_001_2_A\t237.5\t79.25\t0.27\t0.1\t0\t3\t0.90\t\n'
+                     'LC_002_A:LV_ENV_002_1_A\t10\t60\t0.27\t0.1\t0\t3\t0.88\t\nbroken line\n', encoding='utf-8')
+        s = RB.suns(t)
+        self.assertEqual(sorted(s), ['LC_001_A', 'LC_002_A'])
+        self.assertEqual(len(s['LC_001_A']), 2)
+        self.assertEqual(RB.suns(t.with_name('missing.tsv')), {})
+        self.assertTrue(RB.SUN_TABLE.is_file(), 'the measured sun table ships with the tool')
+
+    def test_fallback_rule(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('hdshadows_pack', REPO / 'scripts' / 'hd' / 'hdshadows_pack.py')
+        P = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(P)
+        self.assertTrue(P.good((0.9, 0.95, 5000), 0.85, 0.88))
+        self.assertFalse(P.good((0.8, 0.95, 5000), 0.85, 0.88))        # misses shadows: the upscaled map instead
+        self.assertFalse(P.good((0.9, 0.85, 5000), 0.85, 0.88))
+        self.assertFalse(P.good(None, 0.85, 0.88))                       # no score: never the re-bake
+        self.assertTrue(P.good((0.5, 0.95, 10), 0.85, 0.88))            # few lit texels: agreement decides
+        self.assertFalse(P.good((0.99, 0.89, 10), 0.85, 0.88))
+        t = Path(tempfile.mkdtemp()) / 'report.tsv'
+        t.write_text('LC_001_A\tLV\ta^Shadow.nutexb\t64\t128\t0.9100\t0.9300\t0.1\t4000\t0\n', encoding='utf-8')
+        self.assertEqual(P.read_report(t), {'a^Shadow.nutexb': (0.91, 0.93, 4000)})
+
+    def test_off_turns_both_shadow_packs_off(self):
+        from snapbuild import hdshadows_rebake as RB
+        C, p = self.parser()
+        t = Path(tempfile.mkdtemp())
+        mods = t / 'mods'
+        H.set_enabled(mods, True, RB.STAGE_A_ID)
+        H.set_enabled(mods, True, RB.PACK_ID)
+        H.set_enabled(mods, True, H.PACK_ID)
+        a = p.parse_args(['--level', 'off', '--pack-id', 'hd-shadows', '--cache', str(t / 'cache'), '--mods-dir', str(mods), '--work', str(t / 'w')])
+        self.assertEqual(C.main(a, say=lambda *_: None), 0)
+        on = {e['id']: e['enabled'] for e in json.loads((mods / 'mods.json').read_text(encoding='utf-8'))['packs']}
+        self.assertEqual(on, {RB.STAGE_A_ID: False, RB.PACK_ID: False, H.PACK_ID: True})   # the HD textures pack is not touched
+
+
 @unittest.skipIf(TEXCONV is None, 'texconv.exe not available (set SNAP_TEXCONV)')
 class RunTests(unittest.TestCase):
     def test_end_to_end(self):

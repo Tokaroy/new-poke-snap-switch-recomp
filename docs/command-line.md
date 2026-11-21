@@ -77,7 +77,7 @@ Each of these does one launcher job without the launcher window. The game does n
 | `--report` | Makes the problem report zip and prints its path. Nothing is uploaded. |
 | `--restore-backup` | Prints the save backups, newest first. `--restore-backup latest` or `--restore-backup <number>` puts that one back; the current save is backed up first. Exit code 0 done, 1 not restored, 2 wrong argument. |
 | `--upscalers` | Prints DLSS, FSR and XeSS, whether each is installed, and where its license is. `--upscalers <name> --accept-license <name>` downloads that one from the vendor. Without `--accept-license` nothing is downloaded: the license is yours to accept. |
-| `--hdtex` | Prints the HD texture state. With options it runs the HD texture tool with them, for example `--hdtex --level hd --dry-run`; `builder\HD-TEXTURES.md` lists the options. The exit code is the tool's. |
+| `--hdtex` | Prints the HD texture state. With options it runs the HD texture tool with them, for example `--hdtex --level hd --dry-run`; `builder\HD-TEXTURES.md` lists the options. HD shadows: `--hdtex --cats shadow --pack-id hd-shadows --from-romfs <romfs folder> --level hd --shadow-source upscaled` (the game's maps enlarged) or `--shadow-source rebaked` (re-traced on the graphics card, upscaled where a re-bake does not match; needs ray tracing), and `--hdtex --level off --pack-id hd-shadows` turns both off. The exit code is the tool's. |
 
 None of these opens a window. `--restore-backup`, `--upscalers` and `--hdtex` take everything after them as their own arguments, so put `--data-dir` and the other player flags before them.
 
