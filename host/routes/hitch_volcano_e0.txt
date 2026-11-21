@@ -1,0 +1,19 @@
+# fixture: unlock_all
+# Hitch seed (perf, 2026-11-19): volcano_e0 from course select to photo select on p2 settings (nav from qa_volcano_e0.txt), a shot every 300 presents, slow pans.
+wait ui=title timeout=200
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=500
+@f120 6 Right
+@f480 6 Right
+@f840 6 Right
+@f1200 6 Right
+@f1560 6 Up
+@f2100 6 A
+wait ui=map_select:CourseSelect timeout=400
+@f180 6 A
+wait ride timeout=300
+repeat @f0 @f60000 300 4 A
+repeat @f0 @f60000 400 60 rx=0.25
+repeat @f200 @f60000 400 60 rx=-0.25
+wait ui=photo_submit timeout=480
+end @f120

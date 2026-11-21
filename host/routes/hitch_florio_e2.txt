@@ -1,0 +1,16 @@
+# fixture: unlock_all
+# Hitch seed (perf, 2026-11-19): florio_e2 from course select to photo select on p2 settings (nav from qa_florio_e2.txt), a shot every 300 presents, slow pans.
+wait ui=title timeout=200
+repeat @f60 @f30000 40 4 A
+wait ui=map_select:StageSelect timeout=300
+@f240 6 A
+wait ui=map_select:CourseSelect timeout=60
+@f90 6 Down
+@f180 6 Down
+@f360 6 A
+wait ride timeout=300
+repeat @f0 @f60000 300 4 A
+repeat @f0 @f60000 400 60 rx=0.25
+repeat @f200 @f60000 400 60 rx=-0.25
+wait ui=photo_submit timeout=480
+end @f120
