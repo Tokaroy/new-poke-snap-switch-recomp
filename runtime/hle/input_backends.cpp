@@ -83,7 +83,12 @@ struct SdlPads {
     if (scan_thread_.joinable()) scan_thread_.join();
   }
   std::vector<SDL_JoystickID> seen;   // joystick ids already reported
-  std::vector<SDL_JoystickID> failed; // gamepads SDL_OpenGamepad refused: not retried (nor logged) until the id disappears
+  // Gamepads SDL_OpenGamepad refused: logged once, then retried every retry_ms_ (default 3 s, SNAP_SDL_RETRY_MS, like the XInput
+  // slot rescan) without logging again; forgotten when the id disappears. A pad that was still waking up or held by another
+  // program opens on a later try instead of only after a re-plug.
+  struct Failed { SDL_JoystickID id; uint64_t next_ns; };
+  std::vector<Failed> failed;
+  int retry_ms_ = [] { const char* e = std::getenv("SNAP_SDL_RETRY_MS"); return e ? std::max(0, atoi(e)) : 3000; }();
 
   static const char* type_name(SDL_GamepadType t) {
     switch (t) {
@@ -146,23 +151,31 @@ struct SdlPads {
         SDL_free(map);
       }
       if (!is_pad) continue;
-      if (std::find(failed.begin(), failed.end(), id) != failed.end()) continue;
+      auto fit = std::find_if(failed.begin(), failed.end(), [&](const Failed& f) { return f.id == id; });
+      const uint64_t now_ns = (uint64_t)SDL_GetTicksNS();
+      if (fit != failed.end() && now_ns < fit->next_ns) continue;   // failed before: wait for its next retry
       if (SDL_Gamepad* g = SDL_OpenGamepad(id)) {
         { std::lock_guard<std::mutex> lk(pads_mu); pads.push_back(g); }
-        say("sdl gamepad opened: '%s' gyro=%s rumble=%s", SDL_GetGamepadName(g), SDL_GamepadHasSensor(g, SDL_SENSOR_GYRO) ? "yes" : "no",
-            SDL_GetBooleanProperty(SDL_GetGamepadProperties(g), SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false) ? "yes" : "no");
-      }
-      else {
-        say("sdl gamepad open failed (id %u): %s; not retried until it is unplugged", (unsigned)id, SDL_GetError());
-        failed.push_back(id);
+        say("sdl gamepad opened: '%s' gyro=%s rumble=%s%s", SDL_GetGamepadName(g), SDL_GamepadHasSensor(g, SDL_SENSOR_GYRO) ? "yes" : "no",
+            SDL_GetBooleanProperty(SDL_GetGamepadProperties(g), SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false) ? "yes" : "no",
+            fit != failed.end() ? " (on a retry)" : "");
+        if (fit != failed.end()) failed.erase(fit);
+      } else {
+        const uint64_t next = retry_ms_ > 0 ? now_ns + (uint64_t)retry_ms_ * 1000000ull : UINT64_MAX;   // 0: never retried
+        if (fit == failed.end()) {
+          say("sdl gamepad open failed (id %u): %s; retried every %d ms without logging", (unsigned)id, SDL_GetError(), retry_ms_);
+          failed.push_back({id, next});
+        } else {
+          fit->next_ns = next;
+        }
       }
     }
     // forget ids that disappeared so a re-plug is reported again
     seen.erase(std::remove_if(seen.begin(), seen.end(), [&](SDL_JoystickID id) {
       for (int k = 0; k < n; ++k) if (ids && ids[k] == id) return false;
       return true; }), seen.end());
-    failed.erase(std::remove_if(failed.begin(), failed.end(), [&](SDL_JoystickID id) {
-      for (int k = 0; k < n; ++k) if (ids && ids[k] == id) return false;
+    failed.erase(std::remove_if(failed.begin(), failed.end(), [&](const Failed& f) {
+      for (int k = 0; k < n; ++k) if (ids && ids[k] == f.id) return false;
       return true; }), failed.end());
     SDL_free(ids);
   }
