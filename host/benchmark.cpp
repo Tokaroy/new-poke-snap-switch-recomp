@@ -920,7 +920,7 @@ void find_previous(Result& r, const std::string& dir) {
   }
 }
 
-struct Options { bool uncapped = true, quiet = false; std::vector<std::string> pass; };
+struct Options { bool uncapped = true, quiet = false; std::vector<std::string> pass, sets; };   // sets: "--set key=value" values for the child; they leave pass empty so launcher mode still counts
 
 bool execute(const Options& op, Result& out) {
   wchar_t mp[MAX_PATH * 2] = {};
@@ -980,6 +980,7 @@ bool execute(const Options& op, Result& out) {
   auto run_once = [&]() -> bool {
     std::wstring cmd = L"\"" + exe.wstring() + L"\"";
     for (const std::string& a : op.pass) cmd += L" \"" + W(a) + L"\"";
+    for (const std::string& a : op.sets) cmd += L" --set \"" + W(a) + L"\"";
     STARTUPINFOW si{};
     si.cb = sizeof si;
     SECURITY_ATTRIBUTES sa{sizeof sa, nullptr, TRUE};
@@ -1071,6 +1072,7 @@ int run_cli(const std::vector<std::string>& args) {
     if (args[i] == "--benchmark-uncapped") op.uncapped = true;
     else if (args[i] == "--benchmark-capped") op.uncapped = false;
     else if (args[i] == "--benchmark-view" && i + 1 < args.size()) view = args[++i];
+    else if (args[i] == "--set" && i + 1 < args.size()) op.sets.push_back(args[++i]);
     else op.pass.push_back(args[i]);
   }
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);

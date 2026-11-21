@@ -1111,12 +1111,14 @@ int main(int argc, char **argv) {
             }
         }
     }
+    const bool restarted = getenv("SNAP_RESTART_WAIT_PID") != nullptr;   // F1 > Saves relaunch: the menu's profile and settings win over --profile / --set
     for (auto& kv : cli.sets) {   // --set key=value: this run only (hle/settings.h); it also beats a variable of the same setting set by hand
+        if (restarted) break;
         if (const char* n = hle::settings::env_name(kv.first)) _putenv_s(n, "");
         hle::settings::override_for_run(kv.first, kv.second);
     }
     for (auto& kv : cli.env) _putenv_s(kv.first.c_str(), kv.second.c_str());   // window flags and --set SNAP_X=value
-    if (!cli.profile.empty()) _putenv_s("SNAP_PROFILE", cli.profile.c_str());
+    if (!cli.profile.empty() && !restarted) _putenv_s("SNAP_PROFILE", cli.profile.c_str());
     if (cli.safe) _putenv_s("SNAP_SAFE_MODE", "1");   // docs/safe-mode.md: mods, HD packs, enhanced effects, frame generation, RT and the shader cache off for this run
     static std::vector<char*> rest_argv;
     rest_argv.assign(1, argv[0]);
@@ -1149,10 +1151,12 @@ int main(int argc, char **argv) {
     }
     if (snap_benchmark::wanted(argc, argv)) {   // ride benchmark (host/benchmark.cpp): runs the game as a child and shows the results
         std::vector<std::string> args(argv + 1, argv + argc);
+        for (auto& kv : cli.sets) { args.push_back("--set"); args.push_back(kv.first + "=" + kv.second); }   // the game child gets them too (they live only in this process otherwise)
         return snap_benchmark::run_cli(args);
     }
     if (snap_shaderprep::wanted(argc, argv)) {   // shader preparation (host/shaderprep.cpp): plays one hidden ride per course to fill this PC's shader cache
         std::vector<std::string> args(argv + 1, argv + argc);
+        for (auto& kv : cli.sets) { args.push_back("--set"); args.push_back(kv.first + "=" + kv.second); }
         return snap_shaderprep::run_cli(args);
     }
     {   // launcher mode (builder release): no command of its own (player flags were taken off above) and a config.json next to the exe (host/launcher.cpp)
