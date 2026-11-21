@@ -63,12 +63,12 @@ function Test-LockStale([string]$Path) {
     $item = Get-Item -LiteralPath $Path -ErrorAction SilentlyContinue
     if ($null -eq $item) { return $false }
     $age = ([DateTime]::UtcNow - $item.LastWriteTimeUtc).TotalMinutes
-    if ($age -gt 20) { return $true }
     if ($t -match 'pid=(\d+)') {
         $ownerPid = 0
         if ([int]::TryParse($Matches[1], [ref]$ownerPid) -and $ownerPid -gt 0) { return -not [bool](Get-Process -Id $ownerPid -ErrorAction SilentlyContinue) }
     }
-    return ($age -gt 0.2)
+    # no readable PID: age is the only evidence; holders may run 30 minutes
+    return ($age -gt 45)
 }
 
 # A timed-out WaitOne does not grant ownership; an abandoned mutex does.
