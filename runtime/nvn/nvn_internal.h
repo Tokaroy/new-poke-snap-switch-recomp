@@ -681,6 +681,7 @@ void Retire(GraveKind k, void* obj);   // destroyed once every queue's timeline 
 void RetargetNote(TextureImpl* t, uint32_t tag, float boost);   // TextureInitialize: what its size was decided from
 void RetargetGone(TextureImpl* t);                              // TextureFinalize
 void RetargetAtPresent(Host* h, VkCommandBuffer cb, uint32_t scW, uint32_t scH);   // queue mutex held, the present's command buffer outside a render pass
+void RetargetSubmitFailed();                                    // the present submit failed: drop the blit state of this present
 void RetargetAfterSubmit();                                     // after that command buffer was submitted
 void RetireVkImage(Host* h, VkImage img, VkImageView view, VkDeviceMemory mem);   // an effect module's own image: freed once the GPU is past it
 void RetireFn(std::function<void()> fn);   // the same for host-owned Vulkan objects (runs fn then)

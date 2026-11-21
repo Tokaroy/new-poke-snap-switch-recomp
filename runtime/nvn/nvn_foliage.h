@@ -55,6 +55,7 @@ uint32_t FoliagePipeBits(int alphaFunc, float alphaRef, int32_t colorVkFmt, int3
 float FoliageParticleBoost(const void* tex, uint32_t w, uint32_t h, uint32_t fmt, const uint64_t* chainRel, int n);
 void FoliageTextureGone(const void* tex);
 char FoliageTexLabel(const void* tex);
+float FoliageParticleBoostLive(const void* tex, float created);   // the boost now: 2 for a labelled particle target while soft particles are on, 1 otherwise; `created` for unlabelled textures
 
 bool FoliageAaEnabled();    // SNAP_FOLIAGE_AA
 float FoliageLeafStrength();   // SNAP_LEAF_TRANSLUCENCY

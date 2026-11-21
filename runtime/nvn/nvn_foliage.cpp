@@ -521,6 +521,12 @@ float FoliageParticleBoost(const void* tex, uint32_t w, uint32_t h, uint32_t fmt
   if (!SoftParticlesEnabled() || !((lab == 'A' ? 1 : lab == 'B' ? 2 : 4) & sel)) return 1.0f;
   return 2.0f;
 }
+float FoliageParticleBoostLive(const void* tex, float created) {
+  char lab;
+  { std::lock_guard<std::mutex> g(g_lblMu); auto it = g_lbl.find(tex); if (it == g_lbl.end()) return created; lab = it->second; }
+  static const int sel = [] { const char* e = getenv("SNAP_SOFT_PARTICLES_SEL"); return e && *e ? atoi(e) : 6; }();
+  return SoftParticlesEnabled() && ((lab == 'A' ? 1 : lab == 'B' ? 2 : 4) & sel) ? 2.0f : 1.0f;
+}
 void FoliageTextureGone(const void* tex) { std::lock_guard<std::mutex> g(g_lblMu); g_lbl.erase(tex); }
 char FoliageTexLabel(const void* tex) {
   if (!tex) return 0;
