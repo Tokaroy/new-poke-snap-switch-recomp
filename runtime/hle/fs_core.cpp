@@ -634,6 +634,12 @@ struct Mount {
 
 // ---------------------------------------------------------------------------------------------------------------
 struct Fs::Impl {
+  // Lock order, and the virtual-core rule that keeps it deadlock free:
+  //  1. commit_mu, then mu. Never take commit_mu while holding mu.
+  //  2. of->mu (an open file's write lock), then mu. A thread holding mu never takes of->mu.
+  //  3. Never take a virtual core back (os_io_end) while holding commit_mu, mu or of->mu. Most callers wait for mu while holding
+  //     their core, so a mu holder that waits for a core can wait forever once every core is held by a thread queued on mu.
+  //     Waiting for a lock with the core released is fine: os_io_begin, lock, work, unlock, then os_io_end (get_file, commit).
   std::mutex mu;  // mounts and tables
   // Serializes commits, restores, save mounts and unmounts. Taken before mu, never while holding it. A commit holds it for the
   // whole disk work and mu only to copy and publish the pending sets.
@@ -915,14 +921,19 @@ void Fs::state_load(int* closed, int* reopened) {
 
 static std::shared_ptr<OpenFile> get_file(Fs::Impl* p, FileId f) {
   // Contended (another thread is in a path lookup or a directory operation): wait without the virtual core, like a Horizon IPC wait.
+  // The core comes back only after mu is released (lock-order rule 3 at Fs::Impl).
   std::unique_lock<std::mutex> g(p->mu, std::try_to_lock);
-  if (!g.owns_lock()) {
-    os_io_begin();
-    g.lock();
-    os_io_end();
+  if (g.owns_lock()) {
+    auto it = p->files.find(f);
+    return it == p->files.end() ? nullptr : it->second;
   }
+  os_io_begin();
+  g.lock();
   auto it = p->files.find(f);
-  return it == p->files.end() ? nullptr : it->second;
+  std::shared_ptr<OpenFile> of = it == p->files.end() ? nullptr : it->second;
+  g.unlock();
+  os_io_end();
+  return of;
 }
 
 uint32_t Fs::read_file(FileId f, int64_t off, void* buf, size_t n, size_t* out) {
