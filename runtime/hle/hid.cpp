@@ -34,6 +34,34 @@ HidState g_hid;
 uint32_t active_id() { return config().controller_style == 1 ? kNpadHandheld : kNpadNo1; }
 uint32_t active_style() { return config().controller_style == 1 ? kStyleHandheld : kStyleFullKey; }
 
+// --set for the controls rows (host/cli_flags.h set_key_env turns them into SNAP_CTL_<KEY> variables): they change the loaded mapping for this run.
+// input.json is not rewritten here; a controls change made later in a menu saves the whole mapping, overrides included.
+void apply_run_overrides() {
+  auto env = [](const char* n) -> const char* { const char* e = std::getenv(n); return e && *e ? e : nullptr; };
+  auto truthy = [](const char* e) { return e[0] == '1' || e[0] == 't' || e[0] == 'T' || e[0] == 'y' || e[0] == 'Y' || !std::strcmp(e, "on") || !std::strcmp(e, "On"); };
+  input::Hub& h = input::hub();
+  input::Mapping m = h.mapping();
+  bool any = false;
+  auto flag = [&](const char* n, bool* f) { if (const char* e = env(n)) { *f = truthy(e); any = true; } };
+  if (const char* e = env("SNAP_CTL_FACE_LAYOUT")) {   // 0 or position, 1 or nintendo (by label)
+    const int l = (!std::strcmp(e, "1") || !std::strcmp(e, "nintendo")) ? 1 : 0;
+    if (l != m.face_layout) input::set_face_layout(m, l);
+    any = true;
+  }
+  flag("SNAP_CTL_SWAP_STICKS", &m.swap_sticks);
+  flag("SNAP_CTL_LEFT_INVERT_Y", &m.left.invert_y);
+  flag("SNAP_CTL_RIGHT_INVERT_Y", &m.right.invert_y);
+  flag("SNAP_CTL_TOGGLE_ZL", &m.toggle_zl);
+  flag("SNAP_CTL_TOGGLE_ZR", &m.toggle_zr);
+  flag("SNAP_CTL_MOUSE_LOOK", &m.mouse_look);
+  flag("SNAP_CTL_MOUSE_INVERT_X", &m.mouse_invert_x);
+  flag("SNAP_CTL_MOUSE_INVERT_Y", &m.mouse_invert_y);
+  flag("SNAP_CTL_MOUSE_TOUCH", &m.mouse_touch);
+  flag("SNAP_CTL_LOCK_CURSOR", &m.lock_cursor);
+  if (const char* e = env("SNAP_CTL_MOUSE_SENSITIVITY")) { m.mouse_sensitivity = std::clamp((float)std::atof(e), 0.05f, 10.0f); any = true; }
+  if (any) h.set_mapping(m);
+}
+
 void ensure_init() {
   if (g_hid.inited) return;
   g_hid.inited = true;
@@ -41,6 +69,7 @@ void ensure_init() {
   // leaves a message for the controls menu (Hub::message).
   const std::string legacy = config().input_map_path == default_input_path() ? legacy_input_path() : std::string();
   input::hub().load_config(config().input_map_path, legacy);
+  apply_run_overrides();
 }
 
 void write_npad_state(void* dst, uint32_t id, uint32_t style) {

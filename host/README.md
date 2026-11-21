@@ -293,6 +293,8 @@ wall time from the first input poll, so a loaded PC shifts the game but not the 
 
 ## PC tabs in the game's own Settings screen (2026-11-13, `host/mods/nativeopt.cpp`)
 
+Update 2026-11-20: 19 PC tabs, now including Lighting and Accessibility. `host/routes/ui_polish_tabs.txt` visits every tab for screenshots; `docs/option-map.md` lists each option across launcher, F1, native tabs and `--set`.
+
 The game's Settings screen (lab hub gear) is data driven: `option.lmb` in `common/UI/master/Scenes/option.drp` lists states
 (tabs), elements and focus groups (format and dumper: `scripts/ui/lmb.py dump <option.lmb> [state]`). The PC settings are thirteen
 extra tabs in sets of five after the game's "Other" tab (R past Other; L on Game goes to the last one): Quality, Textures,

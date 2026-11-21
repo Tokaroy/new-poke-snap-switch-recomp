@@ -96,7 +96,7 @@ TABS = [
             'Draws fewer pixels, then an upscaler enlarges them. Needs DLSS, FSR or XeSS.' + R),
     ]),
     ('Textures', 'Texture, shadow and shading detail.', [
-        row('Texture filtering', 'p', 'opt', 'gfx_aniso', '0',
+        row('Anisotropic filtering', 'p', 'opt', 'gfx_aniso', '0',
             (('0', 'Original'), ('2', '2x'), ('4', '4x'), ('8', '8x'), ('16', '16x')),
             'Keeps ground and walls sharp when seen at a slant. 16x costs almost nothing on a PC.' + R),
         row('Texture sharpness', 'p', 'opt', 'gfx_lod_bias', 'auto',
@@ -155,8 +155,10 @@ TABS = [
             'On: no tearing. Adaptive: tears only below the refresh rate. Fast: lower latency. Off: lowest, may tear.'),
     ]),
     ('View', 'How far detail reaches. These rows may change photo scores.', [
+        # three steps, as in the F1 table: settings.cpp moves any other stored value to the nearest of 1, 3 and 8 when the file is read (the 1.5x, 2x, 4x and
+        # 6x steps this row used to offer came back as 3x at the next start)
         row('Detail distance', 'p', 'opt', 'gfx_lod_dist', '1',
-            (('1', '1x (original)'),) + nums('1.5', '2', '3', '4', '6', '8', suffix='x'),
+            (('1', 'Original'), ('3', 'High (3x)'), ('8', 'Max (8x)')),
             'Pushes out where models switch to simpler versions. Costs some speed.' + R),
         row('Always full detail', 'c', 'opt', 'gfx_lod_force0', '0', TOGGLE,
             'Every model uses its most detailed version at any distance. Costs speed.' + R),
@@ -212,15 +214,19 @@ TABS = [
         row('Lock cursor', 'c', 'map', 'lock_cursor', '1', TOGGLE,
             'Keeps the cursor inside the game window while you play.'),
     ]),
-    ('Audio', 'Overall volume and sound output. Music, effects and voices are on the Sound tab.', [
+    ('Audio', 'Volume, sound output and language. Music, effects and voices are on the Sound tab.', [
         row('Master volume', 'p', 'vol', 'master', '10',
             (('0', 'Mute'),) + tuple((str(v), '%d%%' % (v * 10)) for v in range(2, 11)),
             'Overall loudness of the game.'),
         row('Output mode', 'p', 'opt', 'audio_output', 'stereo',
             (('stereo', 'Stereo'), ('speakers', 'Speakers (5.1/7.1)'), ('spatial', 'Spatial (headphones)')),
             'Stereo is the original mix. Speakers sends surround, Spatial uses Windows Spatial Sound.' + R),
-        row('Mute in background', 'c', 'opt', 'win_mute', '1', TOGGLE,
+        row('Mute in the background', 'c', 'opt', 'win_mute', '1', TOGGLE,
             'Silences the game while its window is not in front.'),
+        row('Game language', 'p', 'opt', 'game_language', 'auto',
+            (('auto', 'Auto (Windows)'), ('en', 'English'), ('ja', 'Japanese'), ('fr', 'French'), ('de', 'German'), ('it', 'Italian'),
+             ('es', 'Spanish'), ('ko', 'Korean'), ('zh-hans', 'Chinese (Simplified)'), ('zh-hant', 'Chinese (Traditional)')),
+            "The language of the game's menus and text. Auto follows your Windows language." + R),
     ]),
     ('Photos', 'Photo files and expeditions.', [
         row('Save PNG copies', 'c', 'opt', 'photo_export', '1', TOGGLE,
@@ -268,6 +274,9 @@ TABS = [
         row('Overlay corner', 'p', 'opt', 'fps_overlay_corner', 'tr',
             (('tl', 'Top left'), ('tr', 'Top right'), ('bl', 'Bottom left'), ('br', 'Bottom right')),
             'Where the performance overlay sits on the screen.'),
+        row('Frame rate target', 'p', 'opt', 'fps_target', 'default',
+            (('default', "60 (the game's own)"),) + nums('72', '90', '120', '144', '165', '240'),
+            'How fast the game runs. 90 and up run the game itself faster and need a fast processor.'),
     ]),
     # (the upscaler and its quality are the Anti-aliasing and Performance scaling rows of the Quality tab now; Sharpening moved here to make room for SMAA quality)
     ('Upscaler', 'Sharpening and frame generation.', [
@@ -285,6 +294,15 @@ TABS = [
             'Bigger HUD, menus and dialogue on large screens. The 3D view and photos are not changed.'),
         row('Skip course intro', 'c', 'opt', 'skip_course_intro', '0', TOGGLE,
             'Plays the course fly-over about 8x faster. Rides, Pokémon and scores are not changed.' + R),
+        row('Ultrawide', 'c', 'opt', 'gfx_ultrawide', 'auto', (('auto', 'Auto'), ('off', 'Off')),
+            'On a screen wider than 16:9, Auto shows more of the world at the sides. Menus and photos stay 16:9.'),
+        row('Smooth interface', 'c', 'opt', 'ui_smooth', 'default', (('default', 'On'), ('0', 'Off')),
+            'Above 60 FPS, moves menus and the reticle every frame, not 60 times a second. Does nothing at 60 FPS.'),
+        row('Button icons', 'p', 'opt', 'button_icons', 'auto',
+            (('auto', 'Automatic'), ('switch', 'Switch'), ('xbox', 'Xbox'), ('playstation', 'PlayStation'), ('keyboard', 'Keyboard and mouse')),
+            'Which button pictures the game shows. Automatic follows the controller you connect.'),
+        row('Swap A and B', 'c', 'opt', 'swap_ab', '0', TOGGLE,
+            'Confirm on the south button and back on the east button, like an Xbox or PlayStation pad.'),
     ]),
     # Tab 15 (third set): lens effects (runtime/nvn/nvn_lens_fx.cpp), display only; keys gfx_bokeh_dof / gfx_motion_blur -> SNAP_BOKEH_DOF / SNAP_MOTION_BLUR (settings.cpp)
     ('Lens', 'Camera lens effects. Photos stay sharp.', [
@@ -304,7 +322,7 @@ TABS = [
             'Haze that thickens toward the ground and the distance. Photos are unchanged.' + R),
         row('Auto exposure', 'p', 'opt', 'atmos_exposure', 'default', (('default', 'Off'), ('1', 'On')),
             'Caves open up and bright beaches ease down over about a second. Photos are unchanged.' + R),
-        row('Wide glow', 'p', 'opt', 'atmos_bloom', 'default', (('default', 'Off'), ('1', 'On')),
+        row('Soft glow', 'p', 'opt', 'atmos_bloom', 'default', (('default', 'Off'), ('1', 'On')),
             'A wider glow around the brightest highlights, on top of Bloom. Photos are unchanged.' + R),
         row('Cloud shadows', 'p', 'opt', 'atmos_clouds', 'default', (('default', 'Off'), ('1', 'On')),
             'Slow cloud shadows drift across the ground. Photos are unchanged.' + R),
@@ -323,7 +341,55 @@ TABS = [
         row('Ocean waves', 'p', 'opt', 'water_ocean', 'default', (('default', 'Off'), ('1', 'On')),
             'Rolling sea waves from a GPU simulation: reflections follow the swell, whitecaps on crests. Photos unchanged.'),
     ]),
+    # Lighting: the F1 Lighting rows that had no native page (gfx_lighting / gfx_bounce / gfx_pom / rt_*), tab 18 of the fourth set
+    ('Lighting', 'Lighting, bounce light, surface depth and ray tracing. Photos are unchanged.', [
+        row('Lighting preset', 'p', 'opt', 'gfx_lighting', 'default',
+            (('default', 'Original'), ('enhanced', 'Enhanced'), ('maximum', 'Maximum')),
+            'One switch for the lighting look: soft contact shadows, shading in corners and a larger shadow map.'),
+        row('Bounce light', 'p', 'opt', 'gfx_bounce', 'default', (('default', 'Off'), ('1', 'On')),
+            'Colored light bouncing off nearby surfaces, such as green from grass onto a Pokémon.'),
+        row('Parallax detail', 'p', 'opt', 'gfx_pom', 'default', (('default', 'Off'), ('low', 'Low'), ('high', 'High')),
+            'Gives ground, rock and bark depth that shifts as you look. Costs speed on nearby terrain.'),
+        row('Ray traced reflections', 'p', 'opt', 'rt_reflect', 'default', (('default', 'Off'), ('1', 'On')),
+            'Water reflections that trace rays into the scene. Needs a ray tracing graphics card.' + R),
+        row('Ray traced bounce light', 'p', 'opt', 'rt_gi', 'default', (('default', 'Off'), ('1', 'On')),
+            'Bounce light gathered with rays. Needs a ray tracing graphics card and Bounce light on.' + R),
+        row('Bounce light quality', 'p', 'opt', 'rt_gi_rays', 'default',
+            (('default', '1 ray (fastest)'), ('2', '2 rays'), ('4', '4 rays')),
+            'Rays per pixel for ray traced bounce light. More rays look smoother and cost more.' + R),
+    ]),
+    # Accessibility (docs/accessibility.md): the same keys the launcher and the F1 menu use; Hold to toggle stays in the F1 menu's Accessibility tab
+    ('Accessibility', 'Color vision, flashing, mono sound and menu size.', [
+        row('Color vision correction', 'p', 'opt', 'access_cvd', 'off',
+            (('off', 'Off'), ('protanopia', 'Protanopia'), ('deuteranopia', 'Deuteranopia'), ('tritanopia', 'Tritanopia')),
+            'Shifts colors that are hard to tell apart over the whole picture. Photos are unchanged.'),
+        row('Correction strength', 'p', 'opt', 'access_cvd_strength', '100', tuple((str(v), '%d%%' % v) for v in range(10, 101, 10)),
+            'How much of the color shift is applied. 100% is the full correction.'),
+        row('Reduce flashing', 'p', 'opt', 'access_flash', 'off',
+            (('off', 'Off'), ('gentle', 'Gentle'), ('standard', 'Standard'), ('strong', 'Strong')),
+            'Fades bright bursts and camera flashes in over a few frames instead of snapping.'),
+        row('Mono audio', 'c', 'opt', 'access_mono', '0', TOGGLE,
+            'Plays the same sound in both ears.'),
+        row('Text and menu size', 'p', 'opt', 'access_ui_size', '100', nums('100', '125', '150', '200', suffix='%'),
+            "Makes the launcher and the F1 menu bigger. The game's own screens follow HUD scale."),
+        row('High-contrast menus', 'c', 'opt', 'access_contrast', '0', TOGGLE,
+            'Black panels with white text and a bright selection, for the launcher and the F1 menu.'),
+    ]),
 ]
+def live_keys():
+    """Keys the F1 option table marks kLive (runtime/ui/ui_options.cpp): they apply the moment a row changes, so their help line must not say
+    "Applies after restart." (it did for 36 rows after 2026-11-18 made them live)."""
+    src = open(os.path.join(ROOT, 'runtime', 'ui', 'ui_options.cpp'), encoding='utf-8').read()
+    keys = {m.group(1) for m in re.finditer(r'\n\s*\{"(\w+)",\s*"[^"]+",\s*k\w+,\s*kLive\b', src)}
+    assert len(keys) > 40, 'ui_options.cpp: the kLive scan found too few rows'
+    return keys
+
+
+_LIVE = live_keys()
+for _t in TABS:
+    for _r in _t[2]:
+        if _r['key'] in _LIVE and _r['help'].endswith(R):
+            _r['help'] = _r['help'][:-len(R)]
 VISUAL_KEYS = {'gfx_sharpen': 'SNAP_SHARPEN', 'gfx_aniso': 'SNAP_ANISO', 'gfx_ui_font': 'SNAP_UI_FONT_SCALE',
                'photo_export': 'SNAP_PHOTO_EXPORT', 'hd_photos': 'SNAP_HD_PHOTOS'}
 _VD = visual_defaults()
@@ -624,6 +690,7 @@ def script_hash():
     for f in ('make_native_options.py', 'lmb.py'):
         h.update(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), f), 'rb').read())
     h.update(open(os.path.join(ROOT, 'runtime', 'hle', 'visual_defaults.h'), 'rb').read())   # the row defaults come from it
+    h.update(open(os.path.join(ROOT, 'runtime', 'ui', 'ui_options.cpp'), 'rb').read())      # so do the live / restart help lines
     return h.hexdigest()[:16]
 
 
