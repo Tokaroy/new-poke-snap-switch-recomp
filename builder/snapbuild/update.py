@@ -15,6 +15,7 @@ Safe by construction:
   * Only a newer version is accepted (the version comes from the signed message). Re-sending an old signed zip is a downgrade and is refused.
 Nothing leaves this PC except two plain GET requests to GitHub (the release list and the zip), with a generic User-Agent and no identifiers."""
 import ctypes
+import errno
 import hashlib
 import json
 import os
@@ -419,6 +420,13 @@ class ShortDownload(UpdateError):
     """The zip arrived with fewer bytes than the release says, or the connection broke: worth trying again."""
 
 
+def _disk_error(what, e):
+    """An OSError while writing the update to disk (full disk, no permission, a locked file) in plain words, as an UpdateError."""
+    full = getattr(e, 'errno', None) in (errno.ENOSPC, errno.EDQUOT) or getattr(e, 'winerror', None) in (112, 39, 1450)
+    hint = 'The disk is full: free some space (an update needs about 2 GiB free) and try again.' if full else 'Check that the folder is writable and has free space (an update needs about 2 GiB), then try again.'
+    return UpdateError(f'could not {what}: {e}. {hint}')
+
+
 DOWNLOAD_TRIES = 3
 DOWNLOAD_WAITS = (2, 5)   # seconds before the 2nd and 3rd try
 
@@ -445,30 +453,37 @@ def download_once(rel, dest_dir, url_local_ok=False, progress=None):
     for p in (zpath, part):
         p.unlink(missing_ok=True)
     try:
-        with open_url(rel.sig_url, url_local_ok) as r:
-            sig_text = r.read(8192).decode('utf-8', 'replace')
-        done = 0
-        with open_url(rel.zip_url, url_local_ok, timeout=60) as r, open(part, 'wb') as f:
-            while True:
-                try:
-                    b = r.read(1 << 20)
-                except OSError as e:   # the connection broke part-way (timeout, reset)
-                    raise ShortDownload(f'the connection broke after {done} of {rel.zip_size} bytes ({e}).') from e
-                if not b:
-                    break
-                done += len(b)
-                if done > rel.zip_size:
-                    raise UpdateError('the download is larger than the release says')
-                f.write(b)
-                if progress:
-                    progress(done, rel.zip_size)
-        if done != rel.zip_size:
-            raise ShortDownload(f'the download stopped early ({done} of {rel.zip_size} bytes).')
-        os.replace(part, zpath)
+        try:
+            return _download_into(rel, zpath, part, url_local_ok, progress)
+        except OSError as e:   # writing the .part file or moving it into place failed (the network errors were turned into UpdateError above)
+            raise _disk_error('save the download', e) from e
     except BaseException:
         part.unlink(missing_ok=True)
         zpath.unlink(missing_ok=True)
         raise
+
+
+def _download_into(rel, zpath, part, url_local_ok, progress):
+    with open_url(rel.sig_url, url_local_ok) as r:
+        sig_text = r.read(8192).decode('utf-8', 'replace')
+    done = 0
+    with open_url(rel.zip_url, url_local_ok, timeout=60) as r, open(part, 'wb') as f:
+        while True:
+            try:
+                b = r.read(1 << 20)
+            except OSError as e:   # the connection broke part-way (timeout, reset)
+                raise ShortDownload(f'the connection broke after {done} of {rel.zip_size} bytes ({e}).') from e
+            if not b:
+                break
+            done += len(b)
+            if done > rel.zip_size:
+                raise UpdateError('the download is larger than the release says')
+            f.write(b)
+            if progress:
+                progress(done, rel.zip_size)
+    if done != rel.zip_size:
+        raise ShortDownload(f'the download stopped early ({done} of {rel.zip_size} bytes).')
+    os.replace(part, zpath)
     return zpath, sig_text
 
 
@@ -556,6 +571,9 @@ def unpack(zpath, dest, version):
         if current_version(part / 'builder') != norm_version(version):
             raise UpdateError(f'builder/VERSION in the zip does not say {version}')
         os.replace(part, dest)
+    except OSError as e:   # a full disk or a locked file part-way through unpacking
+        safedel.rmtree(part, ignore_errors=True)
+        raise _disk_error('unpack the update', e) from e
     except BaseException:
         safedel.rmtree(part, ignore_errors=True)
         raise
