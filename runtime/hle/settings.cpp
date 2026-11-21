@@ -155,6 +155,7 @@ const struct { const char* key; const char* env; } kEnvKeys[] = {
     {"hud_scale", "SNAP_HUD_SCALE"},            // auto | 100 | 125 | 150 | 175 | 200 (runtime/nvn/nvn_hud.cpp)
     {"frame_generation", "SNAP_FRAMEGEN"},   // Frame generation row ("fsr" or the older "1" = FSR, "dlss" = NVIDIA DLSS, unset = off; runtime/nvn/nvn_framegen.cpp; restart)
     {"foliage_aa", "SNAP_FOLIAGE_AA"}, {"leaf_translucency", "SNAP_LEAF_TRANSLUCENCY"}, {"soft_particles", "SNAP_SOFT_PARTICLES"},   // foliage / particle rows (runtime/nvn/nvn_foliage.cpp; restart)
+    {"specular_aa", "SNAP_SPECULAR_AA"},   // image stability row (runtime/nvn/nvn_motionaa.cpp; live)
     {"gfx_pom", "SNAP_POM"},   // Parallax detail row (off | low | high; runtime/nvn/nvn_pom.cpp, docs/pom.md; restart)
     {"gfx_bokeh_dof", "SNAP_BOKEH_DOF"}, {"gfx_motion_blur", "SNAP_MOTION_BLUR"},   // lens effect rows (runtime/nvn/nvn_lens_fx.cpp; strength, unset = off; restart)
     {"spawn_rand", "SNAP_SPAWN_RAND"}, {"spawn_seed", "SNAP_SPAWN_SEED"},   // Spawn randomizer rows (off | within | all; seed text): read by scripts/mods/make_spawn_randomizer.py, which builds the pack
@@ -180,6 +181,7 @@ const char* const kLiveKeys[] = {
     "ssao_quality", "gfx_ssao_samples", "gfx_ssao_hbao",                                         // host/mods/gamemods.cpp
     "gfx_lighting", "gfx_bounce", "gfx_shadow_dist",                                             // hle/lighting_preset.h, nvn_lighting_fx.cpp, nvn_shadowpcf.cpp, nvn_draw.cpp
     "foliage_aa", "leaf_translucency", "gfx_pom",                                                // nvn_foliage.cpp, nvn_pom.cpp
+    "specular_aa",                                                                               // nvn_motionaa.cpp
     "gfx_lod_bias", "gfx_aniso",                                                                 // nvn_gfx.cpp (samplers are made again)
     "gfx_lod_dist", "gfx_lod_force0", "gfx_draw_dist", "gfx_full_rate_anim",                     // host/mods/lodanim.cpp
     "fps_target",                                                                                // host/mods/highfps.cpp

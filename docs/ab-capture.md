@@ -20,6 +20,7 @@ powershell -File host\ab_capture.ps1 -Route core_florio_a -Moment ride40 -Effect
 | `-Values` | values set one after the other, default `off,on`. The first value is repeated at the end as a control (noise floor); `-NoControl` skips it |
 | `-Set NAME=value ...` | launch-time configuration of the run (for example `SNAP_LIGHTING=enhanced`) |
 | `-Settle` / `-Window` | presents to wait after each change (default 12; raise it for temporal effects) / presents timed per value (default 24) |
+| `-Hold` | seconds after the moment before the route ends the run (default 150). A long value list on a loaded PC needs more: about 3 s per value at 20 fps |
 | `-NoPhoto` | skip the photo-frame check |
 | `-Name`, `-OutDir`, `-BuildDir`, `-Timeout`, `-KeepRun`, `-PerfCsv` | output base name (default the moment), output folder (default `analysis\<effect>`), a worker build (`host\build_snap.py --out`), run timeout (590 s), keep the raw dump PNGs, time with `SNAP_PERF_SHARED` rows instead of the dev loop |
 

@@ -20,7 +20,7 @@
 [CmdletBinding(PositionalBinding=$false)]
 param([Parameter(Mandatory)][string]$Route, [Parameter(Mandatory)][string]$Moment, [Parameter(Mandatory)][string]$Effect,
       [string[]]$Values = @('off', 'on'), [string[]]$Set = @(), [int]$Settle = 12, [int]$Window = 24, [switch]$NoPhoto, [switch]$NoControl,
-      [string]$Name, [string]$OutDir, [string]$BuildDir, [int]$Timeout = 590, [switch]$KeepRun, [switch]$PerfCsv, [switch]$Exclusive)
+      [string]$Name, [string]$OutDir, [string]$BuildDir, [int]$Timeout = 590, [switch]$KeepRun, [switch]$PerfCsv, [switch]$Exclusive, [int]$Hold = 150)
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 Set-Location $root
@@ -49,7 +49,7 @@ $tmpRoute = "_abcap_$stamp"
 # generated route: the original, then a wait for the moment (the original's segment stops when the wait is met, so its shutter taps end there)
 $lines = @(Get-Content $rf)
 $lines += "wait $cond timeout=$($Timeout - 70)"
-$lines += 'end 150'
+$lines += "end $Hold"   # seconds after the moment before the route ends the run (-Hold; raise it for long value lists)
 Set-Content -Path (Join-Path $root "host\routes\$tmpRoute.txt") -Value $lines -Encoding ascii
 
 $vals = @($Values); if (-not $NoControl) { $vals += $Values[0] }

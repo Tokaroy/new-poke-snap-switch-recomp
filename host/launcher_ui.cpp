@@ -917,6 +917,9 @@ void build_pages() {
     p.items.push_back(choice("Ambient occlusion", "ssao_quality", S_CFG, "default",
                              {{"default", "Default"}, {"high", "High"}, {"ultra", "Ultra"}},
                              "Soft contact shadows. It mostly shows on the photo-select screen."));
+    p.items.push_back(choice("Specular sparkle filter", "specular_aa", S_CFG, "default",
+                             {{"default", "Off (the game's own)"}, {"1", "On"}},
+                             "Calms the single-pixel glints that flicker on shiny or wet surfaces and Pokemon while the camera moves. Nothing is blurred. Photos are unchanged."));
     g.pages.push_back(p);
   }
   // Upscaling

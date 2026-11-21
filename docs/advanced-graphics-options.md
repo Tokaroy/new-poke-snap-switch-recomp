@@ -65,6 +65,7 @@ Kind is two-choice (c) or pulldown (p). "Widen" means the key already has a row;
 | Shadows & lighting | Leaf edge smoothing (New) | p, 11 | default (Off), 1 (On) | default (Off) | `SNAP_FOLIAGE_AA` / `foliage_aa` | Restart | Landed 2026-11-16: hashed alpha on cut-out foliage so leaf edges anti-alias with SSAA, SMAA or the upscalers. Applies after restart. | No measurable cost at 4K (within 0.03 ms, exclusive run) |
 | Shadows & lighting | Leaf translucency (New) | p, 11 | default (Off), 0.5 (Subtle), 1 (Strong) | default (Off) | `SNAP_LEAF_TRANSLUCENCY` / `leaf_translucency` | Restart | Landed 2026-11-16: warm back-lit glow on foliage when the camera faces the sun. Applies after restart. | No measurable cost at 4K (within 0.03 ms, exclusive run) |
 | Shadows & lighting | Soft particles (New) | p, 11 | default (Off), 1 (On) | default (Off) | `SNAP_SOFT_PARTICLES` / `soft_particles` | Restart | Landed 2026-11-16: dust, splash and pollen layer drawn at the scene's resolution. Applies after restart. | Particle fill 4x; about +0.0 ms in a light frame |
+| Shadows & lighting | Specular sparkle filter (New) | p, 11 | default (Off), 1 (On) | default (Off) | `SNAP_SPECULAR_AA` / `specular_aa` | Live | Landed 2026-11-20: calms single-pixel glints on shiny or wet surfaces while the camera moves; nothing is blurred; photos unchanged (section 11). | 0.003 ms median at 2880x1620, about 0.005 ms at 4K |
 | Lens | Zoom bokeh (New, 2026-11-15) | p, 4 | Off, Light 0.6, Medium 1, Strong 1.6 | Off | `SNAP_BOKEH_DOF` / `gfx_bokeh_dof` | Restart | Round background blur while you zoom, focused on the reticle. Photos stay sharp. Applies after restart. | Moderate (see `docs/lens-effects.md`); nothing when not zoomed |
 | Lens | Motion blur (New, 2026-11-15) | p, 4 | Off, Light 0.5, Medium 1, Strong 2 | Off | `SNAP_MOTION_BLUR` / `gfx_motion_blur` | Restart | Blur along the camera motion while the ride moves or you turn. Photos stay sharp. Applies after restart. | Low to moderate (see `docs/lens-effects.md`) |
 | Atmosphere | Light shafts (New, 2026-11-15) | c | Off, On | Off | `SNAP_ATMOS_SHAFTS` / `atmos_shafts` | Restart | Soft rays of sunlight through gaps in leaves and rock, pointing at the sun. Photos are unchanged. Applies after restart. | About 0.4 ms at 4K (`docs/atmosphere.md`) |
@@ -146,3 +147,45 @@ Common to every chunk: run `python -I scripts/ui/make_native_options.py --out <m
 1. Keep 4.0 in the render scale list, or leave 4x env-only?
 2. Should High/Ultra presets set shadow distance (2x, 4x), or should shadow distance stay a free tuning row that never changes the preset?
 3. Add the "(env)" marker (chunk 6), or document the env override only?
+
+## 11. Image stability in motion (2026-11-20)
+
+Goal: less shimmer on cut-out foliage and less specular sparkle while the camera moves, with no blur and no change to photos. Code:
+`runtime/nvn/nvn_motionaa.cpp` (rows, the sparkle pass, the pan probe), `runtime/nvn/nvn_foliage.cpp` (`PatchCaptureAlphaLod`, the coverage term in
+`PatchAlphaHash`), `runtime/nvn/shaders/sparkle.frag`. Both features skip photo frames (`FxIsPhotoFrame`), so photos and scoring use the game's own draw.
+
+**How it was measured.** `host\ab_capture.ps1 -Effect SNAP_AA_PROBE` freezes game time at a moment and pans the frozen frame in 1/8 render-pixel steps
+(`SNAP_AA_PROBE` = state*16+step: step 1..8 shifts every scene-depth draw by (step-1)/8 px right and (step-1)/16 px down; the state bits pick the rows). One run
+captures every state on the same frame. `scripts\aa\shimmer.py` turns the frames into a number: the mean absolute luma change (0..255) between consecutive
+steps, over the alpha-tested draws (mask from state 16, which paints them red), over the rest of the frame, and over the whole frame; pixels the HUD animates
+are left out. Settings: render scale 1.5 (2880x1620 dumps), default AA, Enhanced lighting off, about 18 fps with other runs sharing the GPU.
+
+| Scene | State | Whole frame | Foliage | Rest |
+|---|---|---|---|---|
+| Florio, `core_florio_a` ride 8 | Off | 2.110 | 3.010 | 1.853 |
+| | Leaf edge smoothing (`foliage_aa`) | 2.320 | 3.793 (+26%) | 1.898 |
+| | Foliage stability (env only) | 2.110 | 3.010 | 1.853 |
+| | Specular sparkle filter | 2.099 | 2.967 (-1.4%) | 1.851 |
+| Jungle, `core_jungle_0` ride 10 | Off | 2.171 | 2.750 | 1.986 |
+| | Leaf edge smoothing | 2.363 | 3.390 (+23%) | 2.035 |
+| | Foliage stability (env only) | 2.171 | 2.750 | 1.986 |
+| | Specular sparkle filter | 2.160 | 2.713 (-1.3%) | 1.984 |
+
+Findings:
+
+* **Leaf edge smoothing makes motion shimmer worse** (+23 to +26% on foliage): its dither pattern is fixed to the screen, so a panned leaf edge crosses a
+  different threshold every frame. It helps still frames with SSAA or an upscaler, not motion. It stays Off by default.
+* **Specular sparkle filter** (`specular_aa`, Detail page and F1, live, default Off): an Fx pre-tonemap pass on the opaque scene. A pixel brighter than
+  2x its second-brightest neighbour plus 0.05 is pulled down to that limit, so isolated single-pixel glints stop popping and edges and textures stay sharp
+  (nothing is averaged). The gain is small (-0.5% of the whole-frame shimmer, -1.3% on foliage) because these scenes have few isolated glints. It costs
+  0.003 ms median at 2880x1620 (0.21 ms worst frame under GPU contention), about 0.005 ms at 4K. Default Off until a wet or shiny scene shows a clear gain.
+  Test aids: `SNAP_SPECULAR_AA_K` (2), `SNAP_SPECULAR_AA_FLOOR` (0.05), `SNAP_SPECULAR_AA_DEBUG=1` (changed pixels magenta).
+* **Foliage stability did not change the picture** (`SNAP_FOLIAGE_STABLE=1`, env only, no row). The wrapper reads the mip level of the texture whose alpha
+  the shader writes (`OpImageQueryLod`, 1305 of 1345 cached fragment modules) and tests `a * (1 + 0.25 * level)`, and every patched module passes spirv-val,
+  but the frames are identical to Off in both scenes. Open cause: either the level reads 0 in game (sampler or view clamp) or the colour pass cannot cover more
+  than the depth pre-pass, whose alpha reference may be under the 0.15 the pre-pass branch requires. Next step: a run with `SNAP_FOLIAGE_STABLE_K=4` and the
+  level painted as colour to tell the two apart. The row was taken out until it shows a measured gain.
+* `SNAP_FOLIAGE_AA_PREPASS=1` (test aid, default off, not measured) gives the depth pre-pass the same dithered edge as the colour pass.
+
+Proof (local, `analysis\motionaa`): `florio.json`, `jungle.json`, the shimmer maps `*_map_<state>.png` and the crop sheets `florio_crop.png`,
+`florio_sparkle_crop.png`, `jungle_crop.png` (step 1 and the shimmer map of each state side by side).
