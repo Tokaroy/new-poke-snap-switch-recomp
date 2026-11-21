@@ -224,10 +224,52 @@ def ui_pace_enabled():
     return UI_PACE_DEFAULT if v is None else v not in ('', '0')
 
 
+# Hot leaf routines on the host (host/mods/hotfn.cpp, tests/hotfn; decomp-for-speed pass 2026-11-20). Off unless the generator runs
+# with SNAP_GEN_HOTFN=1, so the default output and the ABI guard stay as they are; turning HOTFN_DEFAULT on for the shared main
+# needs a SNAP_RUNTIME_ABI bump (runtime/cpu.h) in the same change. Entry hook + branch to the function's `ret` (the hook does the
+# whole call), and a check hook just before the final store for SNAP_HOT_*=check.
+HOTFN_DEFAULT = False
+HOTFN_INLINE = {BASE + 0x96d390: 'rt_hot_matdecomp',          # matrix -> scale/quaternion/translation (x0/x1/x2 out, x3 matrix)
+                BASE + 0x96d5b0: 'rt_hot_matdecomp_check',    # `stp d0, d1, [x1]` (final quaternion store)
+                BASE + 0x96d5f0: 'rt_hot_matdecomp_s',        # the same with a per-axis scale vector x4
+                BASE + 0x96d8d8: 'rt_hot_matdecomp_s_check',  # `stp d0, d1, [x1]`
+                BASE + 0x155600: 'rt_hot_reverb',             # Wwise reverb 4-line delay network (x0 state, x1 in, w2 count, x3 out)
+                BASE + 0x155a1c: 'rt_hot_reverb_check',       # `st1 {v0.s}[3], [x8]` (last filter state store)
+                BASE + 0x8b5f10: 'rt_hot_hier',               # recursive node transform walk (x0 skeleton, w1 node, x2 context)
+                BASE + 0x8b66b0: 'rt_hot_hier_check',         # its epilogue (every return passes here)
+                BASE + 0x8b7400: 'rt_hot_bone1',              # bone update loop 1 body, after the id checks ...
+                BASE + 0x8b7960: 'rt_hot_bone1_check',        # ... to after its decomposition call
+                BASE + 0x8b7ac0: 'rt_hot_bone2',              # bone update loop 2 body ...
+                BASE + 0x8b8028: 'rt_hot_bone2_check',        # ... to after its decomposition call
+                BASE + 0x4d220: 'rt_hot_oodle_huff',          # Kraken 6-stream Huffman loop (x0 state block, x1 table)
+                BASE + 0x4d6a8: 'rt_hot_oodle_huff_check',    # its `ret`
+                BASE + 0x16680: 'rt_hot_oodle_lz_raw',        # Kraken LZ runs, raw literals (x0 table, x1 dst, x3 end, x4 base)
+                BASE + 0x16d14: 'rt_hot_oodle_lz_raw_check',  # its `ret`
+                BASE + 0x16ed0: 'rt_hot_oodle_lz_delta',      # the same with delta literals
+                BASE + 0x17610: 'rt_hot_oodle_lz_delta_check'}  # its `ret`
+HOTFN_BRANCH = {BASE + 0x96d390: BASE + 0x96d5b4,             # done on the host: to the `ret`
+                BASE + 0x96d5f0: BASE + 0x96d8dc,
+                BASE + 0x155600: BASE + 0x155a20,
+                BASE + 0x8b5f10: BASE + 0x8b66cc,
+                BASE + 0x8b7400: BASE + 0x8b7960,             # mid-function: to the instruction after the `bl` (only
+                BASE + 0x8b7ac0: BASE + 0x8b8028,             # callee-saved registers and memory are live there)
+                BASE + 0x4d220: BASE + 0x4d6a8,               # to the `ret` (the check hook sits on it)
+                BASE + 0x16680: BASE + 0x16d14,
+                BASE + 0x16ed0: BASE + 0x17610}
+
+
+def hotfn_enabled():
+    v = os.environ.get('SNAP_GEN_HOTFN')
+    return HOTFN_DEFAULT if v is None else v not in ('', '0')
+
+
 MAIN_BRANCH_HOOKS = {}
 if ui_pace_enabled():
     MAIN_INLINE_HOOKS = {**MAIN_INLINE_HOOKS, **UI_PACE_INLINE}
     MAIN_BRANCH_HOOKS = dict(UI_PACE_BRANCH)
+if hotfn_enabled():
+    MAIN_INLINE_HOOKS = {**MAIN_INLINE_HOOKS, **HOTFN_INLINE}
+    MAIN_BRANCH_HOOKS = {**MAIN_BRANCH_HOOKS, **HOTFN_BRANCH}
 assert set(MAIN_BRANCH_HOOKS) <= set(MAIN_INLINE_HOOKS)
 # host/mods/crcfast.cpp (perf pass 17, PCLMUL crc32) is not hooked in: no wall-clock gain; its header says how to add it back.
 
