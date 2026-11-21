@@ -22,3 +22,12 @@ cl /nologo /std:c++20 /EHsc /O2 /W3 /MD /D_CRT_SECURE_NO_WARNINGS /D_USE_MATH_DE
   /Fo"%ROOT%\build\audio\\" /Fe"%ROOT%\build\audio\checks_test.exe" ^
   /link user32.lib ole32.lib winmm.lib avrt.lib || exit /b 1
 echo built %ROOT%\build\audio\checks_test.exe
+cl /nologo /std:c++20 /EHsc /O2 /W3 /MD /I"%ROOT%\runtime\audio" "%ROOT%\tests\audio\dsp_test.cpp" /Fo"%ROOT%\build\audio\\" /Fe"%ROOT%\build\audio\dsp_test.exe" || exit /b 1
+echo built %ROOT%\build\audio\dsp_test.exe
+cl /nologo /std:c++20 /EHsc /O2 /W3 /MD /D_CRT_SECURE_NO_WARNINGS /D_USE_MATH_DEFINES ^
+  /I"%ROOT%\runtime\audio" ^
+  "%ROOT%\runtime\audio\audio_out.cpp" "%ROOT%\runtime\audio\audio_null.cpp" "%ROOT%\runtime\audio\audio_wasapi.cpp" ^
+  "%ROOT%\tests\audio\core_test.cpp" ^
+  /Fo"%ROOT%\build\audio\\" /Fe"%ROOT%\build\audio\core_test.exe" ^
+  /link user32.lib ole32.lib winmm.lib avrt.lib || exit /b 1
+echo built %ROOT%\build\audio\core_test.exe

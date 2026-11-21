@@ -17,12 +17,14 @@
 #include <SpatialAudioClient.h>
 #include <propidl.h>
 #include "audio_mix.h"
+#include "audio_dsp.h"
 
 #include <algorithm>
 #include <atomic>
 #include <new>
 #include <chrono>
 #include <cstdio>
+#include <cctype>
 #include <cstdlib>
 #include <mutex>
 #include <string>
@@ -47,7 +49,7 @@ class Notify : public IMMNotificationClient {
     *o = nullptr; return E_NOINTERFACE;
   }
   HRESULT STDMETHODCALLTYPE OnDefaultDeviceChanged(EDataFlow flow, ERole role, LPCWSTR) override {
-    if (flow == eRender && role == eConsole) SetEvent(ev_);
+    if (flow == eRender && role == eConsole && !pinned_.load()) SetEvent(ev_);   // a stream pinned to a chosen device does not follow the Windows default
     return S_OK;
   }
   HRESULT STDMETHODCALLTYPE OnDeviceAdded(LPCWSTR) override { return S_OK; }
@@ -59,12 +61,17 @@ class Notify : public IMMNotificationClient {
     if (!id) return S_OK;
     if (!cur_.empty()) { if (cur_ == id) SetEvent(ev_); }
     else if (state == DEVICE_STATE_ACTIVE) SetEvent(ev_);
+    // The chosen device was missing and the stream fell back to the default: when any render device comes back, try the chosen one again.
+    if (retry_.load() && state == DEVICE_STATE_ACTIVE) SetEvent(ev_);
     return S_OK;
   }
   void set_current(const wchar_t* id) { std::lock_guard<std::mutex> g(mu_); cur_ = id ? id : L""; }
+  // pinned: the stream is on a device the user chose (ignore default-device changes). retry: that device was not found (watch for it coming back).
+  void set_pinned(bool pinned, bool retry) { pinned_.store(pinned); retry_.store(retry); }
   HRESULT STDMETHODCALLTYPE OnPropertyValueChanged(LPCWSTR, const PROPERTYKEY) override { return S_OK; }
  private:
   std::atomic<ULONG> ref_{1};
+  std::atomic<bool> pinned_{false}, retry_{false};
   HANDLE ev_;
   std::mutex mu_;
   std::wstring cur_;   // id of the render endpoint the stream is built on
@@ -88,8 +95,65 @@ void make_format(WAVEFORMATEXTENSIBLE& w, uint32_t rate, uint32_t ch) {
   w.SubFormat = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
 }
 
+std::string to_utf8(const wchar_t* w) {
+  const int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+  std::string o((size_t)(n > 1 ? n - 1 : 0), '\0');
+  if (n > 1) WideCharToMultiByte(CP_UTF8, 0, w, -1, o.data(), n, nullptr, nullptr);
+  return o;
+}
+
+std::string friendly_name(IMMDevice* d) {
+  std::string out;
+  IPropertyStore* ps = nullptr;
+  if (SUCCEEDED(d->OpenPropertyStore(STGM_READ, &ps)) && ps) {
+    PROPVARIANT v; PropVariantInit(&v);
+    if (SUCCEEDED(ps->GetValue(PKEY_Device_FriendlyName, &v)) && v.vt == VT_LPWSTR && v.pwszVal) out = to_utf8(v.pwszVal);
+    PropVariantClear(&v);
+    ps->Release();
+  }
+  return out;
+}
+
+bool icontains(const std::string& hay, const std::string& needle) {
+  if (needle.empty()) return true;
+  if (needle.size() > hay.size()) return false;
+  for (size_t i = 0; i + needle.size() <= hay.size(); ++i) {
+    size_t k = 0;
+    while (k < needle.size() && std::tolower((unsigned char)hay[i + k]) == std::tolower((unsigned char)needle[k])) ++k;
+    if (k == needle.size()) return true;
+  }
+  return false;
+}
+
+// The render endpoint to play on. `sel` = "" -> the Windows default (eConsole). Otherwise the active render endpoint whose id equals `sel` or whose
+// friendly name contains it (case-insensitive); not found -> the default and *missing = true. *pinned = a chosen device is in use.
+bool pick_endpoint(IMMDeviceEnumerator* en, const std::string& sel, IMMDevice** out, bool* pinned = nullptr, bool* missing = nullptr) {
+  if (pinned) *pinned = false;
+  if (missing) *missing = false;
+  *out = nullptr;
+  if (!sel.empty()) {
+    IMMDeviceCollection* col = nullptr;
+    if (SUCCEEDED(en->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &col)) && col) {
+      UINT n = 0; col->GetCount(&n);
+      for (UINT i = 0; i < n && !*out; ++i) {
+        IMMDevice* d = nullptr;
+        if (FAILED(col->Item(i, &d)) || !d) continue;
+        LPWSTR id = nullptr; bool hit = false;
+        if (SUCCEEDED(d->GetId(&id)) && id) { hit = to_utf8(id) == sel; CoTaskMemFree(id); }
+        if (!hit) hit = icontains(friendly_name(d), sel);
+        if (hit) *out = d; else d->Release();
+      }
+      col->Release();
+    }
+    if (*out) { if (pinned) *pinned = true; return true; }
+    if (missing) *missing = true;
+  }
+  return SUCCEEDED(en->GetDefaultAudioEndpoint(eRender, eConsole, out)) && *out;
+}
+
 class WasapiBackend : public Backend {
  public:
+  void set_device(const std::string& d) override { fmt_.device = d; }
   bool start(const DeviceFormat& f) override {
     fmt_ = f;
     // Probe once so a machine with no usable COM or enumerator falls back to the timer backend.
@@ -121,7 +185,7 @@ class WasapiBackend : public Backend {
     IMMDeviceEnumerator* en = nullptr;
     IMMDevice* dev = nullptr;
     if (SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&en))) &&
-        SUCCEEDED(en->GetDefaultAudioEndpoint(eRender, eConsole, &dev))) {
+        pick_endpoint(en, fmt_.device, &dev)) {
       ok = probe_spatial(dev, 48000, nullptr) ? 1 : 0;
     }
     safe_release(dev); safe_release(en);
@@ -136,7 +200,7 @@ class WasapiBackend : public Backend {
     IAudioClient* ac = nullptr;
     WAVEFORMATEX* mf = nullptr;
     if (SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&en))) &&
-        SUCCEEDED(en->GetDefaultAudioEndpoint(eRender, eConsole, &dev)) &&
+        pick_endpoint(en, fmt_.device, &dev) &&
         SUCCEEDED(dev->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)&ac)) && SUCCEEDED(ac->GetMixFormat(&mf))) {
       ch = mf->nChannels;
     }
@@ -152,6 +216,7 @@ class WasapiBackend : public Backend {
     IAudioRenderClient* rc = nullptr;
     HANDLE ev = nullptr;
     UINT32 frames = 0;
+    uint32_t rate = 48000;   // rate the stream really runs at (the mix rate when our own resampler is on)
     ~Stream() {
       if (ac) ac->Stop();
       safe_release(rc); safe_release(ac);
@@ -214,7 +279,7 @@ class WasapiBackend : public Backend {
 
   bool open_spatial(IMMDeviceEnumerator* en, Spatial& sp) {
     IMMDevice* dev = nullptr;
-    if (FAILED(en->GetDefaultAudioEndpoint(eRender, eConsole, &dev))) return false;
+    if (!pick_endpoint(en, fmt_.device, &dev)) return false;
     bool ok = probe_spatial(dev, fmt_.rate, &sp.sac);
     safe_release(dev);
     if (!ok) return false;
@@ -271,23 +336,32 @@ class WasapiBackend : public Backend {
 
   bool open_stream(IMMDeviceEnumerator* en, Stream& s, uint32_t ch) {
     IMMDevice* dev = nullptr;
-    if (FAILED(en->GetDefaultAudioEndpoint(eRender, eConsole, &dev))) return false;
+    if (!pick_endpoint(en, fmt_.device, &dev)) return false;
     HRESULT hr = dev->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)&s.ac);
     safe_release(dev);
     if (FAILED(hr)) return false;
+    // Own resampler: run the stream at the device's mix rate so the Windows engine does no conversion, and convert the 48 kHz mix ourselves.
+    uint32_t rate = fmt_.rate;
+    if (fmt_.resampler != SNAP_AUDIO_RS_SYSTEM) {
+      WAVEFORMATEX* mf = nullptr;
+      if (SUCCEEDED(s.ac->GetMixFormat(&mf)) && mf) { if (mf->nSamplesPerSec >= 8000 && mf->nSamplesPerSec <= 384000) rate = mf->nSamplesPerSec; CoTaskMemFree(mf); }
+    }
+    s.rate = rate;
     WAVEFORMATEXTENSIBLE wf;
-    make_format(wf, fmt_.rate, ch);
+    make_format(wf, rate, ch);
     s.ev = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     const DWORD flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
     bool done = false, triedLowLat = false;
     lowLat_ = false;
-    if (!std::getenv("SNAP_AUDIO_NO_LOWLAT") && fmt_.bufferMs == 0) {
+    // Latency: low = the engine's shortest period, normal = its default period (both through IAudioClient3), safe = a 40 ms buffer.
+    // An explicit deviceBufferMs always takes the classic path with that size.
+    if (!std::getenv("SNAP_AUDIO_NO_LOWLAT") && fmt_.bufferMs == 0 && fmt_.latency != SNAP_AUDIO_LAT_SAFE) {
       IAudioClient3* a3 = nullptr;
       if (SUCCEEDED(s.ac->QueryInterface(IID_PPV_ARGS(&a3)))) {
         triedLowLat = true;
         UINT32 defP = 0, fund = 0, minP = 0, maxP = 0;
         if (SUCCEEDED(a3->GetSharedModeEnginePeriod(&wf.Format, &defP, &fund, &minP, &maxP)) &&
-            SUCCEEDED(a3->InitializeSharedAudioStream(flags, minP, &wf.Format, nullptr))) {
+            SUCCEEDED(a3->InitializeSharedAudioStream(flags, fmt_.latency == SNAP_AUDIO_LAT_LOW ? minP : defP, &wf.Format, nullptr))) {
           done = true; lowLat_ = true;
         }
         a3->Release();
@@ -297,12 +371,13 @@ class WasapiBackend : public Backend {
       if (triedLowLat) {   // a client whose InitializeSharedAudioStream failed cannot be initialized again: take a fresh one
         safe_release(s.ac);
         IMMDevice* d2 = nullptr;
-        if (FAILED(en->GetDefaultAudioEndpoint(eRender, eConsole, &d2))) return false;
+        if (!pick_endpoint(en, fmt_.device, &d2)) return false;
         hr = d2->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)&s.ac);
         safe_release(d2);
         if (FAILED(hr)) return false;
       }
-      const REFERENCE_TIME dur = fmt_.bufferMs ? (REFERENCE_TIME)fmt_.bufferMs * 10000 : 0;
+      const uint32_t ms = fmt_.bufferMs ? fmt_.bufferMs : (fmt_.latency == SNAP_AUDIO_LAT_SAFE ? 40u : 0u);
+      const REFERENCE_TIME dur = (REFERENCE_TIME)ms * 10000;
       hr = s.ac->Initialize(AUDCLNT_SHAREMODE_SHARED, flags, dur, 0, &wf.Format, nullptr);
       if (FAILED(hr)) {
         std::fprintf(stderr, "[audio] WASAPI Initialize failed 0x%08lx\n", (unsigned long)hr);
@@ -317,8 +392,8 @@ class WasapiBackend : public Backend {
     if (SUCCEEDED(s.rc->GetBuffer(s.frames, &p))) s.rc->ReleaseBuffer(s.frames, AUDCLNT_BUFFERFLAGS_SILENT);
     REFERENCE_TIME lat = 0;
     s.ac->GetStreamLatency(&lat);
-    const double bufMs = 1000.0 * s.frames / fmt_.rate;
-    core_set_device_info(true, s.frames, lat / 10000.0 + bufMs, ch, fmt_.rate, ch == 2 ? SNAP_AUDIO_OUT_STEREO : SNAP_AUDIO_OUT_SPEAKERS);
+    const double bufMs = 1000.0 * s.frames / s.rate;
+    core_set_device_info(true, s.frames, lat / 10000.0 + bufMs, ch, s.rate, ch == 2 ? SNAP_AUDIO_OUT_STEREO : SNAP_AUDIO_OUT_SPEAKERS);
     return SUCCEEDED(s.ac->Start());
   }
 
@@ -340,12 +415,13 @@ class WasapiBackend : public Backend {
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     DWORD task = 0;
     HANDLE mm = AvSetMmThreadCharacteristicsW(L"Pro Audio", &task);
+    if (mm) AvSetMmThreadPriority(mm, AVRT_PRIORITY_HIGH);
     HANDLE changeEv = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     IMMDeviceEnumerator* en = nullptr;
     CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&en));
     Notify* nc = new Notify(changeEv);
     if (en) en->RegisterEndpointNotificationCallback(nc);
-    bool first = true;
+    bool first = true, warnedMissing = false;
     while (run_.load()) {
       Stream s;
       Spatial sp;
@@ -355,8 +431,11 @@ class WasapiBackend : public Backend {
       bool ok = false, spatialOpen = false;
       {  // remember which endpoint this build uses (device-state notifications for other endpoints are ignored)
         IMMDevice* cd = nullptr; LPWSTR cid = nullptr;
-        if (en && SUCCEEDED(en->GetDefaultAudioEndpoint(eRender, eConsole, &cd)) && SUCCEEDED(cd->GetId(&cid))) nc->set_current(cid);
+        bool pinned = false, missing = false;
+        if (en && pick_endpoint(en, fmt_.device, &cd, &pinned, &missing) && SUCCEEDED(cd->GetId(&cid))) nc->set_current(cid);
         else nc->set_current(nullptr);
+        nc->set_pinned(pinned, missing);
+        if (missing && !warnedMissing) { warnedMissing = true; std::fprintf(stderr, "[audio] output device \"%s\" not found, using the Windows default until it appears\n", fmt_.device.c_str()); }
         if (cid) CoTaskMemFree(cid);
         safe_release(cd);
       }
@@ -386,8 +465,11 @@ class WasapiBackend : public Backend {
         if (!run_spatial(sp, changeEv)) core_set_device_info(false, 0, 0.0, 0, fmt_.rate, SNAP_AUDIO_OUT_SPATIAL);
         continue;
       }
-      std::fprintf(stderr, "[audio] WASAPI stream: %u ch, %u frames (%.1f ms)%s\n", ch, s.frames, 1000.0 * s.frames / fmt_.rate,
-                   lowLat_ ? " low-latency" : "");
+      std::fprintf(stderr, "[audio] WASAPI stream: %u ch, %u Hz, %u frames (%.1f ms)%s, latency %s, resampler %s\n", ch, s.rate, s.frames, 1000.0 * s.frames / s.rate,
+                   lowLat_ ? " via IAudioClient3" : "", fmt_.latency == SNAP_AUDIO_LAT_LOW ? "low" : fmt_.latency == SNAP_AUDIO_LAT_SAFE ? "safe" : "normal",
+                   s.rate == fmt_.rate ? "none (48 kHz)" : fmt_.resampler == SNAP_AUDIO_RS_SINC ? "sinc" : "linear");
+      dsp::Resampler rs;   // 48 kHz mix -> stream rate; passthrough when they match
+      rs.init(fmt_.rate, s.rate, ch, fmt_.resampler == SNAP_AUDIO_RS_LINEAR ? dsp::ResampleQuality::Linear : dsp::ResampleQuality::Sinc);
       HANDLE h[3] = {s.ev, changeEv, stopEv_};
       bool rebuild = false;
       while (run_.load() && !rebuild) {
@@ -402,7 +484,7 @@ class WasapiBackend : public Backend {
         BYTE* p = nullptr;
         hr = s.rc->GetBuffer(avail, &p);
         if (FAILED(hr)) { rebuild = true; break; }  // AUDCLNT_E_DEVICE_INVALIDATED etc.
-        core_mix(reinterpret_cast<float*>(p), avail);
+        rs.produce(reinterpret_cast<float*>(p), avail, [](float* d, uint32_t n) { core_mix(d, n); });
         s.rc->ReleaseBuffer(avail, 0);
       }
       if (rebuild) core_set_device_info(false, 0, 0.0, 0, fmt_.rate, mode);
@@ -424,6 +506,27 @@ class WasapiBackend : public Backend {
 }  // namespace
 
 Backend* make_wasapi_backend() { return new WasapiBackend(); }
+
+std::vector<std::string> list_render_devices() {
+  std::vector<std::string> out;
+  const HRESULT hi = CoInitializeEx(nullptr, COINIT_MULTITHREADED);   // RPC_E_CHANGED_MODE (an STA caller) is fine: COM is already up on this thread
+  IMMDeviceEnumerator* en = nullptr;
+  IMMDeviceCollection* col = nullptr;
+  if (SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&en))) &&
+      SUCCEEDED(en->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &col)) && col) {
+    UINT n = 0; col->GetCount(&n);
+    for (UINT i = 0; i < n; ++i) {
+      IMMDevice* d = nullptr;
+      if (FAILED(col->Item(i, &d)) || !d) continue;
+      const std::string name = friendly_name(d);
+      if (!name.empty()) out.push_back(name);
+      d->Release();
+    }
+  }
+  safe_release(col); safe_release(en);
+  if (SUCCEEDED(hi)) CoUninitialize();
+  return out;
+}
 
 }  // namespace snap_audio
 #endif

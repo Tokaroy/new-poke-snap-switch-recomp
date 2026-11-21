@@ -161,6 +161,7 @@ const struct { const char* key; const char* env; } kEnvKeys[] = {
     {"game_language", "SNAP_GAME_LANGUAGE"},   // Game language row: ja | en | fr | de | it | es | ko | zh-hans | zh-hant, unset = Auto (Windows language, else English); docs/player-options.md
     {"fps_target", "SNAP_FPS"},   // Frame rate target row (72 / 90 / 120 / 144 / 165 / 240; "default" = 60, the game's own); host/mods/highfps.cpp, uipace.cpp
     {"access_cvd", "SNAP_ACCESS_CVD"}, {"access_cvd_strength", "SNAP_ACCESS_CVD_STRENGTH"}, {"access_ui_size", "SNAP_ACCESS_UI_SIZE"}, {"access_contrast", "SNAP_ACCESS_CONTRAST"},   // Accessibility rows (hle/access.h, docs/accessibility.md); live through hle::access::set
+    {"audio_latency", "SNAP_AUDIO_LATENCY"}, {"audio_resampler", "SNAP_AUDIO_RESAMPLER"}, {"audio_range", "SNAP_AUDIO_RANGE"}, {"audio_device", "SNAP_AUDIO_DEVICE"},   // audio rows (runtime/audio/audio_out.cpp, docs/audio.md; range is live through snap_audio_set_range, the rest restart)
     {"access_flash", "SNAP_ACCESS_FLASH"}, {"access_mono", "SNAP_ACCESS_MONO"}, {"access_toggle", "SNAP_ACCESS_TOGGLE"},   // access_toggle: comma list of buttons that toggle (read at start, hle/input_core.cpp)
 };
 
