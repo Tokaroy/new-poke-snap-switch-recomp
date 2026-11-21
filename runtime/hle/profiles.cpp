@@ -96,6 +96,24 @@ static bool read_text(const fs::path& p, std::string* out) {
   *out = ss.str();
   return true;
 }
+// Flushes a just-written file to disk before it replaces the real one: a rename can reach the disk before the data, so a power
+// loss right after it could leave an empty or torn file under the real name. A file that cannot be reopened passes (it was
+// written whole); a refused flush fails. SNAP_ATOMIC_FLUSH=0 skips the flush, as before.
+static bool flush_written(const fs::path& p) {
+#ifdef _WIN32
+  static const bool off = [] { const char* e = std::getenv("SNAP_ATOMIC_FLUSH"); return e && *e == '0'; }();
+  if (off) return true;
+  HANDLE h = CreateFileW(p.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                         FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return true;
+  const bool ok = FlushFileBuffers(h) != 0;
+  CloseHandle(h);
+  return ok;
+#else
+  (void)p;
+  return true;
+#endif
+}
 static bool write_atomic(const fs::path& target, const std::string& text) {
   std::error_code ec;
   fs::create_directories(target.parent_path(), ec);
@@ -108,6 +126,7 @@ static bool write_atomic(const fs::path& target, const std::string& text) {
     f.flush();
     if (!f) return false;
   }
+  if (!flush_written(tmp)) { fs::remove(tmp, ec); return false; }   // the old file stays
   fs::rename(tmp, target, ec);
   if (ec) { fs::remove(tmp, ec); return false; }
   return true;
