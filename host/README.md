@@ -16,6 +16,8 @@ Output: `build/snap/snap_boot.exe` (64 MB, with a linker map). The script:
    and the generated files, using the VS Build Tools environment for the Windows SDK,
 4. links with the lifted main and sdk libraries from `build/eh/{main,sdk}/lib` (made by `recomp/snap_build.py`) and `vulkan-1.lib`.
 
+Player flags (`host/cli_flags.h`, listed in `docs/command-line.md`) cover every option that has a launcher or F1 row: window mode, monitor, size, `--pause-in-background`, `--mute-in-background`, `--frame-cap`, `--update-check`, `--update-channel`. The window and update ones set the same `SNAP_WINDOW_*` / `SNAP_UPDATE_*` variables that `host/window_opts.cpp` and `host/launcher.cpp` read, for that start only.
+
 A cold build of the host side takes about 90 s; relinking after a host-only change takes 5 to 10 s. Regenerating and recompiling the lifted
 modules is separate (`recomp/snap_gen.py`, `recomp/snap_build.py`).
 

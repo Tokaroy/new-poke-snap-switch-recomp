@@ -390,12 +390,14 @@ static fs::path updates_dir() {
 }
 
 static bool testing_channel(const hle::Json& cfg) {   // "update_channel": "testing" in config.json; anything else is Stable
+  if (const char* e = std::getenv("SNAP_UPDATE_CHANNEL"); e && *e) return std::strcmp(e, "testing") == 0;   // --update-channel: this run only, config.json is not changed
   const hle::Json* j = cfg.get("update_channel");
   return j && j->str() == "testing";
 }
 static std::wstring channel_arg(const hle::Json& cfg) { return testing_channel(cfg) ? L" --channel testing" : L" --channel stable"; }
 
 static bool update_enabled(const hle::Json& cfg) {   // on unless config.json says "update_check": false
+  if (const char* e = std::getenv("SNAP_UPDATE_CHECK"); e && *e) return *e != '0';   // --update-check on|off: this run only
   const hle::Json* j = cfg.get("update_check");
   return !(j && j->type == hle::Json::Bool && !j->b);
 }

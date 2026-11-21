@@ -60,6 +60,23 @@ int main() {
     CHECK(!snap_cli::parse({"--set", "=120"}).error.empty());
     CHECK(!snap_cli::parse({"--set"}).error.empty());
   }
+  {   // window rows and update options map to the env the window and launcher code already read
+    auto p = snap_cli::parse({"--play", "--pause-in-background", "off", "--mute-in-background", "no", "--frame-cap", "60",
+                              "--update-check", "off", "--update-channel", "testing"});
+    CHECK(p.error.empty() && p.rest.empty());
+    CHECK(env_of(p, "SNAP_WINDOW_PAUSE") == "0");
+    CHECK(env_of(p, "SNAP_WINDOW_MUTE_BG") == "0");
+    CHECK(env_of(p, "SNAP_WINDOW_FRAME_CAP") == "60");
+    CHECK(env_of(p, "SNAP_UPDATE_CHECK") == "0");
+    CHECK(env_of(p, "SNAP_UPDATE_CHANNEL") == "testing");
+    auto q = snap_cli::parse({"--pause-in-background", "on", "--update-check", "true"});
+    CHECK(env_of(q, "SNAP_WINDOW_PAUSE") == "1" && env_of(q, "SNAP_UPDATE_CHECK") == "1");
+    CHECK(!snap_cli::parse({"--frame-cap"}).error.empty());
+    CHECK(!snap_cli::parse({"--frame-cap", "fast"}).error.empty());
+    CHECK(!snap_cli::parse({"--pause-in-background", "maybe"}).error.empty());
+    CHECK(!snap_cli::parse({"--update-channel", "nightly"}).error.empty());
+    CHECK(!snap_cli::parse({"--mute-in-background"}).error.empty());
+  }
   {   // values that are missing or not numbers
     CHECK(!snap_cli::parse({"--width"}).error.empty());
     CHECK(!snap_cli::parse({"--width", "wide"}).error.empty());

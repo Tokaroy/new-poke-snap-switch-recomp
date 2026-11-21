@@ -10,6 +10,8 @@
 //   --monitor <n>  --width <px>  --height <px>
 //   --steam-deck                  the Steam Deck preset (host/steamdeck.h, docs/steam-deck.md): borderless 1280 x 800, handheld picture settings,
 //                                 bigger HUD, Xbox button icons. Flags after it win (--set hud_scale=200, --width ...).
+//   --pause-in-background on|off  --mute-in-background on|off  --frame-cap <fps>   the F1 / launcher Window rows (0 = no extra limit); this run only
+//   --update-check on|off  --update-channel stable|testing                            the launcher's update rows; this run only
 //   --profile <name or id>        the profile to play (also the profile of --import-save / --export-save)
 //   --set <key>=<value>           one settings key for this run only (repeatable); a name that starts with SNAP_ sets that variable
 //   --data-dir <folder>           one folder for saves, settings, mods, caches and logs
@@ -45,6 +47,13 @@ inline bool is_number(const std::string& s) {
   return true;
 }
 
+// "on"/"1"/"true"/"yes" -> "1", "off"/"0"/"false"/"no" -> "0", anything else -> "".
+inline std::string on_off(const std::string& s) {
+  if (s == "on" || s == "1" || s == "true" || s == "yes") return "1";
+  if (s == "off" || s == "0" || s == "false" || s == "no") return "0";
+  return "";
+}
+
 // Launcher actions that have a flag of their own: "--" + name.
 inline const std::vector<std::string>& action_names() {
   static const std::vector<std::string> k = {"update", "check-install", "report", "restore-backup", "upscalers", "hdtex"};
@@ -74,6 +83,20 @@ inline Parsed parse(const std::vector<std::string>& args) {
     else if (a == "--steam-deck") {
       for (auto& kv : snapdeck::env()) p.env.push_back(kv);
       for (const snapdeck::Kv& kv : snapdeck::cfg()) p.sets.push_back({kv.key, kv.val});
+    }
+    else if (a == "--pause-in-background" || a == "--mute-in-background" || a == "--update-check") {
+      if (!value(i, &v)) break;
+      const std::string b = on_off(v);
+      if (b.empty()) { p.error = a + " needs on or off, got \"" + v + "\""; break; }
+      p.env.push_back({a == "--pause-in-background" ? "SNAP_WINDOW_PAUSE" : a == "--mute-in-background" ? "SNAP_WINDOW_MUTE_BG" : "SNAP_UPDATE_CHECK", b});
+    } else if (a == "--frame-cap") {
+      if (!value(i, &v)) break;
+      if (!is_number(v)) { p.error = a + " needs a whole number of frames per second (0 = no extra limit), got \"" + v + "\""; break; }
+      p.env.push_back({"SNAP_WINDOW_FRAME_CAP", v});
+    } else if (a == "--update-channel") {
+      if (!value(i, &v)) break;
+      if (v != "stable" && v != "testing") { p.error = a + " needs stable or testing, got \"" + v + "\""; break; }
+      p.env.push_back({"SNAP_UPDATE_CHANNEL", v});
     }
     else if (a == "--monitor" || a == "--width" || a == "--height") {
       if (!value(i, &v)) break;
@@ -151,6 +174,12 @@ inline const char* help_text() {
          "  --windowed                   normal window\n"
          "  --monitor <n>                monitor number, 0 is the first\n"
          "  --width <px> --height <px>   window size\n"
+         "  --pause-in-background on|off  pause the game while its window is in the background\n"
+         "  --mute-in-background on|off   mute the game while its window is in the background\n"
+         "  --frame-cap <fps>            frame rate limit, 0 = no extra limit\n"
+         "  --update-check on|off        check for updates at launcher start\n"
+         "  --update-channel stable|testing\n"
+         "                               which update channel the check follows\n"
          "  --profile <name>             profile to play or to import to / export from\n"
          "  --set <key>=<value>          one setting for this start only, repeatable (keys: docs/command-line.md);\n"
          "                               a name that starts with SNAP_ sets that environment variable\n"

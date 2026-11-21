@@ -18,6 +18,11 @@ SnapRecomp.exe --play [options]     start the game without the launcher window
 | `--steam-deck` | The Steam Deck preset: borderless 1280 x 800, a lighter 3D picture, a 150% HUD and Xbox button icons ([steam-deck.md](steam-deck.md)). Flags after it win. |
 | `--monitor <n>` | Monitor number. 0 is the first. |
 | `--width <px>`, `--height <px>` | Window size. |
+| `--pause-in-background on\|off` | Pause the game while its window is in the background (the F1 and launcher Window row). This start only. |
+| `--mute-in-background on\|off` | Mute the game while its window is in the background. This start only. |
+| `--frame-cap <fps>` | Frame rate limit. 0 is no extra limit. This start only. |
+| `--update-check on\|off` | Check for updates when the launcher starts. This start only; config.json is not changed. |
+| `--update-channel stable\|testing` | Which update channel the check follows. This start only. |
 | `--profile <name>` | The profile to play, or the one `--import-save` and `--export-save` use. |
 | `--set <key>=<value>` | One setting for this start only. Repeat it for more settings. The settings file is not changed. |
 | `--data-dir <folder>` | Keeps saves, settings, mods, caches and logs in this folder. The folder is created when it is missing. |
