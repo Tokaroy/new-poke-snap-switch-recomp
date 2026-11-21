@@ -126,8 +126,12 @@ const char* nutexb_problem(const std::vector<uint8_t>& d) {
 // (runtime/nvn/nvn_draw.cpp ResolveHandle) finds the pair by comparing the guest texture's bytes with the replacement and
 // samples a second image built from the original at bind time. Both versions stay resident; nothing is re-uploaded.
 namespace {
+// Only the first `cmp` bytes of the replacement are kept (2026-11-21): holding the whole file kept a second copy of every
+// replacement next to the loader's built chunk, about 2 GB more with an 8 GB pack, and the hidden test runs' 14 GB job cap
+// then refused commits (error 1455) and the game aborted (abort, 0xC0000409) mid-ride.
 struct AbEntry {
-  std::shared_ptr<const std::vector<uint8_t>> repl, orig;
+  std::vector<uint8_t> repl;   // the replacement's first `cmp` data bytes
+  std::shared_ptr<const std::vector<uint8_t>> orig;
   uint32_t rw, rh, rm, ow, oh, om;   // replacement and original width, height, mip count
   size_t cmp;                        // bytes of the replacement data compared with the guest's copy
 };
@@ -157,8 +161,9 @@ void ab_register(const mods::Override* o, const std::shared_ptr<const std::vecto
   uint32_t rw, rh, rm, rf, rd, ow, oh, om, of, od;
   if (!ab_footer(*repl, &rw, &rh, &rm, &rf, &rd) || !ab_footer(*orig, &ow, &oh, &om, &of, &od) || rf != of) return;
   if (rd == 0 || rd > repl->size() - 0xb0) return;   // a bad footer data size would read past the file (or match any texture of the same size)
+  const size_t cmp = std::min<size_t>(rd, 4096);
   std::lock_guard<std::mutex> g(g_ab_mu);
-  g_ab.push_back(AbEntry{repl, orig, rw, rh, rm, ow, oh, om, std::min<size_t>(rd, 4096)});
+  g_ab.push_back(AbEntry{std::vector<uint8_t>(repl->begin(), repl->begin() + cmp), orig, rw, rh, rm, ow, oh, om, cmp});
   if (getenv("SNAP_MODS_AB_LOG")) fprintf(stderr, "[mods-ab] registered %s: replacement %ux%u/%u, original %ux%u/%u\n", o->label.c_str(), rw, rh, rm, ow, oh, om);
 }
 }  // namespace
@@ -202,12 +207,12 @@ extern "C" const uint8_t* snap_mods_ab_original(const uint8_t* src, uint32_t w, 
       static int n = 0;
       if (e.rw >= 4096 && n++ < 40) {
         size_t k = 0;
-        while (k < e.cmp && e.repl->data()[k] == src[k]) k++;
+        while (k < e.cmp && e.repl.data()[k] == src[k]) k++;
         fprintf(stderr, "[mods-ab] size match %ux%u/%u: first difference at byte %zu of %zu (repl %02x guest %02x, guest head %02x%02x%02x%02x, repl head %02x%02x%02x%02x)\n", w, h, mips, k, e.cmp,
-                k < e.cmp ? e.repl->data()[k] : 0, k < e.cmp ? src[k] : 0, src[0], src[1], src[2], src[3], (*e.repl)[0], (*e.repl)[1], (*e.repl)[2], (*e.repl)[3]);
+                k < e.cmp ? e.repl.data()[k] : 0, k < e.cmp ? src[k] : 0, src[0], src[1], src[2], src[3], e.repl[0], e.repl[1], e.repl[2], e.repl[3]);
       }
     }
-    if (e.rw != w || e.rh != h || e.rm != mips || std::memcmp(e.repl->data(), src, e.cmp) != 0) continue;
+    if (e.rw != w || e.rh != h || e.rm != mips || std::memcmp(e.repl.data(), src, e.cmp) != 0) continue;
     *ow = e.ow; *oh = e.oh; *om = e.om;
     return e.orig->data();
   }
