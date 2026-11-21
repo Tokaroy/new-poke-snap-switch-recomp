@@ -291,7 +291,93 @@ void LoadAbAlt(Host* h, const uint8_t* data, uint32_t dataSize, int stage, uint3
   sp->spvAlt = std::move(words);
 }
 
+// In-memory copy of the translation-cache files (load pass 2026-11-21). The game creates about 6,200 programs at boot from about 1,650 distinct
+// shaders, and every call read <key>.co, <key>.spv, <key>.json and checked <key>.co again, about 25,000 small file operations on the
+// ResourceUncompress thread that holds the DRP lock, which is the critical path of boot. Entries read once are kept here (the cache is not
+// changed behind the process's back). SNAP_XCACHE_MEMO_MB=<n> caps the copy (default 256; 0 = read every file as before).
+struct XMemoEntry { std::vector<uint8_t> spv, js; };
+// Heap objects that are never destroyed: the prefetch thread below may still run at process exit.
+std::mutex& g_xmMu = *new std::mutex;
+auto& g_xm = *new std::unordered_map<std::string, std::shared_ptr<const XMemoEntry>>;
+auto& g_xmCo = *new std::unordered_map<std::string, uint32_t>;   // key -> the constOff its .co sidecar holds (read, or written by this process)
+uint64_t g_xmBytes = 0;
+uint64_t XMemoCapBytes() {
+  static const uint64_t cap = [] {
+    const char* e = getenv("SNAP_XCACHE_MEMO_MB");
+    const long long mb = (e && *e) ? atoll(e) : 256;
+    return mb > 0 ? (uint64_t)mb << 20 : 0ull;
+  }();
+  return cap;
+}
+bool XMemoCo(const std::string& dir, const std::string& key, uint32_t* have) {
+  if (XMemoCapBytes()) {
+    std::lock_guard<std::mutex> l(g_xmMu);
+    auto it = g_xmCo.find(key);
+    if (it != g_xmCo.end()) { *have = it->second; return true; }
+  }
+  return xcache::ReadCo(dir + "\\" + key + ".co", have);
+}
+void XMemoSetCo(const std::string& key, uint32_t v) {
+  if (!XMemoCapBytes()) return;
+  std::lock_guard<std::mutex> l(g_xmMu);
+  g_xmCo[key] = v;
+}
+std::shared_ptr<const XMemoEntry> XMemoFind(const std::string& key) {
+  if (!XMemoCapBytes()) return nullptr;
+  std::lock_guard<std::mutex> l(g_xmMu);
+  auto it = g_xm.find(key);
+  return it == g_xm.end() ? nullptr : it->second;
+}
+void XMemoPut(const std::string& key, const std::vector<uint8_t>& spv, const std::vector<uint8_t>& js) {
+  const uint64_t cap = XMemoCapBytes();
+  if (!cap) return;
+  std::lock_guard<std::mutex> l(g_xmMu);
+  if (g_xm.count(key) || g_xmBytes + spv.size() + js.size() > cap) return;
+  auto e = std::make_shared<XMemoEntry>();
+  e->spv = spv; e->js = js;
+  g_xmBytes += spv.size() + js.size();
+  g_xm.emplace(key, std::move(e));
+}
+
+// Reads every complete entry of the cache directory into the memo on a background thread, so the loader threads find them in memory (the first
+// read of each of the 1,650 entries was most of what was left of the file time). An entry is memoized only after the checks tryLoad makes.
+// SNAP_XCACHE_PREFETCH=0 turns it off.
+void XMemoPrefetch(const std::string& dir) {
+  const char* e = getenv("SNAP_XCACHE_PREFETCH");
+  if (!XMemoCapBytes() || (e && *e == '0')) return;
+  std::thread([dir] {
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+    WIN32_FIND_DATAA fd;
+    HANDLE fh = FindFirstFileA((dir + "\\*.json").c_str(), &fd);
+    if (fh == INVALID_HANDLE_VALUE) return;
+    std::vector<std::string> keys;
+    do {
+      const std::string n = fd.cFileName;
+      if (n.size() > 5 && n.find('.') == n.size() - 5) keys.push_back(n.substr(0, n.size() - 5));   // <key>.json (scratch files have more dots)
+    } while (FindNextFileA(fh, &fd));
+    FindClose(fh);
+    size_t loaded = 0;
+    for (const std::string& key : keys) {
+      if (XMemoFind(key)) continue;
+      std::vector<uint8_t> spv, js;
+      if (!ReadFile(dir + "\\" + key + ".spv", &spv) || !ReadFile(dir + "\\" + key + ".json", &js)) continue;
+      if (spv.size() < 20 || (spv.size() & 3) != 0) continue;
+      J m;
+      JP jp{reinterpret_cast<const char*>(js.data()), reinterpret_cast<const char*>(js.data()) + js.size()};
+      if (!jp.parse(m)) continue;
+      uint32_t co = 0;
+      const bool haveCo = xcache::ReadCo(dir + "\\" + key + ".co", &co);
+      XMemoPut(key, spv, js);
+      if (haveCo) { std::lock_guard<std::mutex> l(g_xmMu); g_xmCo.emplace(key, co); }
+      loaded++;
+    }
+    fprintf(stderr, "[nvn] shader cache prefetch: %zu entries in memory (%llu MB)\n", loaded, (unsigned long long)(g_xmBytes >> 20));
+  }).detach();
+}
+
 bool BuildStage(Host* h, const ShaderData& sd, StageProg* out) {
+  static std::once_flag prefetchOnce;
+  std::call_once(prefetchOnce, [&] { XMemoPrefetch(h->cacheDir); });
   PoolImpl* pool = nullptr; uint64_t off = 0;
   if (!h->ResolveAddress(sd.data, &pool, &off) || !pool->storage) {
     LogError("ProgramSetShaders: shader address 0x%llx is not in a pool", (unsigned long long)sd.data);
@@ -321,8 +407,11 @@ bool BuildStage(Host* h, const ShaderData& sd, StageProg* out) {
     }
   }
   // The key hashes the data section, stage and codeOff; constOff is recorded next to the entry and only changes the key on a mismatch (nvn_xcache.h).
-  const std::string key = xcache::ResolveKey(h->cacheDir, [&](const std::string& extra) { return Sha256Hex(data, dataSize, extra); }, TranslatorSaltStr(), stage, codeOff, constOff);
+  const std::string key = xcache::ResolveKeyWith([&](const std::string& extra) { return Sha256Hex(data, dataSize, extra); }, TranslatorSaltStr(), stage, codeOff, constOff,
+                                                 [&](const std::string& k, uint32_t* have) { return XMemoCo(h->cacheDir, k, have); });
   if (key.empty()) return false;
+  bool coKnown = false;
+  if (XMemoCapBytes()) { std::lock_guard<std::mutex> l(g_xmMu); auto it = g_xmCo.find(key); coKnown = it != g_xmCo.end() && it->second == constOff; }
   const std::string base = h->cacheDir + "\\" + key;
   const std::string spvPath = base + ".spv", jsonPath = base + ".json";
   std::vector<uint8_t> spv, js;
@@ -332,11 +421,17 @@ bool BuildStage(Host* h, const ShaderData& sd, StageProg* out) {
   const bool loaded = xcache::EnsureEntry(
       h->cacheDir, key, constOff,
       [&]() {   // a complete, valid entry on disk
+        if (auto e = XMemoFind(key)) {   // read and validated earlier in this run
+          spv = e->spv; js = e->js;
+          JP jp{reinterpret_cast<const char*>(js.data()), reinterpret_cast<const char*>(js.data()) + js.size()};
+          m = J();
+          if (jp.parse(m)) return true;
+        }
         if (!ReadFile(spvPath, &spv) || !ReadFile(jsonPath, &js)) return false;
         if (spv.size() < 20 || (spv.size() & 3) != 0) { LogError("bad shader cache entry %s (spv %zu bytes); retranslating", base.c_str(), spv.size()); return false; }
         JP jp{reinterpret_cast<const char*>(js.data()), reinterpret_cast<const char*>(js.data()) + js.size()};
         m = J();
-        if (jp.parse(m)) return true;
+        if (jp.parse(m)) { XMemoPut(key, spv, js); return true; }
         LogError("bad shader manifest %s; retranslating", jsonPath.c_str());
         return false;
       },
@@ -353,8 +448,9 @@ bool BuildStage(Host* h, const ShaderData& sd, StageProg* out) {
           if (n == 1 || n % 100 == 0) fprintf(stderr, "[nvn] first-run shader translation: %d shaders translated so far (cache: %s)\n", n, h->cacheDir.c_str());
         }
         return ok;
-      });
+      }, nullptr, coKnown);
   if (!loaded) { LogError("shader cache entry %s unusable after retranslation", base.c_str()); return false; }
+  XMemoSetCo(key, constOff);
   StageProg sp;
   sp.valid = true; sp.stage = stage; snprintf(sp.key, sizeof sp.key, "%.12s", key.c_str()); sp.fragOutputMap = m.i("fragmentOutputMap");
   snprintf(sp.fkey, sizeof sp.fkey, "%s", key.c_str());

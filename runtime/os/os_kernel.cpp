@@ -1306,25 +1306,56 @@ extern "C" void os_adopt_main_thread(Cpu *c, uint64_t tt, int prio) {
     acquire_core(t, lk);
 }
 
-extern "C" void os_host_block_begin(void) {
+// SNAP_HB_PROF=1 (debug): wall time of every outermost host block per caller address and per core re-acquire, printed every 5 s.
+static const bool g_hb_prof = [] { const char *e = getenv("SNAP_HB_PROF"); return e && *e && *e != '0'; }();
+struct HbAcc { uint64_t ns = 0, n = 0, wait_ns = 0; };
+static std::mutex g_hb_mu;
+static std::map<uintptr_t, HbAcc> g_hb_map;
+static uint64_t g_hb_last = 0;
+static thread_local uint64_t tl_hb_t0 = 0;
+static thread_local uintptr_t tl_hb_ra = 0;
+static uint64_t hb_now() { LARGE_INTEGER c, f; QueryPerformanceCounter(&c); QueryPerformanceFrequency(&f); return (uint64_t)((double)c.QuadPart * 1e9 / (double)f.QuadPart); }
+static void hb_report() {
+    std::lock_guard<std::mutex> lk(g_hb_mu);
+    for (auto &kv : g_hb_map)
+        if (kv.second.ns > 20000000) fprintf(stderr, "[hbprof] ra=exe+%#llx n=%llu block=%.1f ms reacquire=%.1f ms\n", (unsigned long long)(kv.first - (uintptr_t)GetModuleHandleW(nullptr)), (unsigned long long)kv.second.n, kv.second.ns / 1e6, kv.second.wait_ns / 1e6);
+}
+static void host_block_begin(uintptr_t ra) {
     Thread *t = t_self;
     if (!t) return;
     std::lock_guard<std::mutex> lk(G);
-    if (t->block_depth++ == 0) release_core(t);
+    if (t->block_depth++ == 0) {
+        release_core(t);
+        if (g_hb_prof) { tl_hb_t0 = hb_now(); tl_hb_ra = ra; }
+    }
 }
+extern "C" __attribute__((noinline)) void os_host_block_begin(void) { host_block_begin((uintptr_t)__builtin_return_address(0)); }
 extern "C" void os_host_block_end(void) {
     Thread *t = t_self;
     if (!t) return;
+    const uint64_t hb_t1 = g_hb_prof ? hb_now() : 0;
     Lock lk(G);
     if (t->block_depth > 0 && --t->block_depth == 0) {
         t->unclean++;   // the host frames above (NVN, fs, audio code) may own heap objects: a save-state drain must not park or capture here
         acquire_core(t, lk);
         t->unclean--;
+        if (g_hb_prof && tl_hb_t0) {
+            const uint64_t hb_t2 = hb_now();
+            lk.unlock();
+            bool rep = false;
+            {
+                std::lock_guard<std::mutex> hk(g_hb_mu);
+                HbAcc &a = g_hb_map[tl_hb_ra]; a.ns += hb_t1 - tl_hb_t0; a.wait_ns += hb_t2 - hb_t1; a.n++;
+                if (hb_t2 - g_hb_last > 5000000000ull) { g_hb_last = hb_t2; rep = true; }
+            }
+            tl_hb_t0 = 0;
+            if (rep) hb_report();
+        }
     }
 }
 // Blocking host work on a guest thread (file reads, VAMM retry sleeps): release the virtual core like a Horizon IPC
 // wait would (finding 9). SNAP_SCHED_LEGACY=hostblock keeps the core, the old behavior.
-extern "C" void os_io_begin(void) { if (!legacy(LG_HOST_BLOCK)) os_host_block_begin(); }
+extern "C" __attribute__((noinline)) void os_io_begin(void) { if (!legacy(LG_HOST_BLOCK)) host_block_begin((uintptr_t)__builtin_return_address(0)); }
 extern "C" void os_io_end(void) { if (!legacy(LG_HOST_BLOCK)) os_host_block_end(); }
 extern "C" uint64_t os_current_thread_type(void) { return t_self ? t_self->tt : 0; }
 // Diagnostics (host watchdog): visit every live guest thread with its wait state and the Cpu whose x30/sp the caller can symbolize.

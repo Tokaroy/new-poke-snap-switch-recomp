@@ -61,13 +61,18 @@ inline bool WriteCo(const std::string& coPath, uint32_t constOff) {
 }
 
 // The key to store this program under: `hash(extra)` is the hex SHA-256 of the data section followed by `extra`.
-template <class Hash>
-std::string ResolveKey(const std::string& cacheDir, Hash hash, const std::string& salt, int stage, uint32_t codeOff, uint32_t constOff) {
+// readCo(key, &have) -> whether the sidecar of `key` is known and its constOff (BuildStage keeps the answers of the files it has already read).
+template <class Hash, class ReadCoFn>
+std::string ResolveKeyWith(Hash hash, const std::string& salt, int stage, uint32_t codeOff, uint32_t constOff, ReadCoFn readCo) {
   const std::string common = salt + "|" + std::to_string(stage) + "|" + std::to_string(codeOff);
   std::string key = hash(common);
   uint32_t have = 0;
-  if (!key.empty() && ReadCo(cacheDir + "\\" + key + ".co", &have) && have != constOff) key = hash(common + "|co" + std::to_string(constOff));
+  if (!key.empty() && readCo(key, &have) && have != constOff) key = hash(common + "|co" + std::to_string(constOff));
   return key;
+}
+template <class Hash>
+std::string ResolveKey(const std::string& cacheDir, Hash hash, const std::string& salt, int stage, uint32_t codeOff, uint32_t constOff) {
+  return ResolveKeyWith(hash, salt, stage, codeOff, constOff, [&](const std::string& key, uint32_t* have) { return ReadCo(cacheDir + "\\" + key + ".co", have); });
 }
 
 // One writer per key. The wait is bounded (a harness run is capped at 10 minutes); after it the caller carries on without the claim, which is
@@ -108,7 +113,7 @@ inline void DeleteMatching(const std::string& pattern, const std::string& dir) {
 //   translate(priv)    -> writes priv+".spv" and priv+".json" (any scratch input it needs must also start with priv); returns success
 // Returns whether the entry is loadable at the end. `translated` (optional) says whether this call ran the translation.
 template <class Load, class Translate>
-bool EnsureEntry(const std::string& dir, const std::string& key, uint32_t constOff, Load tryLoad, Translate translate, bool* translated = nullptr) {
+bool EnsureEntry(const std::string& dir, const std::string& key, uint32_t constOff, Load tryLoad, Translate translate, bool* translated = nullptr, bool coKnown = false) {
   const std::string base = dir + "\\" + key;
   if (translated) *translated = false;
   bool loaded = tryLoad();
@@ -129,7 +134,7 @@ bool EnsureEntry(const std::string& dir, const std::string& key, uint32_t constO
       if (ok) loaded = tryLoad();
     }
   }
-  if (loaded && !FileExists(base + ".co")) WriteCo(base + ".co", constOff);   // an entry from before the sidecar existed: record what it is taken to be
+  if (loaded && !coKnown && !FileExists(base + ".co")) WriteCo(base + ".co", constOff);   // an entry from before the sidecar existed: record what it is taken to be
   return loaded;
 }
 

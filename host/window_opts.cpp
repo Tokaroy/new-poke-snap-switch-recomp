@@ -21,6 +21,8 @@
 
 extern "C" int snap_route_cond(const char* c, char* why, int n);   // runtime/hle/input_core.cpp: a route "wait" condition
 extern "C" void os_time_pause(int on);   // runtime/os/os_kernel.cpp: freeze guest ticks
+extern "C" void snap_vsync_set(const char* mode);   // runtime/nvn/nvn_vk.cpp [vsync]: live, the next present rebuilds the swapchain
+extern "C" const char* snap_vsync_get();
 namespace hle { void oe_post_message(uint32_t msg); }   // runtime/hle/services_sys.cpp: applet notification queue
 
 namespace {
@@ -378,8 +380,21 @@ static void fast_boot_step(uint64_t n) {
         return v > 0 ? v : 3200;
     }();
     if (!frames) return;
-    if (n == 1) { nvnHostSetFramePacing(0); std::fprintf(stderr, "[window] fast boot: frame limiter off for %d presents\n", frames); }
-    if (n == (uint64_t)frames) { nvnHostSetFramePacing(60); std::fprintf(stderr, "[window] fast boot: frame limiter back to 60 Hz at present %llu\n", (unsigned long long)n); }
+    // The load frames are black: with the limiter off they still waited for the display's vblank (FIFO present, 5 to 9 ms a frame at
+    // 144 Hz, 1,900 frames), so the window also drops vsync (IMMEDIATE) and restores the player's mode at its end. SNAP_FAST_BOOT_VSYNC=0
+    // keeps the present mode.
+    static const bool dropVsync = [] { const char* e = std::getenv("SNAP_FAST_BOOT_VSYNC"); return !(e && *e == '0'); }();
+    static std::string savedVsync;
+    if (n == 1) {
+        nvnHostSetFramePacing(0);
+        if (dropVsync) { savedVsync = snap_vsync_get(); if (savedVsync == "on" || savedVsync == "adaptive") snap_vsync_set("off"); else savedVsync.clear(); }
+        std::fprintf(stderr, "[window] fast boot: frame limiter off for %d presents%s\n", frames, savedVsync.empty() ? "" : ", vsync off");
+    }
+    if (n == (uint64_t)frames) {
+        nvnHostSetFramePacing(60);
+        if (!savedVsync.empty()) snap_vsync_set(savedVsync.c_str());
+        std::fprintf(stderr, "[window] fast boot: frame limiter back to 60 Hz%s at present %llu\n", savedVsync.empty() ? "" : " and vsync restored", (unsigned long long)n);
+    }
 }
 
 void snap_window_on_present() {
