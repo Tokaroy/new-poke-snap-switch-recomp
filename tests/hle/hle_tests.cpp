@@ -2584,6 +2584,107 @@ static void test_modhooks() {
   mh::reset();
 }
 
+// ---- aim feel (docs/aim-feel.md): curves, dead zone override, velocity window, raw deltas, gyro average and smoothing
+static void test_aimfeel() {
+  g_test = "aimfeel";
+  using namespace input;
+  // curves: linear is the identity, the others stay inside 0..1, hit both ends and are monotonic, and sit under linear in the middle
+  CHECK(stick_curve_from_name("linear") == kCurveLinear && stick_curve_from_name("classic") == kCurveClassic && stick_curve_from_name("precise") == kCurvePrecise);
+  CHECK(stick_curve_from_name("nonsense") == kCurveLinear && stick_curve_from_name("") == kCurveLinear);
+  for (int c = 0; c < 3; ++c) {
+    CHECK(apply_stick_curve(c, 0.0f) == 0.0f && std::fabs(apply_stick_curve(c, 1.0f) - 1.0f) < 1e-6f);
+    float prev = -1;
+    for (int i = 0; i <= 20; ++i) { float v = apply_stick_curve(c, i / 20.0f); CHECK(v >= prev && v <= 1.0f); prev = v; }
+  }
+  CHECK(apply_stick_curve(kCurveLinear, 0.37f) == 0.37f);
+  CHECK(apply_stick_curve(kCurveClassic, 0.5f) < 0.5f && apply_stick_curve(kCurvePrecise, 0.5f) < apply_stick_curve(kCurveClassic, 0.5f));
+  // through map_pad: the default response is unchanged (linear, per-stick dead zone); the override and the curves act on the right stick
+  Mapping m = Mapping::defaults();
+  RawInput in; in.focused = true; in.pad_connected = true; in.rx = 0.575f;   // half way between the 0.15 dead zone and 1.0
+  pad_fx().stick_curve = 0; pad_fx().stick_deadzone = -1.0f;
+  const int base = map_pad(m, in).rx;
+  CHECK(std::abs(base - (int)std::lround(0.5f * kStickMax)) < 40);
+  pad_fx().stick_curve = kCurvePrecise;
+  CHECK(map_pad(m, in).rx < base - 3000);
+  pad_fx().stick_curve = kCurveLinear;
+  pad_fx().stick_deadzone = 0.0f;
+  CHECK(std::abs(map_pad(m, in).rx - (int)std::lround(0.575f * kStickMax)) < 40);
+  in.rx = 0.1f;                                                   // inside the default dead zone, outside a zero one
+  CHECK(map_pad(m, in).rx > 0);
+  pad_fx().stick_deadzone = 0.3f;
+  in.rx = 0.25f;
+  CHECK(map_pad(m, in).rx == 0);
+  pad_fx().stick_deadzone = -1.0f;
+  CHECK(map_pad(m, in).rx > 0);                                   // follows the mapping again (0.15 < 0.25)
+  // gyro dead zone parameter: the default argument is the old constant; a bigger one swallows more
+  float sx, sy;
+  gyro_to_stick(-3.0f, 0, 1.0f, false, false, &sx, &sy);
+  float sx2, sy2;
+  gyro_to_stick(-3.0f, 0, 1.0f, false, false, &sx2, &sy2, kGyroDeadDegPerSecDefault);
+  CHECK(sx == sx2 && sx > 0);
+  gyro_to_stick(-3.0f, 0, 1.0f, false, false, &sx2, &sy2, 4.0f);
+  CHECK(sx2 == 0);
+  // velocity window: sum over the window divided by its length; old samples fall out; a shorter window reacts faster
+  VelWindow vw;
+  const uint64_t ms = 1000000ull;
+  vw.add(100 * ms, 40.0f, -20.0f);
+  float vx, vy;
+  vw.velocity(110 * ms, 40 * ms, &vx, &vy);
+  CHECK(std::fabs(vx - 1000.0f) < 1.0f && std::fabs(vy + 500.0f) < 1.0f);
+  vw.velocity(110 * ms, 12 * ms, &vx, &vy);
+  CHECK(std::fabs(vx - 3333.3f) < 1.0f);
+  vw.velocity(150 * ms, 40 * ms, &vx, &vy);                       // 50 ms old: outside a 40 ms window, still held
+  CHECK(vx == 0 && vw.v.size() == 1);
+  vw.velocity(600 * ms, 40 * ms, &vx, &vy);                       // older than 400 ms: dropped
+  CHECK(vx == 0 && vw.v.empty());
+  // raw deltas: nothing is lost between drains, from several threads
+  DeltaAccum acc;
+  std::vector<std::thread> th;
+  for (int k = 0; k < 4; ++k) th.emplace_back([&] { for (int i = 0; i < 5000; ++i) acc.add(3, -2); });
+  float tx = 0, ty = 0, ax = 0, ay = 0;
+  for (int i = 0; i < 50; ++i) { acc.take(&ax, &ay); tx += ax; ty += ay; std::this_thread::sleep_for(std::chrono::microseconds(100)); }
+  for (auto& t : th) t.join();
+  acc.take(&ax, &ay); tx += ax; ty += ay;
+  CHECK(tx == 60000.0f && ty == -40000.0f && acc.events.load() == 20000);
+  acc.take(&ax, &ay);
+  CHECK(ax == 0 && ay == 0);
+  // gyro average: the mean since the last read, the last sample when none arrived
+  GyroAvg ga;
+  float gx, gy, gz;
+  ga.add(10, 0, 0); ga.add(30, 4, 0);
+  ga.take(&gx, &gy, &gz);
+  CHECK(gx == 20.0f && gy == 2.0f && gz == 0.0f);
+  ga.take(&gx, &gy, &gz);
+  CHECK(gx == 30.0f && gy == 4.0f);
+  // smoothing filter: off passes through; on approaches the input, never overshoots, and a long gap converges
+  CHECK(ema_step(5.0f, 9.0f, 0.016f, 0.0f) == 9.0f);
+  float e = 0;
+  for (int i = 0; i < 10; ++i) { float n = ema_step(e, 100.0f, 0.004f, 0.03f); CHECK(n > e && n <= 100.0f); e = n; }
+  CHECK(e > 60.0f && e < 80.0f);
+  CHECK(std::fabs(ema_step(0.0f, 100.0f, 5.0f, 0.03f) - 100.0f) < 0.01f);
+  // through the hub: gyro smoothing delays a step, mouse window setting changes the velocity read
+  static RawInput raw;
+  raw = RawInput{};
+  Hub h;
+  h.set_backend(std::make_unique<FakeBackend>(&raw));
+  h.set_mapping(Mapping::defaults());
+  raw.pad_connected = true; raw.gyro_present = true; raw.gyro_y = -kGyroFullDegPerSec * 0.5f;
+  pad_fx().gyro_on = true; pad_fx().gyro_sens = 1.0f; pad_fx().gyro_smooth = 0.0f;
+  auto poll = [&]() { std::this_thread::sleep_for(std::chrono::milliseconds(3)); h.poll(1); };
+  poll(); poll();
+  const int rx_off = h.pad().rx;
+  CHECK(rx_off > 10000);
+  pad_fx().gyro_smooth = 1.0f;
+  poll();                                                          // first smoothed poll starts from the input
+  raw.gyro_y = 0;
+  poll();
+  const int rx_sm = h.pad().rx;
+  CHECK(rx_sm > 0 && rx_sm < rx_off);                              // decays instead of dropping to zero at once
+  pad_fx().gyro_smooth = 0.0f; pad_fx().gyro_on = false;
+  poll();
+  CHECK(h.pad().rx == 0);
+}
+
 // ---- gyro aim, rumble and per-profile settings (fake sensor feed: the owner has no gyro controller)
 static void test_padfx() {
   g_test = "padfx";
@@ -3256,6 +3357,7 @@ int main(int argc, char** argv) {
       {"savebackup.running", sb_test::test_restore_refused_running},
 #endif
       {"padfx", test_padfx},
+      {"aimfeel", test_aimfeel},
       {"focus_guard", test_focus_guard},
       {"freecam", test_freecam},
       {"modhooks", test_modhooks},
