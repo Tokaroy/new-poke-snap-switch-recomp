@@ -115,10 +115,11 @@ int Swap(Host* h, VkCommandBuffer cb, TextureImpl* t, float scale, float wide, u
 }
 
 // What the size rows say now, as one string: the work below runs only when this moves.
-std::string Sig() {
+std::string Sig(uint32_t scW, uint32_t scH) {
   std::string s;
   for (const char* k : {"SNAP_RENDER_SCALE", "SNAP_AA", "SNAP_SHADOW_RES", "SNAP_LIGHTING", "SNAP_ULTRAWIDE"}) { const char* e = getenv(k); s += e ? e : ""; s += '|'; }
   s += std::to_string(snapdef::saved_look().load(std::memory_order_relaxed));   // the Look row moves the defaults of the rows above
+  s += '|'; s += std::to_string(scW); s += 'x'; s += std::to_string(scH);   // the window size: the ultrawide factor and the auto ssaa2 height follow it
   return s;
 }
 }  // namespace
@@ -160,12 +161,24 @@ void RetargetAtPresent(Host* h, VkCommandBuffer cb, uint32_t scW, uint32_t scH) 
     prevT = now;
   }
   static std::atomic<unsigned> seen{0};
-  if (!hle::live::changed(seen)) return;
+  // A resized window re-derives the ultrawide factor and the auto ssaa2 height (the window size is part of Sig). A drag changes the size every
+  // frame, so a new size counts once it has stayed the same for kSizeSettle presents (the window code saves the new height when the drag ends).
+  static uint32_t appliedW = 0, appliedH = 0, candW = 0, candH = 0; static int stable = 0;
+  const bool envMoved = hle::live::changed(seen);
+  bool sizeMoved = false;
+  if (scW && scH) {
+    if (!appliedW) { appliedW = scW; appliedH = scH; }
+    else if (scW != appliedW || scH != appliedH) {
+      if (scW != candW || scH != candH) { candW = scW; candH = scH; stable = 0; }
+      else if (++stable >= 30) { appliedW = scW; appliedH = scH; sizeMoved = true; }
+    } else { candW = candH = 0; stable = 0; }
+  }
+  if (!envMoved && !sizeMoved) return;
   hle::live::EnvRead er;
   static std::string last;
   static std::string lastWide;
   static bool first = true;
-  const std::string sig = Sig();
+  const std::string sig = Sig(appliedW, appliedH);
   { const char* uw = getenv("SNAP_ULTRAWIDE"); const std::string w = uw ? uw : ""; if (first) lastWide = w; }
   if (first) { first = false; last = sig; return; }   // the values the game started with are in force already
   if (sig == last) return;
@@ -187,9 +200,9 @@ void RetargetAtPresent(Host* h, VkCommandBuffer cb, uint32_t scW, uint32_t scH) 
   else if (snaplight::shadow_res()) sr = snaplight::shadow_res();
   if (const char* e = getenv("SNAP_SHADOW_RES")) { const int v = atoi(e); sr = ((v > 1024 && v <= 8192) || v == 512) ? v : 0; }
   float wk = g_wideK;
-  {   // as host/boot.cpp, from the swapchain size; read only when the row itself moved (a resized window alone changes nothing mid-run)
+  {   // as host/boot.cpp, from the swapchain size; read only when the row itself moved (a resized window re-reads it too, see sizeMoved)
     const char* uw = getenv("SNAP_ULTRAWIDE"); const std::string w = uw ? uw : "";
-    if (w != lastWide && scW && scH) {
+    if ((w != lastWide || sizeMoved) && scW && scH) {
       lastWide = w;
       const bool off = !_stricmp(w.c_str(), "off") || w == "0";
       const float k = (float)((double)scW / scH / (16.0 / 9.0));
