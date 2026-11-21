@@ -326,13 +326,13 @@ void AddSeedKeys() {
     char buf[MAX_PATH] = {};
     DWORD n = GetModuleFileNameA(nullptr, buf, MAX_PATH);
     std::string exe(buf, n);
-    size_t sl = exe.find_last_of("\/");
+    size_t sl = exe.find_last_of("\\/");
     path = (sl == std::string::npos ? std::string() : exe.substr(0, sl + 1)) + "pipeline_keys_seed.bin";
   }
   std::ifstream f(path, std::ios::binary);
   FileHdr got{};
   const FileHdr want = MakeHdr(S->h, kMagicKeys, false);
-  if (!f || !f.read((char*)&got, sizeof got)) return;
+  if (!f || !f.read((char*)&got, sizeof got)) { Log("pipeline seed: %s not found or empty, none loaded", path.c_str()); return; }
   if (!HdrMatches(got, want)) { Log("pipeline seed: %s is from another build / translator, ignored", path.c_str()); return; }
   std::unordered_set<uint64_t> seen;
   for (const PipeDesc& k : S->known) seen.insert(HashDesc(k));
