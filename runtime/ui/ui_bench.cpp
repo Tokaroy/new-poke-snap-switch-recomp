@@ -89,7 +89,7 @@ void tab_benchmark() {
   ImGui::TextColored(t.text_dim, "%s", tr("This game closes first; unsaved progress is lost. Run it twice on the same settings to see how steady the numbers are."));
   ImGui::Spacing();
   if (hold_confirm("Hold to start the benchmark", 1.0f, t.good)) {
-    if (!snap_benchmark_launch_from_game()) g_msg = "The benchmark could not be started.";
+    if (!snap_benchmark_launch_from_game()) g_msg = "The benchmark could not be started."; else g_msg.clear();
   }
   if (!g_msg.empty()) ImGui::TextColored(t.error, "%s", tr(g_msg));
   ImGui::Spacing();

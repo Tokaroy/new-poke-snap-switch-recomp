@@ -28,6 +28,8 @@
 #include "ui_i18n.h"
 #include "ui_internal.h"
 
+extern "C" __attribute__((weak)) void snap_fs_drain_for_exit(int ms);   // runtime/hle/fs.cpp
+
 namespace snap::ui {
 
 namespace {
@@ -51,6 +53,7 @@ struct SavesState {
   enum Confirm { None, Clear, Delete } confirm = None;
   bool restart_needed = false;
   int last_sel = -1;
+  std::string last_sel_id;   // the profile the rename/duplicate boxes were filled for (the index alone moves after delete/restore/reorder)
   int backup_sel = -1;   // the "Restore a backup" list
   bool backup_force = false;   // scripted test: keep that node open
   std::vector<std::string> fixtures;
@@ -243,13 +246,16 @@ void restart_now(const std::string& profile_name) {
   }
   CloseHandle(pi.hThread);
   CloseHandle(pi.hProcess);
+  if (snap_fs_drain_for_exit) snap_fs_drain_for_exit(3000);   // let a save commit / photo export in flight finish (bounded), like the window-close path
   TerminateProcess(GetCurrentProcess(), 0);   // the save layer commits atomically; unsaved progress is lost
 }
 
 // A button that must be held; returns true once when the hold completes. Works with mouse, keyboard (Enter) and the gamepad.
+static ImGuiID g_hold_id = 0;
+static double g_hold_since = 0;
 bool hold_button(const char* label, float secs, const ImVec4& color) {
-  static ImGuiID held = 0;
-  static double since = 0;
+  ImGuiID& held = g_hold_id;
+  double& since = g_hold_since;
   // skin-contrast: on the dark menu the text is light, so a pale status color (green) is darkened until the label reads
   ImVec4 face = color;
   const ImVec4 tx = ImGui::GetStyle().Colors[ImGuiCol_Text];
@@ -322,7 +328,7 @@ bool saves_test_backups(const std::string& action, int n, std::string* what) {
   return false;
 }
 
-void saves_tab_opened() { Z.loaded_at = -100; Z.confirm = SavesState::None; }
+void saves_tab_opened() { Z.loaded_at = -100; Z.confirm = SavesState::None; g_hold_id = 0; g_hold_since = 0; }
 
 void tab_saves() {
   const Theme& t = theme();
@@ -390,15 +396,16 @@ void tab_saves() {
   else {
     const pr::Profile p = list[(size_t)Z.sel];   // a copy: reload() replaces the list
     const bool is_active = act.on && p.id == act.id;
-    if (Z.last_sel != Z.sel) {
+    if (Z.last_sel != Z.sel || Z.last_sel_id != p.id) {
       Z.last_sel = Z.sel;
+      Z.last_sel_id = p.id;
       copy_name(Z.rename_buf, sizeof Z.rename_buf, p.name);
       copy_name(Z.dup_buf, sizeof Z.dup_buf, p.name + " copy");
     }
     ImGui::Spacing();
     ImGui::TextColored(t.title, tr("Selected: %s"), p.name.c_str());
     if (!is_active) {
-      if (ImGui::Button(tr("Switch to this profile (restarts the game)"))) restart_now(p.name);
+      if (hold_button("Hold to switch to this profile (restarts the game, unsaved progress is lost)", 1.0f, t.conflict)) restart_now(p.name);
       ImGui::SameLine();
     }
     if (ImGui::Button(tr("Open folder"))) open_folder(st.save_dir(p.id));
@@ -524,9 +531,10 @@ void tab_saves() {
     for (size_t i = 0; i < Z.trash.size(); ++i) {
       const auto& e = Z.trash[i];
       ImGui::PushID((int)i);
-      ImGui::Text("%s   %s   %s   %s", e.name.c_str(), tr(e.kind == "delete" ? "deleted" : "cleared"), pr::format_time(e.when).c_str(), pr::format_size(e.size).c_str());
+      const bool restore = ImGui::SmallButton(tr("Restore"));   // first, so a long name or a big scale cannot push it off the menu
       ImGui::SameLine();
-      if (ImGui::SmallButton(tr("Restore"))) {
+      ImGui::TextUnformatted((e.name + "   " + tr(e.kind == "delete" ? "deleted" : "cleared") + "   " + pr::format_time(e.when) + "   " + pr::format_size(e.size)).c_str());
+      if (restore) {
         std::string err;
         if (!st.restore(e.folder, &err).empty()) { say(tr("Restored into a new profile."), false); reload(); } else say(err, true);
         ImGui::PopID();
