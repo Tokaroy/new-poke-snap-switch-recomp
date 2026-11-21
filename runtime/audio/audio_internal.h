@@ -3,6 +3,8 @@
 #pragma once
 #include <atomic>
 #include <cstdint>
+#include <string>
+#include <vector>
 #include "audio_out.h"
 
 namespace snap_audio {
@@ -19,7 +21,8 @@ void core_set_device_info(bool attached, uint32_t bufferFrames, double latencyMs
 // mode = SnapAudioOutputMode. channels = core mix channels: 2 stereo, 6 or 8 speakers, 6 for the spatial bed
 // (FL FR FC LFE BL BR). A backend that has to fall back reports the new channel count and mode through
 // core_set_device_info.
-struct DeviceFormat { uint32_t rate; uint32_t channels; uint32_t bufferMs; int mode; };
+// latency = SnapAudioLatency, resampler = SnapAudioResampler, device = output device selector (see SnapAudioConfig::device).
+struct DeviceFormat { uint32_t rate; uint32_t channels; uint32_t bufferMs; int mode; int latency = SNAP_AUDIO_LAT_NORMAL; int resampler = SNAP_AUDIO_RS_SYSTEM; std::string device; };
 
 class Backend {
  public:
@@ -27,11 +30,15 @@ class Backend {
   virtual bool start(const DeviceFormat& fmt) = 0;  // spawns the device thread
   virtual void stop() = 0;                          // joins it
   virtual int kind() const = 0;                     // SnapAudioBackend
+  virtual void set_device(const std::string&) {}    // output device selector; before native_channels / spatial_available / start
   // Channel count of the current default device mix format (2 when unknown).
   virtual uint32_t native_channels() { return 2; }
   // 1 if the default device can render the spatial bed (probe only, nothing is started).
   virtual int spatial_available() { return 0; }
 };
+
+// Friendly names of the active render endpoints (empty on a build without a device backend).
+std::vector<std::string> list_render_devices();
 
 Backend* make_null_backend();
 #if defined(_WIN32)

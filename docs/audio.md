@@ -306,3 +306,25 @@ Mean final-mix RMS over seconds 20..90 (71 one-second samples): normal run 0.013
 (about 48% lower; peak 0.756 -> 0.595). The trace shows the setter posting level 0 for category 0 (BGM) with the game's
 own level at 10; SE and voice stayed untouched. Only one run of each, and the two runs are not frame-aligned, so the
 ratio is indicative, not exact. Not yet checked: SE and voice at 0, and live changes from the UI.
+
+## Clean output and quality options (2026-11-20)
+
+Mixer chain per device block: guest PCM per AudioOut (each into a scratch block) -> upmixer -> mono -> night-mode compressor -> master x device volume (30 ms slew) -> load fade -> limiter -> hard clip (last guard). The DSP is in `runtime/audio/audio_dsp.h` (pure, tested by `tests/audio/dsp_test.cpp`); `core_mix` is tested by `tests/audio/core_test.cpp`.
+
+Fixes:
+- **Underrun clicks.** A guest stream that ran dry was cut from full level to zero and back (a step at each edge). The last and first 96 frames (2 ms) around the hole now fade. A paused game (focus-loss mute) no longer counts underruns.
+- **Hard clip.** The mix could pass 1.0 and was clipped flat. A 1 ms look-ahead limiter (ceiling 0.98, 100 ms release, bit-exact and 1 ms delayed below the ceiling) replaces it. `SNAP_AUDIO_LIMITER=0` turns it off.
+- **Volume steps.** Master volume and mute ramped over one device block, so a low-latency block (3 ms) made a click. The gain now slews at a fixed 30 ms per 0..1.
+- **Device thread priority.** MMCSS "Pro Audio" now also gets AVRT_PRIORITY_HIGH.
+- **Frame rate.** The device thread and the Wwise sink are paced by the device clock only (buffers release on consume), never by presents, so 60 to 240 fps changes nothing in audio timing. This is from reading the code path; no 120 fps game run was made.
+
+Options (restart unless noted). Each is a settings.cfg key (F1 Audio tab; launcher Sound page for latency, conversion and range), an env var, and works with `--set key=value`:
+
+| key | env | values | default |
+|---|---|---|---|
+| `audio_latency` | `SNAP_AUDIO_LATENCY` | `low` (engine minimum period), `normal` (engine default period), `safe` (40 ms buffer) | normal |
+| `audio_resampler` | `SNAP_AUDIO_RESAMPLER` | `system` (Windows converts), `sinc` (48-tap Kaiser; to 44.1 kHz: error under -85 dB at 1 and 15 kHz, -58 dB at 23.5 kHz), `linear` | system |
+| `audio_range` | `SNAP_AUDIO_RANGE` | `full`, `reduced` (2:1, +3 dB), `night` (4:1 over -30 dBFS, +9 dB). Live | full |
+| `audio_device` | `SNAP_AUDIO_DEVICE` | part of a device name or an endpoint id; `default` = Windows default. A missing device falls back to the default and is taken again when it reappears | default |
+
+Our own resampler opens the stream at the device mix rate and converts the 48 kHz mix, so it only acts on 44.1, 88.2 or 96 kHz devices. Mono audio is the existing Accessibility row. Bluetooth adds its own 100 to 200 ms that no setting removes; Safe only stops dropouts. The Output device list is in F1 only (the launcher has no audio device probe).

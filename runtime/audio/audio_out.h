@@ -67,6 +67,15 @@ enum SnapAudioChannelMode { SNAP_AUDIO_CH_STEREO = 0, SNAP_AUDIO_CH_AUTO = 1, SN
 // Host output: stereo (downmix if the game outputs 6), speakers (WASAPI 5.1 or 7.1), spatial (ISpatialAudioClient bed
 // for Windows Sonic or Dolby Atmos for Headphones; falls back to speakers, then stereo).
 enum SnapAudioOutputMode { SNAP_AUDIO_OUT_STEREO = 0, SNAP_AUDIO_OUT_SPEAKERS = 1, SNAP_AUDIO_OUT_SPATIAL = 2 };
+// Device buffer: LOW = the shortest period the engine allows (about 3 to 10 ms, most CPU), NORMAL = the engine's default period (about 10 ms),
+// SAFE = a 40 ms buffer that rides out a stalled device thread (Bluetooth, loaded PC). Restart.
+enum SnapAudioLatency { SNAP_AUDIO_LAT_LOW = 0, SNAP_AUDIO_LAT_NORMAL = 1, SNAP_AUDIO_LAT_SAFE = 2 };
+// Sample-rate conversion from the 48 kHz mix to a device that runs at another rate: SYSTEM = the Windows engine converts (default),
+// LINEAR = our own, cheap, audible above 10 kHz, SINC = our own 48-tap windowed sinc (clean to 20 kHz). Restart.
+enum SnapAudioResampler { SNAP_AUDIO_RS_SYSTEM = 0, SNAP_AUDIO_RS_LINEAR = 1, SNAP_AUDIO_RS_SINC = 2 };
+// Dynamic range: FULL = the game's own mix, REDUCED = gentle 2:1 compression, NIGHT = strong 4:1 with makeup so quiet passages stay audible and
+// loud ones stay down. Live.
+enum SnapAudioRange { SNAP_AUDIO_RANGE_FULL = 0, SNAP_AUDIO_RANGE_REDUCED = 1, SNAP_AUDIO_RANGE_NIGHT = 2 };
 struct SnapAudioConfig {
   int backend;             // SnapAudioBackend; env SNAP_AUDIO_BACKEND=wasapi|null overrides AUTO
   int channelMode;         // what GetActiveAudioDeviceChannelCountForOutput reports (and the device stream uses)
@@ -75,6 +84,12 @@ struct SnapAudioConfig {
   int enableTap;           // capture the final mix into a ring (tests)
   int outputMode;          // SnapAudioOutputMode; -1 = unset (env SNAP_AUDIO_OUTPUT, then audio.json "output", then stereo)
   int speakerChannels;     // speakers mode: 6, 8 or 0 = 8 if the device mix format has 8+ channels, else 6
+  // Added 2026-11-20. snap_audio_default_config sets them to "unset" (-1 / null): env SNAP_AUDIO_LATENCY, SNAP_AUDIO_RESAMPLER, SNAP_AUDIO_RANGE,
+  // SNAP_AUDIO_DEVICE win over these, then the defaults (normal, system, full, Windows default device).
+  int latencyMode;         // SnapAudioLatency, -1 = unset
+  int resampler;           // SnapAudioResampler, -1 = unset
+  int range;               // SnapAudioRange, -1 = unset
+  const char* device;      // output device: part of its name, or its endpoint id; null or "" = the Windows default
 };
 // Volume categories (docs/audio.md, "Volume API for UI"). MASTER is applied in the host mixer; BGM/SE/VOICE are applied
 // inside Wwise by host/abi_audio.cpp (it posts the game's own Set_volume_<cat>_NN events from the Wwise sink thread).
@@ -86,6 +101,12 @@ SNAP_AUDIO_API void snap_audio_shutdown(void);
 SNAP_AUDIO_API void snap_audio_set_volume(int category, float v);
 SNAP_AUDIO_API float snap_audio_get_volume(int category);
 // Session-only mute (window focus loss): silences the final mix without touching the master volume or audio.json.
+// Dynamic range (night mode), live. The configured start value comes from SNAP_AUDIO_RANGE or SnapAudioConfig.range.
+SNAP_AUDIO_API void snap_audio_set_range(int range);
+SNAP_AUDIO_API int snap_audio_get_range(void);
+// Output devices for a picker: writes the friendly names of the active render endpoints, one per line (UTF-8, newline between, NUL at the end) and
+// returns how many. Windows only (0 elsewhere). Needs no running stream.
+SNAP_AUDIO_API int snap_audio_list_devices(char* out, int cap);
 SNAP_AUDIO_API void snap_audio_set_muted(int muted);
 SNAP_AUDIO_API int snap_audio_get_muted(void);
 // Output mode API for the UI (docs/audio.md, "Surround and spatial output"). Persists to audio.json
@@ -117,6 +138,10 @@ struct SnapAudioStats {
   int deviceAttached;          // 0 while falling back to the timer
   int outputModeActive;        // SnapAudioOutputMode actually running
   uint32_t guestChannels;      // channels the game was told to produce
+  uint32_t streamRate;         // rate the device stream runs at (48000 unless the device mix rate is used with our own resampler)
+  int latencyMode;             // SnapAudioLatency in use
+  int resampler;               // SnapAudioResampler in use (SYSTEM when the device already runs at 48 kHz or the engine converts)
+  int range;                   // SnapAudioRange now
 };
 SNAP_AUDIO_API void snap_audio_get_stats(SnapAudioStats* s);
 SNAP_AUDIO_API void snap_audio_reset_stats(void);   // also clears the check counters and re-arms their one log line per kind

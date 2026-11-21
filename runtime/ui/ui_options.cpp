@@ -355,6 +355,34 @@ std::string get_audio_out() {
 void set_audio_out(const std::string& v) {
   snap_audio_set_output(v == "speakers" ? SNAP_AUDIO_OUT_SPEAKERS : v == "spatial" ? SNAP_AUDIO_OUT_SPATIAL : SNAP_AUDIO_OUT_STEREO, -1, -1);
 }
+// Dynamic range (night mode): live through the audio layer, remembered as "audio_range" ("full" = erased; exported as SNAP_AUDIO_RANGE at the next start)
+std::string get_audio_range() { const int r = snap_audio_get_range(); return r == SNAP_AUDIO_RANGE_NIGHT ? "night" : r == SNAP_AUDIO_RANGE_REDUCED ? "reduced" : "full"; }
+void set_audio_range(const std::string& v) {
+  if (v == "full") st::erase("audio_range"); else st::set("audio_range", v);
+  snap_audio_set_range(v == "night" ? SNAP_AUDIO_RANGE_NIGHT : v == "reduced" ? SNAP_AUDIO_RANGE_REDUCED : SNAP_AUDIO_RANGE_FULL);
+}
+// Output devices: enumerated on a worker thread at most every 10 s (COM), the last result is drawn. The stored value is the device's name.
+Choices audio_devices() {
+  static std::mutex mu;
+  static Choices cached{{"default", "Windows default"}};
+  static std::atomic<bool> busy{false};
+  static double last = -100;
+  const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+  if (now - last > 10.0 && !busy.exchange(true)) {
+    last = now;
+    std::thread([] {
+      char buf[4096];
+      const int n = snap_audio_list_devices(buf, (int)sizeof buf);
+      Choices c{{"default", "Windows default"}};
+      const char* p = buf;
+      for (int i = 0; i < n && *p; ++i) { const std::string nm = p; c.push_back({nm, nm}); p += nm.size() + 1; }
+      { std::lock_guard<std::mutex> g(mu); cached = c; }
+      busy = false;
+    }).detach();
+  }
+  std::lock_guard<std::mutex> g(mu);
+  return cached;
+}
 // The monitor list comes from EnumDisplayMonitors, which can be slow (and stalls the presenting thread) on some desktops: enumerate on a worker thread, at most
 // every 10 s, and draw the last result.
 Choices monitors() {
@@ -712,6 +740,18 @@ std::vector<Opt>& audio_opts() {
       {"audio_output", "Output mode", kChoice, kRestart,
        "Stereo is the game's own mix. Speakers sends 5.1 or 7.1 to a surround system (the stereo mix is spread around you). Spatial uses Windows Spatial Sound (Dolby Atmos, Windows Sonic) for headphones. The game opens its sound output once, so this needs a restart. Saved in audio.json.",
        "stereo", {{"stereo", "Stereo"}, {"speakers", "Speakers (5.1 / 7.1)"}, {"spatial", "Spatial (headphones)"}}, 0, 0, "", "SNAP_AUDIO_OUTPUT", get_audio_out, set_audio_out},
+      {"audio_device", "Output device", kChoice, kRestart,
+       "Which sound device the game plays on. Windows default follows the device Windows uses (a headset you plug in takes over). A named device stays on that device; if it is unplugged the game uses the Windows default until it comes back.",
+       "default", {}, 0, 0, "", nullptr, nullptr, nullptr, audio_devices},
+      {"audio_latency", "Audio latency", kChoice, kRestart,
+       "Normal suits most PCs. Low gives the shortest delay between the game and your speakers but needs a free CPU. Safe uses a bigger buffer: pick it if you hear crackle or dropouts, or use Bluetooth.",
+       "normal", {{"low", "Low"}, {"normal", "Normal"}, {"safe", "Safe (fewer dropouts)"}}},
+      {"audio_resampler", "Sample-rate conversion", kChoice, kRestart,
+       "The game's sound is 48 kHz. If your device runs at 44.1 or 96 kHz, Windows converts it (Windows default). Sinc uses the game's own high-quality converter, clean up to 20 kHz; Linear is lighter and a little duller. No effect on 48 kHz devices.",
+       "system", {{"system", "Windows default"}, {"sinc", "High quality (sinc)"}, {"linear", "Linear"}}},
+      {"audio_range", "Dynamic range", kChoice, kLive,
+       "Full is the game's own mix. Reduced narrows the gap between loud and quiet a little. Night mode narrows it a lot, so quiet sounds stay audible and loud ones do not wake the house.",
+       "full", {{"full", "Full"}, {"reduced", "Reduced"}, {"night", "Night mode"}}, 0, 0, "", "SNAP_AUDIO_RANGE", get_audio_range, set_audio_range},
   };
   return v;
 }

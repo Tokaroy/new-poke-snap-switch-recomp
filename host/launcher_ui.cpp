@@ -972,6 +972,12 @@ void build_pages() {
     p.items.push_back(choice("Voices", "voice", S_AUD, "1.0", vols, "Voice and Professor volume.", E_VOL));
     p.items.push_back(choice("Output", "output", S_AUD, "stereo", {{"stereo", "Stereo"}, {"speakers", "Surround speakers"}, {"spatial", "Spatial (headphones)"}},
                              "Stereo is right for most setups. Surround speakers and spatial need Windows to be set up for them."));
+    p.items.push_back(choice("Audio latency", "audio_latency", S_CFG, "normal", {{"low", "Low"}, {"normal", "Normal"}, {"safe", "Safe"}},
+                             "Low is the shortest delay, Safe a bigger buffer for crackle or Bluetooth."));
+    p.items.push_back(choice("Sample-rate conversion", "audio_resampler", S_CFG, "system", {{"system", "Windows default"}, {"sinc", "High quality"}, {"linear", "Linear"}},
+                             "Only matters when your device runs at 44.1 or 96 kHz instead of 48."));
+    p.items.push_back(choice("Dynamic range", "audio_range", S_CFG, "full", {{"full", "Full"}, {"reduced", "Reduced"}, {"night", "Night mode"}},
+                             "Night mode keeps quiet sounds audible and loud ones down."));
     g.pages.push_back(p);
   }
   // Controls
