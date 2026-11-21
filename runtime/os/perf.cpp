@@ -12,6 +12,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "os.h"
 
@@ -70,7 +71,10 @@ static void crit_dump(uint64_t t0) {
 }
 void ledger_register() {
     tl_ledger.tid = GetCurrentThreadId();
-    std::lock_guard<std::mutex> lk(g_led_mu);
+    // Often called from wait_add while the scheduler lock G is held: never block on g_led_mu here. On contention leave reg false;
+    // the next wait_add retries (the ns counters already accumulate in tl_ledger, so nothing is lost).
+    std::unique_lock<std::mutex> lk(g_led_mu, std::try_to_lock);
+    if (!lk.owns_lock()) return;
     g_ledgers[tl_ledger.tid] = &tl_ledger;
     tl_ledger.reg = true;
 }
@@ -166,12 +170,21 @@ static void sampler() {
         }
         if (g_waits) {   // per-thread blocked time over the last second (threads that waited 1 ms or more)
             static std::map<unsigned long, std::array<uint64_t, WT_COUNT>> prev;
-            std::lock_guard<std::mutex> lk(g_led_mu);
-            for (auto& [tid, l] : g_ledgers) {
+            // copy the counters under g_led_mu, then format and print with it released
+            std::vector<std::pair<unsigned long, std::array<uint64_t, WT_COUNT>>> snapLed;
+            {
+                std::lock_guard<std::mutex> lk(g_led_mu);
+                for (auto& [tid, l] : g_ledgers) {
+                    std::array<uint64_t, WT_COUNT> a;
+                    for (int i = 0; i < WT_COUNT; i++) a[i] = l->ns[i].load(std::memory_order_relaxed);
+                    snapLed.emplace_back(tid, a);
+                }
+            }
+            for (auto& [tid, cur] : snapLed) {
                 auto& pv = prev[tid];
                 uint64_t d[WT_COUNT], sum = 0;
                 for (int i = 0; i < WT_COUNT; i++) {
-                    const uint64_t v = l->ns[i].load(std::memory_order_relaxed);
+                    const uint64_t v = cur[i];
                     d[i] = v - pv[i];
                     pv[i] = v;
                     sum += d[i];
