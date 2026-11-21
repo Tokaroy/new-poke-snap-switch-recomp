@@ -238,8 +238,16 @@ std::vector<std::string> packs_on_disk(const std::string& root) {
   return ids;
 }
 
+// A pack id names one folder or zip directly under the mods root: no separators, drive colons, or "." / "..".
+bool safe_pack_id(const std::string& id) {
+  if (id.empty() || id == "." || id == "..") return false;
+  for (char c : id) if (c == 0 || c == 0x2F || c == 0x5C || c == 0x3A) return false;   // NUL, slash, backslash, colon
+  return true;
+}
+
 std::string unpack_zip(const std::string& root, const std::string& id, std::vector<std::string>& warn) {
   std::error_code ec;
+  if (!safe_pack_id(id)) { warn.push_back("pack id \"" + id + "\" refused (not a plain folder name)"); return ""; }
   fs::path z = U(root) / U(id + ".zip"), base = unpacked_base(root), dst = base / U(id), st = base / U(id + ".stamp");
   const std::string want = zip_stamp(z);
   std::string have;
@@ -272,6 +280,7 @@ bool pack_info(const std::string& root, const std::string& id, Pack& p, std::vec
   std::error_code ec;
   p = Pack();
   p.id = id;
+  if (!safe_pack_id(id)) { warn.push_back("pack id \"" + id + "\" refused (not a plain folder name)"); return false; }
   fs::path folder = U(root) / U(id), z = U(root) / U(id + ".zip");
   if (fs::is_directory(folder, ec)) {
     p.dir = S8(folder);
@@ -334,6 +343,7 @@ void load(const std::string& root, Index& out, std::vector<std::string>& warn, b
   std::unordered_map<std::string, int> rom_seen;   // romfs/ path -> the pack that serves it
   for (auto& [id, en] : order) {
     Pack p;
+    if (!safe_pack_id(id)) { warn.push_back("mods.json: pack id \"" + id + "\" skipped (not a plain folder name)"); continue; }
     if (!pack_info(root, id, p, warn)) { warn.push_back(id + ": listed in mods.json but there is no folder or .zip of that name"); continue; }
     p.enabled = en;
     bool listed_only = false;   // an enabled zip read from its file list (unpack = false)

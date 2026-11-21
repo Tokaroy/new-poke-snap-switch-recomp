@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "hle/zip_read.h"
 #include "mods/mods_core.h"
 
 namespace fs = std::filesystem;
@@ -257,6 +258,67 @@ int main() {
   CHECK(std::memcmp(&ch[0x18], "Icon", 5) == 0);                 // name kept
   size_t doff = 0x18 + ((std::strlen((const char*)&ch[0x18]) + 4) & ~(size_t)3);   // how the loader finds the payload
   CHECK(doff == chunk_header_len(4) && std::memcmp(&ch[doff], big.data(), big.size()) == 0);
+
+  // Pack ids from a hostile mods.json: ".." and path-like ids are refused, nothing is read or removed outside the mods folder.
+  {
+    fs::path r2 = fs::temp_directory_path() / ("mods_ids_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    fs::remove_all(r2);
+    write(r2 / "root" / "mods.json", "{\"packs\":[\"..\",\"a\\\\..\\\\b\",\"C:\\\\x\",\"a/b\",\".\",{\"id\":\"\"}]}");
+    write(r2 / "pack.json", "{\"name\":\"Parent\"}");              // what ".." would reach
+    write(r2 / "root" / "b" / "pack.json", "{}");                   // what "a\..\b" would reach
+    Index ix;
+    std::vector<std::string> w;
+    load((r2 / "root").string(), ix, w);
+    CHECK(ix.packs.empty());
+    CHECK(w.size() >= 4);
+    Pack q;
+    std::vector<std::string> w2;
+    const std::string rt = (r2 / "root").string();
+    CHECK(!pack_info(rt, "..", q, w2));
+    CHECK(!pack_info(rt, "a\\..\\b", q, w2));
+    CHECK(!pack_info(rt, "C:\\x", q, w2));
+    CHECK(unpack_zip(rt, "..", w2).empty());
+    CHECK(unpack_zip(rt, "a\\..\\b", w2).empty());
+    CHECK(unpack_zip(rt, "C:\\x", w2).empty());
+    CHECK(fs::exists(r2 / "pack.json") && fs::exists(r2 / "root" / "b" / "pack.json"));
+    fs::remove_all(r2);
+  }
+
+  // A deflate bomb: a tiny stream that expands far past the size the zip declares. extract() must refuse it and stop writing at that size.
+  {
+    fs::path r3 = fs::temp_directory_path() / ("mods_bomb_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    fs::remove_all(r3);
+    fs::create_directories(r3);
+    std::string d;                       // one fixed-Huffman block: literal 'a', then 20000 x (length 258, distance 1), then end of block
+    uint32_t acc = 0; int nb = 0;
+    auto bits = [&](uint32_t v, int n) { for (int i = 0; i < n; ++i) { acc |= ((v >> i) & 1u) << nb; if (++nb == 8) { d += (char)acc; acc = 0; nb = 0; } } };
+    auto code = [&](uint32_t v, int n) { for (int i = n - 1; i >= 0; --i) bits((v >> i) & 1u, 1); };   // Huffman codes go out MSB first
+    bits(1, 1); bits(1, 2);
+    code(0x30 + 'a', 8);
+    for (int i = 0; i < 20000; ++i) { code(0xC0 + (285 - 280), 8); code(0, 5); }
+    code(0, 7);
+    if (nb) d += (char)acc;
+    const uint32_t declared = 100;
+    std::string z, cd;
+    auto p16 = [](std::string& s, uint32_t v) { s += (char)(v & 0xff); s += (char)((v >> 8) & 0xff); };
+    auto p32 = [&](std::string& s, uint32_t v) { p16(s, v & 0xffff); p16(s, v >> 16); };
+    const std::string nm = "bomb.bin";
+    p32(z, 0x04034b50); p16(z, 20); p16(z, 0); p16(z, 8); p16(z, 0); p16(z, 0x21); p32(z, 0x12345678); p32(z, (uint32_t)d.size()); p32(z, declared);
+    p16(z, (uint32_t)nm.size()); p16(z, 0); z += nm; z += d;
+    p32(cd, 0x02014b50); p16(cd, 20); p16(cd, 20); p16(cd, 0); p16(cd, 8); p16(cd, 0); p16(cd, 0x21); p32(cd, 0x12345678); p32(cd, (uint32_t)d.size()); p32(cd, declared);
+    p16(cd, (uint32_t)nm.size()); p16(cd, 0); p16(cd, 0); p16(cd, 0); p16(cd, 0); p32(cd, 0); p32(cd, 0); cd += nm;
+    uint32_t cdo = (uint32_t)z.size();
+    z += cd;
+    p32(z, 0x06054b50); p16(z, 0); p16(z, 0); p16(z, 1); p16(z, 1); p32(z, (uint32_t)cd.size()); p32(z, cdo); p16(z, 0);
+    write(r3 / "bomb.zip", z);
+    std::vector<hle::zipr::Entry> ents;
+    std::string err;
+    CHECK(hle::zipr::list(r3 / "bomb.zip", ents, &err) && ents.size() == 1);
+    CHECK(!hle::zipr::extract(r3 / "bomb.zip", ents[0], r3 / "out.bin", &err));
+    std::error_code fec;
+    CHECK(fs::file_size(r3 / "out.bin", fec) <= declared);           // the 5 MB of output was never written
+    fs::remove_all(r3);
+  }
 
   printf("%d checks, %d failed\n", g_n, g_fail);
   return g_fail ? 1 : 0;
