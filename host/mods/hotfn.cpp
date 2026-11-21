@@ -15,7 +15,7 @@
 //   main+0x8b6750  bone update, the two per-bone loop bodies (local matrix + decompose): mid-function hooks at
 //                  0x8b7400 / 0x8b7ac0 that branch to the instruction after the body's last bl     SNAP_HOT_BONE
 //   main+0x4d220 / 0x16680 / 0x16ed0  Kraken (Oodle) decoder: 6-stream Huffman loop, LZ runs raw / delta
-//                  (hotfn_oodle.h; tests/oodle)                                                 SNAP_HOT_OODLE
+//                  (hotfn_oodle.h; tests/oodle)                                SNAP_HOT_OODLE (also =ab)
 //
 // Each switch: unset or 1 = native, 0 = the guest code, check = the guest runs and the native result (computed first on
 // copies) is compared with it just before the guest's final store (rt_hot_*_check); the first mismatches and a count at
@@ -28,6 +28,11 @@
 #include <cstring>
 #include <mutex>
 #include <vector>
+#ifdef _MSC_VER
+#include <intrin.h>
+#else
+#include <x86intrin.h>
+#endif
 
 #include "hotfn.h"
 #include "hotfn_oodle.h"
@@ -288,13 +293,19 @@ extern "C" void rt_hot_bone2_check(Cpu *c) { (void)c; if (ModeBone() == 2) BoneC
 // ---- the Kraken decoder's inner routines (hotfn_oodle.h): main+0x4d220 Huffman, main+0x16680 / 0x16ed0 LZ runs
 namespace {
 
-int ModeOodle() { static const int m = Mode("SNAP_HOT_OODLE"); return m; }
+// SNAP_HOT_OODLE: 0, 1, check, or ab = each thread alternates guest and native calls and the time per output byte of each
+// is reported (an in-game A/B over the same data)
+int ModeOodle() {
+    static const int m = [] { const char *e = getenv("SNAP_HOT_OODLE"); return e && !strcmp(e, "ab") ? 3 : Mode("SNAP_HOT_OODLE"); }();
+    return m;
+}
+const char *const kOodleName[3] = {"huffman 4d220", "lz raw 16680", "lz delta 16ed0"};
 Tally g_tally3[3];                 // huffman, lz raw, lz delta
 std::atomic<long> g_oodleGuest[3];   // calls left to the guest (LzCheck said not covered)
 void Report3(int slot, const char *name, bool bad, uint64_t at) {
     const long n = ++g_tally3[slot].calls;
     if (bad && ++g_tally3[slot].bad <= 5) fprintf(stderr, "[hotfn] MISMATCH %s call %ld (0x%llx)\n", name, n, (unsigned long long)at);
-    if ((n & 1023) == 0)
+    if ((n & 1023) == 0 || (n <= 1024 && (n & (n - 1)) == 0))
         fprintf(stderr, "[hotfn] check %s: %ld calls, %ld mismatches, %ld left to the guest\n", name, n, g_tally3[slot].bad.load(),
                 g_oodleGuest[slot].load());
 }
@@ -318,9 +329,42 @@ struct LzWant {
 };
 thread_local LzWant t_lz[2];
 
+// ab mode: [0] guest, [1] native, per routine
+std::atomic<uint64_t> g_abCyc[2][3], g_abBytes[2][3];
+std::atomic<long> g_abCalls[2][3];
+struct AbThread { long n[3]; uint64_t t0[3], bytes[3]; bool guest[3]; };
+thread_local AbThread t_ab;
+// mode as seen by one call: ab alternates 0 and 1 per thread
+int OodleCallMode(int slot) { const int m = ModeOodle(); return m == 3 ? (int)(t_ab.n[slot]++ & 1) : m; }
+void AbAdd(int side, int slot, uint64_t cyc, uint64_t bytes) {
+    g_abCyc[side][slot] += cyc; g_abBytes[side][slot] += bytes;
+    const long n = ++g_abCalls[side][slot];
+    if (side == 1 && ((n & 255) == 0 || (n <= 256 && (n & (n - 1)) == 0))) {
+        const double g = (double)g_abCyc[0][slot] / (double)(g_abBytes[0][slot] | 1), h = (double)g_abCyc[1][slot] / (double)(g_abBytes[1][slot] | 1);
+        fprintf(stderr, "[hotfn] ab %s: guest %ld calls %.0f Mcyc %.2f cyc/B, native %ld calls %.0f Mcyc %.2f cyc/B, %.2fx\n", kOodleName[slot],
+                g_abCalls[0][slot].load(), g_abCyc[0][slot] / 1e6, g, n, g_abCyc[1][slot] / 1e6, h, h > 0 ? g / h : 0.0);
+    }
+}
+// entry side of a guest call in ab mode (the ret hook adds the time)
+void AbGuestStart(int slot, uint64_t bytes) {
+    if (ModeOodle() != 3) return;
+    t_ab.guest[slot] = true; t_ab.bytes[slot] = bytes; t_ab.t0[slot] = __rdtsc();
+}
+void AbGuestEnd(int slot) {
+    if (!t_ab.guest[slot]) return;
+    t_ab.guest[slot] = false;
+    AbAdd(0, slot, __rdtsc() - t_ab.t0[slot], t_ab.bytes[slot]);
+}
+struct AbNative {   // times one native call in ab mode
+    int slot; uint64_t bytes, t0; bool on;
+    AbNative(int s, uint64_t b) : slot(s), bytes(b), t0(__rdtsc()), on(ModeOodle() == 3) {}
+    ~AbNative() { if (on) AbAdd(1, slot, __rdtsc() - t0, bytes); }
+};
+
 void LzEntry(Cpu *c, int delta) {
-    const int mode = ModeOodle();
-    if (!mode) { c->x[16] = 1; return; }
+    const int mode = OodleCallMode(1 + delta);
+    if (!mode) { AbGuestStart(1 + delta, c->x[3] - c->x[1]); c->x[16] = 1; return; }
+    AbNative ab(1 + delta, c->x[3] - c->x[1]);
     const hotfn::LzArgs a{c->x[0], c->x[1], c->x[2], c->x[3], c->x[4]};
     hotfn::LzPlan p{};
     const int r = hotfn::LzHeader(a, p);
@@ -368,8 +412,11 @@ void LzCheckRet(Cpu *c, int delta) {
 }   // namespace
 
 extern "C" void rt_hot_oodle_huff(Cpu *c) {
-    const int mode = ModeOodle();
-    if (!mode) { c->x[16] = 1; return; }
+    const int mode = OodleCallMode(0);
+    // ab: bytes = twice the second half's room (an estimate of the output, the same for both sides)
+    const uint64_t abBytes = 2 * (hotfn::SLd((const uint8_t *)(uintptr_t)c->x[0], 0x18) - hotfn::SLd((const uint8_t *)(uintptr_t)c->x[0], 8));
+    if (!mode) { AbGuestStart(0, abBytes); c->x[16] = 1; return; }
+    AbNative ab(0, abBytes);
     uint8_t *st = (uint8_t *)(uintptr_t)c->x[0];
     const uint16_t *lut = (const uint16_t *)(uintptr_t)c->x[1];
     if (mode == 2) {
@@ -392,6 +439,7 @@ extern "C" void rt_hot_oodle_huff(Cpu *c) {
 }
 // at the guest's ret (main+0x4d6a8)
 extern "C" void rt_hot_oodle_huff_check(Cpu *c) {
+    AbGuestEnd(0);
     HuffWant &w = t_huff;
     if (!w.on) return;
     w.on = false;
@@ -408,9 +456,9 @@ extern "C" void rt_hot_oodle_huff_check(Cpu *c) {
     Report3(0, "huffman 4d220", bad, w.st);
 }
 extern "C" void rt_hot_oodle_lz_raw(Cpu *c) { LzEntry(c, 0); }
-extern "C" void rt_hot_oodle_lz_raw_check(Cpu *c) { if (ModeOodle() == 2) LzCheckRet(c, 0); }
+extern "C" void rt_hot_oodle_lz_raw_check(Cpu *c) { AbGuestEnd(1); if (ModeOodle() == 2) LzCheckRet(c, 0); }
 extern "C" void rt_hot_oodle_lz_delta(Cpu *c) { LzEntry(c, 1); }
-extern "C" void rt_hot_oodle_lz_delta_check(Cpu *c) { if (ModeOodle() == 2) LzCheckRet(c, 1); }
+extern "C" void rt_hot_oodle_lz_delta_check(Cpu *c) { AbGuestEnd(2); if (ModeOodle() == 2) LzCheckRet(c, 1); }
 extern "C" long rt_hotfn_oodle_guest_calls() { return g_oodleGuest[0] + g_oodleGuest[1] + g_oodleGuest[2]; }
 
 // mismatches seen in check mode so far, all functions (tests/hotfn --hooked)

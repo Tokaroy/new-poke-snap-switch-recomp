@@ -1,6 +1,6 @@
 """Builds and runs the Kraken decode test for the Oodle hot routines (tests/oodle/oodle_test.cpp; project code, ours).
 
-  python -I tests/oodle/run_oodle_test.py [--root CHECKOUT] [--modes 1,check,0] [--repeat N]
+  python -I tests/oodle/run_oodle_test.py [--root CHECKOUT] [--modes 1,check,0,ab] [--repeat N]
 
 --root is the checkout that holds analysis/, extracted/ and tools/ (default: this checkout). Steps: the corpus
 (build/oodle/corpus.bin, tests/oodle/make_corpus.py, once), the decoder copies (tests/oodle/emit_oodle.py, when missing or
@@ -32,7 +32,7 @@ def vc_env():
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--root', type=Path, default=SRC)
-    ap.add_argument('--modes', default='1,check,0')
+    ap.add_argument('--modes', default='1,check,0,ab')
     ap.add_argument('--repeat', type=int, default=1)
     a = ap.parse_args()
     out = SRC / 'build' / 'oodle'
