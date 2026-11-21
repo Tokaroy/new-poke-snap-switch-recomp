@@ -639,10 +639,13 @@ struct Fs::Impl {
   //  2. of->mu (an open file's write lock), then mu. A thread holding mu never takes of->mu.
   //  3. Never take a virtual core back (os_io_end) while holding commit_mu, mu or of->mu. Most callers wait for mu while holding
   //     their core, so a mu holder that waits for a core can wait forever once every core is held by a thread queued on mu.
-  //     Waiting for a lock with the core released is fine: os_io_begin, lock, work, unlock, then os_io_end (get_file, commit).
+  //     Waiting for a lock with the core released is fine: os_io_begin, lock, work, unlock, then os_io_end (get_file,
+  //     PathOpLock, commit).
   std::mutex mu;  // mounts and tables
   // Serializes commits, restores, save mounts and unmounts. Taken before mu, never while holding it. A commit holds it for the
-  // whole disk work and mu only to copy and publish the pending sets.
+  // whole disk work and mu only to copy and publish the pending sets. Path-changing operations on a save mount wait for it
+  // while that mount commits (PathOpLock): the commit reads working/ by name, so only data reads and writes (and opens,
+  // which add to the commit's journal) run alongside it.
   std::mutex commit_mu;
   std::map<std::string, std::shared_ptr<Mount>> mounts;
   std::unordered_map<uint64_t, std::shared_ptr<OpenFile>> files;
@@ -822,6 +825,34 @@ struct Resolved {
   std::string rel;
   stdfs::path host;  // for layered mounts: first layer holding rel (or the first layer if none)
   int kind = 0;      // 0 none, 1 dir, 2 file
+};
+}  // namespace
+
+// Lock for a path-changing operation (create, delete, rename, directory create and delete). Holds mu. The commit builds the new
+// generation outside mu and copies its dirty files from working/ by name, so a delete or rename on the mount it is committing
+// could publish a generation without the file, or fail the commit. retry(m) is called right before the change: when m is a save
+// mount with a commit running it drops mu, gives up the virtual core, waits for commit_mu (the commit has ended), takes mu
+// again and returns true; the caller then resolves its paths again. The core comes back only after both locks are released.
+namespace {
+struct PathOpLock {
+  bool io = false;
+  std::unique_lock<std::mutex> cg, g;
+  explicit PathOpLock(Fs::Impl* p) : cg(p->commit_mu, std::defer_lock), g(p->mu) {}
+  PathOpLock(const PathOpLock&) = delete;
+  PathOpLock& operator=(const PathOpLock&) = delete;
+  bool retry(const std::shared_ptr<Mount>& m) {
+    if (!m ||!m->save || !m->save->committing || cg.owns_lock()) return false;
+    g.unlock();
+    if (!io) { os_io_begin(); io = true; }
+    cg.lock();   // commit_mu before mu (rule 1); no commit can start while it is held, so an operation retries once at most
+    g.lock();
+    return true;
+  }
+  ~PathOpLock() {
+    if (g.owns_lock()) g.unlock();
+    if (cg.owns_lock()) cg.unlock();
+    if (io) os_io_end();   // rule 3: after both locks are released
+  }
 };
 }  // namespace
 
@@ -1033,13 +1064,17 @@ uint32_t Fs::get_entry_type(int* out, const std::string& path) {
 }
 
 uint32_t Fs::create_file(const std::string& path, int64_t size) {
-  std::lock_guard<std::mutex> g(p_->mu);
+  PathOpLock L(p_.get());
   Resolved r;
-  uint32_t rc = resolve(p_.get(), path, &r);
-  if (rc) return rc;
-  if (!r.m->writable) return kResultWriteNotPermitted;
-  if (r.rel.empty()) return kResultInvalidArgument;
-  if (r.kind != 0) return kResultPathAlreadyExists;
+  for (;;) {
+    r = Resolved{};
+    uint32_t rc = resolve(p_.get(), path, &r);
+    if (rc) return rc;
+    if (!r.m->writable) return kResultWriteNotPermitted;
+    if (r.rel.empty()) return kResultInvalidArgument;
+    if (r.kind != 0) return kResultPathAlreadyExists;
+    if (!L.retry(r.m)) break;
+  }
   std::error_code ec;
   stdfs::path host;
   if (r.m->kind == Mount::SaveData) {
@@ -1066,12 +1101,16 @@ uint32_t Fs::create_file(const std::string& path, int64_t size) {
 }
 
 uint32_t Fs::delete_file(const std::string& path) {
-  std::lock_guard<std::mutex> g(p_->mu);
+  PathOpLock L(p_.get());
   Resolved r;
-  uint32_t rc = resolve(p_.get(), path, &r);
-  if (rc) return rc;
-  if (!r.m->writable) return kResultWriteNotPermitted;
-  if (r.kind != 2) return kResultPathNotFound;
+  for (;;) {
+    r = Resolved{};
+    uint32_t rc = resolve(p_.get(), path, &r);
+    if (rc) return rc;
+    if (!r.m->writable) return kResultWriteNotPermitted;
+    if (r.kind != 2) return kResultPathNotFound;
+    if (!L.retry(r.m)) break;
+  }
   std::error_code ec;
   if (r.m->kind == Mount::SaveData) {
     Save& s = *r.m->save;
@@ -1086,12 +1125,16 @@ uint32_t Fs::delete_file(const std::string& path) {
 }
 
 uint32_t Fs::create_directory(const std::string& path) {
-  std::lock_guard<std::mutex> g(p_->mu);
+  PathOpLock L(p_.get());
   Resolved r;
-  uint32_t rc = resolve(p_.get(), path, &r);
-  if (rc) return rc;
-  if (!r.m->writable) return kResultWriteNotPermitted;
-  if (r.kind != 0) return kResultPathAlreadyExists;
+  for (;;) {
+    r = Resolved{};
+    uint32_t rc = resolve(p_.get(), path, &r);
+    if (rc) return rc;
+    if (!r.m->writable) return kResultWriteNotPermitted;
+    if (r.kind != 0) return kResultPathAlreadyExists;
+    if (!L.retry(r.m)) break;
+  }
   std::error_code ec;
   if (r.m->kind == Mount::SaveData) {
     Save& s = *r.m->save;
@@ -1113,12 +1156,16 @@ uint32_t Fs::create_directory(const std::string& path) {
 }
 
 uint32_t Fs::delete_directory(const std::string& path, bool recursive) {
-  std::unique_lock<std::mutex> g(p_->mu);
+  PathOpLock L(p_.get());
   Resolved r;
-  uint32_t rc = resolve(p_.get(), path, &r);
-  if (rc) return rc;
-  if (!r.m->writable) return kResultWriteNotPermitted;
-  if (r.kind != 1 || r.rel.empty()) return kResultPathNotFound;
+  for (;;) {
+    r = Resolved{};
+    uint32_t rc = resolve(p_.get(), path, &r);
+    if (rc) return rc;
+    if (!r.m->writable) return kResultWriteNotPermitted;
+    if (r.kind != 1 || r.rel.empty()) return kResultPathNotFound;
+    if (!L.retry(r.m)) break;
+  }
   std::error_code ec;
   if (r.m->kind == Mount::SaveData) {
     Save& s = *r.m->save;
@@ -1150,16 +1197,21 @@ uint32_t Fs::delete_directory(const std::string& path, bool recursive) {
 }
 
 uint32_t Fs::rename_file(const std::string& from, const std::string& to) {
-  std::lock_guard<std::mutex> g(p_->mu);
+  PathOpLock L(p_.get());
   Resolved a, b;
-  uint32_t rc = resolve(p_.get(), from, &a);
-  if (rc) return rc;
-  rc = resolve(p_.get(), to, &b);
-  if (rc) return rc;
-  if (a.m != b.m) return kResultInvalidArgument;
-  if (!a.m->writable) return kResultWriteNotPermitted;
-  if (a.kind != 2) return kResultPathNotFound;
-  if (b.kind != 0) return kResultPathAlreadyExists;
+  for (;;) {
+    a = Resolved{};
+    b = Resolved{};
+    uint32_t rc = resolve(p_.get(), from, &a);
+    if (rc) return rc;
+    rc = resolve(p_.get(), to, &b);
+    if (rc) return rc;
+    if (a.m != b.m) return kResultInvalidArgument;
+    if (!a.m->writable) return kResultWriteNotPermitted;
+    if (a.kind != 2) return kResultPathNotFound;
+    if (b.kind != 0) return kResultPathAlreadyExists;
+    if (!L.retry(a.m)) break;
+  }
   std::error_code ec;
   const std::string to_parent = b.rel.find('/') == std::string::npos ? "" : b.rel.substr(0, b.rel.rfind('/'));
   if (a.m->kind == Mount::SaveData) {

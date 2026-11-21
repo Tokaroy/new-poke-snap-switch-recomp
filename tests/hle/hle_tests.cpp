@@ -647,13 +647,23 @@ static void test_save_stale_leftover_retry() {
 }
 
 #ifdef _WIN32
-// stall fix: the commit builds the generation without the fs lock, so other file operations run during it (the fault hook runs
-// on the committing thread between stages; with the old whole-commit lock these calls would deadlock). Changes made during
-// a commit must survive it: published commit -> they are the next commit's work; failed commit -> nothing is lost.
+// stall fix: the commit builds the generation without the fs lock, so data reads and writes run during it (the fault hook runs
+// on the committing thread between stages; with the old whole-commit lock these calls would deadlock). Path changes (create,
+// delete, rename, directories) on the committing mount wait for the commit to end: the commit copies its dirty files from
+// working/ by name. Changes made during a commit must survive it: published commit -> they are the next commit's work;
+// failed commit -> nothing is lost.
+// Starts `fn` on another thread and gives it `ms` to finish; returns whether it did. The caller joins `t` later.
+static bool run_side(std::thread& t, std::atomic<bool>& done, std::function<void()> fn, int ms = 200) {
+  done = false;
+  t = std::thread([&done, fn] { fn(); done = true; });
+  for (int i = 0; i < ms / 5 && !done; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  return done;
+}
 static void test_save_commit_concurrent_ops() {
   g_test = "save.commit_concurrent_ops";
   stdfs::path root = g_tmp / "save_commit_conc", ud = root / hle::uid_dir_name(kUid);
   const std::string a = "savedata:/A", b = "savedata:/B", c = "savedata:/C", d = "savedata:/D", e = "savedata:/E", g = "savedata:/G";
+  const std::string sv = "savedata:/save.dat", bak = "savedata:/save.bak";
   std::string body;
   {
     fs::Fs f; f.set_save_root(root.string());
@@ -663,36 +673,84 @@ static void test_save_commit_concurrent_ops() {
     CHECK_EQ(f.commit("savedata"), 0u);
     put(f, b, "BBBB");   // changed and new this session: in the commit's copy of the pending sets
     put(f, e, "EEEE");
-    bool ran_carried = false, ran_done = false;
+    bool ran_carried = false, ran_done = false, side1_early = true, side2_early = true;
+    std::thread t1, t2;
+    std::atomic<bool> d1{false}, d2{false};
+    uint32_t rc1 = 1, rc1b = 1, rc2 = 1;
     f.set_fault_hook([&](const char* s) {
       if (!strcmp(s, "commit:carried") && !ran_carried) {
         ran_carried = true;
-        CHECK_EQ(f.delete_file(a), 0u);   // A is already linked into the new generation
-        put(f, c, "CCCC");                // created during the commit
-        put(f, b, "B2B2");                // B rewritten before the commit copies it
+        put(f, b, "B2B2");                // data write: B rewritten before the commit copies it
+        // path changes wait for the commit: A's delete and C's creation land after it
+        side1_early = run_side(t1, d1, [&] { rc1 = f.delete_file(a); rc1b = f.create_file(c, 4); });
       }
       if (!strcmp(s, "commit:files-done") && !ran_done) {
         ran_done = true;
-        CHECK_EQ(f.delete_file(e), 0u);   // E was created this session and is already copied
+        side2_early = run_side(t2, d2, [&] { rc2 = f.delete_file(e); });
       }
     });
     CHECK_EQ(f.commit("savedata"), 0u);
     f.set_fault_hook(nullptr);
+    t1.join();
+    t2.join();
+    CHECK(rc1 == 0u && rc1b == 0u && rc2 == 0u);   // the side threads do not CHECK (the counters are not atomic)
+    put(f, c, "CCCC");
     CHECK(ran_carried && ran_done);
-    CHECK(!get(f, a, &body));             // the deletions show at once, although the new generation still holds A and E
+    CHECK(!side1_early && !side2_early);  // both path changes were held until the commit ended
+    CHECK((gen_files(ud / "gens" / std::to_string(current_gen(ud))) == std::set<std::string>{"A", "B", "D", "E"}));
+    CHECK(slurp(ud / "gens" / std::to_string(current_gen(ud)) / "B") == "B2B2");
+    CHECK(!get(f, a, &body));
     CHECK(!get(f, e, &body));
     CHECK(get(f, c, &body) && body == "CCCC");
     CHECK(get(f, b, &body) && body == "B2B2");
-    CHECK_EQ(f.commit("savedata"), 0u);   // the journal is the next commit's work
-    // a failed commit keeps changes made during it
-    HANDLE T = INVALID_HANDLE_VALUE;
+    CHECK_EQ(f.commit("savedata"), 0u);
+    // review fix: a delete + rename during a commit must never publish a generation without a file the commit was copying.
+    // save.dat is dirty in the commit's pending sets; mid-commit the game moves it aside (rename to save.bak) and deletes the
+    // backup. Run during the commit, the generation was published without save.dat.
+    put(f, sv, "SAVE1");
+    CHECK_EQ(f.commit("savedata"), 0u);
+    put(f, sv, "SAVE2");
+    bool ran_sv = false, side3_early = true;
+    std::thread t3;
+    std::atomic<bool> d3{false};
+    uint32_t rc3 = 1, rc3b = 1;
     f.set_fault_hook([&](const char* s) {
-      if (!strcmp(s, "commit:carried") && T == INVALID_HANDLE_VALUE) put(f, g, "GGGG");
+      if (!strcmp(s, "commit:carried") && !ran_sv) {
+        ran_sv = true;
+        side3_early = run_side(t3, d3, [&] { rc3 = f.rename_file(sv, bak); rc3b = f.delete_file(bak); });
+      }
+    });
+    CHECK_EQ(f.commit("savedata"), 0u);
+    f.set_fault_hook(nullptr);
+    t3.join();
+    CHECK(rc3 == 0u && rc3b == 0u);
+    CHECK(ran_sv && !side3_early);
+    const stdfs::path svgen = ud / "gens" / std::to_string(current_gen(ud));
+    CHECK(gen_files(svgen).count("save.dat") == 1);
+    CHECK(slurp(svgen / "save.dat") == "SAVE2");
+    CHECK(!get(f, sv, &body) && !get(f, bak, &body));   // the moves happened, after the commit
+    put(f, sv, "SAVE3");
+    CHECK_EQ(f.commit("savedata"), 0u);
+    // a failed commit keeps changes made during it (a data write in the hook, a creation held until the commit failed)
+    HANDLE T = INVALID_HANDLE_VALUE;
+    bool ran_fail = false;
+    std::thread t4;
+    std::atomic<bool> d4{false};
+    uint32_t rc4 = 1;
+    f.set_fault_hook([&](const char* s) {
+      if (!strcmp(s, "commit:carried") && !ran_fail) {
+        ran_fail = true;
+        put(f, d, "D3D3");
+        run_side(t4, d4, [&] { rc4 = f.create_file(g, 4); }, 20);
+      }
       if (!strcmp(s, "commit:marker") && T == INVALID_HANDLE_VALUE)
         T = CreateFileW((ud / "CURRENT.tmp").c_str(), GENERIC_READ, 0, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     });
     put(f, d, "D2D2");
     CHECK(f.commit("savedata") != 0u);
+    t4.join();
+    CHECK_EQ(rc4, 0u);
+    put(f, g, "GGGG");
     CloseHandle(T);
     f.set_fault_hook(nullptr);
     CHECK_EQ(f.commit("savedata"), 0u);
@@ -702,11 +760,13 @@ static void test_save_commit_concurrent_ops() {
   CHECK_EQ(f.mount_save("savedata", kUid), 0u);
   CHECK(!get(f, a, &body));
   CHECK(!get(f, e, &body));
+  CHECK(!get(f, bak, &body));
   CHECK(get(f, b, &body) && body == "B2B2");
   CHECK(get(f, c, &body) && body == "CCCC");
-  CHECK(get(f, d, &body) && body == "D2D2");
+  CHECK(get(f, d, &body) && body == "D3D3");
   CHECK(get(f, g, &body) && body == "GGGG");
-  CHECK((gen_files(ud / "gens" / std::to_string(current_gen(ud))) == std::set<std::string>{"B", "C", "D", "G"}));
+  CHECK(get(f, sv, &body) && body == "SAVE3");
+  CHECK((gen_files(ud / "gens" / std::to_string(current_gen(ud))) == std::set<std::string>{"B", "C", "D", "G", "save.dat"}));
   CHECK_EQ(f.unmount("savedata"), 0u);
 }
 #endif
