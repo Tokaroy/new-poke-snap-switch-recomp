@@ -668,6 +668,18 @@ std::string label_of(const Item& it, const std::string& v) {
   for (const Ch& c : it.ch) if (c.v == v) return c.label;
   if (it.key == "frame_cap" && v == std::to_string(vrr_cap()) && get_pacing() == "vrr") return v + " (auto)";
   if (it.key == "gfx_render_scale" && v != "auto" && !v.empty()) { const float f = (float)std::atof(v.c_str()); if (f > 0.f) return snappic::dims(f) + " (typed in)"; }
+  if (it.key == "gfx_sharpen" && !v.empty()) {   // the F1 slider moves in 0.05 steps; an in-between saved value shows its nearest choice (the saved value is not touched)
+    char* end = nullptr;
+    const double d = std::strtod(v.c_str(), &end);
+    if (end != v.c_str() && *end == 0) {
+      const Ch* best = nullptr; double bd = 1e9;
+      for (const Ch& c : it.ch) { const double e = std::fabs(std::atof(c.v.c_str()) - d); if (e < bd) { bd = e; best = &c; } }
+      char b[48];
+      if (best && bd < 0.0005) return best->label;
+      std::snprintf(b, sizeof b, "custom (%.2f)", d);
+      return b;
+    }
+  }
   if (it.store != S_CFG && it.enc == E_VOL) return std::to_string((int)std::lround(std::atof(v.c_str()) * 100)) + "%";
   return v.empty() ? "Default" : v;
 }
