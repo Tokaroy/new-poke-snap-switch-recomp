@@ -284,6 +284,30 @@ int main() {
     fs::remove_all(r2);
   }
 
+  // Review fix: Windows strips trailing dots and spaces, so ".. " named the mods root and unpack_zip's remove_all wiped every
+  // pack. Trailing dots / spaces and DOS device names are refused; plain names (dots and spaces inside) still pass.
+  {
+    for (const char* bad : {".. ", ". ", "a.", "a ", "..  ", ". .", "con", "CON", "nul", "Nul.txt", "aux", "prn", "com1", "LPT9",
+                            "nul .zip", "conin$", "a\tb", "a*b", "a?b", "a<b", "a|b"})
+      if (safe_pack_id(bad)) { std::printf("  safe_pack_id accepted \"%s\"\n", bad); CHECK(false); }
+    for (const char* good : {"a", "My Pack", "pack.v2", "a.b c", "console", "nullify", "com10", "lpt", ".hidden"})
+      if (!safe_pack_id(good)) { std::printf("  safe_pack_id refused \"%s\"\n", good); CHECK(false); }
+    fs::path r4 = fs::temp_directory_path() / ("mods_dots_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    fs::remove_all(r4);
+    write(r4 / "root" / "keep" / "pack.json", "{}");
+    write(r4 / "root" / ".unpacked" / "other" / "x.txt", "x");
+    write(r4 / "root" / "mods.json", "{\"packs\":[\".. \",\". \",\"a.\",\"con\"]}");
+    Index ix;
+    std::vector<std::string> w;
+    load((r4 / "root").string(), ix, w);
+    CHECK(ix.packs.empty() || (ix.packs.size() == 1 && ix.packs[0].id == "keep"));
+    const std::string rt = (r4 / "root").string();
+    CHECK(unpack_zip(rt, ".. ", w).empty());
+    CHECK(unpack_zip(rt, ". ", w).empty());
+    CHECK(fs::exists(r4 / "root" / "keep" / "pack.json") && fs::exists(r4 / "root" / ".unpacked" / "other" / "x.txt"));
+    fs::remove_all(r4);
+  }
+
   // A deflate bomb: a tiny stream that expands far past the size the zip declares. extract() must refuse it and stop writing at that size.
   {
     fs::path r3 = fs::temp_directory_path() / ("mods_bomb_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
