@@ -425,8 +425,8 @@ std::vector<Opt>& graphics_opts() {
       {"frame_generation", "Frame generation", kChoice, kRestart,
        "AMD FSR frame generation shows an extra, computed frame between two real ones, so a 60 fps game looks like about 120 on a 120 Hz or faster screen. The menus and HUD are kept out of it. "
        "It adds about one frame of delay, never touches photos or scoring, and turns itself off while the game runs under about 50 fps. It does not count toward the real frame rate in the Frame rate target row. If it ever fails it turns itself off for that session and says so under the options; to undo it, set Off here or remove SNAP_FRAMEGEN. "
-       "Needs the FSR files from the launcher's Upscalers entry (a one-time download you accept).", "default",
-       {{"default", "Off"}, {"fsr", "AMD FSR"}}, 0, 0, "", "SNAP_FRAMEGEN"},
+       "AMD FSR needs the files from the launcher's Upscalers entry (a one-time download you accept). NVIDIA DLSS needs an RTX 40 or 50 card and the Streamline files in the upscalers\\streamline folder.", "default",
+       {{"default", "Off"}, {"fsr", "AMD FSR"}, {"dlss", "NVIDIA DLSS"}}, 0, 0, "", "SNAP_FRAMEGEN"},
       {"", "Textures and shadows", kSection, kLive, "", ""},
       {"gfx_aniso", "Anisotropic filtering", kChoice, kLive,
        "Keeps ground and walls sharp when you look at them from a shallow angle. The original game does not force any (Off keeps its own filtering); 16x costs almost nothing on a PC GPU.",
