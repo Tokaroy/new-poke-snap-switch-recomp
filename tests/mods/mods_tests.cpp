@@ -344,6 +344,22 @@ int main() {
     fs::remove_all(r3);
   }
 
+  // Review fix: the entry cap counted folders, so a romfs pack with more than 5000 entries (most of them folders) was refused.
+  // Only files count now, against a 200,000 cap.
+  {
+    fs::path r5 = fs::temp_directory_path() / ("mods_dirs_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    fs::remove_all(r5);
+    std::vector<std::pair<std::string, std::string>> files;
+    for (int i = 0; i < 6000; ++i) files.push_back({"romfs/d" + std::to_string(i) + "/", ""});
+    files.push_back({"romfs/d0/file.bin", "data"});
+    write_zip(r5 / "many_dirs.zip", files);
+    std::vector<hle::zipr::Entry> ents;
+    std::string err;
+    CHECK(hle::zipr::list(r5 / "many_dirs.zip", ents, &err) && ents.size() == 1);
+    if (!err.empty()) std::printf("  many_dirs.zip: %s\n", err.c_str());
+    fs::remove_all(r5);
+  }
+
   printf("%d checks, %d failed\n", g_n, g_fail);
   return g_fail ? 1 : 0;
 }
