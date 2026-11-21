@@ -2082,9 +2082,11 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
   si.waitSemaphoreInfoCount = 1; si.pWaitSemaphoreInfos = &wait;
   si.commandBufferInfoCount = 1; si.pCommandBufferInfos = &cbi;
   si.signalSemaphoreInfoCount = 2; si.pSignalSemaphoreInfos = sig;
-  { snap_perf::Scope perfScope(snap_perf::C_QSUBMIT); VKCHK(vkQueueSubmit2(h->queue, 1, &si, VK_NULL_HANDLE)); }
+  VkResult subR;
+  { snap_perf::Scope perfScope(snap_perf::C_QSUBMIT); subR = vkQueueSubmit2(h->queue, 1, &si, VK_NULL_HANDLE); VKCHK(subR); }
   PerfGpuSubmitted(perfSlot, v);
-  RetargetAfterSubmit();   // the old images go to the graveyard behind this submit
+  if (subR >= 0) RetargetAfterSubmit();   // the old images go to the graveyard behind this submit
+  else { static bool once; if (!once) { once = true; LogError("present submit failed (%d): render-target resize not retired this frame", (int)subR); } RetargetSubmitFailed(); }
   if (spRecorded) { spFlight = true; spVal = v; }   // the starting-note sample above is readable once the timeline reaches v
   q->inflight.push_back({v, cb, nullptr});
   if (fdBuf && fdHdr) {
