@@ -19,6 +19,7 @@ struct O {
   ocean_fft::OceanGpu* gpu = nullptr;
   ocean_fft::Outputs maps;
   int lastPresent = -1;
+  double lastClock = 0.0;
   double lastTime = 0;
   // 1x1x3 RGBA16F dummies for the two array bindings when the ocean is not in use
   VkImage img = VK_NULL_HANDLE; VkDeviceMemory mem = VK_NULL_HANDLE; VkImageView view = VK_NULL_HANDLE; bool dummyTried = false;
@@ -76,12 +77,12 @@ bool OceanMaps(ReplayCtx& cx, VkImageView* normal, VkImageView* foam) {
       else fprintf(stderr, "ocean: FFT ocean created (%u cascades, %ux%u)\n", ci.params.cascades, ci.params.resolution, ci.params.resolution);
     }
     if (o.gpu) {
-      // one update per present: a second pass in the same present reuses the maps. Time is the game's own 60 Hz clock; a gap (photo frames, a pause) is one longer step.
-      const double dt = o.lastPresent < 0 ? 0.0 : std::clamp((double)(g_presentCount - o.lastPresent) / 60.0, 0.0, 1.0);
+      // one update per present: a second pass in the same present reuses the maps. Time is the wall-clock WaterClock (frame-rate independent, per-frame dt clamped).
+      const double dt = o.lastPresent < 0 ? 0.0 : std::max(0.0, WaterClock() - o.lastClock);
       if (o.lastPresent < 0 || g_presentCount != o.lastPresent) {
         std::string err;
         if (!ocean_fft::update(o.gpu, cx.cb, dt, &o.maps, &err)) Fail(err.c_str());   // never destroyed: a command buffer in flight may still read it
-        else o.lastPresent = g_presentCount;
+        else { o.lastPresent = g_presentCount; o.lastClock = WaterClock(); }
       }
       if (!o.failed && o.maps.normal && o.maps.foam_jacobian) { *normal = o.maps.normal; *foam = o.maps.foam_jacobian; return true; }
     }

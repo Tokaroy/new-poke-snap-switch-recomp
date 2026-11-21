@@ -384,7 +384,7 @@ std::atomic<bool> g_demandLapsed{false};
 constexpr int kDemandHold = 120;
 void NoteDemand() { g_demandAt.store(g_presentCount, std::memory_order_relaxed); }
 bool SceneDemand() {
-  static const bool gated = (ReflectRequested() || GiRequested() || AoRequested()) && EnvInt("SNAP_RT_DEBUG", 0) == 0 && !EnvOn("SNAP_RT_SCENE") && EnvOn("SNAP_RT_DEMAND", true);
+  const bool gated = (ReflectRequested() || GiRequested() || AoRequested()) && EnvInt("SNAP_RT_DEBUG", 0) == 0 && !EnvOn("SNAP_RT_SCENE") && EnvOn("SNAP_RT_DEMAND", true);
   if (!gated || g_presentCount - g_demandAt.load(std::memory_order_relaxed) <= kDemandHold) return true;
   if (!g_demandLapsed.exchange(true)) { static int n; if (n++ < 6) fprintf(stderr, "[rt] p%d scene capture paused: nothing has traced the scene for %d presents\n", g_presentCount, kDemandHold); }
   return false;
