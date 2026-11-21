@@ -224,10 +224,34 @@ def ui_pace_enabled():
     return UI_PACE_DEFAULT if v is None else v not in ('', '0')
 
 
+# Hot leaf routines on the host (host/mods/hotfn.cpp, tests/hotfn; decomp-for-speed pass 2026-11-20). Off unless the generator runs
+# with SNAP_GEN_HOTFN=1, so the default output and the ABI guard stay as they are; turning HOTFN_DEFAULT on for the shared main
+# needs a SNAP_RUNTIME_ABI bump (runtime/cpu.h) in the same change. Entry hook + branch to the function's `ret` (the hook does the
+# whole call), and a check hook just before the final store for SNAP_HOT_*=check.
+HOTFN_DEFAULT = False
+HOTFN_INLINE = {BASE + 0x96d390: 'rt_hot_matdecomp',          # matrix -> scale/quaternion/translation (x0/x1/x2 out, x3 matrix)
+                BASE + 0x96d5b0: 'rt_hot_matdecomp_check',    # `stp d0, d1, [x1]` (final quaternion store)
+                BASE + 0x96d5f0: 'rt_hot_matdecomp_s',        # the same with a per-axis scale vector x4
+                BASE + 0x96d8d8: 'rt_hot_matdecomp_s_check',  # `stp d0, d1, [x1]`
+                BASE + 0x155600: 'rt_hot_reverb',             # Wwise reverb 4-line delay network (x0 state, x1 in, w2 count, x3 out)
+                BASE + 0x155a1c: 'rt_hot_reverb_check'}       # `st1 {v0.s}[3], [x8]` (last filter state store)
+HOTFN_BRANCH = {BASE + 0x96d390: BASE + 0x96d5b4,             # done on the host: to the `ret`
+                BASE + 0x96d5f0: BASE + 0x96d8dc,
+                BASE + 0x155600: BASE + 0x155a20}
+
+
+def hotfn_enabled():
+    v = os.environ.get('SNAP_GEN_HOTFN')
+    return HOTFN_DEFAULT if v is None else v not in ('', '0')
+
+
 MAIN_BRANCH_HOOKS = {}
 if ui_pace_enabled():
     MAIN_INLINE_HOOKS = {**MAIN_INLINE_HOOKS, **UI_PACE_INLINE}
     MAIN_BRANCH_HOOKS = dict(UI_PACE_BRANCH)
+if hotfn_enabled():
+    MAIN_INLINE_HOOKS = {**MAIN_INLINE_HOOKS, **HOTFN_INLINE}
+    MAIN_BRANCH_HOOKS = {**MAIN_BRANCH_HOOKS, **HOTFN_BRANCH}
 assert set(MAIN_BRANCH_HOOKS) <= set(MAIN_INLINE_HOOKS)
 # host/mods/crcfast.cpp (perf pass 17, PCLMUL crc32) is not hooked in: no wall-clock gain; its header says how to add it back.
 
