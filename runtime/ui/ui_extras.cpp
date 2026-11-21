@@ -164,7 +164,24 @@ void extras_controller() {
   ImGui::TextColored(t.text_dim, "%s", tr("Rumble reaches DualSense, Xbox and Switch Pro pads. Applies at once."));
 }
 
+// The gallery needs tools-src\gallery and a Python; a release install has neither, so the section is not shown there (checked once).
+bool gallery_available() {
+  static int cached = -1;
+  if (cached < 0) {
+    namespace fs = std::filesystem;
+    cached = 0;
+    const fs::path root = find_project_root();
+    if (!root.empty()) {
+      std::error_code ec;
+      wchar_t found[MAX_PATH];
+      if (fs::exists(root / "tools" / "venv-recomp" / "Scripts" / "python.exe", ec) || SearchPathW(nullptr, L"python.exe", nullptr, MAX_PATH, found, nullptr)) cached = 1;
+    }
+  }
+  return cached == 1 || g_gallery_port.load() != 0;
+}
+
 void gallery_section() {
+  if (!gallery_available()) return;
   const Theme& t = theme();
   ImGui::TextColored(t.title, "%s", tr("Photo gallery"));
   ImGui::TextWrapped(tr("Opens your saved photos for the running profile (\"%s\") in your web browser, from a small server on this PC (127.0.0.1). Nothing leaves the machine."),
