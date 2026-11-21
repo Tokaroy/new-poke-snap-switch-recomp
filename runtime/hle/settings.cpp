@@ -222,7 +222,8 @@ namespace {
 // Safe mode keeps only settings that do not change what is drawn or loaded: language, accessibility, input feel, HUD size, window size.
 bool safe_keeps(const std::string& k) {
   static const char* const kKeep[] = {"game_language", "return_to_launcher", "hud_scale", "gfx_ui_font", "swap_ab", "button_icons", "win_size",
-                                      "gyro_on", "gyro_sens", "gyro_invert_x", "gyro_invert_y", "rumble_on", "rumble_strength"};
+                                      "gyro_on", "gyro_sens", "gyro_invert_x", "gyro_invert_y", "rumble_on", "rumble_strength",
+                                      "stick_curve", "stick_deadzone", "gyro_smooth", "gyro_dead", "gyro_avg", "raw_mouse", "mouse_window_ms"};
   if (k.compare(0, 7, "access_") == 0) return true;
   for (const char* n : kKeep) if (k == n) return true;
   return false;
@@ -353,6 +354,22 @@ void apply(bool env) {
   fx.gyro_invert_y = get_bool("gyro_invert_y", false);
   fx.rumble_on = get_bool("rumble_on", true);
   fx.rumble_strength = get_float("rumble_strength", 1.0f);
+  {   // aim feel (docs/aim-feel.md): each SNAP_* variable beats its setting; every default is the behavior from before these options
+    auto val = [&](const char* envn, const char* key, const char* def) {
+      const char* e = std::getenv(envn);
+      return e && *e ? std::string(e) : get(key, def);
+    };
+    auto num = [&](const char* envn, const char* key, float def) { const std::string s = val(envn, key, ""); return s.empty() ? def : (float)std::atof(s.c_str()); };
+    auto flag = [&](const char* envn, const char* key) { const std::string s = val(envn, key, "0"); return !(s.empty() || s == "0" || s == "off"); };
+    fx.stick_curve = input::stick_curve_from_name(val("SNAP_STICK_CURVE", "stick_curve", "linear"));
+    const float dz = num("SNAP_STICK_DEADZONE", "stick_deadzone", -1.0f);
+    fx.stick_deadzone = dz < 0.0f ? -1.0f : std::min(dz, 0.6f);
+    fx.gyro_smooth = std::clamp(num("SNAP_GYRO_SMOOTH", "gyro_smooth", 0.0f), 0.0f, 1.0f);
+    fx.gyro_dead = std::clamp(num("SNAP_GYRO_DEAD", "gyro_dead", input::kGyroDeadDegPerSecDefault), 0.0f, 10.0f);
+    fx.gyro_avg = flag("SNAP_GYRO_AVG", "gyro_avg");
+    fx.raw_mouse = flag("SNAP_RAW_MOUSE", "raw_mouse");
+    fx.mouse_window_ms = std::clamp(num("SNAP_MOUSE_WINDOW_MS", "mouse_window_ms", 40.0f), 8.0f, 80.0f);
+  }
   {   // A/B swap (confirm and back on the controller; docs/player-options.md): SNAP_SWAP_AB (1 / 0) beats the swap_ab setting; neither set follows input.json "controller.swap_ab". Live; the prompts' icons follow.
     const char* e = std::getenv("SNAP_SWAP_AB");
     const std::string v = e && *e ? std::string(e) : get("swap_ab", "");

@@ -996,6 +996,18 @@ void build_pages() {
                              "Swaps confirm and back on the controller: the south button confirms and the east button goes back, like an Xbox or PlayStation pad. The game's button pictures follow."));
     p.items.push_back(choice("Rumble", "rumble_on", S_CFG, "1", {{"1", "On"}, {"0", "Off"}}, "Controller vibration."));
     p.items.push_back(choice("Motion aiming (gyro)", "gyro_on", S_CFG, "0", {{"0", "Off"}, {"1", "On"}}, "Aim the camera by moving a controller that has motion sensors."));
+    p.items.push_back(choice("Stick response", "stick_curve", S_CFG, "linear", {{"linear", "Linear (default)"}, {"classic", "Classic"}, {"precise", "Precise"}},
+                             "How far the camera stick turns the camera for a given push. Classic and Precise give finer control near the center."));
+    p.items.push_back(choice("Stick dead zone", "stick_deadzone", S_CFG, "-1", {{"-1", "Follow the controls menu"}, {"0", "None"}, {"0.05", "5%"}, {"0.10", "10%"}, {"0.15", "15%"}, {"0.20", "20%"}, {"0.30", "30%"}},
+                             "The part of the stick's travel the game ignores. Follow the controls menu keeps each stick's own setting."));
+    p.items.push_back(choice("Gyro smoothing", "gyro_smooth", S_CFG, "0", {{"0", "Off"}, {"0.25", "Light"}, {"0.5", "Medium"}, {"1", "Strong"}},
+                             "Smooths motion aiming. More smoothing steadies the camera and adds a little delay."));
+    p.items.push_back(choice("Gyro sampling", "gyro_avg", S_CFG, "0", {{"0", "Latest sample (default)"}, {"1", "Average between frames"}},
+                             "Average between frames reads the motion sensor about every millisecond and gives the game the mean, so fast turns are not missed."));
+    p.items.push_back(choice("Raw mouse input", "raw_mouse", S_CFG, "0", {{"0", "Off (default)"}, {"1", "On"}},
+                             "Mouse aiming reads the mouse directly: no pointer acceleration and no movement lost between frames."));
+    p.items.push_back(choice("Mouse response window", "mouse_window_ms", S_CFG, "40", {{"40", "40 ms (default)"}, {"24", "24 ms"}, {"16", "16 ms (lowest delay)"}, {"8", "8 ms"}},
+                             "How much recent mouse movement is averaged for aiming. Shorter reacts faster and feels less smooth at low frame rates."));
     add_binding_summary(p);
     g.pages.push_back(p);
   }

@@ -71,6 +71,7 @@ struct RawInput {
   float gyro_x = 0, gyro_y = 0, gyro_z = 0;   // angular rate in deg/s, SDL axes: x = pitch (positive tips the front up), y = yaw (positive turns left), z = roll
 };
 
+constexpr float kGyroDeadDegPerSecDefault = 1.5f;
 // Controller extras, set from the profile settings (runtime/hle/settings.cpp) and read on every poll.
 struct PadFx {
   std::atomic<bool> gyro_on{false};              // gyro drives the right (camera) stick, added to the stick and mouse-look
@@ -78,15 +79,58 @@ struct PadFx {
   std::atomic<bool> gyro_invert_x{false}, gyro_invert_y{false};
   std::atomic<bool> rumble_on{true};
   std::atomic<float> rumble_strength{1.0f};      // 0..1.5 scale on both motors
+  // Aim feel (docs/aim-feel.md); every default reproduces the behavior before these options existed.
+  std::atomic<int> stick_curve{0};               // analog stick response after the dead zone: 0 linear, 1 classic (t^1.5), 2 precise (t^2.2)
+  std::atomic<float> stick_deadzone{-1.0f};      // < 0 follows the input.json dead zone of each stick; 0..0.6 overrides both
+  std::atomic<float> gyro_smooth{0.0f};          // 0 off .. 1 (time constant up to 60 ms)
+  std::atomic<float> gyro_dead{kGyroDeadDegPerSecDefault};   // deg/s ignored as sensor noise
+  std::atomic<bool> gyro_avg{false};             // sample the gyro on its own thread and give the game the average since its last read
+  std::atomic<bool> raw_mouse{false};            // mouse-look deltas from WM_INPUT (no pointer acceleration, nothing lost between reads)
+  std::atomic<float> mouse_window_ms{40.0f};     // mouse-look velocity window with smoothing off (8..80 ms)
   std::atomic<int> swap_ab{-1};                  // A/B swap override from SNAP_SWAP_AB / the swap_ab setting: -1 follow input.json, 0 off, 1 on
 };
 PadFx& pad_fx();
 bool rumble_log_enabled();
 bool gyro_aim_enabled();     // profile gyro_on or SNAP_GYRO   // SNAP_RUMBLE_LOG=1
 constexpr float kGyroFullDegPerSec = 90.0f;     // turn rate that gives full stick deflection at sensitivity 1
-constexpr float kGyroDeadDegPerSec = 1.5f;      // below this the sensor noise is ignored
+constexpr float kGyroDeadDegPerSec = kGyroDeadDegPerSecDefault;      // below this the sensor noise is ignored
 // Gyro rate to camera stick (-1..1, y up positive). Pure; used by map_pad and the tests.
-void gyro_to_stick(float yaw_rate_left_pos_dps, float pitch_rate_up_pos_dps, float sens, bool inv_x, bool inv_y, float* sx, float* sy);
+void gyro_to_stick(float yaw_rate_left_pos_dps, float pitch_rate_up_pos_dps, float sens, bool inv_x, bool inv_y, float* sx, float* sy,
+                   float dead_dps = kGyroDeadDegPerSecDefault);
+
+// ---- aim feel helpers (pure; docs/aim-feel.md)
+enum StickCurve : int { kCurveLinear = 0, kCurveClassic, kCurvePrecise };
+int stick_curve_from_name(const std::string& n);   // "linear" | "classic" | "precise" (or 0/1/2); unknown -> linear
+// Response of a stick whose dead zone is already removed: t in 0..1 -> 0..1. Linear is the identity (what the game always had).
+float apply_stick_curve(int curve, float t);
+// Mouse-look velocity: movement samples kept for a window; the velocity is the sum over the window divided by its length.
+struct VelWindow {
+  struct S { uint64_t t; float dx, dy; };
+  std::vector<S> v;
+  void add(uint64_t t_ns, float dx, float dy) { v.push_back({t_ns, dx, dy}); }
+  void velocity(uint64_t t_ns, uint64_t win_ns, float* vx, float* vy);   // pixels per second; drops samples older than 400 ms
+};
+// Raw mouse deltas posted by the window thread (WM_INPUT) and drained by the poll: nothing is lost between reads.
+struct DeltaAccum {
+  std::atomic<int64_t> dx{0}, dy{0};
+  std::atomic<uint64_t> events{0};
+  void add(int x, int y) { dx.fetch_add(x); dy.fetch_add(y); events.fetch_add(1); }
+  void take(float* x, float* y) { *x = (float)dx.exchange(0); *y = (float)dy.exchange(0); }
+};
+// Gyro samples gathered on a fast thread; the game's read gets their mean since its previous read (or the last sample if none arrived).
+struct GyroAvg {
+  double sx = 0, sy = 0, sz = 0; int n = 0; float lx = 0, ly = 0, lz = 0;
+  void add(float x, float y, float z) { sx += x; sy += y; sz += z; ++n; lx = x; ly = y; lz = z; }
+  void take(float* x, float* y, float* z) {
+    if (n > 0) { *x = (float)(sx / n); *y = (float)(sy / n); *z = (float)(sz / n); } else { *x = lx; *y = ly; *z = lz; }
+    sx = sy = sz = 0; n = 0;
+  }
+};
+// One-pole low pass on the gyro rate: tau 0 passes the input through; dt is the time since the last step.
+float ema_step(float prev, float in, float dt_s, float tau_s);
+// Window thread entry for raw mouse input (WM_INPUT, relative motion) and its state for the backend.
+void post_raw_mouse(int dx, int dy);
+DeltaAccum& raw_mouse();
 
 class Backend {
  public:
@@ -242,8 +286,8 @@ class Hub {
   uint64_t message_serial_ = 0;
   std::atomic<bool> menu_open_{false}, cursor_hidden_{false}, toggle_req_{false}, capturing_{false};
   uint64_t tog_state_ = 0, tog_prev_ = 0;   // toggle-mode buttons (one bit per Button: ZL, ZR and the accessibility.toggle_buttons list)
-  struct MSample { uint64_t t; float dx, dy; };
-  std::vector<MSample> msamples_;                                       // mouse-look velocity window
+  VelWindow msamples_;                                                  // mouse-look velocity window
+  float gyro_sm_x_ = 0, gyro_sm_y_ = 0; uint64_t gyro_sm_t_ = 0;        // gyro smoothing state
   uint64_t chord_since_ns_ = 0;                                         // Back+Start
   bool chord_fired_ = false;
   unsigned cap_mask_ = 0;                                               // capture

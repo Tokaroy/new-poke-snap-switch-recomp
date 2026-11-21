@@ -60,6 +60,7 @@ SnapRecomp.exe --play --data-dir D:\SnapData
 | Water | `water_ssr`, `water_caustics`, `water_foam`, `water_ocean` |
 | Atmosphere and lens | `atmos_shafts`, `atmos_fog`, `atmos_exposure`, `atmos_bloom`, `atmos_clouds`, `atmos_sky`, `gfx_bokeh_dof`, `gfx_motion_blur`, `film` |
 | Interface | `hud_scale`, `gfx_ui_font`, `ui_smooth`, `game_language` |
+| Aim feel (`docs/aim-feel.md`) | `stick_curve`, `stick_deadzone`, `gyro_on`, `gyro_sens`, `gyro_smooth`, `gyro_dead`, `gyro_avg`, `raw_mouse`, `mouse_window_ms` |
 | Photos | `photo_export`, `photo_dir`, `hd_photos` |
 | Play | `fast_boot`, `skip_cutscenes`, `skip_course_intro`, `neo_speed`, `freecam`, `freecam_freeze`, `spawn_rand`, `spawn_seed`, `return_to_launcher` |
 

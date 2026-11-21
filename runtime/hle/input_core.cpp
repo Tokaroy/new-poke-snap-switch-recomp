@@ -544,13 +544,47 @@ static const EnvFx& env_fx() {
 bool rumble_log_enabled() { return env_fx().rumble_log; }
 bool gyro_aim_enabled() { return env_fx().gyro_set ? env_fx().gyro : pad_fx().gyro_on.load(); }
 
-void gyro_to_stick(float yaw, float pitch, float sens, bool inv_x, bool inv_y, float* sx, float* sy) {
-  auto dz = [](float v) {
+int stick_curve_from_name(const std::string& n) {
+  if (n == "classic" || n == "1") return kCurveClassic;
+  if (n == "precise" || n == "2") return kCurvePrecise;
+  return kCurveLinear;
+}
+float apply_stick_curve(int curve, float t) {
+  t = std::clamp(t, 0.0f, 1.0f);
+  switch (curve) {
+    case kCurveClassic: return std::pow(t, 1.5f);
+    case kCurvePrecise: return std::pow(t, 2.2f);
+    default: return t;
+  }
+}
+void VelWindow::velocity(uint64_t t, uint64_t win_ns, float* vx, float* vy) {
+  size_t drop = 0;
+  while (drop < v.size() && t - v[drop].t > 400000000ull) ++drop;
+  if (drop) v.erase(v.begin(), v.begin() + (long)drop);
+  double sx = 0, sy = 0;
+  for (auto& m : v) if (t - m.t <= win_ns) { sx += m.dx; sy += m.dy; }
+  const double secs = (double)win_ns * 1e-9;
+  *vx = secs > 0 ? (float)(sx / secs) : 0.0f;
+  *vy = secs > 0 ? (float)(sy / secs) : 0.0f;
+}
+float ema_step(float prev, float in, float dt_s, float tau_s) {
+  if (tau_s <= 1e-6f) return in;
+  if (dt_s <= 0) return prev;
+  const float a = 1.0f - std::exp(-dt_s / tau_s);
+  return prev + (in - prev) * a;
+}
+static DeltaAccum g_raw_mouse;
+void post_raw_mouse(int dx, int dy) { g_raw_mouse.add(dx, dy); }
+DeltaAccum& raw_mouse() { return g_raw_mouse; }
+
+void gyro_to_stick(float yaw, float pitch, float sens, bool inv_x, bool inv_y, float* sx, float* sy, float dead) {
+  dead = std::clamp(dead, 0.0f, kGyroFullDegPerSec - 5.0f);
+  auto dz = [dead](float v) {
     float a = std::fabs(v);
-    if (a <= kGyroDeadDegPerSec) return 0.0f;
-    return std::copysign(a - kGyroDeadDegPerSec, v);   // subtract the dead zone so there is no jump at its edge
+    if (a <= dead) return 0.0f;
+    return std::copysign(a - dead, v);   // subtract the dead zone so there is no jump at its edge
   };
-  float s = std::max(0.0f, sens) / (kGyroFullDegPerSec - kGyroDeadDegPerSec);
+  float s = std::max(0.0f, sens) / (kGyroFullDegPerSec - dead);
   float x = -dz(yaw) * s;      // turning the pad to the right (negative yaw rate) pushes the stick right
   float y = dz(pitch) * s;     // tipping the front up pushes the stick up
   *sx = std::clamp(inv_x ? -x : x, -1.0f, 1.0f);
@@ -566,9 +600,12 @@ static void stick_value(const StickMap& sm, bool is_left, const Mapping& m, cons
     float ax = analog == "left" ? in.lx : in.rx, ay = analog == "left" ? in.ly : in.ry;
     if (sm.invert_y) ay = -ay;
     float mag = std::sqrt(ax * ax + ay * ay);
-    if (mag > sm.deadzone) {
-      float span = std::max(0.01f, sm.outer_deadzone - sm.deadzone);
-      float scale = std::min(1.0f, (mag - sm.deadzone) / span) / mag;  // radial: inner dead zone, saturation at the outer one
+    const float ovr = pad_fx().stick_deadzone.load(std::memory_order_relaxed);
+    const float dzone = ovr >= 0.0f ? std::min(ovr, 0.9f) : sm.deadzone;
+    const float outer = ovr >= 0.0f ? std::max(sm.outer_deadzone, dzone + 0.05f) : sm.outer_deadzone;
+    if (mag > dzone) {
+      float span = std::max(0.01f, outer - dzone);
+      float scale = apply_stick_curve(pad_fx().stick_curve.load(std::memory_order_relaxed), std::min(1.0f, (mag - dzone) / span)) / mag;  // radial: inner dead zone, saturation at the outer one
       x = ax * scale; y = ay * scale;
     }
   }
@@ -630,7 +667,7 @@ PadSample map_pad(const Mapping& m, const RawInput& in) {
   const EnvFx& ev = env_fx();
   if (eff.gyro_present && (ev.gyro_set ? ev.gyro : pad_fx().gyro_on.load())) {
     float gx, gy;
-    gyro_to_stick(eff.gyro_y, eff.gyro_x, ev.sens_set ? ev.sens : pad_fx().gyro_sens.load(), pad_fx().gyro_invert_x.load(), pad_fx().gyro_invert_y.load(), &gx, &gy);
+    gyro_to_stick(eff.gyro_y, eff.gyro_x, ev.sens_set ? ev.sens : pad_fx().gyro_sens.load(), pad_fx().gyro_invert_x.load(), pad_fx().gyro_invert_y.load(), &gx, &gy, pad_fx().gyro_dead.load());
     mlx += gx; mly += gy;
   }
   stick_value(m.right, false, m, eff, mlx, mly, &rx, &ry);
@@ -1462,8 +1499,32 @@ void Hub::poll(int min_interval_ms) {
   std::lock_guard<std::mutex> g(mu_);
   if (!backend_) backend_ = make_default_backend();
   uint64_t t = now_ns();
+  // SNAP_INPUT_STATS=1: how the game reads input (log line every 5 s): reads of the pad per presented frame, how old the sample it got was
+  // (0 when the read polled the devices itself; the time since the last poll when the 1 ms throttle served it) and the mouse totals.
+  static const bool stats_on = [] { const char* e = std::getenv("SNAP_INPUT_STATS"); return e && *e && *e != '0'; }();
+  struct Stats { uint64_t t0 = 0, reads = 0, polls = 0, age_sum = 0, age_max = 0, mouse_events = 0, last_pres_ns = 0, phase_sum = 0, phase_n = 0; int pres0 = 0, last_pres = -1; double px = 0; };
+  static Stats st;
+  if (stats_on) {
+    if (!st.t0) { st.t0 = t; st.pres0 = (int)nvn::g_presentCount; }
+    ++st.reads;
+    const uint64_t age = last_poll_ns_ && t - last_poll_ns_ < (uint64_t)min_interval_ms * 1000000ull ? t - last_poll_ns_ : 0;
+    st.age_sum += age; st.age_max = std::max(st.age_max, age);
+    if ((int)nvn::g_presentCount != st.last_pres) {   // first read after a new present: how long after it
+      if (st.last_pres >= 0 && st.last_pres_ns) { st.phase_sum += t - st.last_pres_ns; ++st.phase_n; }
+      st.last_pres = (int)nvn::g_presentCount; st.last_pres_ns = t;
+    }
+    if (t - st.t0 >= 5000000000ull) {
+      const int pres = (int)nvn::g_presentCount - st.pres0;
+      log("input stats: %.1f s, %llu reads, %llu polls, %d presents (%.2f reads per present), sample age mean %.3f ms max %.3f ms, read after present mean %.3f ms, mouse %llu moves %.0f px",
+          (double)(t - st.t0) * 1e-9, (unsigned long long)st.reads, (unsigned long long)st.polls, pres, pres > 0 ? (double)st.reads / pres : 0.0,
+          st.reads ? (double)st.age_sum / st.reads * 1e-6 : 0.0, (double)st.age_max * 1e-6, st.phase_n ? (double)st.phase_sum / st.phase_n * 1e-6 : 0.0,
+          (unsigned long long)st.mouse_events, st.px);
+      st = Stats{}; st.t0 = t; st.pres0 = (int)nvn::g_presentCount; st.last_pres = (int)nvn::g_presentCount;
+    }
+  }
   if (last_poll_ns_ && t - last_poll_ns_ < (uint64_t)min_interval_ms * 1000000ull) return;
   last_poll_ns_ = t;
+  if (stats_on) ++st.polls;
   const bool open = menu_open_.load();
   const bool fcm = freecam::wants_mouse() && !open;   // the free camera flies with the mouse: confine and recenter the cursor like mouse-look
   const bool lock = (map_.lock_cursor && !open && (!map_.mouse_look || raw_.in_ride)) || fcm;   // mouse look confines the cursor on a ride only (menus: free cursor, touch screen)
@@ -1529,14 +1590,22 @@ void Hub::poll(int min_interval_ms) {
     icons::set_last_input(kbm_last);
   }
   // mouse-look velocity: pixels moved over a window of 40 ms (smoothing off) up to 340 ms (smoothing 1)
-  if (r.focused && (r.mouse_dx != 0 || r.mouse_dy != 0)) msamples_.push_back({t, r.mouse_dx, r.mouse_dy});
+  if (stats_on && (r.mouse_dx != 0 || r.mouse_dy != 0)) { ++st.mouse_events; st.px += std::fabs(r.mouse_dx) + std::fabs(r.mouse_dy); }
+  if (r.focused && (r.mouse_dx != 0 || r.mouse_dy != 0)) msamples_.add(t, r.mouse_dx, r.mouse_dy);
   {
-    const uint64_t win = (uint64_t)((0.04 + 0.30 * std::clamp(map_.mouse_smoothing, 0.0f, 1.0f)) * 1e9);
-    while (!msamples_.empty() && t - msamples_.front().t > 400000000ull) msamples_.erase(msamples_.begin());
-    double sx = 0, sy = 0;
-    for (auto& m : msamples_) if (t - m.t <= win) { sx += m.dx; sy += m.dy; }
-    r.mouse_vx = (float)(sx / ((double)win * 1e-9));
-    r.mouse_vy = (float)(sy / ((double)win * 1e-9));
+    const double base = std::clamp(pad_fx().mouse_window_ms.load(), 8.0f, 80.0f) * 1e-3;   // 40 ms unless the player shortened it
+    const uint64_t win = (uint64_t)((base + 0.30 * std::clamp(map_.mouse_smoothing, 0.0f, 1.0f)) * 1e9);
+    msamples_.velocity(t, win, &r.mouse_vx, &r.mouse_vy);
+  }
+  {   // gyro smoothing (off by default): a one-pole filter on the rate, time constant up to 60 ms
+    const float sm = std::clamp(pad_fx().gyro_smooth.load(), 0.0f, 1.0f);
+    if (r.gyro_present && sm > 0.0f) {
+      const float dt = gyro_sm_t_ ? (float)(t - gyro_sm_t_) * 1e-9f : 1.0f;
+      gyro_sm_x_ = ema_step(gyro_sm_x_, r.gyro_x, dt > 0.25f ? 1.0f : dt, dt > 0.25f ? 0.0f : sm * 0.06f);
+      gyro_sm_y_ = ema_step(gyro_sm_y_, r.gyro_y, dt > 0.25f ? 1.0f : dt, dt > 0.25f ? 0.0f : sm * 0.06f);
+      r.gyro_x = gyro_sm_x_; r.gyro_y = gyro_sm_y_;
+      gyro_sm_t_ = t;
+    } else { gyro_sm_t_ = 0; }
   }
   raw_ = r;
   icons::set_pad((icons::Family)r.pad_family, r.pad_connected);

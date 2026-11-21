@@ -100,6 +100,14 @@ LRESULT ui_wndproc_impl(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_MOUSEWHEEL:
       hle::input::post_wheel(GET_WHEEL_DELTA_WPARAM(w));
       break;
+    case WM_INPUT: {   // raw mouse motion (only delivered once the backend registered for it: raw_mouse option)
+      RAWINPUT ri{};
+      UINT sz = sizeof ri;
+      if (GetRawInputData(reinterpret_cast<HRAWINPUT>(l), RID_INPUT, &ri, &sz, sizeof(RAWINPUTHEADER)) != (UINT)-1 && ri.header.dwType == RIM_TYPEMOUSE &&
+          !(ri.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE))
+        hle::input::post_raw_mouse((int)ri.data.mouse.lLastX, (int)ri.data.mouse.lLastY);
+      break;
+    }
     case WM_KILLFOCUS:
     case WM_CLOSE:
     case WM_DESTROY:

@@ -77,10 +77,38 @@ struct SdlPads {
   std::mutex pads_mu;
   std::thread scan_thread_;
   std::atomic<bool> stop_{false};
+  // Gyro averaging (SNAP_GYRO_AVG / gyro_avg, off by default): a thread samples the sensor about every millisecond and the game's read gets the
+  // mean since its previous read, instead of the one newest sample (noisier, and it misses the motion between two reads).
+  std::mutex sdl_mu;     // SDL_UpdateGamepads and the sensor reads, from poll and from the gyro thread
+  std::mutex gavg_mu;
+  GyroAvg gavg;
+  std::thread gyro_thread_;
+  void gyro_loop() {
+    while (!stop_.load()) {
+      if (pad_fx().gyro_on.load() && pad_fx().gyro_avg.load()) {
+        std::lock_guard<std::mutex> lk(sdl_mu);
+        SDL_UpdateGamepads();
+        std::lock_guard<std::mutex> pl(pads_mu);
+        for (SDL_Gamepad* pad : pads) {
+          if (!SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO)) continue;
+          if (!SDL_GamepadSensorEnabled(pad, SDL_SENSOR_GYRO)) SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_GYRO, true);
+          float g[3] = {0, 0, 0};
+          if (SDL_GetGamepadSensorData(pad, SDL_SENSOR_GYRO, g, 3)) {
+            constexpr float kDeg = 57.29578f;
+            std::lock_guard<std::mutex> ga(gavg_mu);
+            gavg.add(g[0] * kDeg, g[1] * kDeg, g[2] * kDeg);
+          }
+          break;
+        }
+      }
+      SDL_Delay(1);
+    }
+  }
   bool scan_threaded_ = [] { const char* e = std::getenv("SNAP_SDL_SCAN_THREAD"); return !(e && *e == '0'); }();
   ~SdlPads() {
     stop_.store(true);
     if (scan_thread_.joinable()) scan_thread_.join();
+    if (gyro_thread_.joinable()) gyro_thread_.join();
   }
   std::vector<SDL_JoystickID> seen;   // joystick ids already reported
   // Gamepads SDL_OpenGamepad refused: logged once, then retried every retry_ms_ (default 3 s, SNAP_SDL_RETRY_MS, like the XInput
@@ -191,7 +219,11 @@ struct SdlPads {
         }
       });
     } else if (!last_scan_ns || t - last_scan_ns > 1000000000ull) { last_scan_ns = t; scan(); }
+    const bool avg = pad_fx().gyro_on.load() && pad_fx().gyro_avg.load();
+    if (avg && !gyro_thread_.joinable()) gyro_thread_ = std::thread([this] { gyro_loop(); });
+    std::unique_lock<std::mutex> sdl_lk(sdl_mu);
     SDL_UpdateGamepads();
+    sdl_lk.unlock();
     std::lock_guard<std::mutex> lk(pads_mu);
     for (SDL_Gamepad* pad : pads) {
       RawInput r;
@@ -209,7 +241,12 @@ struct SdlPads {
       r.lx = ax(SDL_GAMEPAD_AXIS_LEFTX); r.ly = -ax(SDL_GAMEPAD_AXIS_LEFTY);  // SDL y is down positive
       r.rx = ax(SDL_GAMEPAD_AXIS_RIGHTX); r.ry = -ax(SDL_GAMEPAD_AXIS_RIGHTY);
       r.lt = std::max(0.0f, ax(SDL_GAMEPAD_AXIS_LEFT_TRIGGER)); r.rt = std::max(0.0f, ax(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER));
-      if (pad_fx().gyro_on.load() && SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO)) {
+      if (avg && SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO)) {   // the average the gyro thread gathered since the last read
+        if (!SDL_GamepadSensorEnabled(pad, SDL_SENSOR_GYRO)) SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_GYRO, true);
+        std::lock_guard<std::mutex> ga(gavg_mu);
+        gavg.take(&r.gyro_x, &r.gyro_y, &r.gyro_z);
+        r.gyro_present = true;
+      } else if (pad_fx().gyro_on.load() && SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO)) {
         if (!SDL_GamepadSensorEnabled(pad, SDL_SENSOR_GYRO)) SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_GYRO, true);
         float g[3] = {0, 0, 0};
         if (SDL_GetGamepadSensorData(pad, SDL_SENSOR_GYRO, g, 3)) {   // rad/s
@@ -336,6 +373,16 @@ class Win32Backend final : public Backend {
         if (vk == VK_RETURN && swallow_enter_) continue;
         if (vk && (GetAsyncKeyState(vk) & 0x8000)) out.keys.set((size_t)k);
       }
+      float rdx = 0, rdy = 0;
+      bool use_raw = false;
+      if (pad_fx().raw_mouse.load() && fg_ours) {   // WM_INPUT (runtime/ui/ui_overlay.cpp): relative motion, no pointer acceleration, summed between reads
+        if (raw_hwnd_ != fg) {
+          RAWINPUTDEVICE rid{0x01, 0x02, 0, fg};   // generic desktop, mouse
+          if (RegisterRawInputDevices(&rid, 1, sizeof rid)) raw_hwnd_ = fg;
+        }
+        raw_mouse().take(&rdx, &rdy);
+        use_raw = raw_hwnd_ == fg && raw_mouse().events.load() > 0;
+      } else if (raw_mouse().events.load() > 0) { float a, b; raw_mouse().take(&a, &b); }
       POINT p;
       if (GetCursorPos(&p) && fg) {
         POINT c = p;
@@ -353,7 +400,10 @@ class Win32Backend final : public Backend {
           } else if (clipped_) { ClipCursor(nullptr); clipped_ = false; }
           if (recenter_ && fg_ours) {
             POINT mid{(tl.x + br.x) / 2, (tl.y + br.y) / 2};
-            if (have_last_ && was_recenter_) { out.mouse_dx = (float)(p.x - mid.x); out.mouse_dy = (float)(p.y - mid.y); }
+            if (have_last_ && was_recenter_) {
+              if (use_raw) { out.mouse_dx = rdx; out.mouse_dy = rdy; }
+              else { out.mouse_dx = (float)(p.x - mid.x); out.mouse_dy = (float)(p.y - mid.y); }
+            }
             SetCursorPos(mid.x, mid.y);
             last_ = mid;
             have_last_ = true;
@@ -405,6 +455,7 @@ class Win32Backend final : public Backend {
   ULONGLONG drop_log_tick_ = 0;
   ULONGLONG rumble_tick_ = 0;
   static constexpr ULONGLONG kRumbleStaleMs = 2000;   // the game refreshes its values every frame
+  HWND raw_hwnd_ = nullptr;   // window the raw mouse is registered for
   bool lock_ = false, recenter_ = false, clipped_ = false, was_recenter_ = false, swallow_enter_ = false;   // swallow_enter_: Alt+Enter (fullscreen) must not reach the game as Plus
   RECT clip_{};
 #ifdef HLE_WITH_SDL3
