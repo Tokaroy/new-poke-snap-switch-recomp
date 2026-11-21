@@ -323,14 +323,39 @@ static bool portable_mode() {
   const char* e = std::getenv("SNAP_PORTABLE");
   return e && e[0] == '1';
 }
+// An environment variable of any length (a portable folder deep in a path can pass MAX_PATH).
+static std::wstring env_wide(const wchar_t* name) {
+  DWORD n = GetEnvironmentVariableW(name, nullptr, 0);
+  if (!n) return {};
+  std::wstring v(n, L'\0');
+  DWORD got = GetEnvironmentVariableW(name, v.data(), n);
+  v.resize(got);
+  return v;
+}
+// Writes config.json through a temp file and a replace, so a crash or a full disk never leaves a half-written file.
+static bool write_config_atomic(const fs::path& cfg_path, const hle::Json& cfg) {
+  std::string text;
+  hle::json_dump(cfg, text);
+  const fs::path tmp = cfg_path.wstring() + L".tmp";
+  std::error_code ec;
+  {
+    std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+    if (!f) return false;
+    f << text << "\n";
+    f.flush();
+    if (!f.good()) { f.close(); fs::remove(tmp, ec); return false; }
+  }
+  if (!MoveFileExW(tmp.c_str(), cfg_path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) { fs::remove(tmp, ec); return false; }
+  return true;
+}
 static fs::path g_work_dir;   // config.json "work" (the builder's work folder; the exe lives in <work>/out); set by prepare()
 
 static std::string save_folder(const hle::Json& cfg) {
   if (const char* e = std::getenv("SNAP_SAVE_DIR")) if (*e) return e;
   if (const hle::Json* s = cfg.get("save_root")) if (!s->str().empty()) return s->str();
   if (portable_mode()) {   // portable.txt: the runtime reads the redirected %APPDATA% (host/portable.cpp), so the saves are under portable_data
-    wchar_t env_ad[MAX_PATH] = {};
-    if (GetEnvironmentVariableW(L"APPDATA", env_ad, MAX_PATH) && env_ad[0]) return U8(env_ad) + "\\SnapRecomp\\save";
+    const std::wstring env_ad = env_wide(L"APPDATA");
+    if (!env_ad.empty()) return U8(env_ad) + "\\SnapRecomp\\save";
   }
   wchar_t* ad = nullptr;
   std::string out;
@@ -356,8 +381,8 @@ static fs::path updates_dir() {
     }
     return base / L"updates";
   }
-  wchar_t env_la[MAX_PATH] = {};
-  if (GetEnvironmentVariableW(L"LOCALAPPDATA", env_la, MAX_PATH) && env_la[0]) return fs::path(env_la) / L"SnapRecomp" / L"updates";
+  const std::wstring env_la = env_wide(L"LOCALAPPDATA");
+  if (!env_la.empty()) return fs::path(env_la) / L"SnapRecomp" / L"updates";
   fs::path p;
   wchar_t* la = nullptr;
   if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &la))) { p = fs::path(la) / L"SnapRecomp" / L"updates"; CoTaskMemFree(la); }
@@ -376,10 +401,7 @@ static bool update_enabled(const hle::Json& cfg) {   // on unless config.json sa
 }
 
 static void save_config(const fs::path& cfg_path, const hle::Json& cfg) {
-  std::string text;
-  hle::json_dump(cfg, text);
-  std::ofstream f(cfg_path, std::ios::binary | std::ios::trunc);
-  f << text << "\n";
+  write_config_atomic(cfg_path, cfg);
 }
 
 // "python" -I "<builder>\snap_builder.py" <args>; empty when config.json does not say where the builder is.
@@ -1067,8 +1089,8 @@ static int ask_themed(const UpdateNotice& notice, const fs::path& cfg_path, cons
 static fs::path logs_dir() {
   wchar_t* la = nullptr;
   fs::path logs;
-  wchar_t env_la[MAX_PATH] = {};
-  if (GetEnvironmentVariableW(L"LOCALAPPDATA", env_la, MAX_PATH) && env_la[0]) logs = fs::path(env_la) / L"SnapRecomp" / L"logs";
+  const std::wstring env_la = env_wide(L"LOCALAPPDATA");
+  if (!env_la.empty()) logs = fs::path(env_la) / L"SnapRecomp" / L"logs";
   else if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &la))) { logs = fs::path(la) / L"SnapRecomp" / L"logs"; CoTaskMemFree(la); }
   return logs;
 }
@@ -1212,10 +1234,7 @@ bool prepare(Result& r) {
   if (!cfg.get("upscalers_offered") && ((!autoplay && !r.play) || std::getenv("SNAP_UPSCALER_AUTOACCEPT"))) {
     offer_upscalers(exe_dir, data, true);
     cfg.set("upscalers_offered", hle::Json::boolean_(true));
-    std::string text;
-    hle::json_dump(cfg, text);
-    std::ofstream f(cfg_path, std::ios::binary | std::ios::trunc);
-    f << text << "\n";
+    write_config_atomic(cfg_path, cfg);
   }
   if (std::getenv("SNAP_LAUNCHER_FETCH_ONLY")) return true;   // test switch: only the upscaler offer, never start the game
   // Update notice from the last background check, then start the next one (at most one GitHub request a day, none when switched off;
@@ -1301,10 +1320,7 @@ bool prepare(Result& r) {
       s_verify = uv;   // that folder was just checked: no second pass
       s_verify->state.store(1);
       s_verify_root = p;
-      std::string text;
-      hle::json_dump(cfg, text);
-      std::ofstream f(cfg_path, std::ios::binary | std::ios::trunc);
-      f << text << "\n";
+      write_config_atomic(cfg_path, cfg);
       continue;
     }
     std::string bad;

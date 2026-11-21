@@ -45,6 +45,15 @@ std::string U8(const std::wstring& w) {
   WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), s.data(), n, nullptr, nullptr);
   return s;
 }
+std::wstring module_path() {   // the exe path at any length
+  std::wstring p(MAX_PATH, L'\0');
+  for (;;) {
+    const DWORD n = GetModuleFileNameW(nullptr, p.data(), (DWORD)p.size());
+    if (n == 0) return {};
+    if (n < p.size()) { p.resize(n); return p; }
+    p.resize(p.size() * 2);
+  }
+}
 std::string env(const char* name) {
   wchar_t buf[2048];
   const DWORD n = GetEnvironmentVariableW(W(name).c_str(), buf, 2048);
@@ -329,8 +338,7 @@ std::string system_info(const char* who) {
   }
   EnumDisplayMonitors(nullptr, nullptr, mon_cb, (LPARAM)&o);
   // the running program
-  wchar_t mp[MAX_PATH] = {};
-  GetModuleFileNameW(nullptr, mp, MAX_PATH);
+  const std::wstring mp = module_path();
   o << "Program: " << U8(fs::path(mp).filename().wstring()) << "\n";
   o << "Cheats active: " << (hle::cheats::active() ? "yes" : "no") << "\n";   // runtime/hle/cheats.h: the cheat switch is on and a cheat or an always-on section is enabled
   // settings that are in effect
@@ -397,7 +405,7 @@ bool make(const std::string& dir_in, const char* who, std::string* path, std::st
   add_file("settings/audio.json", cfgdir / L"audio.json", 1u << 18);
   add_file("settings/window.json", cfgdir / L"window.json", 1u << 18);
   add_file("settings/hle.json", droot / L"config" / L"hle.json", 1u << 18);
-  { wchar_t mp[MAX_PATH] = {}; GetModuleFileNameW(nullptr, mp, MAX_PATH); add_file("settings/config.json", fs::path(mp).parent_path() / L"config.json", 1u << 18); }
+  { const std::wstring mp = module_path(); add_file("settings/config.json", fs::path(mp).parent_path() / L"config.json", 1u << 18); }
   add_file("settings/mods.json", droot / L"mods" / L"mods.json", 1u << 18);
   { std::string ic(16384, '\0'); ic.resize((size_t)snap_install_check_text(ic.data(), (int)ic.size())); if (!ic.empty()) add_text("install_check.txt", ic); }   // host/mods/install_check.cpp: words only, no hashes
   // shader cache: stats, a size listing, and the pipeline key list when it is small
