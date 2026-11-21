@@ -307,7 +307,12 @@ uint32_t heap_set_size(uint64_t size) {
 uint32_t heap_alloc_block(uint64_t out, uint64_t size) {   // first fit, page aligned
     if (!size) return R_INVALID_RANGE;
     size = page_up(size);
-    std::lock_guard<std::mutex> lk(g_mm);
+    // The block is zeroed after g_mm is released (a large block took milliseconds under the lock every other memory call needs).
+    // Safe: the address reaches the guest only through `out`, written after the memset, so no other thread can use or free the
+    // block before it is zeroed, and a heap shrink refuses while the recorded block is in use. SNAP_HEAP_ZERO_LOCKED=1 zeroes
+    // under the lock, as before.
+    static const bool zero_locked = [] { const char *e = getenv("SNAP_HEAP_ZERO_LOCKED"); return e && *e == '1'; }();
+    std::unique_lock<std::mutex> lk(g_mm);
     uint64_t at = g_heap_base;
     for (auto &b : g_heap_blocks) {
         if (b.first - at >= size) break;
@@ -318,6 +323,7 @@ uint32_t heap_alloc_block(uint64_t out, uint64_t size) {   // first fit, page al
         return R_OUT_OF_MEMORY;
     }
     g_heap_blocks[at] = size;
+    if (!zero_locked) lk.unlock();
     memset((void *)(uintptr_t)at, 0, size);
     gst<uint64_t>(out, at);
     return R_OK;
