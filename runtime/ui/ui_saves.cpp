@@ -28,7 +28,7 @@
 #include "ui_i18n.h"
 #include "ui_internal.h"
 
-extern "C" __attribute__((weak)) void snap_fs_drain_for_exit(int ms);   // runtime/hle/fs.cpp
+extern "C" void snap_fs_drain_for_exit(int ms);   // runtime/hle/fs.cpp (always linked in the host build; a weak declaration here collides in lld-link)
 
 namespace snap::ui {
 
@@ -246,7 +246,7 @@ void restart_now(const std::string& profile_name) {
   }
   CloseHandle(pi.hThread);
   CloseHandle(pi.hProcess);
-  if (snap_fs_drain_for_exit) snap_fs_drain_for_exit(3000);   // let a save commit / photo export in flight finish (bounded), like the window-close path
+  snap_fs_drain_for_exit(3000);   // let a save commit / photo export in flight finish (bounded), like the window-close path
   TerminateProcess(GetCurrentProcess(), 0);   // the save layer commits atomically; unsaved progress is lost
 }
 
