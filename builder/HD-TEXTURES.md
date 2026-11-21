@@ -52,6 +52,12 @@ The HD build was timed while other programs were using the graphics card, so it 
 - Mip maps are made in linear light. Cut-out alpha, such as leaves and fences, keeps the same coverage at every mip level so foliage does not thin out in the distance.
 - BC3 color maps are rewritten as BC7 (same size, better quality). `--bc7 all` also converts BC1 (twice the memory); `--bc7 off` keeps every format.
 
+### In-game check (2026-11-21, HD level, `--from-data`)
+
+Built for Florio, the lab, the beach (LC_003), the jungle (LC_005), the cave (LC_010) and most menus: 5,933 textures, 8.4 GB, about 5 h on a shared RTX 4090. Pokémon textures outside the course archives were not built yet. At 4K with the Enhanced look, same-frame A/B pairs (`SNAP_MODS_AB=1`) showed sharper bark, rock and ground grain and leaf veins, no seams on tiling textures, no rims on leaf edges and no color shift. The game's VRAM peak on a Florio photo run went from 3.0 GB to 3.4 GB. Time to the ride and fps stayed within run-to-run noise (39.1 s against 40.5 s; 57.2 against 55.1 fps). The photo still reached the professor's Score.
+
+`--only` builds retire every pack texture outside the match into the work folder. The next build without `--only` brings them back without rebuilding them.
+
 ## Lighting
 
 Each course stores its baked light in sets of four BC6H textures per mesh, named `...^0^Lightmap` to `...^3^Lightmap`. Only the `^0^` map is light. The other three are signed directional terms (values from about -32 to 58) and are never changed; changing them would bend the light's direction.
