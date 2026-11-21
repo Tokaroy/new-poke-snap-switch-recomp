@@ -42,6 +42,10 @@ struct Settings {
 };
 
 Settings g_s;
+Settings g_file;                      // what window.json held at start (defaults where it had no value), before command-line / environment overrides
+Settings g_env;                       // the values the environment gave, valid where the matching bit of g_env_mask is set
+unsigned g_env_mask = 0;
+enum : unsigned { E_MODE = 1, E_MON = 2, E_W = 4, E_H = 8, E_X = 16, E_Y = 32, E_PAUSE = 64, E_MUTE = 128, E_NOTIFY = 256, E_CAP = 512 };
 std::mutex g_mu;                      // guards g_s, g_norm, g_have_norm
 HWND g_hwnd;
 RECT g_norm = {0, 0, 0, 0};           // windowed outer rectangle (restore target)
@@ -86,21 +90,23 @@ void load_settings() {
             if (auto* v = j.get("frame_cap")) g_s.frame_cap = (int)v->num(0);
         } else std::fprintf(stderr, "[window] %s is invalid (%s): defaults used\n", cfg_path().c_str(), err.c_str());
     }
+    g_file = g_s;
     int v;
-    if (const char* e = std::getenv("SNAP_WINDOW_MODE")) g_s.mode = (std::strcmp(e, "borderless") == 0 || std::strcmp(e, "1") == 0) ? SNAP_WINDOW_BORDERLESS : SNAP_WINDOW_WINDOWED;
-    if (env_int("SNAP_WINDOW_MONITOR", &v)) g_s.monitor = v;
-    if (env_int("SNAP_WINDOW_W", &v)) g_s.width = v;
-    if (env_int("SNAP_WINDOW_H", &v)) g_s.height = v;
-    if (env_int("SNAP_WINDOW_X", &v)) g_s.x = v;
-    if (env_int("SNAP_WINDOW_Y", &v)) g_s.y = v;
-    if (env_int("SNAP_WINDOW_PAUSE", &v)) g_s.pause_on_focus_loss = v != 0;
-    if (env_int("SNAP_WINDOW_MUTE_BG", &v)) g_s.mute_in_background = v != 0;
-    if (env_int("SNAP_WINDOW_NOTIFY", &v)) g_s.game_notify = v != 0;
-    if (env_int("SNAP_WINDOW_FRAME_CAP", &v)) g_s.frame_cap = v;
+    if (const char* e = std::getenv("SNAP_WINDOW_MODE")) { g_s.mode = (std::strcmp(e, "borderless") == 0 || std::strcmp(e, "1") == 0) ? SNAP_WINDOW_BORDERLESS : SNAP_WINDOW_WINDOWED; g_env_mask |= E_MODE; }
+    if (env_int("SNAP_WINDOW_MONITOR", &v)) { g_s.monitor = v; g_env_mask |= E_MON; }
+    if (env_int("SNAP_WINDOW_W", &v)) { g_s.width = v; g_env_mask |= E_W; }
+    if (env_int("SNAP_WINDOW_H", &v)) { g_s.height = v; g_env_mask |= E_H; }
+    if (env_int("SNAP_WINDOW_X", &v)) { g_s.x = v; g_env_mask |= E_X; }
+    if (env_int("SNAP_WINDOW_Y", &v)) { g_s.y = v; g_env_mask |= E_Y; }
+    if (env_int("SNAP_WINDOW_PAUSE", &v)) { g_s.pause_on_focus_loss = v != 0; g_env_mask |= E_PAUSE; }
+    if (env_int("SNAP_WINDOW_MUTE_BG", &v)) { g_s.mute_in_background = v != 0; g_env_mask |= E_MUTE; }
+    if (env_int("SNAP_WINDOW_NOTIFY", &v)) { g_s.game_notify = v != 0; g_env_mask |= E_NOTIFY; }
+    if (env_int("SNAP_WINDOW_FRAME_CAP", &v)) { g_s.frame_cap = v; g_env_mask |= E_CAP; }
     if (g_s.width < 320) g_s.width = 320;
     if (g_s.height < 180) g_s.height = 180;
     if (g_s.frame_cap < 0) g_s.frame_cap = 0;
     g_cap = g_s.frame_cap;
+    g_env = g_s;
     // test runs (a save dir override) must not rewrite the owner's remembered placement unless asked
     const char* sd = std::getenv("SNAP_SAVE_DIR");
     g_save_enabled = !(sd && *sd) || [] { const char* ws = std::getenv("SNAP_WINDOW_SAVE"); return ws && *ws && *ws != '0'; }();
@@ -111,16 +117,20 @@ void save_settings() {
     hle::Json j = hle::Json::object();
     {
         std::lock_guard<std::mutex> lk(g_mu);
-        j.set("mode", hle::Json::string(g_s.mode == SNAP_WINDOW_BORDERLESS ? "borderless" : "windowed"));
-        j.set("monitor", hle::Json::number(g_s.monitor));
-        j.set("width", hle::Json::number(g_s.width));
-        j.set("height", hle::Json::number(g_s.height));
-        if (g_s.x != INT_MIN) { j.set("x", hle::Json::number(g_s.x)); j.set("y", hle::Json::number(g_s.y)); }
+        // A field given on the command line / environment is written back as the file had it, unless it changed since (the user moved or toggled it).
+        auto pick = [&](unsigned bit, auto cur, auto env, auto file) { return ((g_env_mask & bit) && cur == env) ? file : cur; };
+        const int mode = pick(E_MODE, g_s.mode, g_env.mode, g_file.mode);
+        const int x = pick(E_X, g_s.x, g_env.x, g_file.x), y = pick(E_Y, g_s.y, g_env.y, g_file.y);
+        j.set("mode", hle::Json::string(mode == SNAP_WINDOW_BORDERLESS ? "borderless" : "windowed"));
+        j.set("monitor", hle::Json::number(pick(E_MON, g_s.monitor, g_env.monitor, g_file.monitor)));
+        j.set("width", hle::Json::number(pick(E_W, g_s.width, g_env.width, g_file.width)));
+        j.set("height", hle::Json::number(pick(E_H, g_s.height, g_env.height, g_file.height)));
+        if (x != INT_MIN) { j.set("x", hle::Json::number(x)); j.set("y", hle::Json::number(y)); }
         j.set("maximized", hle::Json::boolean_(g_s.maximized));
-        j.set("pause_on_focus_loss", hle::Json::boolean_(g_s.pause_on_focus_loss));
-        j.set("mute_in_background", hle::Json::boolean_(g_s.mute_in_background));
-        j.set("game_notify", hle::Json::boolean_(g_s.game_notify));
-        j.set("frame_cap", hle::Json::number(g_s.frame_cap));
+        j.set("pause_on_focus_loss", hle::Json::boolean_(pick(E_PAUSE, g_s.pause_on_focus_loss, g_env.pause_on_focus_loss, g_file.pause_on_focus_loss)));
+        j.set("mute_in_background", hle::Json::boolean_(pick(E_MUTE, g_s.mute_in_background, g_env.mute_in_background, g_file.mute_in_background)));
+        j.set("game_notify", hle::Json::boolean_(pick(E_NOTIFY, g_s.game_notify, g_env.game_notify, g_file.game_notify)));
+        j.set("frame_cap", hle::Json::number(pick(E_CAP, g_s.frame_cap, g_env.frame_cap, g_file.frame_cap)));
     }
     std::string out; hle::json_dump(j, out); out += "\n";
     CreateDirectoryA(cfg_dir().c_str(), nullptr);
