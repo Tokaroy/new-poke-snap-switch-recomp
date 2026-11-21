@@ -234,10 +234,19 @@ HOTFN_INLINE = {BASE + 0x96d390: 'rt_hot_matdecomp',          # matrix -> scale/
                 BASE + 0x96d5f0: 'rt_hot_matdecomp_s',        # the same with a per-axis scale vector x4
                 BASE + 0x96d8d8: 'rt_hot_matdecomp_s_check',  # `stp d0, d1, [x1]`
                 BASE + 0x155600: 'rt_hot_reverb',             # Wwise reverb 4-line delay network (x0 state, x1 in, w2 count, x3 out)
-                BASE + 0x155a1c: 'rt_hot_reverb_check'}       # `st1 {v0.s}[3], [x8]` (last filter state store)
+                BASE + 0x155a1c: 'rt_hot_reverb_check',       # `st1 {v0.s}[3], [x8]` (last filter state store)
+                BASE + 0x8b5f10: 'rt_hot_hier',               # recursive node transform walk (x0 skeleton, w1 node, x2 context)
+                BASE + 0x8b66b0: 'rt_hot_hier_check',         # its epilogue (every return passes here)
+                BASE + 0x8b7400: 'rt_hot_bone1',              # bone update loop 1 body, after the id checks ...
+                BASE + 0x8b7960: 'rt_hot_bone1_check',        # ... to after its decomposition call
+                BASE + 0x8b7ac0: 'rt_hot_bone2',              # bone update loop 2 body ...
+                BASE + 0x8b8028: 'rt_hot_bone2_check'}        # ... to after its decomposition call
 HOTFN_BRANCH = {BASE + 0x96d390: BASE + 0x96d5b4,             # done on the host: to the `ret`
                 BASE + 0x96d5f0: BASE + 0x96d8dc,
-                BASE + 0x155600: BASE + 0x155a20}
+                BASE + 0x155600: BASE + 0x155a20,
+                BASE + 0x8b5f10: BASE + 0x8b66cc,
+                BASE + 0x8b7400: BASE + 0x8b7960,             # mid-function: to the instruction after the `bl` (only
+                BASE + 0x8b7ac0: BASE + 0x8b8028}             # callee-saved registers and memory are live there)
 
 
 def hotfn_enabled():

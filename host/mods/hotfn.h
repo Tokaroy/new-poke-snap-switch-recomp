@@ -217,4 +217,204 @@ inline void ReverbFdn4(Cpu *c, uint64_t st, uint64_t in, uint32_t n, uint64_t ou
     }
 }
 
+// ---------------------------------------------------------------- 4x4 row matrices (bone and node transforms)
+
+#define HF_S __builtin_shufflevector
+
+// m[0]*a0 + m[1]*a1 + m[2]*a2 + m[3]*a3 as the guest's FMUL-by-element and three FMLA-by-element (row m times the
+// matrix whose rows are a0..a3)
+inline vf32 MulRow(Cpu *c, vf32 a0, vf32 a1, vf32 a2, vf32 a3, vf32 m) {
+    return Fma(c, Fma(c, Fma(c, Mul(c, a0, Splat(m[0])), a1, Splat(m[1])), a2, Splat(m[2])), a3, Splat(m[3]));
+}
+
+// Inverse of the 4x4 row matrix p0..p3 the way the game's inlined vector-math inverse computes it (the same sequence at
+// main+0x8b5f10 and in both bone loops of main+0x8b6750): 2x2 cofactor products of the transposed matrix, sign vectors
+// sa = (1,-1,1,-1) and sb = (-1,1,-1,1) (the guest reads them from its stack copy), determinant by FADD/FADDP, 1/det by
+// FRECPE and two FRECPS steps, and every row zeroed when the determinant is 0. Each line is one guest instruction, in
+// an order that keeps each FP operation's operands as the guest has them.
+inline void Inverse4(Cpu *c, vf32 p0, vf32 p1, vf32 p2, vf32 p3, vf32 sa, vf32 sb, vf32 inv[4]) {
+    const vf32 t1 = Mul(c, HF_S(p2, p3, 6, 6, 6, 2), HF_S(p1, p2, 7, 7, 3, 3));
+    const vf32 t2 = Mul(c, HF_S(p1, p2, 6, 6, 2, 2), HF_S(p2, p3, 7, 7, 7, 3));
+    const vf32 t3 = Mul(c, HF_S(p0, p1, 7, 3, 3, 3), HF_S(p2, p3, 6, 6, 6, 2));
+    const vf32 t4 = Mul(c, HF_S(p0, p1, 7, 3, 3, 3), HF_S(p1, p2, 6, 6, 2, 2));
+    const vf32 t5 = Sub(c, t2, t1);
+    const vf32 t7 = Sub(c, Mul(c, HF_S(p0, p1, 6, 2, 2, 2), HF_S(p2, p3, 7, 7, 7, 3)), t3);
+    const vf32 t9 = Sub(c, Mul(c, HF_S(p0, p1, 6, 2, 2, 2), HF_S(p1, p2, 7, 7, 3, 3)), t4);
+    const vf32 t11 = Fma(c, Mul(c, HF_S(p0, p1, 5, 1, 1, 1), t5), vneg_s(HF_S(p1, p2, 5, 5, 1, 1)), t7);
+    const vf32 t13 = Fma(c, Mul(c, HF_S(p0, p1, 4, 0, 0, 0), t5), vneg_s(HF_S(p1, p2, 4, 4, 0, 0)), t7);
+    const vf32 t14 = Mul(c, HF_S(p1, p2, 4, 4, 0, 0), HF_S(p2, p3, 5, 5, 5, 1));
+    const vf32 t15 = Fma(c, t11, t9, HF_S(p2, p3, 5, 5, 5, 1));
+    const vf32 t16 = Fma(c, t13, t9, HF_S(p2, p3, 4, 4, 4, 0));
+    const vf32 t17 = Mul(c, HF_S(p2, p3, 4, 4, 4, 0), HF_S(p1, p2, 5, 5, 1, 1));
+    const vf32 t18 = Mul(c, HF_S(p2, p3, 4, 4, 4, 0), HF_S(p0, p1, 5, 1, 1, 1));
+    const vf32 t19 = Sub(c, t14, t17);
+    const vf32 t20 = Mul(c, HF_S(p0, p1, 4, 0, 0, 0), HF_S(p2, p3, 5, 5, 5, 1));
+    const vf32 t21 = Mul(c, HF_S(p0, p1, 4, 0, 0, 0), HF_S(p1, p2, 5, 5, 1, 1));
+    const vf32 t22 = Mul(c, HF_S(p0, p1, 5, 1, 1, 1), HF_S(p1, p2, 4, 4, 0, 0));
+    const vf32 t23 = Sub(c, t20, t18);
+    const vf32 t24 = Mul(c, t15, sa);
+    const vf32 t25 = Sub(c, t21, t22);
+    const vf32 t27 = Fma(c, Mul(c, HF_S(p0, p1, 7, 3, 3, 3), t19), vneg_s(HF_S(p1, p2, 7, 7, 3, 3)), t23);
+    const vf32 t29 = Fma(c, Mul(c, HF_S(p0, p1, 6, 2, 2, 2), t19), vneg_s(HF_S(p1, p2, 6, 6, 2, 2)), t23);
+    const vf32 t30 = Mul(c, (vf32){p0[0], p1[0], p2[0], p3[0]}, t24);   // column 0 times the first cofactor row
+    const vf32 t31 = Mul(c, t16, sb);
+    const vf32 t32 = Add(c, HF_S(t30, HF_Z, 2, 3, 4, 4), HF_S(t30, HF_Z, 0, 1, 4, 4));   // FADD 2S of the halves
+    const vf32 t33 = Add(c, HF_S(t32, HF_Z, 0, 0, 4, 4), HF_S(t32, HF_Z, 1, 1, 4, 4));   // FADDP 2S: det in lanes 0, 1
+    const vf32 det = HF_S(t33, t33, 0, 1, 0, 1);
+    const vf32 t34 = Fma(c, t29, t25, HF_S(p2, p3, 6, 6, 6, 2));
+    const vf32 t35 = vrecpe_s(c, det);
+    const vf32 t36 = Fma(c, t27, t25, HF_S(p2, p3, 7, 7, 7, 3));
+    const vf32 t37 = Mul(c, t34, sb);
+    const vf32 t38 = vop_s(c, FOP_RECPS, vneg_s(t35), det, HF_Z);
+    const vf32 t39 = Mul(c, t36, sa);
+    const vf32 t40 = Mul(c, t35, t38);
+    const vf32 t41 = vop_s(c, FOP_RECPS, vneg_s(t40), det, HF_Z);
+    const vu32 nz = ~vcmp_s(c, 0, det, HF_Z);   // FCMEQ #0 then MVN
+    const vf32 r = Mul(c, t40, t41);              // 1 / det
+    inv[0] = (vf32)((vu32)Mul(c, r, t24) & nz);
+    inv[1] = (vf32)((vu32)Mul(c, r, t31) & nz);
+    inv[2] = (vf32)((vu32)Mul(c, t39, r) & nz);
+    inv[3] = (vf32)((vu32)Mul(c, t37, r) & nz);
+}
+
+// Guest memory access for the hierarchy walk: direct, or (check mode) with the walk's stores kept aside so the guest
+// can run afterwards on unchanged memory. Shadow::bad is set when a load partly overlaps a kept store.
+struct DirectMem {
+    vf32 Ld4(uint64_t a) { return hotfn::Ld4(a); }
+    void St4(uint64_t a, vf32 v) { hotfn::St4(a, v); }
+    uint32_t Ld32(uint64_t a) { return hotfn::Ld32(a); }
+    uint64_t Ld64(uint64_t a) { return hotfn::Ld64(a); }
+    uint8_t Ld8(uint64_t a) { return *(const uint8_t *)(uintptr_t)a; }
+};
+
+// main+0x8b5f10 (recursive): for each child of node w1 (w1 = -1: the root list) of the skeleton x0, except the node
+// ctx+0x10 names, find its 4x4 matrix D (index tables and the flag at +0x999 pick the address, as the guest does) and
+// set rows 0-2 to D[i] times (A0, A1, A2, (0,0,0,1)) with A = *(ctx+0x18), and row 3 to (D[3] times inverse(*(ctx+0x28)))
+// with w = 0 times *(ctx+0x20) plus its row 3 (FMLA by a vector of ones); then the same for that child's children.
+template <class Mem> void HierarchyTransform(Cpu *c, Mem &mem, uint64_t x0, uint32_t w1, uint64_t ctx) {
+    const uint64_t p = mem.Ld64(x0);
+    uint64_t node;
+    if (w1 != 0xffffffffu) {
+        const uint64_t e = mem.Ld64(mem.Ld64(p + 0x48) + (uint64_t)(int64_t)(int32_t)w1 * 8);
+        if (!e) return;
+        node = mem.Ld64(e + 8);
+    } else {
+        node = mem.Ld64(mem.Ld64(p + 0xb0) + 8);
+    }
+    const vf32 kW = {0.0f, 0.0f, 0.0f, 1.0f}, kOne = Splat(1.0f);
+    const vf32 kSa = {1.0f, -1.0f, 1.0f, -1.0f}, kSb = {-1.0f, 1.0f, -1.0f, 1.0f};
+    for (; node; node = mem.Ld64(node + 0x20)) {
+        const uint32_t id = mem.Ld32(node + 0x30);
+        if (mem.Ld32(ctx + 0x10) == id) continue;
+        const uint64_t x10 = mem.Ld64(ctx), x11 = mem.Ld64(ctx + 8);
+        uint32_t idx = 0xffffffffu;
+        if (mem.Ld64(x11 + 0x48) > (uint64_t)id) idx = mem.Ld32(mem.Ld64(x11 + 0x40) + (uint64_t)id * 4);
+        uint64_t d = 0;
+        const uint64_t o = mem.Ld64(x10), q = mem.Ld64(o + 0x18);
+        if (q && mem.Ld64(q) == mem.Ld64(o + 0x20)) {
+            const uint64_t x12 = mem.Ld64(o + 0x10);
+            if (mem.Ld64(x12 + 0x48) > (uint64_t)idx) {
+                const uint64_t x13 = mem.Ld64(o + 0x30);
+                if (mem.Ld64(x13 + 0x20)) {
+                    const uint64_t x11b = mem.Ld64(x13 + 0x18);
+                    if (mem.Ld8(x12 + 0x999) == 0)
+                        d = mem.Ld64(o) + (uint64_t)mem.Ld32(x13 + 0x10) * idx + mem.Ld32(x11b);
+                    else
+                        d = mem.Ld64(o) + (uint32_t)(mem.Ld32(x11b + 0x34) * idx + mem.Ld32(mem.Ld64(x12 + 0x858)));
+                }
+            }
+        }
+        const uint64_t ma = mem.Ld64(ctx + 0x18), mb = mem.Ld64(ctx + 0x20), mc = mem.Ld64(ctx + 0x28);
+        const vf32 c0 = mem.Ld4(mc), c1 = mem.Ld4(mc + 16), c2 = mem.Ld4(mc + 32), c3 = mem.Ld4(mc + 48);
+        const vf32 d0 = mem.Ld4(d), d1 = mem.Ld4(d + 16), d2 = mem.Ld4(d + 32), d3 = mem.Ld4(d + 48);
+        const vf32 a0 = mem.Ld4(ma), a1 = mem.Ld4(ma + 16), a2 = mem.Ld4(ma + 32);
+        const vf32 b0 = mem.Ld4(mb), b1 = mem.Ld4(mb + 16), b2 = mem.Ld4(mb + 32), b3 = mem.Ld4(mb + 48);
+        vf32 inv[4];
+        Inverse4(c, c0, c1, c2, c3, kSa, kSb, inv);
+        const vf32 r0 = MulRow(c, a0, a1, a2, kW, d0);
+        const vf32 r1 = MulRow(c, a0, a1, a2, kW, d1);
+        const vf32 r2 = MulRow(c, a0, a1, a2, kW, d2);
+        const vf32 t = MulRow(c, inv[0], inv[1], inv[2], inv[3], d3);
+        const vf32 r3 = Fma(c, Fma(c, Fma(c, Mul(c, b0, Splat(t[0])), b1, Splat(t[1])), b2, Splat(t[2])), kOne, b3);
+        mem.St4(d, r0); mem.St4(d + 16, r1); mem.St4(d + 32, r2); mem.St4(d + 48, r3);
+        HierarchyTransform(c, mem, x0, mem.Ld32(node + 0x30), ctx);
+    }
+}
+
+// The per-bone body of the two local-pose loops of main+0x8b6750 (bone update): the bone's matrix relative to its
+// parent, then the decomposition call. Computed from the guest registers at the loop body; the caller stores the
+// local matrix where the guest does and runs MatrixDecompose / ScaledMatrixDecompose on it.
+struct BoneLocal {
+    uint64_t outS, outQ, outT;   // decomposition outputs (x0, x1, x2)
+    uint64_t mat;                // where the guest keeps the local matrix (x3)
+    uint64_t sv;                 // scaled: the scale vector (x4); 0: plain decomposition
+    vf32 m[4];
+    vf32 scale;                  // loop 1 scaled: the 12 bytes the guest copies to x4 first
+    bool copyScale;
+};
+
+// rows of child matrix ch times the matrix whose rows are a[0..3]
+inline void MulMat(Cpu *c, const vf32 a[4], uint64_t ch, vf32 out[4]) {
+    for (int i = 0; i < 4; i++) out[i] = MulRow(c, a[0], a[1], a[2], a[3], Ld4(ch + 16 * i));
+}
+
+// loop 1, at main+0x8b7400 (after the id checks): w8 child id, w11 its matrix index, w9 parent id (-1: root), w10 the
+// parent's matrix index, x14 matrices (64 bytes each), x15 per-index "scaled" flags or 0, x16/x25/x17 the translation /
+// rotation / scale arrays (16 bytes per id), x20+0x10 the root matrix, [sp+8] per-index scale vectors, sign vectors at
+// sp+0x20 / sp+0x10; the local matrix goes to x29-0xe0, the scale copy to x29-0x98.
+inline BoneLocal BoneLoop1(Cpu *c) {
+    BoneLocal b{};
+    const uint64_t ci = (uint32_t)c->x[8] * 16ull, cm = (uint32_t)c->x[11];
+    b.outS = c->x[17] + ci; b.outQ = c->x[25] + ci; b.outT = c->x[16] + ci;
+    b.mat = c->x[29] - 0xe0;
+    const uint64_t ch = c->x[14] + cm * 64;
+    vf32 a[4];
+    if ((uint32_t)c->x[9] == 0xffffffffu) {
+        for (int i = 0; i < 4; i++) a[i] = Ld4(c->x[20] + 0x10 + 16 * i);
+        MulMat(c, a, ch, b.m);
+        return b;
+    }
+    const uint64_t pi = (uint32_t)c->x[10], pm = c->x[14] + pi * 64;
+    Inverse4(c, Ld4(pm), Ld4(pm + 16), Ld4(pm + 32), Ld4(pm + 48), Ld4(c->sp + 0x20), Ld4(c->sp + 0x10), a);
+    MulMat(c, a, ch, b.m);
+    if (c->x[15] && Ld32(c->x[15] + cm * 4)) {
+        b.sv = c->x[29] - 0x98;
+        b.scale = Ld4(Ld64(c->sp + 8) + pi * 16);
+        b.copyScale = true;
+    }
+    return b;
+}
+
+// loop 2, at main+0x8b7ac0: w9 child index, w10 parent id (-1: root), w11 parent index, x0 the bone's output (scale,
+// +0x10 rotation, +0x20 translation), records of x27 (0x60) bytes at x24 (matrix at +0, "scaled" flag at +0x50, scale
+// vector at +0x40), sign vectors at sp+0x50 / sp+0x40; the local matrix goes to sp+0x60. Returns false for the path the
+// guest takes when the parent record address is 0 (no decomposition; left to the guest).
+inline bool BoneLoop2(Cpu *c, BoneLocal &b) {
+    b = BoneLocal{};
+    const uint64_t x0 = c->x[0], x24 = c->x[24], x27 = c->x[27];
+    const uint64_t ch = (uint32_t)c->x[9] * x27 + x24;
+    b.outS = x0; b.outQ = x0 + 0x10; b.outT = x0 + 0x20;
+    b.mat = c->sp + 0x60;
+    vf32 a[4];
+    if ((uint32_t)c->x[10] == 0xffffffffu) {
+        for (int i = 0; i < 4; i++) a[i] = Ld4(c->x[20] + 0x10 + 16 * i);
+        MulMat(c, a, ch, b.m);
+        return true;
+    }
+    const uint64_t pm = (uint64_t)(uint32_t)c->x[11] * (uint32_t)x27 + x24;   // UMADDL
+    if (!pm) return false;
+    Inverse4(c, Ld4(pm), Ld4(pm + 16), Ld4(pm + 32), Ld4(pm + 48), Ld4(c->sp + 0x50), Ld4(c->sp + 0x40), a);
+    MulMat(c, a, ch, b.m);
+    if (Ld32(ch + 0x50)) b.sv = pm + 0x40;
+    return true;
+}
+
+// stores the local matrix (and loop 1's scale copy) at the given places and decomposes it
+inline void BoneFinish(Cpu *c, const BoneLocal &b, uint64_t mat, uint64_t sv, uint64_t outS, uint64_t outQ, uint64_t outT, uint64_t epsSlot) {
+    for (int i = 0; i < 4; i++) St4(mat + 16 * i, b.m[i]);
+    if (b.copyScale) { memcpy((void *)(uintptr_t)sv, &b.scale, 8); memcpy((void *)(uintptr_t)(sv + 8), (const char *)&b.scale + 8, 4); }
+    if (b.sv) ScaledMatrixDecompose(c, outS, outQ, outT, mat, sv, epsSlot);
+    else MatrixDecompose(c, outS, outQ, outT, mat, epsSlot);
+}
+
 }   // namespace hotfn

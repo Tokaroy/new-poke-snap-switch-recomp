@@ -19,7 +19,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 SRC = HERE.parents[1]
 VCVARS = r'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat'
-FUNCS = ['f_710096d390', 'f_710096d5f0', 'f_7100155600']
+FUNCS = ['f_710096d390', 'f_710096d5f0', 'f_7100155600', 'f_71008b5f10']
 BELOW_NORMAL = 0x4000
 
 
@@ -72,15 +72,24 @@ def main():
     (out / 'guest_fns.c').write_text('// GENERATED-GAME-CODE copied from the generated main for tests/hotfn. Do not commit.\n'
                                      '#include "cpu.h"\n#include "simd.h"\n'
                                      'volatile int g_fnprof;\nvoid fnprof_hit(uint64_t a, uint64_t lr, uint64_t x0) {}\n'
+                                     'void rt_dispatch(Cpu *c) {}\n'   # the bone-loop regions end by dispatching: stop there
                                      + decls + body, encoding='utf-8')
     env = vc_env()
     env['PATH'] = str(llvm) + os.pathsep + env['PATH']
     common = ['-O2', '-march=x86-64-v3', '-fno-strict-aliasing', '-w', '-D_CRT_SECURE_NO_WARNINGS', '-DNOMINMAX', '-I', str(SRC / 'runtime')]
     run = lambda cmd: subprocess.run(cmd, env=env, check=True, creationflags=BELOW_NORMAL)
     run([str(llvm / 'clang.exe')] + common + ['-c', str(out / 'guest_fns.c'), '-o', str(out / 'guest_fns.o')])
+    # the bone-loop regions and the hooked copies come from the generator (tests/recomp/hotfn_hook_test.py --emit)
+    gen_py = SRC / 'recomp' / 'snap_gen.py'
+    if not (out / 'regions.c').exists() or (out / 'regions.c').stat().st_mtime < gen_py.stat().st_mtime:
+        py = a.root / 'tools' / 'venv-recomp' / 'Scripts' / 'python.exe'
+        subprocess.run([str(py), '-I', str(SRC / 'tests' / 'recomp' / 'hotfn_hook_test.py'), '--emit', str(out)], check=True,
+                       stdout=subprocess.DEVNULL, creationflags=BELOW_NORMAL)
+    run([str(llvm / 'clang.exe')] + common + ['-c', str(out / 'regions.c'), '-o', str(out / 'regions.o')])
     exe = out / 'hotfn_test.exe'
     if not a.hooked:
-        run([str(llvm / 'clang++.exe'), '-std=c++20'] + common + [str(HERE / 'hotfn_test.cpp'), str(out / 'guest_fns.o'), '-o', str(exe)])
+        run([str(llvm / 'clang++.exe'), '-std=c++20'] + common + [str(HERE / 'hotfn_test.cpp'), str(out / 'guest_fns.o'),
+                                                                 str(out / 'regions.o'), '-o', str(exe)])
         args = [str(exe), str(elf), str(a.cases)] + ([a.capture] if a.capture else [])
         sys.exit(subprocess.run(args, creationflags=BELOW_NORMAL).returncode)
     hooked = out / 'hooked_fns.c'
@@ -89,11 +98,12 @@ def main():
     exe = out / 'hotfn_test_hooked.exe'
     run([str(llvm / 'clang.exe')] + common + ['-c', str(hooked), '-o', str(out / 'hooked_fns.o')])
     run([str(llvm / 'clang++.exe'), '-std=c++20', '-DHOTFN_HOOKED'] + common + [str(HERE / 'hotfn_test.cpp'), str(SRC / 'host' / 'mods' / 'hotfn.cpp'),
-         str(out / 'guest_fns.o'), str(out / 'hooked_fns.o'), '-o', str(exe)])
+         str(out / 'guest_fns.o'), str(out / 'regions.o'), str(out / 'hooked_fns.o'), '-o', str(exe)])
     rc = 0
     for mode in ('1', 'check', '0'):
         print(f'--- SNAP_HOT_*={mode}')
-        env1 = dict(os.environ, SNAP_HOT_MATDECOMP=mode, SNAP_HOT_MATDECOMP_SCALED=mode, SNAP_HOT_REVERB=mode)
+        env1 = dict(os.environ, SNAP_HOT_MATDECOMP=mode, SNAP_HOT_MATDECOMP_SCALED=mode, SNAP_HOT_REVERB=mode,
+                    SNAP_HOT_HIER=mode, SNAP_HOT_BONE=mode)
         args = [str(exe), str(elf), str(a.cases)] + ([a.capture] if a.capture else [])
         rc |= subprocess.run(args, env=env1, creationflags=BELOW_NORMAL).returncode
     sys.exit(rc)

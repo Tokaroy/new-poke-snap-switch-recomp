@@ -30,7 +30,12 @@ extern "C" {   // build/hotfn/guest_fns.c (also defines g_fnprof and fnprof_hit 
 void f_710096d390(Cpu *c);
 void f_710096d5f0(Cpu *c);
 void f_7100155600(Cpu *c);
-}
+void f_71008b5f10(Cpu *c);
+// build/hotfn/regions.c (tests/recomp/hotfn_hook_test.py --emit): the two bone-loop bodies of main+0x8b6750 that
+// rt_hot_bone1 / rt_hot_bone2 replace, as functions ending at the hook's target
+void rg_8b7400(Cpu *c);
+void rg_8b7ac0(Cpu *c);
+}   // (the regions end by dispatching to their target: guest_fns.c's rt_dispatch stub returns)
 #ifdef HOTFN_HOOKED
 // --hooked: the "native" side is the generated function with the HOTFN hooks (build/hotfn/hooked_fns.c from
 // tests/recomp/hotfn_hook_test.py --emit) running host/mods/hotfn.cpp, as in the game; SNAP_HOT_* pick the mode
@@ -38,6 +43,9 @@ extern "C" {
 void hk_96d390(Cpu *c);
 void hk_96d5f0(Cpu *c);
 void hk_155600(Cpu *c);
+void hk_8b5f10(Cpu *c);
+void hkrg_8b7400(Cpu *c);
+void hkrg_8b7ac0(Cpu *c);
 long rt_hotfn_mismatches();
 void rt_inline_hook(Cpu *c, uint64_t ra, void (*fn)(Cpu *c)) { (void)ra; fn(c); }
 }
@@ -271,6 +279,241 @@ void Case155600(Cpu *cg, Cpu *cn, const FdnInput &f, uint64_t fpcr, uint64_t see
     }
 }
 
+// ---------------------------------------------------------------- main+0x8b5f10 hierarchy walk, main+0x8b6750 bone loops
+
+// a random 4x4 matrix: kind 0 any bits, 1 wide-range values, 2 a TRS-like transform, 3 singular (two equal rows),
+// 4 a third of the values NaN with distinct payloads (catches operand-order slips: ARM returns the first NaN)
+void MakeMat(Rng &r, int kind, float m[16]) {
+    if (kind == 4) {
+        for (int i = 0; i < 16; i++) {
+            if (r.g() % 3) { m[i] = r.range(-2, 2); continue; }
+            const uint32_t u = 0x7f800001u | (r.u32() & 0x803ffffeu) | (r.g() & 1 ? 0x400000u : 0);
+            memcpy(&m[i], &u, 4);
+        }
+        return;
+    }
+    if (kind >= 2) {
+        MakeMatrix96d390(r, 2, m);
+        if (kind == 3) memcpy(m + 4, m, 16);
+        return;
+    }
+    for (int i = 0; i < 16; i++) m[i] = kind == 0 ? [&] { uint32_t u = r.u32(); float x; memcpy(&x, &u, 4); return x; }() : r.wild();
+}
+
+// One arena holds the whole world either side sees; both get identical copies at the same offsets from different bases,
+// and every pointer inside is written relative to the base (so the arenas compare byte for byte after the pointers are
+// made relative again).
+struct Arena {
+    std::vector<uint8_t> a;
+    std::vector<size_t> ptrs;   // offsets of 64-bit pointer slots (relative pointers in the template)
+    size_t top = 0;
+    explicit Arena(size_t n) : a(n, 0) {}
+    size_t alloc(size_t n) { size_t o = (top + 15) & ~(size_t)15; top = o + n; return o; }
+    void u32(size_t o, uint32_t v) { memcpy(&a[o], &v, 4); }
+    void u64(size_t o, uint64_t v) { memcpy(&a[o], &v, 8); }
+    void ptr(size_t o, size_t target) { u64(o, target); ptrs.push_back(o); }
+    void f(size_t o, const float *v, int n) { memcpy(&a[o], v, 4 * n); }
+};
+
+// copies the template to a real buffer with absolute pointers; back to relative for the comparison
+void Place(const Arena &t, std::vector<uint8_t> &buf) {
+    buf = t.a;
+    const uint64_t base = (uint64_t)(uintptr_t)buf.data();
+    for (size_t o : t.ptrs) { uint64_t v; memcpy(&v, &buf[o], 8); v += base; memcpy(&buf[o], &v, 8); }
+}
+void Unplace(const Arena &t, std::vector<uint8_t> &buf) {
+    const uint64_t base = (uint64_t)(uintptr_t)buf.data();
+    for (size_t o : t.ptrs) { uint64_t v; memcpy(&v, &buf[o], 8); v -= base; memcpy(&buf[o], &v, 8); }
+}
+
+constexpr size_t kStack = 1 << 20;
+uint8_t *StackFor(Cpu *c) {
+    static uint8_t *sg = (uint8_t *)_aligned_malloc(kStack, 64), *sn = (uint8_t *)_aligned_malloc(kStack, 64);
+    return c->x[31] ? sn : sg;   // x[31] tags the native-side Cpu (set in main)
+}
+
+#ifdef HOTFN_HOOKED
+void Native8b5f10(Cpu *c) { hk_8b5f10(c); }
+void NativeBone1(Cpu *c) { hkrg_8b7400(c); }
+void NativeBone2(Cpu *c) { hkrg_8b7ac0(c); }
+#else
+void Native8b5f10(Cpu *c) { hotfn::DirectMem m; hotfn::HierarchyTransform(c, m, c->x[0], (uint32_t)c->x[1], c->x[2]); }
+void NativeBone1(Cpu *c) {
+    const hotfn::BoneLocal b = hotfn::BoneLoop1(c);
+    c->x[26] = c->x[16];
+    hotfn::BoneFinish(c, b, b.mat, b.sv, b.outS, b.outQ, b.outT, kGotQuatEps);
+}
+void NativeBone2(Cpu *c) {
+    hotfn::BoneLocal b;
+    if (hotfn::BoneLoop2(c, b)) hotfn::BoneFinish(c, b, b.mat, b.sv, b.outS, b.outQ, b.outT, kGotQuatEps);
+}
+#endif
+
+// compares the arenas, the frames (sp .. sp+0x400) and the callee-saved registers; prints the first difference
+void CompareWorld(const char *name, const Arena &t, std::vector<uint8_t> &ag, std::vector<uint8_t> &an, Cpu *cg, Cpu *cn,
+                  uint64_t fpcr, Totals &tot) {
+    Unplace(t, ag); Unplace(t, an);
+    const uint8_t *fg = (const uint8_t *)(uintptr_t)cg->sp, *fn = (const uint8_t *)(uintptr_t)cn->sp;
+    bool regs = cg->fpsr != cn->fpsr;
+    auto rel = [](uint64_t v, const std::vector<uint8_t> &b) {   // arena pointers compare by offset
+        const uint64_t lo = (uint64_t)(uintptr_t)b.data();
+        return v - lo < b.size() ? v - lo : v;
+    };
+    for (int r = 19; r <= 28; r++) regs |= rel(cg->x[r], ag) != rel(cn->x[r], an);   // callee-saved (x26: bone loop 1's output)
+    for (int r = 8; r <= 15; r++) regs |= (uint64_t)cg->v[r] != (uint64_t)cn->v[r];
+    tot.cases++;
+    const bool frame = memcmp(fg, fn, 0x400) != 0;
+    if (ag != an || frame || regs) {
+        if (++tot.bad <= 8) {
+            size_t first = 0;
+            while (first < ag.size() && ag[first] == an[first]) first++;
+            fprintf(stderr, "  MISMATCH %s fpcr=%llx: arena %s (first +0x%zx) frame %s regs %s (fpsr %llx/%llx)\n", name,
+                    (unsigned long long)fpcr, ag != an ? "differs" : "same", first, frame ? "differs" : "same", regs ? "differ" : "same",
+                    (unsigned long long)cg->fpsr, (unsigned long long)cn->fpsr);
+        }
+    }
+}
+
+// a skeleton for the walk: n nodes, random tree, index tables and the matrix-address scheme of main+0x8b5f10
+struct HierWorld { Arena t{1 << 16}; size_t skel, ctx; uint32_t w1; };
+HierWorld MakeHier(Rng &r, int kind) {
+    HierWorld w;
+    Arena &t = w.t;
+    t.alloc(64);   // keep offset 0 unused
+    const int n = 1 + (int)(r.g() % 24);
+    const size_t skel = t.alloc(16), P = t.alloc(0xc0), T = t.alloc(8 * n), rootE = t.alloc(16);
+    const size_t ctx = t.alloc(0x30), X10 = t.alloc(16), X11 = t.alloc(0x50), map = t.alloc(4 * n);
+    const size_t O = t.alloc(0x40), Q = t.alloc(16), X12 = t.alloc(0xa00), X13 = t.alloc(0x30), X11b = t.alloc(0x40), b858 = t.alloc(16);
+    const size_t A = t.alloc(64), B = t.alloc(64), C = t.alloc(64);
+    const size_t nodes = t.alloc(0x40 * n), entries = t.alloc(16 * n);
+    const bool flag = r.g() & 1;
+    const uint32_t off = 16 * (uint32_t)(r.g() % 4), stride = 64 + 16 * (uint32_t)(r.g() % 2), b858v = 16 * (uint32_t)(r.g() % 4);
+    const size_t mats = t.alloc(64 + (size_t)stride * n + 64);
+    w.skel = skel; w.ctx = ctx;
+    t.ptr(skel, P); t.ptr(P + 0x48, T); t.ptr(P + 0xb0, rootE);
+    t.ptr(ctx, X10); t.ptr(ctx + 8, X11); t.ptr(ctx + 0x18, A); t.ptr(ctx + 0x20, B); t.ptr(ctx + 0x28, C);
+    t.u64(X11 + 0x48, n); t.ptr(X11 + 0x40, map);
+    t.ptr(X10, O); t.ptr(O, mats); t.ptr(O + 0x18, Q); t.u64(Q, 0x1234); t.u64(O + 0x20, 0x1234);
+    t.ptr(O + 0x10, X12); t.ptr(O + 0x30, X13);
+    t.u64(X12 + 0x48, n); t.a[X12 + 0x999] = flag; t.ptr(X12 + 0x858, b858); t.u32(b858, b858v);
+    t.u64(X13 + 0x20, 1); t.ptr(X13 + 0x18, X11b); t.u32(X11b, off); t.u32(X11b + 0x34, stride); t.u32(X13 + 0x10, stride);
+    std::vector<int> perm(n);
+    for (int i = 0; i < n; i++) perm[i] = i;
+    for (int i = n - 1; i > 0; i--) std::swap(perm[i], perm[r.g() % (i + 1)]);
+    for (int i = 0; i < n; i++) t.u32(map + 4 * i, perm[i]);
+    // tree: node i's parent is a lower node or the root list; children linked through +0x20 (pushed at the front)
+    std::vector<size_t> head(n + 1, 0);   // head[n] = root list
+    for (int i = 0; i < n; i++) {
+        const int parent = i == 0 || r.g() % 3 == 0 ? n : (int)(r.g() % i);
+        const size_t nd = nodes + 0x40 * i;
+        t.u32(nd + 0x30, i);
+        if (head[parent]) t.ptr(nd + 0x20, head[parent]);
+        head[parent] = nd;
+    }
+    for (int i = 0; i < n; i++) {
+        if (r.g() % 8 == 0) continue;   // no entry: the walk stops there
+        t.ptr(T + 8 * i, entries + 16 * i);
+        if (head[i]) t.ptr(entries + 16 * i + 8, head[i]);
+    }
+    if (head[n]) t.ptr(rootE + 8, head[n]);
+    t.u32(ctx + 0x10, r.g() % 4 == 0 ? (uint32_t)(r.g() % n) : 0xffffffffu);   // a node to skip
+    w.w1 = r.g() % 3 == 0 ? (uint32_t)(r.g() % n) : 0xffffffffu;
+    float m[16];
+    for (size_t M : {A, B, C}) { MakeMat(r, kind == 4 && M != C ? 2 : kind, m); t.f(M, m, 16); }   // kind 4: NaNs only where order shows
+    for (int i = 0; i < n; i++) {
+        const uint32_t idx = perm[i];
+        const size_t d = flag ? (uint32_t)(stride * idx + b858v) : (size_t)stride * idx + off;
+        MakeMat(r, kind == 3 ? 2 : kind, m); t.f(mats + d, m, 16);
+    }
+    return w;
+}
+
+void CaseHier(Cpu *cg, Cpu *cn, const HierWorld &w, uint64_t fpcr, Totals &tot) {
+    static std::vector<uint8_t> ag, an;
+    Place(w.t, ag); Place(w.t, an);
+    for (Cpu *c : {cg, cn}) {
+        std::vector<uint8_t> &a = c == cg ? ag : an;
+        const uint64_t base = (uint64_t)(uintptr_t)a.data();
+        c->x[0] = base + w.skel; c->x[1] = w.w1; c->x[2] = base + w.ctx;
+        c->sp = (uint64_t)(uintptr_t)(StackFor(c) + kStack - 0x800);
+        memset((void *)(uintptr_t)c->sp, 0, 0x400);
+        c->fpsr = 0;
+    }
+    RunPair(cg, cn, f_71008b5f10, Native8b5f10, fpcr);
+    CompareWorld("8b5f10", w.t, ag, an, cg, cn, fpcr, tot);
+}
+
+// the bone loops: matrices, records, output arrays and a frame
+struct BoneWorld { Arena t{1 << 14}; size_t mats, flags, outS, outQ, outT, root, svs, recs, out2; int n; };
+BoneWorld MakeBone(Rng &r, int kind) {
+    BoneWorld w;
+    Arena &t = w.t;
+    t.alloc(64);
+    const int n = w.n = 2 + (int)(r.g() % 6);
+    w.mats = t.alloc(64 * n); w.flags = t.alloc(4 * n); w.outS = t.alloc(16 * n); w.outQ = t.alloc(16 * n); w.outT = t.alloc(16 * n);
+    w.root = t.alloc(0x50); w.svs = t.alloc(16 * n); w.recs = t.alloc(0x60 * n); w.out2 = t.alloc(0x40);
+    float m[16];
+    std::mt19937_64 g(r.g());
+    for (size_t i = 0; i < t.a.size(); i += 8) { uint64_t v = g(); memcpy(&t.a[i], &v, 8); }   // outputs start as noise
+    for (int i = 0; i < n; i++) {
+        MakeMat(r, kind, m); t.f(w.mats + 64 * i, m, 16);
+        t.u32(w.flags + 4 * i, r.g() & 1);
+        float s[4] = {r.wild(), r.wild(), r.wild(), r.wild()};
+        if (kind >= 2) for (float &x : s) x = std::exp(r.range(-2, 2));
+        t.f(w.svs + 16 * i, s, 4);
+        MakeMat(r, kind, m); t.f(w.recs + 0x60 * i, m, 16);
+        t.f(w.recs + 0x60 * i + 0x40, s, 4);
+        t.u32(w.recs + 0x60 * i + 0x50, r.g() & 1);
+    }
+    MakeMat(r, kind == 3 ? 2 : kind, m); t.f(w.root + 0x10, m, 16);
+    return w;
+}
+
+void SetFrame(Cpu *c, uint64_t svs) {
+    c->sp = (uint64_t)(uintptr_t)(StackFor(c) + kStack - 0x2000);
+    uint8_t *f = (uint8_t *)(uintptr_t)c->sp;
+    memset(f, 0, 0x400);
+    const float sa[4] = {1, -1, 1, -1}, sb[4] = {-1, 1, -1, 1};
+    memcpy(f + 8, &svs, 8);
+    memcpy(f + 0x10, sb, 16); memcpy(f + 0x20, sa, 16);   // loop 1
+    memcpy(f + 0x40, sb, 16); memcpy(f + 0x50, sa, 16);   // loop 2
+    c->x[29] = c->sp + 0x200;
+    // the TBL index registers the loops load before they start (callee-saved d8-d12)
+    c->v[8] = 0x0302010003020100ull; c->v[9] = 0x0b0a09080b0a0908ull; c->v[10] = 0x0706050407060504ull;
+    c->v[11] = 0x0f0e0d0c0f0e0d0cull; c->v[12] = 0x0b0a09080f0e0d0cull;
+}
+
+void CaseBone(Cpu *cg, Cpu *cn, const BoneWorld &w, int loop, Rng &r, uint64_t fpcr, Totals &tot) {
+    static std::vector<uint8_t> ag, an;
+    Place(w.t, ag); Place(w.t, an);
+    const uint32_t child = (uint32_t)(r.g() % w.n), parent = r.g() % 4 == 0 ? 0xffffffffu : (uint32_t)(r.g() % w.n);
+    const uint32_t pidx = (uint32_t)(r.g() % w.n);
+    const bool noFlags = r.g() % 4 == 0;
+    const uint64_t noise = r.g();
+    for (Cpu *c : {cg, cn}) {
+        const uint64_t base = (uint64_t)(uintptr_t)(c == cg ? ag : an).data();
+        for (int i = 0; i < 31; i++) if (i != 29) c->x[i] = noise * (i + 1);   // registers the body must not depend on
+        SetFrame(c, base + w.svs);
+        if (loop == 0) {
+            c->x[8] = child | (noise << 32); c->x[11] = (uint32_t)(r.g() % w.n) | (noise & ~0xffffffffull);
+            c->x[9] = parent; c->x[10] = pidx;
+            c->x[14] = base + w.mats; c->x[15] = noFlags ? 0 : base + w.flags;
+            c->x[16] = base + w.outT; c->x[25] = base + w.outQ; c->x[17] = base + w.outS;
+            c->x[20] = base + w.root;   // root matrix at x20+0x10
+        } else {
+            c->x[0] = base + w.out2; c->x[9] = child; c->x[10] = parent; c->x[11] = pidx;
+            c->x[24] = base + w.recs; c->x[27] = 0x60; c->x[20] = base + w.root;
+            c->x[8] = c->x[24] + 0x60ull * child;   // the loop head's UMADDL (the only way in)
+        }
+        c->fpsr = 0;
+    }
+    // x11 for loop 1 must be the same on both sides (drawn once above per Cpu: redo for the native one)
+    cn->x[11] = cg->x[11];
+    RunPair(cg, cn, loop ? rg_8b7ac0 : rg_8b7400, loop ? NativeBone2 : NativeBone1, fpcr);
+    for (Cpu *c : {cg, cn}) memset((void *)(uintptr_t)(c->sp + 8), 0, 8);   // the scale-array pointer differs by side
+    CompareWorld(loop ? "bone loop 2" : "bone loop 1", w.t, ag, an, cg, cn, fpcr, tot);
+}
+
 // ---------------------------------------------------------------- capture file (real inputs from a game run)
 // Records of hotfn.cpp's SNAP_HOTFN_CAPTURE: u32 function tag, u32 byte count, then the bytes.
 struct Capture { uint32_t tag; std::vector<uint8_t> bytes; };
@@ -317,6 +560,7 @@ int main(int argc, char **argv) {
     const long cases = argc > 2 ? atol(argv[2]) : 20000;
     const std::vector<Capture> cap = LoadCapture(argc > 3 ? argv[3] : nullptr);
     Cpu *cg = NewCpu(), *cn = NewCpu();
+    cn->x[31] = 1;   // x[31] is unused by the code: tags the native side for StackFor
     int fail = 0;
 
     for (int variant = 0; variant < 2; variant++) {   // main+0x96d390, then main+0x96d5f0 (with a scale vector)
@@ -399,6 +643,64 @@ int main(int argc, char **argv) {
         Bench("155600 (1024 samples)", [&](int) { cg->x[0] = (uint64_t)(uintptr_t)sg.st; cg->x[1] = (uint64_t)(uintptr_t)sg.in.data(); cg->x[2] = 1024; cg->x[3] = (uint64_t)(uintptr_t)sg.out.data(); f_7100155600(cg); },
               [&](int) { cn->x[0] = (uint64_t)(uintptr_t)sn.st; cn->x[1] = (uint64_t)(uintptr_t)sn.in.data(); cn->x[2] = 1024; cn->x[3] = (uint64_t)(uintptr_t)sn.out.data(); Native155600(cn); }, 200);
     }
+    {   // main+0x8b5f10
+        Totals t;
+        Rng r(0x8b5f10);
+        const long n = std::max(1L, cases / 10);
+        for (long i = 0; i < n; i++) {
+            const HierWorld w = MakeHier(r, (int)(i % 5));
+            for (uint64_t mode : kFpcrModes) CaseHier(cg, cn, w, mode, t);
+        }
+        printf("8b5f10 HierarchyTransform: %ld cases (random skeletons x %zu FPCR modes), %ld mismatches\n", t.cases,
+               sizeof kFpcrModes / sizeof kFpcrModes[0], t.bad);
+        fail |= t.bad != 0;
+        // microbenchmark: one 24-node skeleton of TRS matrices (the walk rewrites them each call: same work each time)
+        HierWorld w;
+        do { w = MakeHier(r, 2); } while (w.t.top < 3000);
+        static std::vector<uint8_t> ag, an, ag0, an0;
+        Place(w.t, ag); Place(w.t, an);
+        ag0 = ag; an0 = an;
+        for (Cpu *c : {cg, cn}) { c->fpcr = 0; c->sp = (uint64_t)(uintptr_t)(StackFor(c) + kStack - 0x800); }
+        rt_fpcr_sync(cg);
+        // each call starts from the same matrices (the walk rewrites them in place); both sides pay the copy
+        auto setup = [&](Cpu *c, std::vector<uint8_t> &a) {
+            memcpy(a.data(), (c == cg ? ag0 : an0).data(), w.t.top);
+            c->x[0] = (uint64_t)(uintptr_t)a.data() + w.skel; c->x[1] = 0xffffffffu; c->x[2] = (uint64_t)(uintptr_t)a.data() + w.ctx;
+        };
+        Bench("8b5f10 (one skeleton)", [&](int) { setup(cg, ag); f_71008b5f10(cg); }, [&](int) { setup(cn, an); Native8b5f10(cn); }, 2000);
+    }
+
+    for (int loop = 0; loop < 2; loop++) {   // main+0x8b6750 bone loops
+        Totals t;
+        Rng r(0x8b6750 + loop);
+        const long n = std::max(1L, cases / 2);
+        for (long i = 0; i < n; i++) {
+            const BoneWorld w = MakeBone(r, (int)(i % 5));
+            for (uint64_t mode : kFpcrModes) CaseBone(cg, cn, w, loop, r, mode, t);
+        }
+        printf("8b6750 bone loop %d body: %ld cases (x %zu FPCR modes), %ld mismatches\n", loop + 1, t.cases,
+               sizeof kFpcrModes / sizeof kFpcrModes[0], t.bad);
+        fail |= t.bad != 0;
+        // microbenchmark: TRS matrices, a parent, scaled flags as drawn
+        const BoneWorld w = MakeBone(r, 2);
+        static std::vector<uint8_t> ag, an;
+        Place(w.t, ag); Place(w.t, an);
+        for (Cpu *c : {cg, cn}) {
+            const uint64_t base = (uint64_t)(uintptr_t)(c == cg ? ag : an).data();
+            SetFrame(c, base + w.svs);
+            c->fpcr = 0;
+            c->x[8] = 1; c->x[11] = 1; c->x[9] = 0; c->x[10] = 0; c->x[14] = base + w.mats; c->x[15] = base + w.flags;
+            c->x[16] = base + w.outT; c->x[25] = base + w.outQ; c->x[17] = base + w.outS; c->x[20] = base + w.root;
+            if (loop) { c->x[0] = base + w.out2; c->x[9] = 1; c->x[10] = 0; c->x[11] = 0; c->x[24] = base + w.recs; c->x[27] = 0x60; c->x[8] = c->x[24] + 0x60; }
+        }
+        rt_fpcr_sync(cg);
+        Cpu sg = *cg, sn = *cn;
+        if (loop == 0)
+            Bench("8b6750 loop 1 body", [&](int) { memcpy(cg->x, sg.x, sizeof sg.x); rg_8b7400(cg); }, [&](int) { memcpy(cn->x, sn.x, sizeof sn.x); NativeBone1(cn); }, 20000);
+        else
+            Bench("8b6750 loop 2 body", [&](int) { memcpy(cg->x, sg.x, sizeof sg.x); rg_8b7ac0(cg); }, [&](int) { memcpy(cn->x, sn.x, sizeof sn.x); NativeBone2(cn); }, 20000);
+    }
+
 #ifdef HOTFN_HOOKED
     printf("hooked: check-mode mismatches %ld\n", rt_hotfn_mismatches());
     fail |= rt_hotfn_mismatches() != 0;
