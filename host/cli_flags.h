@@ -11,7 +11,8 @@
 //   --steam-deck                  the Steam Deck preset (host/steamdeck.h, docs/steam-deck.md): borderless 1280 x 800, handheld picture settings,
 //                                 bigger HUD, Xbox button icons. Flags after it win (--set hud_scale=200, --width ...).
 //   --profile <name or id>        the profile to play (also the profile of --import-save / --export-save)
-//   --set <key>=<value>           one settings key for this run only (repeatable); a name that starts with SNAP_ sets that variable
+//   --set <key>=<value>           one settings key for this run only (repeatable); a name that starts with SNAP_ sets that variable.
+//                                 Rows kept outside settings.cfg (window.json, audio.json, input.json) take their key from set_key_env() below.
 //   --data-dir <folder>           one folder for saves, settings, mods, caches and logs
 //   --update | --check-install | --report | --restore-backup | --upscalers | --hdtex
 //                                 one launcher action without the launcher window (host/launcher.cpp run_action); the game does not start.
@@ -38,6 +39,22 @@ struct Parsed {
   std::vector<std::string> rest;                           // everything else, in order, for the older handlers
   std::string error;                                       // not empty: print it and exit 2
 };
+
+// --set keys for rows that settings.cfg does not hold: the window and audio files, the volumes and the controls mapping. Each turns into a
+// variable the game reads at start (window_opts.cpp, audio_out.cpp, hle/hid.cpp), so the stored file is not changed. Volumes are 0 to 1.
+inline const char* set_key_env(const std::string& k) {
+  static const struct { const char* key; const char* env; } kMap[] = {
+      {"win_mode", "SNAP_WINDOW_MODE"}, {"win_monitor", "SNAP_WINDOW_MONITOR"}, {"win_pause", "SNAP_WINDOW_PAUSE"}, {"win_mute", "SNAP_WINDOW_MUTE_BG"},
+      {"frame_cap", "SNAP_WINDOW_FRAME_CAP"}, {"audio_output", "SNAP_AUDIO_OUTPUT"},
+      {"master_volume", "SNAP_VOL_MASTER"}, {"music_volume", "SNAP_VOL_BGM"}, {"effects_volume", "SNAP_VOL_SE"}, {"voice_volume", "SNAP_VOL_VOICE"},
+      {"face_layout", "SNAP_CTL_FACE_LAYOUT"}, {"swap_sticks", "SNAP_CTL_SWAP_STICKS"}, {"left_invert_y", "SNAP_CTL_LEFT_INVERT_Y"},
+      {"right_invert_y", "SNAP_CTL_RIGHT_INVERT_Y"}, {"toggle_zl", "SNAP_CTL_TOGGLE_ZL"}, {"toggle_zr", "SNAP_CTL_TOGGLE_ZR"},
+      {"mouse_look", "SNAP_CTL_MOUSE_LOOK"}, {"mouse_sensitivity", "SNAP_CTL_MOUSE_SENSITIVITY"}, {"mouse_invert_x", "SNAP_CTL_MOUSE_INVERT_X"},
+      {"mouse_invert_y", "SNAP_CTL_MOUSE_INVERT_Y"}, {"mouse_touch", "SNAP_CTL_MOUSE_TOUCH"}, {"lock_cursor", "SNAP_CTL_LOCK_CURSOR"},
+  };
+  for (const auto& m : kMap) if (k == m.key) return m.env;
+  return nullptr;
+}
 
 inline bool is_number(const std::string& s) {
   if (s.empty() || s.size() > 6) return false;
@@ -90,6 +107,7 @@ inline Parsed parse(const std::vector<std::string>& args) {
       if (eq == std::string::npos || eq == 0) { p.error = "--set needs key=value, got \"" + v + "\""; break; }
       const std::string k = v.substr(0, eq), val = v.substr(eq + 1);
       if (k.compare(0, 5, "SNAP_") == 0) p.env.push_back({k, val});
+      else if (const char* e = set_key_env(k)) p.env.push_back({e, val});
       else p.sets.push_back({k, val});
     } else {
       bool act = false;

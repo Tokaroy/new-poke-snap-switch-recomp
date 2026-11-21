@@ -60,6 +60,15 @@ int main() {
     CHECK(!snap_cli::parse({"--set", "=120"}).error.empty());
     CHECK(!snap_cli::parse({"--set"}).error.empty());
   }
+  {   // --set keys for rows kept outside settings.cfg become variables (window.json, audio.json, the controls mapping); settings keys stay settings
+    auto p = snap_cli::parse({"--set", "win_mode=1", "--set", "master_volume=0.5", "--set", "mouse_look=0", "--set", "audio_output=spatial",
+                              "--set", "frame_cap=60", "--set", "hud_scale=150", "--set", "gfx_profile=max"});
+    CHECK(p.error.empty());
+    CHECK(env_of(p, "SNAP_WINDOW_MODE") == "1" && env_of(p, "SNAP_VOL_MASTER") == "0.5" && env_of(p, "SNAP_CTL_MOUSE_LOOK") == "0");
+    CHECK(env_of(p, "SNAP_AUDIO_OUTPUT") == "spatial" && env_of(p, "SNAP_WINDOW_FRAME_CAP") == "60");
+    CHECK(p.sets.size() == 2 && p.sets[0].first == "hud_scale" && p.sets[1].first == "gfx_profile");   // not aliases: host/boot.cpp handles them
+    CHECK(snap_cli::set_key_env("swap_sticks") && !snap_cli::set_key_env("hud_scale"));
+  }
   {   // values that are missing or not numbers
     CHECK(!snap_cli::parse({"--width"}).error.empty());
     CHECK(!snap_cli::parse({"--width", "wide"}).error.empty());

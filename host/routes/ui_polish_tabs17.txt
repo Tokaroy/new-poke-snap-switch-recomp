@@ -1,0 +1,58 @@
+# fixture: post_tutorial
+# Visits every tab of the game's Settings screen (5 game tabs, then every native PC tab) and dumps one frame per tab from view 13 on, then wraps to Game,
+# goes R x5 to Quality and opens the Internal resolution popup. For contact sheets: run with NVN_FRAME_DUMP_POST=1 (full window size), -ShotAt 99999 -ShotMax 110
+# (no time-based dumps; the shots come from shot=1 below), SNAP_MODS_DIR=<mods root holding native-options>, SNAP_NATIVE_OPT_SETTINGS=<settings.cfg>.
+# One R per tab: this file is for a pack with 17 PC tabs.
+# Preamble as native_options_tabs.txt: ZL/Up/A taps until the Settings screen raises the input-script event "options".
+repeat @f200 @f1400 100 8 ZL
+repeat @f1500 @f30000 240 8 Up
+repeat @f1530 @f30000 240 8 A
+anchor options
+@f120 8 A
+@f290 8 R
+@f370 8 R
+@f450 8 R
+@f530 8 R
+@f700 8 R
+@f870 8 R
+@f1040 8 R
+@f1210 8 R
+@f1380 8 R
+@f1550 8 R
+@f1720 8 R
+@f1890 8 R
+@f2060 8 R
+@f2200 6 shot=1
+@f2210 8 R
+@f2370 6 shot=1
+@f2380 8 R
+@f2540 6 shot=1
+@f2550 8 R
+@f2710 6 shot=1
+@f2720 8 R
+@f2880 6 shot=1
+@f2890 8 R
+@f3050 6 shot=1
+@f3060 8 R
+@f3220 6 shot=1
+@f3230 8 R
+@f3390 6 shot=1
+@f3400 8 R
+@f3560 6 shot=1
+@f3570 8 R
+@f3700 6 shot=1
+@f3730 8 R
+@f3860 8 R
+@f3990 8 R
+@f4120 8 R
+@f4250 8 R
+@f4480 6 shot=1
+@f4530 8 Down
+@f4580 8 Down
+@f4630 8 A
+@f4730 6 shot=1
+@f4780 8 B
+@f4860 6 shot=1
+@f4910 8 B
+@f5000 6 shot=1
+end @f5080

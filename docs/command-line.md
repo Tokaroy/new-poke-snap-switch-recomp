@@ -54,9 +54,15 @@ SnapRecomp.exe --play --data-dir D:\SnapData
 | HDR | `gfx_hdr`, `gfx_hdr_peak`, `gfx_hdr_paper`, `gfx_hdr_expand` |
 | Water | `water_ssr`, `water_caustics`, `water_foam`, `water_ocean` |
 | Atmosphere and lens | `atmos_shafts`, `atmos_fog`, `atmos_exposure`, `atmos_bloom`, `atmos_clouds`, `atmos_sky`, `gfx_bokeh_dof`, `gfx_motion_blur`, `film` |
-| Interface | `hud_scale`, `gfx_ui_font`, `ui_smooth`, `game_language` |
+| Interface | `hud_scale`, `gfx_ui_font`, `ui_smooth`, `game_language`, `button_icons`, `swap_ab`, `win_size` |
 | Photos | `photo_export`, `photo_dir`, `hd_photos` |
 | Play | `fast_boot`, `skip_cutscenes`, `skip_course_intro`, `neo_speed`, `freecam`, `freecam_freeze`, `spawn_rand`, `spawn_seed`, `return_to_launcher` |
+| Preset | `gfx_profile` (`original`, `balanced`, `enhanced` or `max`: writes the preset's rows for this start, with no upscaler) |
+| Window and sound | `win_mode` (`windowed`, `borderless`), `win_monitor`, `win_pause`, `win_mute`, `frame_cap`, `audio_output` (`stereo`, `speakers`, `spatial`), `master_volume`, `music_volume`, `effects_volume`, `voice_volume` (0 to 1) |
+| Controller and mouse | `face_layout` (`position`, `nintendo`), `swap_sticks`, `left_invert_y`, `right_invert_y`, `toggle_zl`, `toggle_zr`, `mouse_look`, `mouse_sensitivity`, `mouse_invert_x`, `mouse_invert_y`, `mouse_touch`, `lock_cursor` (1 or 0) |
+| Accessibility | `access_cvd`, `access_cvd_strength`, `access_flash`, `access_ui_size`, `access_contrast`, `access_mono`, `access_toggle` |
+
+The window, sound and controller keys are held in `window.json`, `audio.json` and `input.json`, not in `settings.cfg`. `--set` turns each into a variable for this start (`SNAP_WINDOW_MODE`, `SNAP_VOL_MASTER`, `SNAP_CTL_<KEY>` and so on) and writes none of the three files. [option-map.md](option-map.md) lists every option with its key, its launcher page, its F1 tab and its tab in the game's own Settings screen.
 
 Other keys from `settings.cfg` work too. Safe mode still ignores the settings it always ignores, even when `--set` names one.
 

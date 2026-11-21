@@ -9,6 +9,7 @@
 #include "portable.h"
 #include "cli_flags.h"
 #include "hle/settings.h"
+#include "hle/presets.h"
 #include <filesystem>
 #include <tlhelp32.h>
 #include <shobjidl.h>
@@ -1128,6 +1129,17 @@ int main(int argc, char **argv) {
     const bool restarted = getenv("SNAP_RESTART_WAIT_PID") != nullptr;   // F1 > Saves relaunch: the menu's profile and settings win over --profile / --set
     for (auto& kv : cli.sets) {   // --set key=value: this run only (hle/settings.h); it also beats a variable of the same setting set by hand
         if (restarted) break;
+        if (kv.first == "gfx_profile") {   // the Graphics preset is not a stored key: it writes its rows (runtime/hle/presets.h), without an upscaler (none is known here)
+            const int pr = snappreset::from_id(kv.second);
+            if (pr < 0) { fprintf(stderr, "SnapRecomp: --set gfx_profile=%s: use original, balanced, enhanced or max\n", kv.second.c_str()); continue; }
+            snappic::Ctx pc;
+            pc.dlss = pc.fsr = pc.xess = false;
+            snappreset::apply(pr, [](const std::string& k, const std::string& v) {
+                if (const char* n = hle::settings::env_name(k)) _putenv_s(n, "");
+                hle::settings::override_for_run(k, v);
+            }, pc);
+            continue;
+        }
         if (const char* n = hle::settings::env_name(kv.first)) _putenv_s(n, "");
         hle::settings::override_for_run(kv.first, kv.second);
     }
