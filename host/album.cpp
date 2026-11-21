@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <ctime>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -730,11 +731,21 @@ std::string slug(const std::string& s) {
 
 bool export_begin(ExportJob& job, const std::string& dest, const std::vector<int>& slots) {
   job = ExportJob();
-  job.dest = dest;
   job.slots = slots;
   std::error_code ec;
-  fs::create_directories(P(dest), ec);
-  if (!fs::is_directory(P(dest), ec)) { job.error = "The folder could not be created."; return false; }
+  // Each export goes into its own dated subfolder, so an earlier export (Photo_*.png, album.json, album.csv) is never overwritten.
+  char stamp[48];
+  {
+    time_t tt = time(nullptr);
+    tm lt{};
+    localtime_s(&lt, &tt);
+    strftime(stamp, sizeof stamp, "Album export %Y-%m-%d_%H%M%S", &lt);
+  }
+  fs::path sub = P(dest) / W(stamp);
+  for (int n = 2; fs::exists(sub, ec) && n < 100; ++n) sub = P(dest) / W(std::string(stamp) + "_" + std::to_string(n));
+  fs::create_directories(sub, ec);
+  if (!fs::is_directory(sub, ec)) { job.error = "The folder could not be created."; return false; }
+  job.dest = sub.u8string();
   job.json = "[\n";
   job.csv = "file,slot,pokemon,pokemon_number,course,course_number,stars,score,date_taken,game_tick_ms,rated,caption,source\n";
   job.started = true;
@@ -759,7 +770,8 @@ bool export_step(const Library& lib, ExportJob& job, double budget_ms) {
       if (!strcmp(kind, "png")) {
         std::ofstream o(out, std::ios::binary | std::ios::trunc);
         o.write((const char*)img.data(), (std::streamsize)img.size());
-        ok = o.good();
+        o.close();
+        ok = !o.fail();
       } else {
         Bitmap b;
         ok = wic_decode(img.data(), img.size(), 0, b) && write_png(out, b);
@@ -790,11 +802,15 @@ bool export_step(const Library& lib, ExportJob& job, double budget_ms) {
     job.started = false;
     if (job.exported > 0) {
       job.json += "\n]\n";
-      std::ofstream a(P(job.dest) / L"album.json", std::ios::binary | std::ios::trunc);
-      a << job.json;
-      std::ofstream b(P(job.dest) / L"album.csv", std::ios::binary | std::ios::trunc);
-      b << job.csv;
+      const auto write_all = [&](const wchar_t* name, const std::string& text) {
+        std::ofstream o(P(job.dest) / name, std::ios::binary | std::ios::trunc);
+        o << text;
+        o.close();
+        return !o.fail();
+      };
+      if (!write_all(L"album.json", job.json) || !write_all(L"album.csv", job.csv)) job.error = "album.json or album.csv could not be written (is the disk full?).";
     }
+    if (job.failed > 0 && job.error.empty()) job.error = std::to_string(job.failed) + " photo(s) could not be written (is the disk full?).";
     job.json.clear();
     job.csv.clear();
   }
