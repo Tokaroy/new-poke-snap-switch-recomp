@@ -727,11 +727,25 @@ static void dump_thread_cb(void *, uint64_t tt, uint64_t id, int wkind, uint64_t
 
 static HANDLE g_main_thread_handle;
 static Cpu *g_main_cpu;
+namespace nvn { extern int g_presentCount; }
 static DWORD WINAPI watchdog(LPVOID) {
     double last_report = 0;
+    // The stall dump fires when presents stop for 8 s (before the first present: when the log is silent for 8 s). It used to fire on
+    // 8 s of log silence alone, which a quiet ride reaches, so it walked every thread under the scheduler lock and suspended every
+    // host thread mid-ride. SNAP_WATCHDOG=0 turns the automatic dump off (SNAP_DUMP_AT/SNAP_DUMP_EVERY still work);
+    // SNAP_WATCHDOG=log restores the old log-silence trigger.
+    const char *wd_env = getenv("SNAP_WATCHDOG");
+    const bool wd_off = wd_env && !strcmp(wd_env, "0"), wd_log = wd_env && !strcmp(wd_env, "log");
+    int last_presents = -1;
+    double presents_since = trace_now();
     for (;;) {
         Sleep(1000);
         double now = trace_now();
+        const int presents = *(volatile int *)&nvn::g_presentCount;
+        if (presents != last_presents) { last_presents = presents; presents_since = now; }
+        if (snap_window_paused()) presents_since = now;   // the focus-loss pause blocks presents on purpose
+        const bool by_log = wd_log || presents == 0;
+        const double quiet = by_log ? now - g_last_trace_time : now - presents_since;
         static const double dump_at = getenv("SNAP_DUMP_AT") ? atof(getenv("SNAP_DUMP_AT")) : 0.0;   // debug: one guest thread dump at that time, no host stacks
         static int dumped = 0;
         // debug: SNAP_DUMP_EVERY=<s> dumps the guest threads every s seconds (no host stacks); for hangs that keep presenting, which
@@ -741,7 +755,7 @@ static DWORD WINAPI watchdog(LPVOID) {
         const bool every = dump_every > 0 && now >= next_every;
         if (every) next_every = now + dump_every;
         const bool force = every || (dump_at > 0 && now >= dump_at + dumped * 1.5 && dumped < 6);
-        if (!force && (now - g_last_trace_time < 8.0 || now - last_report < 8.0)) continue;
+        if (!force && (wd_off || quiet < 8.0 || now - last_report < 8.0)) continue;
         if (force && !every) dumped++;
         last_report = now;
         CONTEXT ctx = {};
@@ -755,7 +769,7 @@ static DWORD WINAPI watchdog(LPVOID) {
         Cpu *c = g_main_cpu;
         std::vector<std::string> ch;
         if (c) ch = guest_chain(c, c->x[30], 12);
-        trace("STALL: no trace output for %.1f s; main thread host rip=%#llx (exe+%#llx), guest x0=%#llx x30=%s", now - g_last_trace_time,
+        trace("STALL: no %s for %.1f s; main thread host rip=%#llx (exe+%#llx), guest x0=%#llx x30=%s", by_log ? "trace output" : "present", quiet,
               (unsigned long long)rip, (unsigned long long)(rip - (uint64_t)GetModuleHandleA(nullptr)), c ? (unsigned long long)c->x[0] : 0ull, c ? symbolize(c->x[30]).c_str() : "-");
         for (auto &l : ch) trace("    %s", l.c_str());
         os_dump_threads(dump_thread_cb, nullptr);

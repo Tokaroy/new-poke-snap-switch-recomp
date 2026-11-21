@@ -1343,8 +1343,9 @@ extern "C" void os_dump_threads(void (*emit)(void *ud, uint64_t tt, uint64_t id,
             (unsigned long long)g_stats.yield_any.load(), (unsigned long long)g_stats.overflow_grants.load());
         return;
     }
-    // The core handoff state first (who waits for a core, and which waiter each free core is reserved for): the walk below
-    // symbolizes guest stacks under G and takes long enough to distort the wait times.
+    const uint64_t dump_t0 = now_us();
+    // The core handoff state first (who waits for a core, and which waiter each free core is reserved for), before the walk
+    // below can distort the wait times.
     char buf[768];
     g_dumps++;
     {
@@ -1361,13 +1362,37 @@ extern "C" void os_dump_threads(void (*emit)(void *ud, uint64_t tt, uint64_t id,
             if (!g_cores[c] && n < (int)sizeof buf - 40)
                 if (Thread *b = best_waiter_for(c)) n += snprintf(buf + n, sizeof buf - n, " | free core %d -> id%llu", c, (unsigned long long)b->id);
     }
+    // Copy the fields under G and emit after it is released: the callback symbolizes about ten guest frames per thread and each
+    // trace line flushes stderr and the trace file, which held G (and so every core handoff) for the whole dump.
+    // SNAP_DUMP_UNDER_G=1 emits under G as before.
+    struct Row { uint64_t tt, id, wkey, waddr; int wkind, core, prio; bool has_cpu; Cpu cpu; };
+    static const bool under_g = [] { const char *e = getenv("SNAP_DUMP_UNDER_G"); return e && *e == '1'; }();
+    std::vector<Row> rows;
+    rows.reserve(g_by_tt.size() + g_cfg.num_cores);
     for (auto &kv : g_by_tt) {
         Thread *t = kv.second;
-        emit(ud, t->tt, t->id | ((uint64_t)(t->waiting_core ? 1 : 0) << 62) | ((t->mask & 0xff) << 48) | ((uint64_t)((t->ideal + 4) & 0xf) << 56), t->wkind, t->wkey, t->waddr, t->core, t->eff_prio, t->cur ? t->cur : t->cpu);
+        Row r{};
+        r.tt = t->tt;
+        r.id = t->id | ((uint64_t)(t->waiting_core ? 1 : 0) << 62) | ((t->mask & 0xff) << 48) | ((uint64_t)((t->ideal + 4) & 0xf) << 56);
+        r.wkind = t->wkind; r.wkey = t->wkey; r.waddr = t->waddr; r.core = t->core; r.prio = t->eff_prio;
+        if (Cpu *c = t->cur ? t->cur : t->cpu) {   // the frame walk reads x29, x30 and sp only
+            r.has_cpu = true;
+            r.cpu.x[29] = c->x[29]; r.cpu.x[30] = c->x[30]; r.cpu.sp = c->sp; r.cpu.pc = c->pc;
+        }
+        if (under_g) emit(ud, r.tt, r.id, r.wkind, r.wkey, r.waddr, r.core, r.prio, t->cur ? t->cur : t->cpu);
+        else rows.push_back(r);
     }
-    for (int c = 0; c < g_cfg.num_cores; c++) emit(ud, 0xC0DE, (uint64_t)c, 99, 0, 0, c, g_cores[c] ? g_cores[c]->eff_prio : -1, nullptr);   // core occupancy: id = core, prio = holder prio
+    for (int c = 0; c < g_cfg.num_cores; c++) {   // core occupancy: id = core, prio = holder prio
+        Row r{};
+        r.tt = 0xC0DE; r.id = (uint64_t)c; r.wkind = 99; r.core = c; r.prio = g_cores[c] ? g_cores[c]->eff_prio : -1;
+        if (under_g) emit(ud, r.tt, r.id, r.wkind, 0, 0, r.core, r.prio, nullptr);
+        else rows.push_back(r);
+    }
+    const uint64_t held_us = now_us() - dump_t0;
     G.unlock();
     log("%s", buf);   // after G is released (finding 12)
+    for (Row &r : rows) emit(ud, r.tt, r.id, r.wkind, r.wkey, r.waddr, r.core, r.prio, r.has_cpu ? &r.cpu : nullptr);
+    log("watchdog dump held G for %.1f ms", held_us / 1000.0);
 }
 
 
