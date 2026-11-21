@@ -245,7 +245,7 @@ bool start_detached(std::string& err) {
 }
 
 int run_cli(const std::vector<std::string>& args) {
-  std::vector<std::string> pass, only;
+  std::vector<std::string> pass, only, sets;   // sets: "--set key=value" values for the child (kept out of pass so launcher mode still counts)
   bool force = false, visible = false, list = false, stop = false;
   for (size_t i = 0; i < args.size(); i++) {
     const std::string& a = args[i];
@@ -258,7 +258,8 @@ int run_cli(const std::vector<std::string>& args) {
       std::stringstream ss(args[++i]);
       std::string k;
       while (std::getline(ss, k, ',')) if (!k.empty()) only.push_back(k);
-    } else pass.push_back(a);
+    } else if (a == "--set" && i + 1 < args.size()) sets.push_back(args[++i]);
+    else pass.push_back(a);
   }
   if (list) {
     for (int i = 0; i < kCourses; i++) std::printf("%s\t%s\n", kPrepCourses[i].key, kPrepCourses[i].name);
@@ -346,6 +347,7 @@ int run_cli(const std::vector<std::string>& args) {
 
     std::wstring cmd = L"\"" + exe.wstring() + L"\"";
     for (const std::string& a : pass) cmd += L" \"" + W(a) + L"\"";
+    for (const std::string& a : sets) cmd += L" --set \"" + W(a) + L"\"";
     STARTUPINFOW si{};
     si.cb = sizeof si;
     std::wstring dname = desk_name;
