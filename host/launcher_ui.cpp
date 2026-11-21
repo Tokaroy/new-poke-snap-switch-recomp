@@ -1163,7 +1163,7 @@ void vdf_write(const std::vector<VNode>& v, std::string& o) {
 VNode vs(const char* k, const std::string& v) { VNode n; n.t = 1; n.k = k; n.s = v; return n; }
 VNode vi(const char* k, int32_t v) { VNode n; n.t = 2; n.k = k; n.i = v; return n; }
 
-struct ShortcutDef { std::string name, exe_q, start_q, icon; uint32_t appid = 0; };
+struct ShortcutDef { std::string name, exe_q, start_q, icon, launch_opts; uint32_t appid = 0; };
 ShortcutDef shortcut_def(const std::string& grid_dir) {
   ShortcutDef d;
   d.name = "Snap Recomp";
@@ -1177,7 +1177,7 @@ ShortcutDef shortcut_def(const std::string& grid_dir) {
 VNode shortcut_entry(const char* key, const ShortcutDef& d) {
   VNode e; e.t = 0; e.k = key;
   e.c = {vi("appid", (int32_t)d.appid), vs("AppName", d.name), vs("Exe", d.exe_q), vs("StartDir", d.start_q), vs("icon", d.icon), vs("ShortcutPath", ""),
-         vs("LaunchOptions", ""), vi("IsHidden", 0), vi("AllowDesktopConfig", 1), vi("AllowOverlay", 1), vi("OpenVR", 0), vi("Devkit", 0), vs("DevkitGameID", ""),
+         vs("LaunchOptions", d.launch_opts), vi("IsHidden", 0), vi("AllowDesktopConfig", 1), vi("AllowOverlay", 1), vi("OpenVR", 0), vi("Devkit", 0), vs("DevkitGameID", ""),
          vi("DevkitOverrideAppID", 0), vi("LastPlayTime", 0), vs("FlatpakAppID", "")};
   VNode tags; tags.t = 0; tags.k = "tags";
   e.c.push_back(tags);
@@ -1207,7 +1207,8 @@ bool shortcut_present(const std::string& vdf_path) {
   for (const VNode& n : root) if (n.t == 0 && _stricmp(n.k.c_str(), "shortcuts") == 0) return find_entry(n.c, def) >= 0;
   return false;
 }
-bool shortcut_write(const std::string& vdf_path, const ShortcutDef& def) {
+bool shortcut_write(const std::string& vdf_path, const ShortcutDef& def_in) {
+  ShortcutDef def = def_in;
   std::string d;
   std::vector<VNode> root;
   if (read_file_bytes(vdf_path, d)) {
@@ -1221,6 +1222,8 @@ bool shortcut_write(const std::string& vdf_path, const ShortcutDef& def) {
   for (VNode& n : root) if (n.t == 0 && _stricmp(n.k.c_str(), "shortcuts") == 0) sc = &n;
   if (!sc) { VNode n; n.t = 0; n.k = "shortcuts"; root.push_back(n); sc = &root.back(); }
   const int at = find_entry(sc->c, def);
+  if (get_device() == "steamdeck") def.launch_opts = "--play --steam-deck";   // Device is Steam Deck: start straight into the game with the Deck preset
+  if (at >= 0) for (const VNode& f : sc->c[(size_t)at].c) if (f.t == 1 && _stricmp(f.k.c_str(), "LaunchOptions") == 0 && !f.s.empty()) def.launch_opts = f.s;   // keep what the entry already has
   if (at >= 0) sc->c[(size_t)at] = shortcut_entry(sc->c[(size_t)at].k.c_str(), def);
   else {
     int next = 0;

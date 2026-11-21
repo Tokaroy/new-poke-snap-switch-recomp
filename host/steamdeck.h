@@ -30,7 +30,7 @@ inline const std::vector<Kv>& cfg() {
       {"gfx_aniso", "4"},
       {"gfx_sharpen", "0.00"},
       {"ssao_quality", "default"},
-      {"gfx_bounce", "0"},
+      {"gfx_bounce", "default"},
       {"hud_scale", "150"},           // larger HUD text
       {"gfx_ui_font", "2"},           // sharper menu letters at the bigger size
       {"gfx_ultrawide", "off"},
