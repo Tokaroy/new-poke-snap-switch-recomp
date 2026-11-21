@@ -26,7 +26,7 @@ from . import hdtex_image as im
 from . import hdtex_nutexb as nb
 from . import safedel
 
-CODE_VERSION = 1
+CODE_VERSION = 3   # 2: AI colour back-projected onto its source; 3: cut-out colour filled under clear texels
 PACK_ID = 'hd-ai-textures'
 BUILDER = Path(__file__).resolve().parents[1]
 NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
@@ -130,7 +130,9 @@ def scan_data(root, index_path, subdir='nx/Pack/LevelComposite/master', suffixes
     number of files. The 'crc' column is size and modified time: enough to see that a source changed."""
     base = Path(root) / subdir
     lines = []
-    if base.is_dir():
+    if suffixes is None:   # every texture of the game (all categories): walk the whole tree
+        lines = _scan_all(Path(root))
+    elif base.is_dir():
         for pack in sorted(os.listdir(base)):
             d = base / pack
             if not d.is_dir():
@@ -142,6 +144,26 @@ def scan_data(root, index_path, subdir='nx/Pack/LevelComposite/master', suffixes
                         lines.append(f'{subdir}/{pack}/{e.name}' + chr(9) + f'{st.st_size}' + chr(9) + f'{st.st_size:x}-{st.st_mtime_ns:x}')
     write_atomic(index_path, (chr(10).join(lines) + chr(10)).encode('utf-8'))
     return len(lines)
+
+
+DATA_TOPS = ('nx/Pack', 'common/UI')   # the game's own textures; resource/ holds the engine's dummy 4x4 maps
+
+
+def _scan_all(root):
+    """Index lines for every .nutexb inside an archive folder (<name>.drp/) below the DATA_TOPS of an unpacked tree. Paths
+    keep the tree's case (the mod loader matches without case)."""
+    lines = []
+    for top in DATA_TOPS:
+        for dirpath, dirs, files in os.walk(root / top):
+            dirs.sort()
+            rel_dir = Path(dirpath).relative_to(root).as_posix()
+            if '.drp' not in rel_dir.lower():
+                continue
+            for n in sorted(files):
+                if n.lower().endswith('.nutexb'):
+                    st = os.stat(os.path.join(dirpath, n))
+                    lines.append(f'{rel_dir}/{n}' + chr(9) + f'{st.st_size}' + chr(9) + f'{st.st_size:x}-{st.st_mtime_ns:x}')
+    return lines
 
 
 # ---- planning -----------------------------------------------------------------------------------------------------------
@@ -439,7 +461,7 @@ def process_color(it, px, ai_rgb, ai_scale, wrap):
         ai = tolin(crop)
         if ai.shape[:2] != (it.out_h, it.out_w):
             ai = im.resize(ai, it.out_w, it.out_h, wrap=wrap)
-        out = im.blend_detail(base, ai, it.strength)
+        out = im.back_project(im.blend_detail(base, ai, it.strength), tolin(f[..., :3]), wrap)
     if it.boost and wrap:
         out = im.local_contrast(out, it.boost, wrap)
     a = np.clip(im.resize(f[..., 3], it.out_w, it.out_h, wrap=wrap), 0, 1)
@@ -543,6 +565,19 @@ def light_fill(rgb, mask):
         up = np.repeat(np.repeat(col, 2, 0), 2, 1)[:c.shape[0], :c.shape[1]]
         col = np.where((m > 0)[..., None], c / np.maximum(m, 1e-6)[..., None], up)
     return np.where(mask[..., None], rgb, col).astype(np.float32)
+
+
+def fill_cutout(px):
+    """Cut-out colour maps (leaves, grass, fences): the colour under the clear texels is replaced by the nearest solid
+    colour (push-pull). The model otherwise draws an edge where the leaf meets whatever the artist left under the clear
+    part, and that edge shows as a light rim around every leaf once the alpha test cuts it. Clear texels stay clear."""
+    if px.ndim != 3 or px.shape[2] < 4:
+        return px
+    a = px[..., 3].astype(np.float32) / 255
+    if not alpha_tested(a):
+        return px
+    rgb = light_fill(px[..., :3].astype(np.float32), a >= 0.5)
+    return np.concatenate([np.clip(rgb + 0.5, 0, 255).astype(np.uint8), px[..., 3:]], -1)
 
 
 def light_prepare(px):
@@ -832,6 +867,9 @@ def run(items, o, say=print):
             for it, d in lst:
                 gdx, w, h, lv = nb.read_dds(tmp / f'dec{dx}' / d.name)
                 px[it.rel] = nb.pixels(lv[0], gdx, w, h)
+        for it in batch:
+            if it.cat in hc.AI_CATEGORIES:
+                px[it.rel] = fill_cutout(px[it.rel])
         # 2. AI passes, grouped by model
         wrap = {it.rel: it.cat == 'scenery' and im.tiles_seamlessly(px[it.rel].astype(np.float32) / 255) for it in batch}
         ai = {}

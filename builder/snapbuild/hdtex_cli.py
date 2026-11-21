@@ -316,10 +316,16 @@ def _main(a, table, say, emit):
             return 1
         a.from_data = str(got)
     if a.from_data:
-        suffixes = tuple(({'shadow': '^Shadow.nutexb', 'lightmap': '^0^Lightmap.nutexb'}[c]) for c in (cats or ['shadow']) if c in ('shadow', 'lightmap'))
-        if not suffixes:
-            say('--from-data reads the course shadow and light map textures: pass --cats shadow and/or lightmap.')
+        c = cats or ['shadow']
+        bad = [x for x in c if x not in hc.CATEGORIES or x in ('skip', 'lightdir')]
+        if bad:
+            say(f'--cats: unknown or never-built categories {", ".join(bad)}. Pick from '
+                + ', '.join(x for x in hc.CATEGORIES if x not in ('skip', 'lightdir')))
             return 2
+        if any(x not in ('shadow', 'lightmap') for x in c):
+            suffixes = None   # colour, data or UI textures: every texture of the game is a candidate
+        else:
+            suffixes = tuple({'shadow': '^Shadow.nutexb', 'lightmap': '^0^Lightmap.nutexb'}[x] for x in c)
         cache, index = Path(a.from_data), work / 'data-index.tsv'
         work.mkdir(parents=True, exist_ok=True)
         say(f'{H.scan_data(cache, index, suffixes=suffixes)} course textures found in {cache}')

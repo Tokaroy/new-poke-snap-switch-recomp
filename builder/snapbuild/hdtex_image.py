@@ -172,6 +172,16 @@ def blend_detail(base, ai, strength):
     return base + (ai - base) * float(max(strength, 0.0))
 
 
+def back_project(out, src, wrap=False, iters=1):
+    """Holds an upscale to its source: the part of the source the upscale lost or changed (src - down(out)) is enlarged and
+    added back. Downscaled again, the result matches the source, so AI colour drift (spanimation2 tinted menu art 3 to 6
+    levels warm) and thin low-contrast lines the model smoothed away come back, while the model's edges stay. Linear light."""
+    sh, sw = src.shape[:2]
+    for _ in range(iters):
+        out = np.clip(out + resize(src - resize(out, sw, sh, wrap=wrap), out.shape[1], out.shape[0], wrap=wrap), 0, None)
+    return out.astype(np.float32)
+
+
 def gauss(x, s, wrap=False):
     """Separable Gaussian blur (sigma s px) over the first two axes; wrap for tiling textures, else edge."""
     r = max(1, int(3 * s))

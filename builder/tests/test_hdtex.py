@@ -353,6 +353,30 @@ class ImageTests(unittest.TestCase):
         np.testing.assert_allclose(im.blend_detail(base, ai, 0.0), base)
         np.testing.assert_allclose(im.blend_detail(base, ai, 1.0), ai, atol=1e-6)
 
+    def test_back_project_undoes_colour_drift_and_keeps_lines(self):
+        src = np.full((32, 32, 3), 0.4, np.float32)
+        src[:, 15] = 0.6                                     # a one-texel line the model smoothed away
+        ai = np.full((64, 64, 3), 0.4, np.float32) * np.array([1.08, 1.0, 1.12], np.float32)   # tinted, no line
+        out = im.back_project(ai, src, wrap=False)
+        down = im.resize(out, 32, 32)
+        self.assertLess(np.abs(down - src).mean(), 0.01)
+        np.testing.assert_allclose(out[:, :20].mean((0, 1)), [0.4, 0.4, 0.4], atol=0.01)   # tint gone
+        self.assertGreater(out[:, 30:32].mean(), out[:, 20:26].mean() + 0.05)              # line back
+        same = im.resize(src, 64, 64)
+        np.testing.assert_allclose(im.back_project(same, src), same, atol=0.03)            # a faithful upscale barely moves
+
+    def test_fill_cutout_hides_the_colour_under_clear_texels(self):
+        px = np.zeros((32, 32, 4), np.uint8)
+        px[..., :3] = 230                                    # what the artist left under the clear part: light
+        px[8:24, 8:24] = [40, 70, 30, 255]                   # a dark leaf, solid
+        out = H.fill_cutout(px)
+        np.testing.assert_array_equal(out[..., 3], px[..., 3])          # alpha untouched
+        np.testing.assert_array_equal(out[8:24, 8:24], px[8:24, 8:24])  # solid texels untouched
+        self.assertLess(np.abs(out[6:8, 8:24, :3].astype(int) - [40, 70, 30]).max(), 3)   # next to the leaf: leaf colour
+        soft = px.copy()
+        soft[..., 3] = 128                                    # blended alpha, not a cut-out: left alone
+        np.testing.assert_array_equal(H.fill_cutout(soft), soft)
+
     def test_local_contrast(self):
         rng = np.random.default_rng(3)
         x = im.resize(rng.random((16, 16, 3)).astype(np.float32) * 0.6 + 0.2, 64, 64, wrap=True)
@@ -525,6 +549,19 @@ class ShadowTests(unittest.TestCase):
         got = H.read_index(root, idx)
         self.assertEqual(list(got), ['nx/Pack/LevelComposite/master/LC_002_A.drp/a^Shadow.nutexb'])
         self.assertEqual(got[next(iter(got))][0], 10)
+
+    def test_scan_data_all_categories_walks_every_archive(self):
+        root = Path(tempfile.mkdtemp())
+        for rel in ('nx/Pack/LevelComposite/master/LC_002_A.drp/a_col.nutexb', 'nx/Pack/Characters/master/CH_025.drp/b_dif.nutexb',
+                    'common/UI/master/Scenes/album.drp/album-00001.nutexb', 'resource/nx/resource.drp/dummy_white_texture.nutexb',
+                    'nx/Pack/Characters/master/loose.nutexb', 'nx/Pack/Characters/master/CH_025.drp/b.numatb'):
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_bytes(b'x' * 7)
+        idx = root / 'idx.tsv'
+        self.assertEqual(H.scan_data(root, idx, suffixes=None), 3)   # not resource/, not outside a .drp, not other files
+        self.assertEqual(sorted(H.read_index(root, idx)), ['common/UI/master/Scenes/album.drp/album-00001.nutexb',
+                                                           'nx/Pack/Characters/master/CH_025.drp/b_dif.nutexb',
+                                                           'nx/Pack/LevelComposite/master/LC_002_A.drp/a_col.nutexb'])
 
     def test_waits_while_the_game_runs(self):
         states = iter([True, True, False])

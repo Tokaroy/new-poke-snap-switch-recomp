@@ -11,6 +11,8 @@ python builder/snap_builder.py hdtex --level hd
 
 The first command runs the game hidden and muted through each course your save has unlocked and saves the textures it loads. The second builds the pack and turns it on. Start the game as usual.
 
+With an unpacked copy of the game, `--from-data <folder> --cats scenery,creature,ui,effect,normal,mask,emissive,lightmap` reads every texture straight from it (all 28,358 of version 2.0.1), with no play-through.
+
 You can also skip `--collect`: run `hdtex --capture on`, play normally for a while, then build. Textures load the first time the game shows them, so a course you have not visited yet stays at its original resolution until you capture it and build again. A rebuild only does the new textures.
 
 ## Levels
@@ -42,6 +44,8 @@ The HD build was timed while other programs were using the graphics card, so it 
 - **Course surfaces** use `nomos2-plksr` at full strength. Textures that tile are padded with their own opposite edge, so seams stay hidden.
 - **Pokémon** use `texture-dat2` at half strength, mixed with a plain resize, so fur stays fine and soft instead of turning thick.
 - **Menus and icons** use a small model trained on flat art, which keeps text and lines clean.
+- Every AI result is held to its original: scaled back down, it must match the original, and what it lost or changed is added back (back-projection). On menu art the model alone shifted colors 3 to 6 levels warmer and erased thin, faint lines; with this step the colors match within half a level and the lines stay.
+- Cut-out textures (leaves, grass, fences) first get the color under their clear part replaced by the nearest solid color, so the model draws no light rim along each leaf edge.
 - **Normal maps** are resized as directions and set back to unit length, not run through the AI.
 - **Masks, shadow maps, glow maps and effects** are resized with a sharp filter and never get AI detail.
 - **Light maps** (the Lighting row) are the light and shadow baked into the courses. See the next section.
