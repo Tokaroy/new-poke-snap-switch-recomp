@@ -2,6 +2,7 @@
 #include "hle_config.h"
 
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <cstdlib>
 #include <fstream>
@@ -55,6 +56,26 @@ std::string appdata_utf8() {
 }
 #endif
 
+// An environment variable as UTF-8; false when it is not set. host/boot.cpp sets the path variables with _wputenv_s, and getenv
+// would return them in the ANSI code page, which the u8path users misread for a non-ASCII folder name (like APPDATA above).
+static bool env_utf8(const char* name, std::string* out) {
+#ifdef _WIN32
+  std::wstring wn(name, name + strlen(name));
+  const wchar_t* w = _wgetenv(wn.c_str());
+  if (!w) return false;
+  const int len = (int)wcslen(w);
+  int n = len ? WideCharToMultiByte(CP_UTF8, 0, w, len, nullptr, 0, nullptr, nullptr) : 0;
+  out->assign((size_t)(n > 0 ? n : 0), '\0');
+  if (n > 0) WideCharToMultiByte(CP_UTF8, 0, w, len, out->data(), n, nullptr, nullptr);
+  return true;
+#else
+  const char* e = std::getenv(name);
+  if (!e) return false;
+  *out = e;
+  return true;
+#endif
+}
+
 std::string default_data_root() {
 #ifdef _WIN32
   return appdata_utf8() + "\\SnapRecomp";
@@ -65,8 +86,8 @@ std::string default_data_root() {
 }
 
 std::string default_input_path() {
-  const char* d = std::getenv("SNAP_CONFIG_DIR");
-  if (d && *d) return join(d, "input.json");
+  std::string d;
+  if (env_utf8("SNAP_CONFIG_DIR", &d) && !d.empty()) return join(d, "input.json");
   return join(g_cfg.data_root.empty() ? default_data_root() : g_cfg.data_root, "input.json");
 }
 std::string legacy_input_path() { return join(join(g_cfg.data_root.empty() ? default_data_root() : g_cfg.data_root, "config"), "input_map.json"); }
@@ -274,8 +295,8 @@ bool load_config(const std::string& path_in) {
   c = Config();
   std::string path = path_in;
   if (path.empty()) {
-    const char* e = std::getenv("SNAP_HLE_CONFIG");
-    if (e && *e) path = e;
+    std::string e;
+    if (env_utf8("SNAP_HLE_CONFIG", &e) && !e.empty()) path = e;
     else path = join(join(default_data_root(), "config"), "hle.json");
   }
   bool ok = true;
@@ -314,10 +335,11 @@ bool load_config(const std::string& path_in) {
       }
     }
   }
-  if (const char* e = std::getenv("SNAP_ROMFS")) if (*e) c.romfs_root = e;
-  if (const char* e = std::getenv("SNAP_SAVE_ROOT")) if (*e) c.save_root = e;
+  std::string ev;
+  if (env_utf8("SNAP_ROMFS", &ev) && !ev.empty()) c.romfs_root = ev;
+  if (env_utf8("SNAP_SAVE_ROOT", &ev) && !ev.empty()) c.save_root = ev;
   if (const char* e = std::getenv("SNAP_PLAYER_NAME")) if (*e) c.player_name = e;
-  if (const char* e = std::getenv("SNAP_SAVE_DIR")) if (*e) c.save_root = e;   // wins over SNAP_SAVE_ROOT; default %APPDATA%\SnapRecomp\save
+  if (env_utf8("SNAP_SAVE_DIR", &ev) && !ev.empty()) c.save_root = ev;   // wins over SNAP_SAVE_ROOT; default %APPDATA%\SnapRecomp\save
   if (const char* e = std::getenv("SNAP_HLE_HEADLESS")) if (*e && *e != '0') c.headless = true;
   g_save_explicit = !c.save_root.empty();
   g_cfg_init = false;
@@ -409,12 +431,12 @@ extern "C" int snap_ui_pick_profile_none(const profiles::PickItem*, int) { retur
 // start with (`profile` empty: SNAP_PROFILE, else the last used one), after the same legacy migration the game start does.
 std::string tool_save_root(const std::string& profile, std::string* label) {
   Config& c = config();
-  const char* pd = std::getenv("SNAP_PROFILES_DIR");
-  const bool has_pd = pd && *pd;
+  std::string pd, ld;
+  const bool has_pd = env_utf8("SNAP_PROFILES_DIR", &pd) && !pd.empty();
   if (g_save_explicit && !has_pd) { if (label) *label = "save folder"; return c.save_root; }
-  std::string root = has_pd ? std::string(pd) : join(c.data_root, "profiles");
+  std::string root = has_pd ? pd : join(c.data_root, "profiles");
   std::string legacy = has_pd ? std::string() : join(c.data_root, "save");
-  if (const char* e = std::getenv("SNAP_LEGACY_SAVE_DIR")) legacy = e;
+  if (env_utf8("SNAP_LEGACY_SAVE_DIR", &ld)) legacy = ld;
   std::string want = profile;
   if (want.empty()) if (const char* e = std::getenv("SNAP_PROFILE")) want = e;
   {   // an existing profile store is only read (startup would also stamp "last played"); a missing one is set up as a game start does
@@ -436,12 +458,12 @@ std::string tool_save_root(const std::string& profile, std::string* label) {
 
 void activate_profiles() {
   Config& c = config();
-  const char* pd = std::getenv("SNAP_PROFILES_DIR");
-  bool has_pd = pd && *pd;
+  std::string pd, ld;
+  bool has_pd = env_utf8("SNAP_PROFILES_DIR", &pd) && !pd.empty();
   if (g_save_explicit && !has_pd) return;   // SNAP_SAVE_DIR / save_root override everything (test runs)
-  std::string root = has_pd ? std::string(pd) : join(c.data_root, "profiles");
+  std::string root = has_pd ? pd : join(c.data_root, "profiles");
   std::string legacy = has_pd ? std::string() : join(c.data_root, "save");
-  if (const char* e = std::getenv("SNAP_LEGACY_SAVE_DIR")) legacy = e;
+  if (env_utf8("SNAP_LEGACY_SAVE_DIR", &ld)) legacy = ld;
   const char* want = std::getenv("SNAP_PROFILE");
   const char* pk = std::getenv("SNAP_PROFILE_PICKER");
   bool no_picker = c.headless || (pk && *pk == '0');

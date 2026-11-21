@@ -5,6 +5,7 @@
 #include <tlhelp32.h>
 
 #include <cstdio>
+#include <cstring>
 #include <algorithm>
 #include <array>
 #include <map>
@@ -96,6 +97,32 @@ static OsStats g_prev_os;
 static uint64_t g_prev_cycles;
 static std::once_flag g_once;
 
+// Events are pushed into a small ring under a lock held only for the copy, and written to the file by the sampler (once a second)
+// and frame_mark. note_wait and acquire_core report events while holding the scheduler lock G; event() used to take g_ev_mu,
+// which frame_mark and the sampler hold across fprintf/fflush, so a slow disk write could stall every core handoff.
+// SNAP_PERF_EVENT_SYNC=1 writes each event at once under g_ev_mu, as before.
+struct EvRec { uint64_t ns; double ms; char kind[24]; char det[336]; };
+static constexpr uint32_t kEvRing = 512;
+static EvRec g_ev_ring[kEvRing], g_ev_out[kEvRing];
+static SRWLOCK g_ev_push = SRWLOCK_INIT;
+static uint32_t g_ev_head, g_ev_tail;   // head: next write, tail: next read (free-running)
+static uint64_t g_ev_dropped, g_ev_dropped_written;
+static const bool g_ev_sync = [] { const char* e = std::getenv("SNAP_PERF_EVENT_SYNC"); return e && *e == '1'; }();
+static void ev_drain_locked() {   // caller holds g_ev_mu
+    uint32_t n = 0;
+    AcquireSRWLockExclusive(&g_ev_push);
+    while (g_ev_tail != g_ev_head) g_ev_out[n++] = g_ev_ring[g_ev_tail++ % kEvRing];
+    const uint64_t dropped = g_ev_dropped;
+    ReleaseSRWLockExclusive(&g_ev_push);
+    if (!g_events) return;
+    for (uint32_t i = 0; i < n; i++)
+        fprintf(g_events, "%.3f,%s,%.3f,%s\n", (double)(g_ev_out[i].ns - g_t0) / 1e9, g_ev_out[i].kind, g_ev_out[i].ms, g_ev_out[i].det);
+    if (dropped != g_ev_dropped_written) {
+        fprintf(g_events, "%.3f,events_dropped,0,%llu\n", (double)(now_ns() - g_t0) / 1e9, (unsigned long long)(dropped - g_ev_dropped_written));
+        g_ev_dropped_written = dropped;
+    }
+}
+
 static void sampler() {
     std::map<DWORD, std::pair<HANDLE, uint64_t>> h;   // tid -> handle, last cpu time (100 ns)
     uint64_t last = now_ns();
@@ -174,7 +201,9 @@ static void sampler() {
             fflush(g_waits);
         }
         std::lock_guard<std::mutex> lk(g_ev_mu);
+        ev_drain_locked();
         fflush(g_threads);
+        fflush(g_events);
     }
 }
 
@@ -267,6 +296,7 @@ void frame_mark(uint64_t present_no, double gpu_busy_ms, double gpu_span_ms, int
     const uint64_t ce = g_cs_elided.load(std::memory_order_relaxed), cf = g_cs_forced.load(std::memory_order_relaxed);
     fprintf(g_frames, ",%llu,%llu,%llu\n", (unsigned long long)(fb - g_prev_fs_bytes), (unsigned long long)(ce - g_prev_cs_elided), (unsigned long long)(cf - g_prev_cs_forced));
     g_prev_fs_bytes = fb; g_prev_cs_elided = ce; g_prev_cs_forced = cf;
+    ev_drain_locked();
     if (present_no % 120 == 0) { fflush(g_frames); fflush(g_events); }
 }
 
@@ -274,8 +304,25 @@ void event(const char* kind, double ms, const char* detail) {
     if (!on) return;
     std::call_once(g_once, init);
     if (!g_events) return;
-    std::lock_guard<std::mutex> lk(g_ev_mu);
-    fprintf(g_events, "%.3f,%s,%.3f,%s\n", (double)(now_ns() - g_t0) / 1e9, kind, ms, detail ? detail : "");
+    if (g_ev_sync) {
+        std::lock_guard<std::mutex> lk(g_ev_mu);
+        fprintf(g_events, "%.3f,%s,%.3f,%s\n", (double)(now_ns() - g_t0) / 1e9, kind, ms, detail ? detail : "");
+        return;
+    }
+    const uint64_t t = now_ns();
+    AcquireSRWLockExclusive(&g_ev_push);
+    if (g_ev_head - g_ev_tail >= kEvRing) {
+        g_ev_dropped++;
+    } else {
+        EvRec& r = g_ev_ring[g_ev_head++ % kEvRing];
+        r.ns = t;
+        r.ms = ms;
+        strncpy(r.kind, kind ? kind : "", sizeof r.kind - 1);
+        r.kind[sizeof r.kind - 1] = 0;
+        strncpy(r.det, detail ? detail : "", sizeof r.det - 1);
+        r.det[sizeof r.det - 1] = 0;
+    }
+    ReleaseSRWLockExclusive(&g_ev_push);
 }
 
 }  // namespace snap_perf

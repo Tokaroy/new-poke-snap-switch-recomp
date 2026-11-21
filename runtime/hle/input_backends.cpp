@@ -69,6 +69,7 @@ struct SdlPads {
   uint64_t last_scan_ns = 0;
   std::vector<SDL_Gamepad*> pads;
   std::vector<SDL_JoystickID> seen;   // joystick ids already reported
+  std::vector<SDL_JoystickID> failed; // gamepads SDL_OpenGamepad refused: not retried (nor logged) until the id disappears
 
   static const char* type_name(SDL_GamepadType t) {
     switch (t) {
@@ -129,17 +130,24 @@ struct SdlPads {
         SDL_free(map);
       }
       if (!is_pad) continue;
+      if (std::find(failed.begin(), failed.end(), id) != failed.end()) continue;
       if (SDL_Gamepad* g = SDL_OpenGamepad(id)) {
         pads.push_back(g);
         say("sdl gamepad opened: '%s' gyro=%s rumble=%s", SDL_GetGamepadName(g), SDL_GamepadHasSensor(g, SDL_SENSOR_GYRO) ? "yes" : "no",
             SDL_GetBooleanProperty(SDL_GetGamepadProperties(g), SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false) ? "yes" : "no");
       }
-      else say("sdl gamepad open failed (id %u): %s", (unsigned)id, SDL_GetError());
+      else {
+        say("sdl gamepad open failed (id %u): %s; not retried until it is unplugged", (unsigned)id, SDL_GetError());
+        failed.push_back(id);
+      }
     }
     // forget ids that disappeared so a re-plug is reported again
     seen.erase(std::remove_if(seen.begin(), seen.end(), [&](SDL_JoystickID id) {
       for (int k = 0; k < n; ++k) if (ids && ids[k] == id) return false;
       return true; }), seen.end());
+    failed.erase(std::remove_if(failed.begin(), failed.end(), [&](SDL_JoystickID id) {
+      for (int k = 0; k < n; ++k) if (ids && ids[k] == id) return false;
+      return true; }), failed.end());
     SDL_free(ids);
   }
   // Merges every open gamepad into `out`; false when none is open.
@@ -229,9 +237,14 @@ class Win32Backend final : public Backend {
     sdl_.poll(out);
 #endif
     if (get_) {
+      // An empty XInput slot costs a slow device query on every call; it is checked again only every xrescan_ms_ (default 2 s,
+      // SNAP_XINPUT_RESCAN_MS=0 checks every poll as before). Connected slots are read every poll.
+      const ULONGLONG now_ms = GetTickCount64();
       for (DWORD i = 0; i < 4; ++i) {
+        if (!xslot_[i] && xrescan_ms_ > 0 && now_ms < xnext_[i]) continue;
         XState s{};
         bool ok = get_(i, &s) == 0;  // ERROR_SUCCESS
+        if (!ok) xnext_[i] = now_ms + (ULONGLONG)xrescan_ms_;
         if (ok != xslot_[i]) {
           xslot_[i] = ok;
           std::fprintf(stdout, "pad: xinput slot %u %s\n", (unsigned)i, ok ? "connected" : "disconnected");
@@ -347,6 +360,8 @@ class Win32Backend final : public Backend {
   SetFn set_ = nullptr;
   DWORD pad_index_ = 0;
   bool xslot_[4] = {false, false, false, false};
+  ULONGLONG xnext_[4] = {0, 0, 0, 0};   // next check of an empty slot (GetTickCount64)
+  int xrescan_ms_ = [] { const char* e = std::getenv("SNAP_XINPUT_RESCAN_MS"); return e ? std::max(0, atoi(e)) : 2000; }();
   bool rumbling_ = false, background_ = false, have_last_ = false;
   bool drop_pads_ = false;          // see the constructor
   ULONGLONG drop_log_tick_ = 0;

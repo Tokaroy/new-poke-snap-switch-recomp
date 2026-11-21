@@ -646,6 +646,71 @@ static void test_save_stale_leftover_retry() {
   CHECK_EQ(f.unmount("savedata"), 0u);
 }
 
+#ifdef _WIN32
+// stall fix: the commit builds the generation without the fs lock, so other file operations run during it (the fault hook runs
+// on the committing thread between stages; with the old whole-commit lock these calls would deadlock). Changes made during
+// a commit must survive it: published commit -> they are the next commit's work; failed commit -> nothing is lost.
+static void test_save_commit_concurrent_ops() {
+  g_test = "save.commit_concurrent_ops";
+  stdfs::path root = g_tmp / "save_commit_conc", ud = root / hle::uid_dir_name(kUid);
+  const std::string a = "savedata:/A", b = "savedata:/B", c = "savedata:/C", d = "savedata:/D", e = "savedata:/E", g = "savedata:/G";
+  std::string body;
+  {
+    fs::Fs f; f.set_save_root(root.string());
+    CHECK_EQ(f.mount_save("savedata", kUid), 0u);
+    put(f, a, "AAAA");
+    put(f, d, "DDDD");
+    CHECK_EQ(f.commit("savedata"), 0u);
+    put(f, b, "BBBB");   // changed and new this session: in the commit's copy of the pending sets
+    put(f, e, "EEEE");
+    bool ran_carried = false, ran_done = false;
+    f.set_fault_hook([&](const char* s) {
+      if (!strcmp(s, "commit:carried") && !ran_carried) {
+        ran_carried = true;
+        CHECK_EQ(f.delete_file(a), 0u);   // A is already linked into the new generation
+        put(f, c, "CCCC");                // created during the commit
+        put(f, b, "B2B2");                // B rewritten before the commit copies it
+      }
+      if (!strcmp(s, "commit:files-done") && !ran_done) {
+        ran_done = true;
+        CHECK_EQ(f.delete_file(e), 0u);   // E was created this session and is already copied
+      }
+    });
+    CHECK_EQ(f.commit("savedata"), 0u);
+    f.set_fault_hook(nullptr);
+    CHECK(ran_carried && ran_done);
+    CHECK(!get(f, a, &body));             // the deletions show at once, although the new generation still holds A and E
+    CHECK(!get(f, e, &body));
+    CHECK(get(f, c, &body) && body == "CCCC");
+    CHECK(get(f, b, &body) && body == "B2B2");
+    CHECK_EQ(f.commit("savedata"), 0u);   // the journal is the next commit's work
+    // a failed commit keeps changes made during it
+    HANDLE T = INVALID_HANDLE_VALUE;
+    f.set_fault_hook([&](const char* s) {
+      if (!strcmp(s, "commit:carried") && T == INVALID_HANDLE_VALUE) put(f, g, "GGGG");
+      if (!strcmp(s, "commit:marker") && T == INVALID_HANDLE_VALUE)
+        T = CreateFileW((ud / "CURRENT.tmp").c_str(), GENERIC_READ, 0, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    });
+    put(f, d, "D2D2");
+    CHECK(f.commit("savedata") != 0u);
+    CloseHandle(T);
+    f.set_fault_hook(nullptr);
+    CHECK_EQ(f.commit("savedata"), 0u);
+    CHECK_EQ(f.unmount("savedata"), 0u);
+  }
+  fs::Fs f; f.set_save_root(root.string());
+  CHECK_EQ(f.mount_save("savedata", kUid), 0u);
+  CHECK(!get(f, a, &body));
+  CHECK(!get(f, e, &body));
+  CHECK(get(f, b, &body) && body == "B2B2");
+  CHECK(get(f, c, &body) && body == "CCCC");
+  CHECK(get(f, d, &body) && body == "D2D2");
+  CHECK(get(f, g, &body) && body == "GGGG");
+  CHECK((gen_files(ud / "gens" / std::to_string(current_gen(ud))) == std::set<std::string>{"B", "C", "D", "G"}));
+  CHECK_EQ(f.unmount("savedata"), 0u);
+}
+#endif
+
 // savefix3 #1b: a file deleted this session is not resurrected through a stale half-generation that still holds it
 static void test_save_deleted_not_resurrected() {
   g_test = "save.deleted_not_resurrected";
@@ -3081,6 +3146,7 @@ int main(int argc, char** argv) {
       {"save.lock_unavailable", test_save_lock_unavailable},
       {"save.carry_failure", test_save_carry_failure},
       {"save.stale_leftover_retry", test_save_stale_leftover_retry},
+      {"save.commit_concurrent_ops", test_save_commit_concurrent_ops},
       {"save.deleted_not_resurrected", test_save_deleted_not_resurrected},
       {"save.lock_not_deletable", test_save_lock_not_deletable},
 #endif

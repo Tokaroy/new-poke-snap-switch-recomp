@@ -78,6 +78,25 @@ void read_file() {
   }
 }
 
+// Flushes a just-written file to disk before it replaces the real one: a rename can reach the disk before the data, so a power
+// loss right after it could leave an empty or torn file under the real name. A file that cannot be reopened passes (it was
+// written whole); a refused flush fails. SNAP_ATOMIC_FLUSH=0 skips the flush, as before.
+static bool flush_written(const std::filesystem::path& p) {
+#ifdef _WIN32
+  static const bool off = [] { const char* e = std::getenv("SNAP_ATOMIC_FLUSH"); return e && *e == '0'; }();
+  if (off) return true;
+  HANDLE h = CreateFileW(p.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                         FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return true;
+  const bool ok = FlushFileBuffers(h) != 0;
+  CloseHandle(h);
+  return ok;
+#else
+  (void)p;
+  return true;
+#endif
+}
+
 void write_file() {
   if (g_path.empty() || g_readonly) return;
   std::error_code ec;
@@ -90,6 +109,7 @@ void write_file() {
     f.flush();
     if (!f.good()) { f.close(); fs::remove(P(tmp), ec); return; }   // a short write must not replace the good file
   }
+  if (!flush_written(P(tmp))) { std::fprintf(stderr, "settings: flush of %s failed (kept the previous file)\n", tmp.c_str()); fs::remove(P(tmp), ec); return; }
   // Replace in one step and never delete the target first: a failed replace (antivirus or an indexer holding the .tmp) keeps the
   // old file. A few short retries, then give up, log, and drop the .tmp.
   bool ok = false;
