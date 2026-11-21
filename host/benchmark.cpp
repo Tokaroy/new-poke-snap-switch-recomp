@@ -1139,6 +1139,7 @@ extern "C" void snap_benchmark_on_present(uint64_t n) {
 
 // F1 menu: start this exe again as the benchmark and leave (the running game is closed the way the profile restart does it). The new copy gets
 // the same command line plus --benchmark, so a development run (--main ... run) hands the same arguments on to the game it plays.
+extern "C" __attribute__((weak)) void snap_fs_drain_for_exit(int ms);   // runtime/hle/fs.cpp
 extern "C" bool snap_benchmark_launch_from_game() {
   wchar_t exe[MAX_PATH * 2];
   if (!GetModuleFileNameW(nullptr, exe, MAX_PATH * 2)) return false;
@@ -1152,6 +1153,7 @@ extern "C" bool snap_benchmark_launch_from_game() {
   if (!ok) return false;
   CloseHandle(pi.hThread);
   CloseHandle(pi.hProcess);
+  if (snap_fs_drain_for_exit) snap_fs_drain_for_exit(3000);   // let a save commit / photo export in flight finish (bounded), like the window-close path
   TerminateProcess(GetCurrentProcess(), 0);   // the save layer commits atomically
   return true;
 }

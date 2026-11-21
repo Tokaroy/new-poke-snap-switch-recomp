@@ -19,6 +19,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <filesystem>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -105,6 +106,14 @@ bool write_png(const Job &j, const std::string &path) {
     return ok;
 }
 
+// Creates the export folder with every missing parent (%APPDATA%\\SnapRecomp may not exist yet); true when it exists afterwards.
+bool ensure_dir() {
+    std::error_code ec;
+    const std::filesystem::path p = std::filesystem::u8path(g_dir);
+    std::filesystem::create_directories(p, ec);
+    return std::filesystem::is_directory(p, ec);
+}
+
 void worker() {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
@@ -118,7 +127,11 @@ void worker() {
             g_busy = true;
         }
         std::string png = g_dir + "\\" + j.base + ".png";
-        bool ok = write_png(j, png);
+        bool ok = false;
+        for (int attempt = 0; attempt < 2 && !ok; ++attempt) {   // a missing or just-removed folder is created again once per photo
+            if (!ensure_dir()) continue;
+            ok = write_png(j, png);
+        }
         if (ok) {
             char js[512];
             snprintf(js, sizeof js, "{\"png\": \"%s.png\", \"width\": %d, \"height\": %d, \"jpeg_bytes\": %u, \"jpeg_crc32\": \"%08x\", \"pixel_format\": %d, \"source\": \"nn::image::JpegEncoder\"}\n",
@@ -136,7 +149,7 @@ void ensure_started() {
     std::lock_guard<std::mutex> lk(g_mu);
     if (g_started) return;
     g_started = true;
-    CreateDirectoryA(g_dir.c_str(), nullptr);
+    ensure_dir();
     std::thread(worker).detach();
 }
 

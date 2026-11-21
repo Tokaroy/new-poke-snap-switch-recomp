@@ -1236,7 +1236,20 @@ bool shortcut_write(const std::string& vdf_path, const ShortcutDef& def_in) {
   const int at = find_entry(sc->c, def);
   if (get_device() == "steamdeck") def.launch_opts = "--play --steam-deck";   // Device is Steam Deck: start straight into the game with the Deck preset
   if (at >= 0) for (const VNode& f : sc->c[(size_t)at].c) if (f.t == 1 && _stricmp(f.k.c_str(), "LaunchOptions") == 0 && !f.s.empty()) def.launch_opts = f.s;   // keep what the entry already has
-  if (at >= 0) sc->c[(size_t)at] = shortcut_entry(sc->c[(size_t)at].k.c_str(), def);
+  if (at >= 0) {
+    // Update the fields we own in place: the user's tags, IsHidden, LastPlayTime and other settings on the entry stay.
+    VNode& e = sc->c[(size_t)at];
+    const auto set_s = [&e](const char* k, const std::string& v) {
+      for (VNode& f : e.c) if (f.t == 1 && _stricmp(f.k.c_str(), k) == 0) { f.s = v; return; }
+      e.c.push_back(vs(k, v));
+    };
+    set_s("Exe", def.exe_q);
+    set_s("StartDir", def.start_q);
+    set_s("icon", def.icon);
+    bool had_appid = false;
+    for (VNode& f : e.c) if (f.t == 2 && _stricmp(f.k.c_str(), "appid") == 0) { f.i = (int32_t)def.appid; had_appid = true; }
+    if (!had_appid) e.c.insert(e.c.begin(), vi("appid", (int32_t)def.appid));
+  }
   else {
     int next = 0;
     for (const VNode& e : sc->c) next = std::max(next, std::atoi(e.k.c_str()) + 1);
@@ -1405,6 +1418,12 @@ void steam_add() {
   bool closed = false;
   if (steam_is_running()) {
     if (steam_test_mode()) { fail("Steam is running. Close it and try again."); return; }
+    // Steam sets these for a game it started; shutting Steam down would close this launcher with it, half way through the job.
+    wchar_t sv[8];
+    if (GetEnvironmentVariableW(L"SteamGameId", sv, 8) || GetEnvironmentVariableW(L"SteamAppId", sv, 8)) {
+      fail("This launcher was started from Steam, and the shortcut can only be added while Steam is closed. Close Steam yourself, start the launcher from its own exe, and try again.");
+      return;
+    }
     STARTUPINFOW si{sizeof si};
     PROCESS_INFORMATION pi{};
     std::wstring cmd = L"\"" + P(dir + "\\steam.exe").wstring() + L"\" -shutdown";

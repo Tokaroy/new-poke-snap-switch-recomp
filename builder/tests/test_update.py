@@ -285,6 +285,27 @@ class Verify(unittest.TestCase):
         rel = update.fetch_release(self.rig.make_release(**kw))
         return rel, update.download(rel, self.rig.state / 'downloads', True)
 
+    def test_full_disk_during_download_is_an_update_error(self):
+        import errno
+        from unittest import mock
+        rel = update.fetch_release(self.rig.make_release())
+        full = OSError(errno.ENOSPC, 'No space left on device')
+        with mock.patch.object(update.os, 'replace', side_effect=full):
+            with self.assertRaises(UpdateError) as cm:
+                update.download(rel, self.rig.state / 'downloads', True)
+        self.assertIn('disk is full', str(cm.exception))
+        self.assertEqual(list((self.rig.state / 'downloads').glob('*.part')), [])
+
+    def test_full_disk_during_unpack_is_an_update_error(self):
+        import errno
+        from unittest import mock
+        rel, (z, sig) = self.fetch()
+        with mock.patch.object(update.shutil, 'copyfileobj', side_effect=OSError(errno.ENOSPC, 'No space left on device')):
+            with self.assertRaises(UpdateError) as cm:
+                update.unpack(z, self.rig.state / 'unpacked', '1.0.1')
+        self.assertIn('disk is full', str(cm.exception))
+        self.assertFalse((self.rig.state / 'unpacked.part').exists())
+
     def test_good_signature(self):
         rel, (z, sig) = self.fetch()
         self.assertEqual(update.verify_download(z, sig, rel, PUB, '1.0.0'), '1.0.1')
