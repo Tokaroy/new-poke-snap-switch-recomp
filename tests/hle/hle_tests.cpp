@@ -2801,7 +2801,7 @@ static void test_padfx() {
   settings::erase("gfx_look");
   CHECK(snapdef::enhanced());
   int nlk = 0; const char* const* lk = snapdef::look_keys(&nlk);
-  CHECK(nlk == 6 && std::string(lk[0]) == "gfx_aa" && std::string(lk[nlk - 1]) == "hd_photos");
+  CHECK(nlk == 7 && std::string(lk[0]) == "gfx_aa" && std::string(lk[nlk - 1]) == "gfx_hd_effects");
   // Enhanced supersampling is relative to the output with a 2160-line budget (nvn_aa.cpp SsaaAutoScale): 1080p 2.0 (2x per side), 1440p 2.0 (1.5x), 2160p 2.0 (1.0x)
   CHECK(snapdef::ssaa_auto_scale(1080, 2160.f, 3.f) == 2.0f && snapdef::ssaa_auto_scale(1440, 2160.f, 3.f) == 2.0f && snapdef::ssaa_auto_scale(2160, 2160.f, 3.f) == 2.0f);
   CHECK(std::fabs(snapdef::ssaa_auto_scale(720, 2160.f, 3.f) - 1440.f / 1080.f) < 1e-5f);                       // a small window still gets the full 2x

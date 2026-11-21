@@ -35,6 +35,7 @@ inline const Def* table(int* n) {
       {"SNAP_UI_FONT_SCALE", "off", "auto", "off, as the game ships", "automatic: 2x at 1440p and above"},
       {"SNAP_PHOTO_EXPORT", "0", "1", "off", "on"},                                       // a PNG file per kept photo
       {"SNAP_HD_PHOTOS", "0", "1", "off", "on"},                                          // 2160x1440 photo copies (runtime/nvn/nvn_hdphoto.cpp)
+      {"SNAP_HD_EFFECTS", "0", "1", "off", "on"},                                         // half-size effect targets at scene size (runtime/nvn/nvn_hdfx.cpp)
       // HOOK for the lighting worker (Lighting v2): when "Enhanced lighting" passes its checks, add its row here and read it through
       // snapdef::get("SNAP_LIGHTING") in runtime/hle/lighting_preset.h (it reads getenv today):
       //   {"SNAP_LIGHTING", "original", "enhanced", "the game's own lighting", "enhanced lighting"},
@@ -49,7 +50,7 @@ inline std::atomic<int>& saved_look() { static std::atomic<int> v{-1}; return v;
 // The settings keys that follow the rows above, one per row with a settings key (the SNAP_LIGHTING hook adds "gfx_lighting"). The Look row (F1, in-game
 // Quality tab, launcher) erases all of them when it flips, so the whole bundle follows the new Look; a key left alone keeps the player's own choice.
 inline const char* const* look_keys(int* n) {
-  static const char* const k[] = {"gfx_aa", "gfx_sharpen", "gfx_aniso", "gfx_ui_font", "photo_export", "hd_photos"};
+  static const char* const k[] = {"gfx_aa", "gfx_sharpen", "gfx_aniso", "gfx_ui_font", "photo_export", "hd_photos", "gfx_hd_effects"};
   *n = (int)(sizeof k / sizeof k[0]);
   return k;
 }

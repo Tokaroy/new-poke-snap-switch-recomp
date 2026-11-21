@@ -929,6 +929,9 @@ void build_pages() {
     p.items.push_back(choice("Ambient occlusion", "ssao_quality", S_CFG, "default",
                              {{"default", "Default"}, {"high", "High"}, {"ultra", "Ultra"}},
                              "Soft contact shadows. It mostly shows on the photo-select screen."));
+    p.items.push_back(choice("HD effects", "gfx_hd_effects", S_CFG, snapdef::def("SNAP_HD_EFFECTS"),
+                             {{"0", "Off (the game's own)"}, {"1", "On"}},
+                             "Draws the sea, splashes, dust and glow at the scene's full resolution instead of half, so they stay sharp at 1440p and 4K. Photo scoring is untouched."));
     g.pages.push_back(p);
   }
   // Upscaling
