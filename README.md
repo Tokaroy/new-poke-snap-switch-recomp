@@ -404,6 +404,9 @@ Dump your own copy of version 2.0.1 and run the pipeline above. Generated code, 
 **Does it change photo scoring?**
 No. The Enhanced look changes only how the picture is drawn and what extra files are saved; the game's own photo, save and score data are the same as with the Original look. Photos and scoring never use jittered or upscaled output. The View options (draw distance, detail distance, full-rate animation) can change which Pokémon are in a photo and so the score, which is why they are marked experimental.
 
+**Is there a Linux version?**
+Not from this repo, which is Windows only. didslima maintains an unofficial Linux port as a separate fork: [new-poke-snap-switch-recomp-linux](https://github.com/didslima/new-poke-snap-switch-recomp-linux). It is not tested or supported here, so please report Linux issues there.
+
 **Why does the first launch build something with my game files?**
 The native settings tabs are patched into a copy of the game's own settings UI file, built on your PC. That file is never committed.
 
