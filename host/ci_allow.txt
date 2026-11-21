@@ -5,3 +5,4 @@ builder/leak_allow_content.txt|personal     # its comment names the third-party 
 builder/tests/*|home-path                   # the leak-scan unit tests feed fake home paths
 builder/tests/*|email                       # and fake addresses
 builder/tests/*|personal                    # and fake terms
+tools/hd-shadows/sun.tsv|extension      # our computed sun angles per course, not in the release payload

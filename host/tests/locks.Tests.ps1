@@ -87,16 +87,16 @@ try {
     Assert (Test-Path $p) 'release preserves replacement owned by another PID'
     Assert (Try-TakeLock $p 'dead') 'dead PID reclaimed'
     (Get-Item $p).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(-21)
-    Assert (Test-LockStale $p) 'live PID expires after 20 minutes'
-    Assert (Try-TakeLock $p 'old') 'expired live-PID lock reclaimed'
+    Assert (-not (Test-LockStale $p)) 'live PID never expires by age'
+    Assert (-not (Try-TakeLock $p 'old')) 'old lock with a live owner preserved'
     Release-Lock $p
     Set-Content $p ''
     Assert (-not (Try-TakeLock $p 'young')) 'young half-written lock preserved'
-    (Get-Item $p).LastWriteTimeUtc = [DateTime]::UtcNow.AddSeconds(-13)
-    Assert (Try-TakeLock $p 'partial') 'old half-written lock reclaimed'
+    (Get-Item $p).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(-46)
+    Assert (Try-TakeLock $p 'partial') 'half-written lock without a PID reclaimed after 45 minutes'
     Release-Lock $p
     Set-Content $p 'bad pid=999999999999999999999'
-    (Get-Item $p).LastWriteTimeUtc = [DateTime]::UtcNow.AddSeconds(-13)
+    (Get-Item $p).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(-46)
     Assert (Try-TakeLock $p 'malformed') 'overflow PID treated as malformed'
 
     # A waiter reading a lock file must not stop its owner from releasing it, and must not stop a cap rewrite (the flake under slot load:
