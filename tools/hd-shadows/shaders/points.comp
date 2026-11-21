@@ -1,0 +1,33 @@
+#version 460
+#extension GL_EXT_ray_query : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_GOOGLE_include_directive : require
+
+// HD shadows calibration: sun occlusion of a list of surface points (sampled texels of the game's own shadow maps) for
+// a list of sun directions, so one dispatch scores many sun directions against every map of a course level.
+// Output: one byte per (direction, point), 0..255; each direction's row is `stride` bytes (point count rounded up to 4).
+
+layout(local_size_x = 64) in;
+
+#include "trace.glsl"
+
+struct Point {
+    vec4 pos;    // world position, w unused
+    vec4 gn;     // geometric normal, w = 1 for a two-sided receiver
+    vec4 nrm;    // shading normal
+};
+layout(set = 0, binding = 1, scalar) readonly buffer Points { Point pts[]; };
+layout(set = 0, binding = 2, scalar) readonly buffer Dirs { vec4 dirs[]; };
+layout(set = 0, binding = 3, scalar) buffer Out { uint outWords[]; };
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    uint d = gl_GlobalInvocationID.y;
+    if (i >= pc.size) return;
+    Point p = pts[i];
+    float occ = sunOcclusion(dirs[d].xyz, p.pos.xyz, p.gn.xyz, p.nrm.xyz, p.gn.w > 0.5, hash(i * 747796405u + pc.seed));
+    uint v = uint(clamp(occ * 255.0 + 0.5, 0.0, 255.0));
+    uint stride = (pc.size + 3u) & ~3u;
+    uint o = d * stride + i;
+    atomicOr(outWords[o >> 2], v << ((o & 3u) * 8u));
+}
