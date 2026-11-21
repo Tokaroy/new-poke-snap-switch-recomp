@@ -1,5 +1,6 @@
 //! A course's lightmapped environment as world-space mesh objects, read from the player's own unpacked data.
 use glam::{Mat3, Mat4, Quat, Vec3};
+use ssbh_data::matl_data::MatlEntryData;
 use ssbh_data::mesh_data::VectorData;
 use ssbh_data::prelude::*;
 use std::path::Path;
@@ -15,6 +16,8 @@ pub struct Obj {
     pub uvs: Vec<(String, Vec<[f32; 2]>)>,
     pub idx: Vec<u32>,
     pub instance: usize,
+    /// The object's material entry from the model's `.numatb` (textures, cull mode, alpha settings).
+    pub mat: Option<MatlEntryData>,
 }
 
 fn v3(d: &VectorData) -> Vec<Vec3> {
@@ -45,6 +48,7 @@ pub fn load_objects(modl_path: &Path, model: &str, xf: Mat4, instance: usize) ->
             .and_then(|(s, b)| s.calculate_world_transform(b).ok())
             .unwrap_or(Mat4::IDENTITY)
     };
+    let matls: Vec<MatlData> = modl.material_file_names.iter().filter_map(|f| MatlData::from_file(dir.join(f)).ok()).collect();
     let mut out = vec![];
     for o in &mesh.objects {
         let Some(pos) = o.positions.first() else { continue };
@@ -76,7 +80,8 @@ pub fn load_objects(modl_path: &Path, model: &str, xf: Mat4, instance: usize) ->
             .find(|e| e.mesh_object_name == o.name && e.mesh_object_subindex == o.subindex)
             .map(|e| e.material_label.clone())
             .unwrap_or_default();
-        out.push(Obj { model: model.to_string(), name: o.name.clone(), subindex: o.subindex, material, pos: p, nrm: n, uvs, idx, instance });
+        let mat = matls.iter().flat_map(|m| m.entries.iter()).find(|e| e.material_label == material).cloned();
+        out.push(Obj { model: model.to_string(), name: o.name.clone(), subindex: o.subindex, material, pos: p, nrm: n, uvs, idx, instance, mat });
     }
     Ok(out)
 }

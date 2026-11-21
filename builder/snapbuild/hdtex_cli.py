@@ -5,6 +5,10 @@
   hdtex --collect <SnapRecomp.exe>       a hidden, muted pass through the courses your save has unlocked, capturing
   hdtex --level sharp|hd|ultra|custom    upscale the cache into the "hd-ai-textures" mod pack and turn it on
   hdtex --level off                      turn the pack off (nothing is deleted)
+  hdtex --cats shadow --pack-id hd-shadows --from-romfs <romfs> --level hd --shadow-source rebaked
+                                         HD shadows re-baked on the GPU from the course geometry (Stage B), with the
+                                         upscaled maps (Stage A) where a re-bake does not match the game; its own pack
+                                         (hd-shadows-rebaked). --shadow-source upscaled (default) is Stage A only.
   hdtex --status                         what is captured, what is built, what is on
   hdtex --licenses [--level L]           the licenses level L needs and which are accepted (--accept-license X records X)
 For the launcher, --json makes --status, --dry-run and --licenses print one JSON object on stdout, and a build print one
@@ -26,6 +30,7 @@ from pathlib import Path
 
 from . import fetch, hdtex as H, hdtex_romfs as R, hdtex_setup as S, hdtex_classify as hc
 from . import safedel
+from . import hdshadows_rebake as RB
 
 ROUTES = H.BUILDER / 'hdtex_routes'
 PACK_META = {'hd-shadows': {'name': 'HD shadows (made on this PC)', 'version': '1', 'author': 'Snap Recomp Builder',
@@ -69,6 +74,9 @@ def add_args(p):
     p.add_argument('--report', help='write the run report (JSON) here as well')
     p.add_argument('--licenses', action='store_true', help='list the licenses the level needs and which are accepted')
     p.add_argument('--json', action='store_true', help='machine-readable output for the launcher (see the module help)')
+    p.add_argument('--shadow-source', choices=['upscaled', 'rebaked'], default='upscaled',
+                   help='HD shadows (--pack-id hd-shadows): upscaled = the game\'s maps enlarged (Stage A); rebaked = re-baked on the '
+                        'GPU from the course geometry, upscaled where a re-bake does not match (Stage B, pack hd-shadows-rebaked)')
 
 
 def gb(n):
@@ -273,6 +281,8 @@ def _main(a, table, say, emit):
         return 2
     if a.level == 'off':
         changed = H.set_enabled(mods, False, a.pack_id)
+        if a.pack_id == RB.STAGE_A_ID:
+            changed = H.set_enabled(mods, False, RB.PACK_ID) or changed
         say('HD AI textures are off.' + ('' if changed else ' (They were not set up.)') + ' No file was deleted; --level <level> turns them back on.')
         if emit:
             emit({'done': {'level': 'off', 'enabled': False}})
@@ -408,9 +418,28 @@ def _main(a, table, say, emit):
     H.write_atomic(work / 'last_run.json', body)
     if a.report:
         H.write_atomic(Path(a.report), body)
-    H.set_enabled(mods, True, a.pack_id)
+    if a.pack_id == RB.STAGE_A_ID and a.shadow_source == 'rebaked':
+        rb = RB.run(a.from_romfs, work, mods, 4 if a.level == 'ultra' else 2, say, wait_game=H.wait_for_game if a.pause_game else None,
+                    data=None if a.from_romfs else a.from_data)
+        if rb is None:
+            say('The re-baked shadows could not be made; the upscaled HD shadows are kept on.')
+            H.set_enabled(mods, True, a.pack_id)
+            if emit:
+                emit({'error': {'code': 1, 'rebake': False}})
+            return 1
+        rep['rebake'] = rb
+        H.write_atomic(work / 'last_run.json', (json.dumps(rep, indent=1, default=str) + '\n').encode())
+        H.set_enabled(mods, False, a.pack_id)
+        H.set_enabled(mods, True, RB.PACK_ID)
+        o.pack = mods / RB.PACK_ID
+        say(f'Re-baked: {rb["rebaked"]} maps, {rb["upscaled"]} upscaled where the re-bake did not match, {rb["original"]} left as the game has them.')
+    else:
+        H.set_enabled(mods, True, a.pack_id)
+        if a.pack_id == RB.STAGE_A_ID:
+            H.set_enabled(mods, False, RB.PACK_ID)
     if emit:
-        emit({'done': {k: rep.get(k) for k in ('level', 'built', 'failed', 'up_to_date', 'seconds')} | {'enabled': True, 'pack': str(o.pack)}})
+        emit({'done': {k: rep.get(k) for k in ('level', 'built', 'failed', 'up_to_date', 'seconds')} | {'enabled': True, 'pack': str(o.pack),
+                                                                                                    'shadow_source': a.shadow_source}})
     say(f'Done: {rep["built"]} built, {rep["failed"]} failed, {rep["up_to_date"]} already up to date, {rep["seconds"] / 60:.1f} min. '
         f'{"HD shadows" if a.pack_id == "hd-shadows" else "HD AI textures"} are on ({o.pack}). Turn them off with --level off.')
     return 0 if rep['failed'] == 0 else 1
