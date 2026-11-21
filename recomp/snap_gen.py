@@ -240,13 +240,22 @@ HOTFN_INLINE = {BASE + 0x96d390: 'rt_hot_matdecomp',          # matrix -> scale/
                 BASE + 0x8b7400: 'rt_hot_bone1',              # bone update loop 1 body, after the id checks ...
                 BASE + 0x8b7960: 'rt_hot_bone1_check',        # ... to after its decomposition call
                 BASE + 0x8b7ac0: 'rt_hot_bone2',              # bone update loop 2 body ...
-                BASE + 0x8b8028: 'rt_hot_bone2_check'}        # ... to after its decomposition call
+                BASE + 0x8b8028: 'rt_hot_bone2_check',        # ... to after its decomposition call
+                BASE + 0x4d220: 'rt_hot_oodle_huff',          # Kraken 6-stream Huffman loop (x0 state block, x1 table)
+                BASE + 0x4d6a8: 'rt_hot_oodle_huff_check',    # its `ret`
+                BASE + 0x16680: 'rt_hot_oodle_lz_raw',        # Kraken LZ runs, raw literals (x0 table, x1 dst, x3 end, x4 base)
+                BASE + 0x16d14: 'rt_hot_oodle_lz_raw_check',  # its `ret`
+                BASE + 0x16ed0: 'rt_hot_oodle_lz_delta',      # the same with delta literals
+                BASE + 0x17610: 'rt_hot_oodle_lz_delta_check'}  # its `ret`
 HOTFN_BRANCH = {BASE + 0x96d390: BASE + 0x96d5b4,             # done on the host: to the `ret`
                 BASE + 0x96d5f0: BASE + 0x96d8dc,
                 BASE + 0x155600: BASE + 0x155a20,
                 BASE + 0x8b5f10: BASE + 0x8b66cc,
                 BASE + 0x8b7400: BASE + 0x8b7960,             # mid-function: to the instruction after the `bl` (only
-                BASE + 0x8b7ac0: BASE + 0x8b8028}             # callee-saved registers and memory are live there)
+                BASE + 0x8b7ac0: BASE + 0x8b8028,             # callee-saved registers and memory are live there)
+                BASE + 0x4d220: BASE + 0x4d6a8,               # to the `ret` (the check hook sits on it)
+                BASE + 0x16680: BASE + 0x16d14,
+                BASE + 0x16ed0: BASE + 0x17610}
 
 
 def hotfn_enabled():

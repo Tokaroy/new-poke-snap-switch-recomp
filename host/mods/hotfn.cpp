@@ -14,6 +14,8 @@
 //   main+0x8b5f10  HierarchyTransform      recursive child-node world matrices (inverse(parent) x child)  SNAP_HOT_HIER
 //   main+0x8b6750  bone update, the two per-bone loop bodies (local matrix + decompose): mid-function hooks at
 //                  0x8b7400 / 0x8b7ac0 that branch to the instruction after the body's last bl     SNAP_HOT_BONE
+//   main+0x4d220 / 0x16680 / 0x16ed0  Kraken (Oodle) decoder: 6-stream Huffman loop, LZ runs raw / delta
+//                  (hotfn_oodle.h; tests/oodle)                                                 SNAP_HOT_OODLE
 //
 // Each switch: unset or 1 = native, 0 = the guest code, check = the guest runs and the native result (computed first on
 // copies) is compared with it just before the guest's final store (rt_hot_*_check); the first mismatches and a count at
@@ -28,6 +30,7 @@
 #include <vector>
 
 #include "hotfn.h"
+#include "hotfn_oodle.h"
 
 namespace {
 
@@ -282,9 +285,138 @@ extern "C" void rt_hot_bone1_check(Cpu *c) { (void)c; if (ModeBone() == 2) BoneC
 extern "C" void rt_hot_bone2(Cpu *c) { BoneEntry(c, 1); }
 extern "C" void rt_hot_bone2_check(Cpu *c) { (void)c; if (ModeBone() == 2) BoneCheck(1); }
 
+// ---- the Kraken decoder's inner routines (hotfn_oodle.h): main+0x4d220 Huffman, main+0x16680 / 0x16ed0 LZ runs
+namespace {
+
+int ModeOodle() { static const int m = Mode("SNAP_HOT_OODLE"); return m; }
+Tally g_tally3[3];                 // huffman, lz raw, lz delta
+std::atomic<long> g_oodleGuest[3];   // calls left to the guest (LzCheck said not covered)
+void Report3(int slot, const char *name, bool bad, uint64_t at) {
+    const long n = ++g_tally3[slot].calls;
+    if (bad && ++g_tally3[slot].bad <= 5) fprintf(stderr, "[hotfn] MISMATCH %s call %ld (0x%llx)\n", name, n, (unsigned long long)at);
+    if ((n & 1023) == 0)
+        fprintf(stderr, "[hotfn] check %s: %ld calls, %ld mismatches, %ld left to the guest\n", name, n, g_tally3[slot].bad.load(),
+                g_oodleGuest[slot].load());
+}
+
+// check mode of the Huffman loop: the native runs on a copy of the state block whose output pointers point at shadows
+struct HuffWant {
+    bool on = false;
+    uint64_t st = 0, o1 = 0, o2 = 0, ret = 0;
+    alignas(16) uint8_t blk[0x90];
+    std::vector<uint8_t> s1, s2;
+};
+thread_local HuffWant t_huff;
+
+struct LzWant {
+    bool on = false;
+    hotfn::LzArgs a{};
+    uint64_t ret = 0, lenEnd = 0;
+    bool padded = false, ran = true;
+    size_t at = 0;                 // out[at] stands for dst; out[0 .. at) is a copy of the earlier output matches read
+    std::vector<uint8_t> out;
+};
+thread_local LzWant t_lz[2];
+
+void LzEntry(Cpu *c, int delta) {
+    const int mode = ModeOodle();
+    if (!mode) { c->x[16] = 1; return; }
+    const hotfn::LzArgs a{c->x[0], c->x[1], c->x[2], c->x[3], c->x[4]};
+    hotfn::LzPlan p{};
+    const int r = hotfn::LzHeader(a, p);
+    if (r < 0) { g_oodleGuest[1 + delta]++; c->x[16] = 1; return; }
+    if (mode == 2) {
+        LzWant &w = t_lz[delta];
+        int64_t reach = 0;
+        if (r == 1 && !hotfn::LzReach(p, delta != 0, reach)) { g_oodleGuest[1 + delta]++; c->x[16] = 1; return; }
+        w.on = true; w.a = a; w.ret = (uint64_t)r; w.padded = r == 1; w.lenEnd = p.lenEnd;
+        if (r == 1) {
+            w.at = (size_t)-reach;
+            w.out.assign(w.at + (size_t)p.n, 0);
+            memcpy(w.out.data(), (const uint8_t *)(uintptr_t)a.dst - w.at, w.at);
+            uint8_t *o = w.out.data() + w.at;
+            w.ran = delta ? hotfn::LzRun<true>(p, o) : hotfn::LzRun<false>(p, o);
+        }
+        c->x[16] = 1;
+        return;
+    }
+    if (r == 1) {
+        uint32_t *pad = (uint32_t *)(uintptr_t)p.lenEnd;
+        for (int i = 0; i < 16; i++) pad[i] = 3;
+        uint8_t *d = (uint8_t *)(uintptr_t)a.dst;
+        // stopped on something not covered (never on the game's data so far): the guest decodes the chunk again from
+        // the start, over the same inputs
+        if (!(delta ? hotfn::LzRun<true>(p, d) : hotfn::LzRun<false>(p, d))) { g_oodleGuest[1 + delta]++; c->x[16] = 1; return; }
+    }
+    c->x[0] = (uint64_t)r;
+    c->x[16] = 0;
+}
+
+void LzCheckRet(Cpu *c, int delta) {
+    LzWant &w = t_lz[delta];
+    if (!w.on) return;
+    w.on = false;
+    bool bad = (uint32_t)c->x[0] != (uint32_t)w.ret || !w.ran;
+    if (w.padded) {
+        bad |= memcmp((const void *)(uintptr_t)w.a.dst, w.out.data() + w.at, w.out.size() - w.at) != 0;
+        const uint32_t *pad = (const uint32_t *)(uintptr_t)w.lenEnd;
+        for (int i = 0; i < 16; i++) bad |= pad[i] != 3;
+    }
+    Report3(1 + delta, delta ? "lz delta 16ed0" : "lz raw 16680", bad, w.a.dst);
+}
+
+}   // namespace
+
+extern "C" void rt_hot_oodle_huff(Cpu *c) {
+    const int mode = ModeOodle();
+    if (!mode) { c->x[16] = 1; return; }
+    uint8_t *st = (uint8_t *)(uintptr_t)c->x[0];
+    const uint16_t *lut = (const uint16_t *)(uintptr_t)c->x[1];
+    if (mode == 2) {
+        HuffWant &w = t_huff;
+        memcpy(w.blk, st, 0x90);
+        w.st = c->x[0]; w.o1 = hotfn::SLd(st, 0); w.o2 = hotfn::SLd(st, 8);
+        const uint64_t rem2 = hotfn::SLd(st, 0x18) - w.o2;
+        const size_t n = rem2 < (1u << 22) ? (size_t)rem2 + 32 : 32;   // the loop writes at most rem2 + 1 bytes per half
+        w.s1.assign(n, 0); w.s2.assign(n, 0);
+        hotfn::SSt(w.blk, 0, (uint64_t)(uintptr_t)w.s1.data());
+        hotfn::SSt(w.blk, 8, (uint64_t)(uintptr_t)w.s2.data());
+        hotfn::SSt(w.blk, 0x18, (uint64_t)(uintptr_t)w.s2.data() + rem2);
+        w.ret = hotfn::HuffCore6(w.blk, lut);
+        w.on = true;
+        c->x[16] = 1;
+        return;
+    }
+    c->x[0] = hotfn::HuffCore6(st, lut);
+    c->x[16] = 0;
+}
+// at the guest's ret (main+0x4d6a8)
+extern "C" void rt_hot_oodle_huff_check(Cpu *c) {
+    HuffWant &w = t_huff;
+    if (!w.on) return;
+    w.on = false;
+    const uint64_t n1 = hotfn::SLd(w.blk, 0) - (uint64_t)(uintptr_t)w.s1.data();
+    const uint64_t n2 = hotfn::SLd(w.blk, 8) - (uint64_t)(uintptr_t)w.s2.data();
+    uint8_t want[0x90];
+    memcpy(want, w.blk, 0x90);
+    hotfn::SSt(want, 0, w.o1 + n1);
+    hotfn::SSt(want, 8, w.o2 + n2);
+    hotfn::SSt(want, 0x18, w.o2 + (hotfn::SLd(w.blk, 0x18) - (uint64_t)(uintptr_t)w.s2.data()));
+    bool bad = c->x[0] != w.ret || memcmp((const void *)(uintptr_t)w.st, want, 0x90) != 0;
+    if (n1) bad |= memcmp((const void *)(uintptr_t)w.o1, w.s1.data(), (size_t)n1 + 1) != 0;   // + the stale byte
+    if (n2) bad |= memcmp((const void *)(uintptr_t)w.o2, w.s2.data(), (size_t)n2 + 1) != 0;
+    Report3(0, "huffman 4d220", bad, w.st);
+}
+extern "C" void rt_hot_oodle_lz_raw(Cpu *c) { LzEntry(c, 0); }
+extern "C" void rt_hot_oodle_lz_raw_check(Cpu *c) { if (ModeOodle() == 2) LzCheckRet(c, 0); }
+extern "C" void rt_hot_oodle_lz_delta(Cpu *c) { LzEntry(c, 1); }
+extern "C" void rt_hot_oodle_lz_delta_check(Cpu *c) { if (ModeOodle() == 2) LzCheckRet(c, 1); }
+extern "C" long rt_hotfn_oodle_guest_calls() { return g_oodleGuest[0] + g_oodleGuest[1] + g_oodleGuest[2]; }
+
 // mismatches seen in check mode so far, all functions (tests/hotfn --hooked)
 extern "C" long rt_hotfn_mismatches() {
-    return g_tally[0].bad + g_tally[1].bad + g_tally[2].bad + g_tally2[0].bad + g_tally2[1].bad + g_tally2[2].bad;
+    return g_tally[0].bad + g_tally[1].bad + g_tally[2].bad + g_tally2[0].bad + g_tally2[1].bad + g_tally2[2].bad +
+           g_tally3[0].bad + g_tally3[1].bad + g_tally3[2].bad;
 }
 
 // before the guest's last state store (`st1 {v0.s}[3]`, line 3's filter state still in v0 lane 3)

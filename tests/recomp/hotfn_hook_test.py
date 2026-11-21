@@ -2,7 +2,7 @@
 
   tools/venv-recomp/Scripts/python -I tests/recomp/hotfn_hook_test.py [--emit DIR]
 
-Emits main+0x96d390, 0x96d5f0, 0x155600, 0x8b5f10 and 0x8b6750 from the real module with and without the HOTFN tables and checks: the entry,
+Emits main+0x96d390, 0x96d5f0, 0x155600, 0x8b5f10, 0x8b6750 and the Oodle routines 0x4d220, 0x16680, 0x16ed0 from the real module with and without the HOTFN tables and checks: the entry,
 check and `ret` sites hold the instruction words the hooks were written for; with the tables the entry hook is followed by
 the branch to the `ret` label and the check hook sits before the final store; without them the C has no hook. --emit DIR
 also writes the hooked functions (renamed hk_<addr>) to DIR/hooked_fns.c for tests/hotfn (generated game code: keep it
@@ -30,7 +30,10 @@ SITES = [(0x96d390, 0x96d390, 'rt_hot_matdecomp', 0x96d5b0, 'rt_hot_matdecomp_ch
          (0x155600, 0x155600, 'rt_hot_reverb', 0x155a1c, 'rt_hot_reverb_check', 0x155a20, 0x4d009100),      # st1 {v0.s}[3], [x8]
          (0x8b5f10, 0x8b5f10, 'rt_hot_hier', 0x8b66b0, 'rt_hot_hier_check', 0x8b66cc, 0x6d4623e9),          # ldp d9, d8, [sp, #0x60]
          (0x8b6750, 0x8b7400, 'rt_hot_bone1', 0x8b7960, 'rt_hot_bone1_check', 0x8b7960, 0xa943bff1),        # ldp x17, x15, [sp, #0x38]
-         (0x8b6750, 0x8b7ac0, 'rt_hot_bone2', 0x8b8028, 'rt_hot_bone2_check', 0x8b8028, 0x1280000d)]       # mov w13, #-1
+         (0x8b6750, 0x8b7ac0, 'rt_hot_bone2', 0x8b8028, 'rt_hot_bone2_check', 0x8b8028, 0x1280000d),       # mov w13, #-1
+         (0x4d220, 0x4d220, 'rt_hot_oodle_huff', 0x4d6a8, 'rt_hot_oodle_huff_check', 0x4d6a8, RET),           # check on the ret
+         (0x16680, 0x16680, 'rt_hot_oodle_lz_raw', 0x16d14, 'rt_hot_oodle_lz_raw_check', 0x16d14, RET),
+         (0x16ed0, 0x16ed0, 'rt_hot_oodle_lz_delta', 0x17610, 'rt_hot_oodle_lz_delta_check', 0x17610, RET)]
 # guest regions the bone hooks replace, emitted as functions for tests/hotfn (they end by dispatching to the target)
 REGIONS = [(0x8b7400, 0x8b7960), (0x8b7ac0, 0x8b8028)]
 
@@ -86,7 +89,7 @@ def main():
         check(on[i:].split('\n', 2)[1].strip() == f'if ((c)->x[16] == 0) {{ goto L_{BASE + tgt:x}; }}', f'{entry:#x}: the branch to the target follows the entry hook')
         lab = on.index(f'\nL_{BASE + tgt:x}:;')
         j = on.index(f', {chook});')
-        if mid:
+        if mid or csite == tgt:
             check(i < lab < j, f'{entry:#x}: the check hook runs right after the target label')
         else:
             check(i < j < lab, f'{entry:#x}: the check hook runs before the ret label')
