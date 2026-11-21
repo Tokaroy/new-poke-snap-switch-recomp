@@ -321,7 +321,7 @@ void RunPass(ReplayCtx& cx, TextureImpl* c, TextureImpl* z) {
   const int dbg = tun.debug;
   if (dbg == 1) flags = 8; else if (dbg == 2) flags = 16; else if (dbg == 3) flags = 32; else if (dbg == 4) flags = 64; else if (dbg == 5) flags = 128; else if (dbg == 6) flags = 2048 | (ocean ? 1024 : 0);
   pc.tlas = rt ? rinfo.tlas : 0; pc.avg = rt ? rinfo.avg : 0;
-  pc.k[0] = cam->nearZ; pc.k[1] = (float)g_presentCount / 60.0f; pc.k[2] = (float)flags; pc.k[3] = ocean ? tun.oceanStrength : tun.ripple;
+  pc.k[0] = cam->nearZ; pc.k[1] = (float)std::fmod(WaterClock(), 2048.0); pc.k[2] = (float)flags; pc.k[3] = ocean ? tun.oceanStrength : tun.ripple;
   pc.s[0] = tun.ssrStrength; pc.s[1] = tun.causticsStrength; pc.s[2] = tun.foamStrength; pc.s[3] = tun.ssrDist;
   VkImageLayout prev;
   VkImageView dv = FxDepthRead(cx, z, &prev);

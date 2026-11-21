@@ -221,7 +221,7 @@ struct Track {
   float tanNow = 0.f, zoom = 1.f;
   double R[4][4] = {};           // previous view-projection * inverse of this frame's (identity when there is no usable previous frame)
   bool rValid = false;
-  LARGE_INTEGER lastQ{}; double dt = 1.0 / 60.0;   // smoothed seconds between scene frames
+  LARGE_INTEGER lastQ{}; double dt = 1.0 / 60.0, rawDt = 1.0 / 60.0;   // dt smoothed; rawDt is the last unsmoothed seconds between scene frames
   int frameNo = 0;
 } T;
 
@@ -231,7 +231,7 @@ void TrackFrame(const FxCam* cam) {
   T.present = g_presentCount;
   // seconds between scene frames (the blur length follows the real frame time, so the look stays the same at 60, 120 or 144 fps)
   LARGE_INTEGER q, f; QueryPerformanceCounter(&q); QueryPerformanceFrequency(&f);
-  if (T.lastQ.QuadPart) { const double d = (double)(q.QuadPart - T.lastQ.QuadPart) / (double)f.QuadPart; if (d > 0.0005 && d < 0.1) T.dt += (d - T.dt) * 0.25; }
+  if (T.lastQ.QuadPart) { const double d = (double)(q.QuadPart - T.lastQ.QuadPart) / (double)f.QuadPart; T.rawDt = d; if (d > 0.0005 && d < 0.1) T.dt += (d - T.dt) * 0.25; }
   T.lastQ = q;
   bool cut = false;
   if (T.have && gap <= 3) {
@@ -357,7 +357,7 @@ void PreMb(ReplayCtx& cx) {
   pm.sz[0] = (float)g.rw; pm.sz[1] = (float)g.rh; pm.sz[2] = jx; pm.sz[3] = jy;
   pm.dp[0] = cam->nearZ; pm.dp[1] = cam->farZ; pm.dp[2] = DepthMode(cam); pm.dp[3] = (jx != 0.f || jy != 0.f) ? (float)(1 + (g_presentCount & 255)) : 0.f;
   const float shutter = EnvF("SNAP_MBLUR_SHUTTER", 1.f / 120.f);
-  pm.mp[0] = MblurStrength() * shutter / (float)T.dt;      // velocity (one frame of motion) -> motion over the shutter time
+  pm.mp[0] = MblurStrength() * shutter / (float)std::max(T.rawDt, 1e-3);      // velocity (one frame of motion) -> motion over the shutter time
   pm.mp[1] = EnvF("SNAP_MBLUR_MAXLEN", 0.07f) * H;            // longest blur in render pixels
   pm.mp[2] = 0.6f * hs;                                      // shorter than this: untouched
   pm.mp[3] = EnvF("SNAP_MBLUR_DEBUG", 0.f);

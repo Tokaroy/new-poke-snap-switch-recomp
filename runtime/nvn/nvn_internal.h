@@ -639,6 +639,16 @@ void DebugDrawLog(const char* fmt, ...);
 void DebugSamplerNote(void* vkSampler, const SamplerBuilder& b);   // debug (NVN_DRAW_LOG): remembers a sampler's guest state
 void DebugSamplerDesc(void* vkSampler, char* out, size_t n);        // debug: "min/mag/wrap/lod" text for a VkSampler
 extern int g_presentCount;
+// Wall-clock water time in seconds (ripples, caustics, FFT ocean): per-present advance, dt clamped so a load stall does not jump the waves. Same value for every call within one present.
+inline double WaterClock() {
+  static double t = 0.0; static int lastP = -1; static std::chrono::steady_clock::time_point last{};
+  if (lastP != g_presentCount) {
+    const auto now = std::chrono::steady_clock::now();
+    if (lastP >= 0) t += std::min(0.1, std::max(0.0, std::chrono::duration<double>(now - last).count()));
+    last = now; lastP = g_presentCount;
+  }
+  return t;
+}
 // SNAP_XLATE_AB=1 (test aid, off = no cost): fragment pipelines alternate every present between the translation of SNAP_XLATE_REV and the one of
 // SNAP_XLATE_AB_REV (cache dir SNAP_XLATE_AB_DIR). On a frozen scene (pause menu) two consecutive presents render the same frame with the two
 // translations; dump both and diff. Returns 0 (normal module) or 1 (alternate module).
