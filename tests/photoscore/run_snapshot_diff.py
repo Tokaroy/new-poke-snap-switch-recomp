@@ -98,6 +98,7 @@ def main():
     ap.add_argument('--readable', nargs='+', required=True)
     ap.add_argument('--ret', default='')
     ap.add_argument('--csv', default='')
+    ap.add_argument('--pair', action='append', default=[], help='<in>:<out> main offsets: per-photo check across two calls (see snapshot_diff.cpp)')
     ap.add_argument('--verbose', default='5')
     ap.add_argument('--data-sym', action='append', default=[], help='<imported data symbol>=<float> (SDK constants the code reads)')
     ap.add_argument('--root', type=Path, default=SRC)
@@ -134,8 +135,13 @@ def main():
         args += ['--ret', a.ret]
     if a.csv:
         args += ['--csv', a.csv]
+    sdk = a.root / 'analysis' / 'import' / 'v262144-sdk.elf'
+    if sdk.exists():
+        args += ['--import-elf', str(sdk)]   # SDK constant tables the main module imports (GLOB_DAT)
     for d in a.data_sym:
         args += ['--data-sym', d]
+    for p in a.pair:
+        args += ['--pair', p]
     sys.exit(subprocess.run(args, creationflags=BELOW_NORMAL).returncode)
 
 

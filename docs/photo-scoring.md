@@ -19,7 +19,7 @@ under `paramb` `R.3`) and writes a small result block. The evaluator then adds t
 | Background | inside `0x418350` | a bonus for background elements of three kinds |
 
 Total points = pose + size + direction + framing + other-Pokémon bonus + background bonus, each part cut to a whole number
-before the sum.
+before the sum. Size is the larger of the two size estimates below.
 
 ## The parts
 
@@ -28,11 +28,14 @@ star count) × base value + a per-species bonus (zero for most species).
 
 **Size.** Two estimates; the larger wins.
 - Pixel estimate: a per-species curve over the share of the screen the Pokémon's pixels cover, times a factor for how much of
-  its body is hidden behind other things, times a factor for the share of its pixels that are visible.
-- Sphere estimate: the same idea using the Pokémon's bounding sphere (area × visible share), with the hidden factor counting only
-  body parts of two particular kinds (likely the main body; not confirmed).
-The hidden share is a weighted average over the body-part spheres, each weighted by its rough projected area, using a
-per-sphere visibility test against the camera (`0x426520`).
+  its body is inside the frame, times a factor for the share of its pixels that are visible (not blocked by other things).
+- Sphere estimate: the same idea using the Pokémon's bounding sphere (area × visible share), with the in-frame factor counting
+  only body parts of two particular kinds (likely the main body; not confirmed).
+
+The in-frame share is a weighted average over the body-part spheres, each weighted by its rough projected area. For each
+sphere, `0x426520` finds the four points of its outline as seen from the camera (top, bottom, left, right), projects them,
+and returns the share of the box they span that lies outside the screen. It uses the SDK's polynomial sine and cosine and
+the hardware's reciprocal square root estimate, so a faithful rewrite has to reproduce both bit for bit.
 
 **Direction.** Points = pitch factor × the better of two facing curves × an edge factor.
 - Facing curves map an angle in degrees to points through per-species breakpoints: facing the camera scores highest.
@@ -47,9 +50,17 @@ in screen units (0 = centre, 1 = edge). Points come from a curve over 1 − the 
 the second kind is off screen, a fixed value from the start of the curve is used instead. For paired subjects the midpoints between the two Pokémon
 also count.
 
-**Other Pokémon and background.** The evaluator adds a bonus per other Pokémon visible in the shot (weights depend on whether it
-is the paired partner) and per background element of three kinds, scaled by how visible each is. These sums live inside
-`0x418350` and are not yet rewritten or tested.
+**Other Pokémon.** Every other Pokémon in the photo is run through the size, direction and pose scorers. It is skipped when
+the evaluator has no measurements for it, when none of its body is in the frame, or when its pixel area is zero, at or below a
+minimum, or fully blocked. Its pixel-size points (not the larger of the two size estimates), direction points and pose points
+are each multiplied by a weight and added up. The partner gets its own weight and minimum area. The bonus is the three sums
+added together, cut to a whole number.
+
+**Background.** Background subjects come in three kinds, each with its own minimum area. They are scored the same way and with
+one shared weight, but only the best two count: the bonus is the sum of the top two scores, cut to a whole number. Subjects
+without pixel counts fall back to their bounding-sphere measurements.
+
+The evaluator stores the six parts and the total in the photo's result record.
 
 ## Curves
 
@@ -61,6 +72,14 @@ curves start at zero area.
 
 `host/mods/pscap.cpp` (off unless `SNAP_PSCAP` is set) snapshots the memory a function can reach when it is entered.
 `tests/photoscore/run_snapshot_diff.py` replays each recorded call twice, through the lifted function and through a readable
-rewrite, and compares every byte the caller can see plus the return value. One Florio run (72 shots, 168 pose-score calls,
-2675 recorded calls) matched on every call for the four scorers and the three direction curves. The rewrite itself is
-reconstructed from the game, so it stays out of the repository.
+rewrite, and compares every byte the caller can see plus the return value. Two Florio runs (5,464 recorded calls) matched on
+every call for the four scorers, the three direction curves and `0x426520`. Inside the size scorer, every body-part sphere was
+also checked against the lifted `0x426520`, along with moved and resized copies of it, about 534,000 spheres in all.
+
+The bonuses and the total have no function of their own, so they are checked across two calls with `--pair`. The snapshot at
+the framing call holds the evaluator's inputs (its locals, the object list, the visibility list and the id map). The readable
+code computes the six parts and the total from that snapshot. A later call (`0x415bd0`, or the next evaluator entry) shows
+the record the game itself wrote, and the two must match. All 71 photos of the second run matched. In those photos the
+other-Pokémon bonus ranged from 0 to 139. The background bonus was 0 in every photo: a background subject appeared but never
+passed the checks, so the top-two rule has not been exercised yet. The rewrite itself is reconstructed from the game, so it
+stays out of the repository.

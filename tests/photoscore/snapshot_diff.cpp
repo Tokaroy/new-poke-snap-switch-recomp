@@ -8,8 +8,8 @@
 //   extern "C" GuestFn readable_fn(uint64_t main_off);   the rewrite (kept outside the repository when it is game-derived)
 // Either may return null for an offset it does not cover; such calls are counted as skipped.
 //
-// Usage: snapshot_diff <main.elf> <capture.psc> [--ret <off>:<x0|w0|s0>[,...]] [--only <off>[,...]] [--csv <file>] [--verbose n]
-//                      [--data-sym <imported data symbol>=<float>]...
+// Usage: snapshot_diff <main.elf> <capture.psc> [--ret <off>:<x0|w0|s0>[,...]] [--only <off>[,...]] [--pair <in>:<out>] [--csv <file>] [--verbose n]
+//                      [--import-elf <module.elf>]... [--data-sym <imported data symbol>=<float>]...
 // Exit code 0 only when every compared call matched and none faulted.
 #include <windows.h>
 
@@ -30,6 +30,9 @@ extern "C" {
 typedef void (*GuestFnPtr)(Cpu *);
 GuestFnPtr lifted_fn(uint64_t main_off);
 GuestFnPtr readable_fn(uint64_t main_off);
+typedef int (*PairFn)(Cpu *cpu, int32_t *vals, int max);
+PairFn readable_pair_in(uint64_t main_off);    // see --pair
+PairFn readable_pair_out(uint64_t main_off);
 }
 
 namespace {
@@ -79,9 +82,47 @@ bool ReadCapture(const char *path) {
 }
 
 // Relocations, as the loader applies them: RELATIVE = base + addend; a symbol defined in main = base + value + addend; a symbol
-// imported from the SDK points at a zeroed 64-byte slot of its own, or at a value given with --data-sym <name>=<float>.
+// imported from the SDK points at a slot of its own holding the symbol's initial bytes from an --import-elf module (the SDK
+// ELF, for constant tables), else a value given with --data-sym <name>=<float>, else zeros.
 std::map<std::string, float> g_data_sym_values;
-std::map<std::string, std::array<uint8_t, 64>> g_data_sym_slots;
+std::map<std::string, std::vector<uint8_t>> g_data_sym_slots;
+std::map<std::string, std::vector<uint8_t>> g_import_bytes;   // defined data symbols of the --import-elf modules
+
+bool LoadImportElf(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) { fprintf(stderr, "cannot open %s\n", path); return false; }
+    std::vector<uint8_t> e;
+    fseek(f, 0, SEEK_END); e.resize((size_t)ftell(f)); fseek(f, 0, SEEK_SET);
+    fread(e.data(), 1, e.size(), f); fclose(f);
+    uint64_t phoff, shoff; uint16_t phnum, shnum;
+    memcpy(&phoff, &e[0x20], 8); memcpy(&shoff, &e[0x28], 8); memcpy(&phnum, &e[0x38], 2); memcpy(&shnum, &e[0x3c], 2);
+    auto fileOff = [&](uint64_t va) -> int64_t {
+        for (int i = 0; i < phnum; i++) {
+            uint32_t type; uint64_t off, pva, fsz;
+            memcpy(&type, &e[phoff + 56 * i], 4); memcpy(&off, &e[phoff + 56 * i + 8], 8);
+            memcpy(&pva, &e[phoff + 56 * i + 16], 8); memcpy(&fsz, &e[phoff + 56 * i + 32], 8);
+            if (type == 1 && va >= pva && va < pva + fsz) return int64_t(off + (va - pva));
+        }
+        return -1;
+    };
+    for (int i = 0; i < shnum; i++) {
+        const uint8_t *sh = &e[shoff + 64 * i];
+        uint32_t type, link; uint64_t off, size;
+        memcpy(&type, sh + 4, 4); memcpy(&off, sh + 24, 8); memcpy(&size, sh + 32, 8); memcpy(&link, sh + 40, 4);
+        if (type != 11) continue;   // SHT_DYNSYM
+        uint64_t stroff; memcpy(&stroff, &e[shoff + 64 * link + 24], 8);
+        for (uint64_t o = 0; o + 24 <= size; o += 24) {
+            const uint8_t *st = &e[off + o];
+            uint32_t name; uint16_t shndx; uint64_t value, ssize;
+            memcpy(&name, st, 4); memcpy(&shndx, st + 6, 2); memcpy(&value, st + 8, 8); memcpy(&ssize, st + 16, 8);
+            if (shndx == 0 || (st[4] & 0xf) != 1 || ssize == 0) continue;   // defined STT_OBJECT only
+            int64_t fo = fileOff(value);
+            if (fo < 0 || uint64_t(fo) + ssize > e.size()) continue;
+            g_import_bytes[(const char *)&e[stroff + name]].assign(&e[fo], &e[fo] + ssize);
+        }
+    }
+    return true;
+}
 
 void ApplyRelocations(const std::vector<uint8_t> &elf, uint8_t *img) {
     uint64_t phoff; uint16_t phnum;
@@ -122,8 +163,13 @@ void ApplyRelocations(const std::vector<uint8_t> &elf, uint8_t *img) {
                 } else {
                     std::string n = (const char *)(img + strtab + name);
                     auto &slot = g_data_sym_slots[n];
-                    auto it = g_data_sym_values.find(n);
-                    if (it != g_data_sym_values.end()) memcpy(slot.data(), &it->second, 4);
+                    if (slot.empty()) {
+                        auto ib = g_import_bytes.find(n);
+                        slot.assign(std::max<size_t>(64, ib == g_import_bytes.end() ? 0 : ib->second.size()), 0);
+                        if (ib != g_import_bytes.end()) memcpy(slot.data(), ib->second.data(), ib->second.size());
+                        auto it = g_data_sym_values.find(n);
+                        if (it != g_data_sym_values.end()) memcpy(slot.data(), &it->second, 4);
+                    }
                     value = (uint64_t)(uintptr_t)slot.data() + add;
                 }
             } else {
@@ -236,6 +282,13 @@ bool RunGuarded(GuestFnPtr fn, Cpu *cpu) {
     return true;
 }
 
+bool RunPair(PairFn fn, Cpu *cpu, int32_t *vals, int &n) {
+    g_fault_addr = 0;
+    __try { n = fn(cpu, vals, 16); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+    return true;
+}
+
 struct RetSpec { char kind; };   // 'x' x0, 'w' w0, 's' s0
 
 }  // namespace
@@ -244,12 +297,15 @@ int main(int argc, char **argv) {
     if (argc < 3) { fprintf(stderr, "usage: snapshot_diff <main.elf> <capture.psc> [--ret off:x0|w0|s0,...] [--only off,...] [--csv file]\n"); return 2; }
     std::map<uint64_t, char> rets;
     std::set<uint64_t> only;
+    std::vector<std::pair<uint64_t, uint64_t>> pairs;
     const char *csv_path = nullptr;
     int verbose = 3;
     for (int i = 3; i + 1 < argc; i += 2) {
         std::string k = argv[i];
         const char *s = argv[i + 1];
-        if (k == "--data-sym") {
+        if (k == "--import-elf") {
+            if (!LoadImportElf(s)) return 2;
+        } else if (k == "--data-sym") {
             std::string v = s;
             size_t eq = v.find('=');
             g_data_sym_values[v.substr(0, eq)] = strtof(v.c_str() + eq + 1, nullptr);
@@ -263,6 +319,10 @@ int main(int argc, char **argv) {
             }
         } else if (k == "--only") {
             while (*s) { char *end; only.insert(strtoull(s, &end, 16)); s = *end == ',' ? end + 1 : end; if (!*end) break; }
+        } else if (k == "--pair") {
+            char *end;
+            uint64_t in_fn = strtoull(s, &end, 16);
+            if (*end == ':') pairs.push_back({in_fn, strtoull(end + 1, nullptr, 16)});
         } else if (k == "--csv") csv_path = s;
         else if (k == "--verbose") verbose = atoi(s);
     }
@@ -345,8 +405,69 @@ int main(int argc, char **argv) {
             fprintf(csv, "\n");
         }
     }
+    // --pair <in>:<out>: a check over two calls, for results that only show up later than the call that has the inputs. For
+    // each call of <in>, readable_pair_in computes values from its memory; the next call of <out> is then loaded and
+    // readable_pair_out reads the values the game itself produced. The two lists must be equal. Either side returns -1 when
+    // a call does not apply (it is then not counted) and -2 when its inputs break an assumption (counted as a failure).
+    long pair_bad = 0;
+    for (auto &[in_fn, out_fn] : pairs) {
+        PairFn fi = readable_pair_in(in_fn), fo = readable_pair_out(out_fn);
+        if (!fi || !fo) { fprintf(stderr, "--pair %llx:%llx: no readable pair functions\n", (unsigned long long)in_fn, (unsigned long long)out_fn); return 2; }
+        long matched = 0, mismatched = 0, failed = 0, unpaired = 0;
+        bool pending = false;
+        int32_t want[16], got[16];
+        int nwant = 0;
+        uint64_t pending_seq = 0;
+        for (auto &c : g_calls) {
+            if (c.fn == in_fn) {
+                LoadPages(c);
+                SetCpu(a, c);
+                int n = -1;
+                bool ok = RunPair(fi, a, want, n);
+                if (!ok || n == -2) {
+                    failed++;
+                    if (verbose-- > 0) fprintf(stderr, "pair seq %llu: input side %s (addr %#llx)\n", (unsigned long long)c.seq, ok ? "rejected" : "faulted", (unsigned long long)g_fault_addr);
+                    continue;
+                }
+                if (n < 0) continue;
+                if (pending) unpaired++;
+                pending = true;
+                nwant = n;
+                pending_seq = c.seq;
+            } else if (c.fn == out_fn && pending) {
+                LoadPages(c);
+                SetCpu(b, c);
+                int n = -1;
+                bool ok = RunPair(fo, b, got, n);
+                if (!ok) { failed++; pending = false; continue; }
+                if (n < 0) continue;
+                pending = false;
+                bool same = n == nwant && !memcmp(want, got, sizeof(int32_t) * n);
+                (same ? matched : mismatched)++;
+                if (csv) {
+                    fprintf(csv, "%llu,%llx,pair,%s", (unsigned long long)pending_seq, (unsigned long long)in_fn, same ? "match" : "mismatch");
+                    for (int k = 0; k < nwant; k++) fprintf(csv, ",%d", want[k]);
+                    fprintf(csv, ",|");
+                    for (int k = 0; k < n; k++) fprintf(csv, ",%d", got[k]);
+                    fprintf(csv, "\n");
+                }
+                if (!same && verbose-- > 0) {
+                    fprintf(stderr, "pair seq %llu -> %llu: readable", (unsigned long long)pending_seq, (unsigned long long)c.seq);
+                    for (int k = 0; k < nwant; k++) fprintf(stderr, " %d", want[k]);
+                    fprintf(stderr, ", game");
+                    for (int k = 0; k < n; k++) fprintf(stderr, " %d", got[k]);
+                    fprintf(stderr, "\n");
+                }
+            }
+        }
+        if (pending) unpaired++;
+        printf("pair main+%#llx -> main+%#llx: %ld matched, %ld mismatched, %ld failed, %ld without a result call\n", (unsigned long long)in_fn,
+               (unsigned long long)out_fn, matched, mismatched, failed, unpaired);
+        pair_bad += mismatched + failed;
+        if (!matched) pair_bad++;   // a pair check that compared nothing is not a pass
+    }
     if (csv) fclose(csv);
-    long bad = 0;
+    long bad = pair_bad;
     for (auto &[fn, t] : per) {
         printf("main+%#llx: %ld matched, %ld mismatched, %ld faulted, %ld skipped\n", (unsigned long long)fn, t[0], t[1], t[2], t[3]);
         bad += t[1] + t[2];

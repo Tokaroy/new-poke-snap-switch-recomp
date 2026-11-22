@@ -214,9 +214,10 @@ NAMES = {
         # table_c = photo scoring (docs/photo-scoring.md). Read by main+0x4aea20 into the score parameter block; slots below were
         # matched against the reader code in main and against the values seen in memory during a scored run.
         'R.3': ('PhotoScoreParams', {0: ('base', H, 'per-star multipliers and the score-point lists'),
-                                     1: ('hidden_curve', H, '(hidden fraction, factor) points for the size score, all body parts'),
-                                     2: ('hidden_core_curve', H, '(hidden fraction, factor) points, main body parts only'),
+                                     1: ('onscreen_curve', H, '(on-screen fraction, factor) points for the size score, all body parts'),
+                                     2: ('onscreen_core_curve', H, '(on-screen fraction, factor) points, main body parts only'),
                                      6: ('visible_curve', H, '(visible pixel fraction, factor) points for the size score'),
+                                     22: ('bonus_weights', M, 'weights of the other-Pokemon and background bonuses'),
                                      23: ('pitch_points', H, 'pitch-curve points; entries 1..3 used, mirrored over 6 angles'),
                                      24: ('species', H, 'per-species score entries (hash-keyed)'),
                                      27: ('species_extra', M, 'more per-species score entries, same shape, same lookup table')}),
@@ -225,6 +226,10 @@ NAMES = {
                                      8: ('sphere_size_points', H, 'points for the sphere-size curve (first x is 0)'),
                                      9: ('facing_points', H, 'points per facing-angle breakpoint'),
                                      10: ('framing_curve', H, '(1 - distance from screen centre, points) pairs')}),
+        # slots matched by value against the scoring parameters in memory during a scored run
+        'R.3.22': ('BonusWeights', {2: ('other_weight', M, 'weight of the points of any other Pokemon (other-Pokemon bonus)'),
+                                    3: ('background_weight', M, 'weight of the points of a background subject'),
+                                    4: ('partner_weight', M, 'weight of the points of the partner (other-Pokemon bonus)')}),
         'R.3.24[]': ('SpeciesScore', {0: ('species_hash', M, 'u32 hash of the species name; the lookup key'),
                                       1: ('pose_bonus', L, 'present on 16 entries; looks like a flat pose bonus'),
                                       2: ('pixel_size_breaks', H, 'screen-area breakpoints of the pixel-size curve'),

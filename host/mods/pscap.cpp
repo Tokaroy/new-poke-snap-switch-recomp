@@ -9,8 +9,9 @@
 //                     found (default 0x400), m<n> snapshots of this function at most (default 3000),
 //                     l<lo hex>-<hi hex> only when the return address is in [lo, hi) (main offsets)
 // SNAP_PSCAP_ROOTS=<root>[;<root>...]  extra starting points, walked deeper than the default ones:
-//                     <fn hex>@x<n>[><off hex>...][+<add hex>]:w<hex>[:d<n>][:map]
-//                     x<n> = register; each '>off' loads the pointer at (address + off); '+add' adds at the end. 'map' treats the
+//                     <fn hex>@<base>[><off hex>...][+<add hex>]:w<hex>[:d<n>][:map]
+//                     <base> = x<n> (a register) or sp (the guest sp at entry, so the caller's locals); each '>off' loads the
+//                     pointer at (address + off); '+add' adds at the end. 'map' treats the
 //                     address as a libc++ unordered_map (bucket pointer, bucket count, first node) and copies the whole bucket array
 //                     and every node (w bytes each) before the pointer walk.
 // SNAP_PSCAP_STACK=<below>,<above>   guest stack bytes copied around sp (default 0x8000,0x2000).
@@ -43,6 +44,7 @@ namespace {
 constexpr uint64_t kMainBase = 0x7100000000ull;
 constexpr uint64_t kPage = 4096;
 constexpr size_t kBudget = 8000;    // pages per snapshot
+constexpr int kSpReg = 31;          // root base 'sp'
 
 struct Root {
     int reg = 0;
@@ -99,7 +101,7 @@ struct Readable {
 };
 
 void parse_roots(const char* s) {
-    // <fn hex>@x<n>[>off...][+add]:w<hex>[:d<n>][:map]   separated by ';'
+    // <fn hex>@(x<n>|sp)[>off...][+add]:w<hex>[:d<n>][:map]   separated by ';'
     while (s && *s) {
         char* end;
         uint64_t fn = kMainBase + strtoull(s, &end, 16);
@@ -107,6 +109,7 @@ void parse_roots(const char* s) {
         Root r;
         if (*s == '@') s++;
         if (*s == 'x') { r.reg = (int)strtol(s + 1, &end, 10); s = end; }
+        else if (!strncmp(s, "sp", 2)) { r.reg = kSpReg; s += 2; }
         while (*s == '>') { r.loads.push_back(strtoull(s + 1, &end, 16)); s = end; }
         if (*s == '+') { r.add = strtoull(s + 1, &end, 16); s = end; }
         while (*s == ':') {
@@ -213,7 +216,7 @@ void snapshot(FnSpec& fs, uint64_t lr) {
     if (!c) return;
     Walk w;
     for (auto& r : fs.roots) {
-        uint64_t a = c->x[r.reg];
+        uint64_t a = r.reg == kSpReg ? c->sp : c->x[r.reg];
         bool ok = true;
         for (uint64_t off : r.loads) {
             w.copy_range(a + off, 8);
