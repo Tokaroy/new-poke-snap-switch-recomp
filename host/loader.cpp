@@ -52,6 +52,7 @@ extern "C" void snap_fn_observe(uint64_t a, uint64_t lr, uint64_t x0);
 extern "C" void snap_skips_observe(uint64_t a, uint64_t lr, uint64_t x0);
 extern "C" void snap_neo_observe(uint64_t a, uint64_t lr, uint64_t x0);
 extern "C" void snap_highfps_observe(uint64_t a, uint64_t lr, uint64_t x0);
+extern "C" void snap_pscap_observe(uint64_t a, uint64_t lr, uint64_t x0);
 extern "C" void loader_init_hit(uint64_t a);
 static thread_local GuestThread *g_cur = nullptr;
 thread_local Cpu *loader::g_tls_cpu = nullptr;   // the Cpu of the last host call on this thread (crash reports)
@@ -1138,6 +1139,7 @@ void fnprof_hit(uint64_t a, uint64_t lr, uint64_t x0) {
     snap_skips_observe(a, lr, x0);   // host/mods/skips.cpp (SNAP_SKIPS_REC)
     snap_neo_observe(a, lr, x0);   // host/mods/neofilm.cpp (dev tracer SNAP_NEO_CAMFN)
     snap_highfps_observe(a, lr, x0);   // host/mods/highfps.cpp (SNAP_FPS_TRACE / SNAP_FPS_MSWATCH)
+    snap_pscap_observe(a, lr, x0);   // host/mods/pscap.cpp (SNAP_PSCAP function-entry snapshots for offline tests)
     for (int i = 0; i < g_fntrace_n; i++)
         if (g_fntrace[i] == a) {
             // SNAP_FNTRACE_STACK=n (debug): also thread id, x1 and the guest frame-pointer chain (n return addresses as main offsets; the callee has not
