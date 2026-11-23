@@ -1,0 +1,7 @@
+# fixture: post_tutorial
+# Shortest route to a rendered menu (driver portability runs, docs/driver-portability.md): wait for the title, slow A taps, wait for the lab hub main menu, linger a few frames.
+# Run: powershell -File host\run_boot.ps1 -Route lvp_menu -BuildDir build\w\lvp -Timeout 590
+wait ui=title timeout=500
+repeat @f60 @f20000 120 8 A
+wait ui=main_menu timeout=500
+end 20

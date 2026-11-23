@@ -55,7 +55,14 @@ bool ModuleUsesSubgroup(VkShaderModule m);    // nvn_shader.cpp
 
 // Pins a stage to 32 lanes when its SPIR-V uses subgroup ops (the translator assumes Maxwell's 32-lane warp; RDNA may run wave64).
 static void PinSubgroup32(VkPipelineShaderStageCreateInfo* si, VkPipelineShaderStageRequiredSubgroupSizeCreateInfo* rq, VkShaderModule baseMod) {
-  if (!(g_sgPinStages & si->stage) || !ModuleUsesSubgroup(baseMod)) return;
+  if (!ModuleUsesSubgroup(baseMod)) return;
+  if (!(g_sgPinStages & si->stage)) {   // no 32-lane pin on this GPU (for example a software rasterizer with 8 lanes): the lane math runs at the native width
+    static std::atomic<bool> warned{false};
+    if (!warned.exchange(true))
+      fprintf(stderr, "[nvn] warning: a shader that assumes 32-lane subgroups cannot be pinned to 32 on this GPU (stage 0x%x, pin mask 0x%x); its results may differ from the Switch (photo scoring, light culling)\n",
+              (unsigned)si->stage, (unsigned)g_sgPinStages);
+    return;
+  }
   *rq = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO};
   rq->requiredSubgroupSize = 32;
   rq->pNext = const_cast<void*>(si->pNext);

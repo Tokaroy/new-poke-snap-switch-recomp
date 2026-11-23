@@ -1,0 +1,9 @@
+# fixture: post_tutorial
+# Short ride for driver portability runs (docs/driver-portability.md): title, lab hub, Lental Map, Florio start, 30 s of riding with shutter taps, then exit.
+# Run: powershell -File host\run_boot.ps1 -Route lvp_ride -BuildDir build\w\lvp -Timeout 590
+repeat @f300 @f30000 120 8 A
+wait ui=map_select timeout=500
+repeat @f60 @f30000 120 8 A
+wait ride timeout=500
+repeat @f0 @f30000 24 4 A
+end 30
