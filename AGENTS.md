@@ -834,3 +834,7 @@ Owner decisions of 2026-11-17, following `A:\AI\Recomps\AGENTS.md`. Player docs:
 - New row `specular_aa` (Specular sparkle filter, Detail page and F1, live, default Off): -0.5% whole-frame and -1.3% foliage shimmer, about 0.005 ms at 4K, skips photo frames. A Florio ride to the Score screen with it on (and `SNAP_FOLIAGE_STABLE=1`) scored normally.
 - `SNAP_FOLIAGE_STABLE=1` (mip-scaled alpha test) is env only: no change to the frames in either scene although the patched modules validate. Cause still open (section 11 lists the next check). `SNAP_FOLIAGE_AA_PREPASS=1` is an unmeasured test aid, default off.
 - `ab_capture.ps1 -Hold <s>`: the route now ends `<s>` seconds after the moment (was a fixed 150 s, too short for long value lists). The photo check adds about 10 s per value; with 47 values use `-NoPhoto` or a longer `-Hold`.
+
+## Ride-start "scene transition" stalls (2026-11-23, worker scenestall, `docs/boot-time-vs-rival.md`)
+
+- The three 0.8-0.9 s single-frame stalls in the boot-time runs were the test's checkpoint frame dumps (`run_boot.ps1 -Route` sets `NVN_FRAME_DUMP` at 20 s, then every 30 s), not game code: the dump read a write-combined host buffer pixel by pixel on the presenting `JobWorker`. `CreateHostBuffer(..., readback = true)` now prefers a `HOST_CACHED` type and the dump uses it (1.2-1.4 s per dump to 33-85 ms). Any timing read from a `-Route` run before this change carries those stalls; use `-ShotAt 100000` for timing runs. `SNAP_SAMPLE_BUCKET=1` gives the sampler one bucket per present.

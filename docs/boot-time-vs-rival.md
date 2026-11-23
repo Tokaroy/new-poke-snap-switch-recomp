@@ -72,8 +72,9 @@ Florio check, same build: a ride from an empty translated-shader cache reached `
    6 steady-state runs, about 2.5 s of the 100 s. The per-frame csv (`SNAP_PERF_SHARED`) shows the host cost of those frames near zero
    (pace, replay, pipeline, upload under 15 ms) and the guest main thread blocked on one condition variable (`0x71012fe180`) while one
    `JobWorker` burns 0.8-1.1 s of CPU in lifted game code. The rival's runs have 0.0-0.2 s excess in those windows (excess = wall time
-   of a present interval minus its presents/60). The cause is not proven: the sampler (`SNAP_SAMPLE`, 500-present buckets) is too coarse to
-   isolate it.
+   of a present interval minus its presents/60). Resolved 2026-11-23 (section "The three stalls were the test's own frame dumps" below):
+   they were the route's checkpoint screenshots (`run_boot.ps1 -Route` dumps a frame at 20 s, then every 30 s), not scene loads. Normal play
+   has no such stall.
 3. Map to ride: 17.0 s ours against 20.2 s theirs, but the two are not the same measurement (see below); treat it as equal.
 
 Where we are not slower: first frame (1.4 s against 2.1-2.9 s: the rival's guest starts 0.4-1.0 s late, waiting for its pipeline
@@ -86,9 +87,49 @@ barely differ for us because test runs always start with the translated-shader c
    their SPIR-V; build the program object on creation, translate on a worker pool at first draw (or when a pipeline is requested), and
    use the existing skipped-draw path while it finishes. Alternative with less risk: run the translation as a visible, parallel
    step of the builder or launcher (the harness already runs as a separate program).
-2. Find the 0.8 s `JobWorker` job at the three transitions with a finer sampler bucket (`SNAP_SAMPLE`, presents/500 is too wide),
-   on a quiet PC. About 2.5 s per ride start.
+2. Done 2026-11-23: the "transition" stalls were the test harness's debug frame dumps (below); the dump now reads cached memory. Not a
+   cost a player pays.
 3. Nothing to do for first-frame or steady-state title time.
+
+## The three stalls were the test's own frame dumps (worker scenestall, 2026-11-23)
+
+Cause. `run_boot.ps1 -Route` sets `NVN_FRAME_DUMP` with `NVN_FRAME_DUMP_FROM=20` and `_EVERY=30` (the checkpoint PNGs), so a route run dumps
+one frame at 20, 50, 80, 110 s... At 60 fps those are presents about 1,120, 2,920 and 4,720 (present 1 comes at 1.4 s), the three stalls in the table above (the
+boot-time route ends at about 101 s, before the 110 s dump). The dump (`PresentWindowOnce`, `runtime/nvn/nvn_vk.cpp`) runs on
+the thread that presents, which is a guest `JobWorker`: it copies the window texture into a buffer from `CreateHostBuffer`, waits for the
+GPU, then builds a half-size BMP by reading every other pixel of that buffer. `CreateHostBuffer` picks the first host-visible type, which on
+NVIDIA is write-combined, so each of the about 518,000 4-byte reads is uncached: 0.8-1.4 s on that one frame while the guest main thread waits
+for the present. With 500-present buckets the profile mixed this with the frames around it and looked like lifted game code.
+
+Evidence. `SNAP_SAMPLE_BUCKET=1` (new, `runtime/os/sampler.cpp`: one bucket per present) with `cpu_profile.py --phase f=<n>-<n+1>`: in every
+dump frame of run `0-20261123_082054` (presents 1115, 2593, 3312, 4486, 5344, 6213, wall times 22.6, 52.4, 82.6, 142.7, 172.7, 202.8 s) 99-100% of
+the `JobWorker` cycles are self time in `nvn::PresentWindowOnce`, and the long frames fall on the 30 s dump grid; the dump list
+(`route_<route>_<run>_dumps.txt`, file names carry the present) gives the same presents.
+
+Fix. `CreateHostBuffer` takes an optional `readback` flag that prefers a `HOST_CACHED` memory type (falls back to the old type), and the
+frame dump asks for it. Only the debug dump uses it; game rendering, timing and scores are untouched.
+
+Numbers (route `boottime`, `SNAP_PERF_SHARED` frames csv, dt of the dumped present; the PC was not quiet: CPU 84-100% from other projects'
+processes for the whole series, runs interleaved A B A B A B):
+
+| Build | Run | Dump 1 | Dump 2 | Dump 3 | Neighbouring frames (median) |
+|---|---|---|---|---|---|
+| before (`origin/main` runtime) | `0-20261123_090228` | 1,650 ms | 9,512 ms | 4,809 ms | 24-30 ms (fps collapsed in this run, void) |
+| before | `0-20261123_091313` | 1,252 ms | 1,366 ms | 1,219 ms | 17-25 ms |
+| before | `0-20261123_092942` | 1,423 ms | 1,209 ms | 1,370 ms | 28-43 ms |
+| after (cached readback) | `0-20261123_091026` | 66 ms | 45 ms | 44 ms | 21-25 ms |
+| after | `0-20261123_091601` | 225 ms | 1,018 ms | 33 ms | 18-46 ms (dump 2 fell in a 300-2,000 ms load burst, void) |
+| after | `0-20261123_093541` | 85 ms | 49 ms | 34 ms | 29-33 ms |
+
+Per route run that is about 3.8 s of dump stall before (3 dumps in the first 100 s) and about 0.15 s after. Without dumps (`-ShotAt 100000`)
+no long frame repeats: run `0-20261123_093909` (old build) had one 999 ms frame at present 3,777 (70 s, in the lab scene) and
+`0-20261123_094231` (new build, sampler on) none over 472 ms; the 999 ms frame did not recur, so it is counted as load from the shared PC.
+Florio `florio_eval` on the new build reached `ui=evaluation:End` (run `0-20261123_095833`) with correct checkpoint images; an earlier
+attempt (`0-20261123_094935`) timed out at the evaluation screen while the PC ran at 2-4 fps (void).
+
+Not done: the timing series could not be run on a quiet PC, so absolute wall times (title, map, ride) from it are not comparable with the
+table at the top. Our steady-state boot-time figures there include about 2.5-3.8 s of these dumps (the rival's shots were taken outside
+its process), so ours to the ride is about 2.5 s faster than listed.
 
 ## Method
 

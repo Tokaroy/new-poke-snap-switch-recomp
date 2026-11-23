@@ -2015,7 +2015,9 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
     }
     if (fdBurstNow || fdAtNow || (fdAt.empty() && nowS >= fdFrom && nowS <= fdTo && nowS >= fdNext)) {
       fdNext = nowS + fdEvery;
-      if (CreateHostBuffer(h, (uint64_t)fdW * fdH * (fdHdr && snap_hdr::IsScrgb() ? 8 : 4), VK_BUFFER_USAGE_TRANSFER_DST_BIT, &fdBuf, &fdMem, &fdMap)) {
+      // readback memory (cached): the BMP loop below reads every other pixel; from the default write-combined type that took 0.8-1.1 s per dump
+      // on the presenting thread, which showed up as one-frame stalls in every -Route run (run_boot.ps1 dumps at 20 s, then every 30 s).
+      if (CreateHostBuffer(h, (uint64_t)fdW * fdH * (fdHdr && snap_hdr::IsScrgb() ? 8 : 4), VK_BUFFER_USAGE_TRANSFER_DST_BIT, &fdBuf, &fdMem, &fdMap, true)) {
         VkBufferImageCopy bc{}; bc.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; bc.imageExtent = {src->HW(), src->HH(), 1};
         if (!fdPost) vkCmdCopyImageToBuffer(cb, realPass ? src->image : blitSrc, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, fdBuf, 1, &bc);
         VkMemoryBarrier2 mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};

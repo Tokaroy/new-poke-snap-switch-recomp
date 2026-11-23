@@ -684,7 +684,9 @@ void DestroyPool(PoolImpl* p);
 void DestroyWindow(WindowImpl* w);
 SyncWaitResult WaitSync(const SyncImpl* s, uint64_t timeoutNs);
 // Host-visible, coherent buffer (mapped persistently); used for constant data, dummy UBOs and the support buffer.
-bool CreateHostBuffer(Host* h, uint64_t size, VkBufferUsageFlags usage, VkBuffer* buf, VkDeviceMemory* mem, void** mapped);
+bool CreateHostBuffer(Host* h, uint64_t size, VkBufferUsageFlags usage, VkBuffer* buf, VkDeviceMemory* mem, void** mapped, bool readback = false);
+// readback = true: the CPU reads the buffer, so a HOST_CACHED type is taken when the device has one (else the plain type). The plain host-visible
+// type is write-combined on desktop GPUs, where every CPU read is uncached (scenestall, 2026-11-23: a 1080p debug frame dump took 0.8-1.1 s).
 extern int g_fdBurst;   // NVN_FRAME_DUMP burst counter (set by the photo-thumbnail debug log)
 
 // ---- object lifetime against the GPU timeline (nvn_life.cpp; analysis/core/review_nvn.md 1-4, 10) -------------------------------

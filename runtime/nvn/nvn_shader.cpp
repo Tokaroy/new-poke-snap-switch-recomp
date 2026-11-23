@@ -605,19 +605,23 @@ bool ModuleUsesSubgroup(VkShaderModule m) { std::lock_guard<std::mutex> l(g_sgMu
 
 // A host-visible mapped buffer (the steps and their failure handling live in nvn_hostbuf.h, which tests/nvn/hostbuf_test.cpp drives with a
 // failing fake). True only when created, bound and mapped; a failed step is logged to stderr (so the problem report has it).
-bool CreateHostBuffer(Host* h, uint64_t size, VkBufferUsageFlags usage, VkBuffer* buf, VkDeviceMemory* mem, void** mapped) {
+bool CreateHostBuffer(Host* h, uint64_t size, VkBufferUsageFlags usage, VkBuffer* buf, VkDeviceMemory* mem, void** mapped, bool readback) {
   struct RealOps {
-    Host* h; uint64_t size;
+    Host* h; uint64_t size; bool readback;
     VkResult CreateBuffer(const VkBufferCreateInfo* i, VkBuffer* b) { return vkCreateBuffer(h->device, i, nullptr, b); }
     void MemReqs(VkBuffer b, VkMemoryRequirements* r) { vkGetBufferMemoryRequirements(h->device, b, r); }
-    uint32_t MemType(uint32_t bits) { return h->FindMemoryType(bits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT); }
+    uint32_t MemType(uint32_t bits) {
+      constexpr VkMemoryPropertyFlags kVis = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+      const uint32_t t = readback ? h->FindMemoryType(bits, kVis | VK_MEMORY_PROPERTY_HOST_CACHED_BIT) : UINT32_MAX;
+      return t != UINT32_MAX ? t : h->FindMemoryType(bits, kVis);
+    }
     VkResult Allocate(const VkMemoryAllocateInfo* i, VkDeviceMemory* m) { return vkAllocateMemory(h->device, i, nullptr, m); }
     VkResult Bind(VkBuffer b, VkDeviceMemory m) { return vkBindBufferMemory(h->device, b, m, 0); }
     VkResult Map(VkDeviceMemory m, void** p) { return vkMapMemory(h->device, m, 0, VK_WHOLE_SIZE, 0, p); }
     void DestroyBuffer(VkBuffer b) { vkDestroyBuffer(h->device, b, nullptr); }
     void Free(VkDeviceMemory m) { vkFreeMemory(h->device, m, nullptr); }
     void Error(const char* step, VkResult r) { LogError("host buffer of %llu bytes: %s failed: %d", (unsigned long long)size, step, (int)r); }
-  } ops{h, size};
+  } ops{h, size, readback};
   return snapnvn::CreateHostBufferWith(ops, size, usage, buf, mem, mapped);
 }
 

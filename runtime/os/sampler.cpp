@@ -4,6 +4,7 @@
 //   SNAP_SAMPLE_US=<us>             sampling period (default 1000)
 //   SNAP_SAMPLE_WRITE_S=<s>         rewrite the output every s seconds (default 20; a run killed by PID keeps the last copy)
 //   SNAP_SAMPLE_MIN_KCYC=<k>        sample a thread only when it used at least k thousand cycles since its last sample (default 100)
+//   SNAP_SAMPLE_BUCKET=<n>          presents per bucket key (default 500; 1 isolates single heavy frames such as scene-load stalls)
 //
 // One host thread wakes every period, and for every thread of the process that did enough work since its last sample
 // (QueryThreadCycleTime delta >= SNAP_SAMPLE_MIN_KCYC) it suspends the thread, reads its context, copies the top 16 KiB of its stack into a static buffer and resumes it.
@@ -11,7 +12,7 @@
 // only), so a thread suspended while it holds the heap lock or an SRW lock cannot deadlock the sampler (same rule as the stall
 // watchdog in host\boot.cpp). The stack copy is unwound after the resume with RtlVirtualUnwind (no heap, no dbghelp), giving up to
 // kDepth host frames; lifted guest functions are host functions (f_<guest address>), so the host stack is the guest call chain.
-// Stacks are counted in a fixed table (allocated once), keyed by thread, present-count bucket (presents / 500) and frames.
+// Stacks are counted in a fixed table (allocated once), keyed by thread, present-count bucket (presents / SNAP_SAMPLE_BUCKET, default 500) and frames.
 // The file holds raw absolute addresses plus the module list; analysis\perf\cpu_profile.py symbolizes them with the linker map
 // (snap_boot.map) and the guest ELF symbols, and prints flat and caller views per thread.
 #include <windows.h>
@@ -27,12 +28,12 @@
 
 namespace {
 
-constexpr int kDepth = 8;                  // frames kept per sample (leaf first)
+constexpr int kDepth = 16;                 // frames kept per sample (leaf first)
 constexpr int kMaxThreads = 512;
 constexpr size_t kStackCopy = 16 * 1024;
 constexpr uint32_t kTableBits = 19;        // 512K stacks, ~44 MB
 constexpr uint32_t kTableSize = 1u << kTableBits;
-constexpr int kBucketPresents = 500;
+int g_bucket_presents = 500;               // SNAP_SAMPLE_BUCKET
 
 struct Entry {
     uint64_t pc[kDepth];
@@ -236,7 +237,7 @@ void write_out() {
             (unsigned long long)(g_t_refresh / 1000000), (unsigned long long)(g_t_write / 1000000), (unsigned long long)g_n_sampled);
     fprintf(f, "period_us %u\nticks %llu\nstacks %llu\ndropped %llu\nsuspend_fail %llu\nself_cycles %llu\nframe %d\nbucket_presents %d\n",
             g_period_us, (unsigned long long)g_ticks, (unsigned long long)g_used, (unsigned long long)g_dropped,
-            (unsigned long long)g_suspend_fail, (unsigned long long)g_self_cyc, g_frame ? *g_frame : -1, kBucketPresents);
+            (unsigned long long)g_suspend_fail, (unsigned long long)g_self_cyc, g_frame ? *g_frame : -1, g_bucket_presents);
     HMODULE mods[1024];
     DWORD need = 0;
     if (EnumProcessModules(GetCurrentProcess(), mods, sizeof mods, &need)) {
@@ -294,7 +295,7 @@ DWORD WINAPI sampler_main(void *) {
         QueryThreadCycleTime(self, &c0);
         if (now - last_refresh >= 500) { const uint64_t f0 = __rdtsc(); refresh_threads(); g_t_refresh += __rdtsc() - f0; last_refresh = now; }
         const int fr = g_frame ? *(volatile const int *)g_frame : 0;
-        const uint16_t bucket = (uint16_t)(fr < 0 ? 0 : (fr / kBucketPresents > 65535 ? 65535 : fr / kBucketPresents));
+        const uint16_t bucket = (uint16_t)(fr < 0 ? 0 : (fr / g_bucket_presents > 65535 ? 65535 : fr / g_bucket_presents));
         // perf pass 14: flag bit 2 = this tick is at least SNAP_SAMPLE_LATE_MS into the current frame (the frame is a heavy one);
         // cpu_profile.py --late / --early splits the profile on it.
         static int last_fr = -1;
@@ -323,6 +324,7 @@ void snap_sampler_start(const int *frame) {
     if (const char *p = getenv("SNAP_SAMPLE_US")) { int u = atoi(p); g_period_us = u < 100 ? 100 : (u > 100000 ? 100000 : (unsigned)u); }
     if (const char *p = getenv("SNAP_SAMPLE_LATE_MS")) g_late_ms = (unsigned)atoi(p);
     if (const char *p = getenv("SNAP_SAMPLE_WRITE_S")) { int s = atoi(p); g_write_s = s < 2 ? 2 : (unsigned)s; }
+    if (const char *p = getenv("SNAP_SAMPLE_BUCKET")) { int b = atoi(p); g_bucket_presents = b < 1 ? 1 : b; }
     if (const char *p = getenv("SNAP_SAMPLE_MIN_KCYC")) g_min_cyc = (uint64_t)strtoull(p, nullptr, 10) * 1000;
     g_tab = (Entry *)VirtualAlloc(nullptr, sizeof(Entry) * kTableSize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     if (!g_tab) return;
