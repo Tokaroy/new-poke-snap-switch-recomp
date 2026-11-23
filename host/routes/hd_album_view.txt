@@ -1,0 +1,19 @@
+# fixture: qa_post_florio
+# HD album full view proof (docs/hd-album.md): the lab album ('myphoto') of a save made by hd_eval (set SNAP_SAVE_DIR to a copy of it),
+# open the first photo (photo_detail) and shoot the full view. Run once with SNAP_HD_PHOTOS=1 and once with 0 on two copies of one save.
+# Run: SNAP_HD_PHOTOS=1 NVN_FRAME_DUMP_POST=1 NVN_FRAME_DUMP_FULL=1 powershell -File host\run_boot.ps1 -Route hd_album_view -ShotAt 9999 -ShotMax 8 -KeepSave
+repeat @f300 @f30000 120 8 A
+wait ui=main_menu:MainMenu timeout=240
+@f200 8 Down
+@f400 8 A
+repeat @f800 @f30000 200 8 A
+wait ui=main_menu:Laboratory timeout=300
+@f90 8 Down
+@f200 8 A
+wait ui=myphoto timeout=60
+@f200 8 A
+@f700 8 A
+@f1100 8 A
+wait ui=photo_detail timeout=120
+@f200 300 shot=60
+end @f700
