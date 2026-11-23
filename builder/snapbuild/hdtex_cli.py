@@ -31,6 +31,7 @@ from pathlib import Path
 from . import fetch, hdtex as H, hdtex_romfs as R, hdtex_setup as S, hdtex_classify as hc
 from . import safedel
 from . import hdshadows_rebake as RB
+from . import packcompress as PC
 
 ROUTES = H.BUILDER / 'hdtex_routes'
 PACK_META = {'hd-shadows': {'name': 'HD shadows (made on this PC)', 'version': '1', 'author': 'Snap Recomp Builder',
@@ -74,6 +75,8 @@ def add_args(p):
     p.add_argument('--report', help='write the run report (JSON) here as well')
     p.add_argument('--licenses', action='store_true', help='list the licenses the level needs and which are accepted')
     p.add_argument('--json', action='store_true', help='machine-readable output for the launcher (see the module help)')
+    p.add_argument('--compress', nargs='?', const='lznt1', choices=['lznt1', 'xpress4k', 'xpress8k', 'xpress16k', 'lzx'],
+                   help='after the build, losslessly compress the pack with NTFS compression (default lznt1; see docs/hd-pack-compression.md)')
     p.add_argument('--shadow-source', choices=['upscaled', 'rebaked'], default='upscaled',
                    help='HD shadows (--pack-id hd-shadows): upscaled = the game\'s maps enlarged (Stage A); rebaked = re-baked on the '
                         'GPU from the course geometry, upscaled where a re-bake does not match (Stage B, pack hd-shadows-rebaked)')
@@ -437,6 +440,8 @@ def _main(a, table, say, emit):
         H.set_enabled(mods, True, a.pack_id)
         if a.pack_id == RB.STAGE_A_ID:
             H.set_enabled(mods, False, RB.PACK_ID)
+    if a.compress:
+        PC.run([str(o.pack)], a.compress, say=say)
     if emit:
         emit({'done': {k: rep.get(k) for k in ('level', 'built', 'failed', 'up_to_date', 'seconds')} | {'enabled': True, 'pack': str(o.pack),
                                                                                                     'shadow_source': a.shadow_source}})
