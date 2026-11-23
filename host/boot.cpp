@@ -530,6 +530,7 @@ extern "C" void nvnHostShotDrain(int ms);   // runtime/nvn/nvn_shot.cpp
 extern "C" void snap_modhooks_install();   // host/mods/modhooks.cpp (mod hooks, docs/mod-hooks.md)
 extern "C" void snap_launchmark_begin(int safe);   // host/mods/crashlog.cpp: launch marker (docs/safe-mode.md)
 extern "C" void snap_launchmark_clear();
+extern "C" void snap_session_end();   // host/mods/crashlog.cpp: removes the crash-resume marker (docs/crash-resume.md)
 
 // "After the game closes: back to the launcher" (Display page of the launcher, settings key return_to_launcher, env SNAP_RETURN_TO_LAUNCHER).
 // Launcher mode only. The launcher is started again from the environment this process began with, so what the game set for itself (settings
@@ -1242,6 +1243,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "boot: timeout after %s s, exiting\n", g_o.timeout_s.c_str());
         snap_audio_log_checks();
         snap_launchmark_clear();
+        snap_session_end();   // a test run that ran out its --timeout is not a crash
         fflush(stderr);
         snap_sampler_flush();   // final SNAP_SAMPLE profile (no-op when off)
         TerminateProcess(GetCurrentProcess(), 4);

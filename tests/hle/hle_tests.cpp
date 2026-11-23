@@ -3280,6 +3280,7 @@ static void test_guest_tls_image() {
 #include "save_port_tests.h"
 #include "save_backup_tests.h"
 #include "sync_backup_tests.h"
+#include "crash_resume_tests.h"
 #include "cheats_tests.h"
 #include "readonly_tests.h"
 
@@ -3370,6 +3371,9 @@ int main(int argc, char** argv) {
       {"readonly.pointer", ro_test::test_pointer},
       {"readonly.resolve", ro_test::test_resolve},
       {"readonly.move", ro_test::test_move},
+      {"crashresume.marker", cr_test::test_marker_roundtrip},
+      {"crashresume.script", cr_test::test_targets_and_script},
+      {"crashresume.flagged", cr_test::test_save_flagged},
       {"padfx", test_padfx},
       {"aimfeel", test_aimfeel},
       {"focus_guard", test_focus_guard},

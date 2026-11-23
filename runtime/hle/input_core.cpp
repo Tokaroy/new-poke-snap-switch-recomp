@@ -21,6 +21,7 @@
 #include "freecam.h"
 #include "hle.h"
 
+extern "C" __attribute__((weak)) void snap_session_end();   // host/mods/crashlog.cpp: a scripted end is a clean exit (docs/crash-resume.md); null where it is not linked
 extern "C" void snap_audio_log_checks(void);   // runtime/audio/audio_out.cpp: the "[audio] checks:" counter line, printed before a route ends the run
 extern "C" void snap_audio_log_checks_none(void) {}   // test builds without the audio layer link this instead
 #pragma comment(linker, "/alternatename:snap_audio_log_checks=snap_audio_log_checks_none")
@@ -1383,6 +1384,7 @@ void script_apply(uint64_t now_ns_v, PadSample& p) {
     if (en.is_shoot && !en.state_prev) { en.state_prev = true; snap_aim_shot(); }
     if (en.is_end) {
       log("input script: end of route reached (segment %d, present %d); exiting", seg, nvn::g_presentCount);
+      if (snap_session_end) snap_session_end();
       std::fflush(stdout);
       std::fflush(stderr);
       std::_Exit(0);

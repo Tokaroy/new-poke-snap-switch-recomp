@@ -25,6 +25,8 @@
 extern "C" const char* snap_quirks_gpu_line();       // runtime/nvn/nvn_quirks.cpp
 extern "C" const char* snap_quirks_applied_line();
 extern "C" void snap_audio_log_checks(void);          // runtime/audio/audio_out.cpp: the "[audio] checks:" counter line
+extern "C" void snap_fs_drain_for_exit(int ms);   // runtime/hle/fs.cpp: waits for a save commit in flight, then removes the session marker
+extern "C" int snap_route_cond(const char* c, char* why, int n);   // runtime/hle/input_core.cpp: a route "wait" condition (SNAP_CRASH_TEST_AT=ride:<n>)
 extern "C" __attribute__((weak)) void snap_fs_log_io_failures(void);   // runtime/hle/fs_core.cpp: one line when a save flush failed
 
 namespace {
@@ -404,16 +406,118 @@ int snap_launchmark_check(char* why, int cap) {
   return was_safe ? 2 : 1;
 }
 
+// ---- session marker (docs/crash-resume.md): <crash dir>\session.marker exists from the title screen until a clean exit and names the last UI scene the game
+// opened. A marker whose owner is gone means the last session ended without closing; the launcher then offers to start again and to skip the menus.
+// Written through a temp file and a replace, so a crash never leaves half a marker. SNAP_CRASH_RESUME=0 or SNAP_CRASH_PROMPT=0 turns it off.
+static bool session_enabled() {
+  static const bool on = [] { const char* e = getenv("SNAP_CRASH_PROMPT"); if (e && *e) return *e != '0'; e = getenv("SNAP_CRASH_RESUME"); return !(e && e[0] == '0'); }();
+  return on;
+}
+static bool session_path(wchar_t* out, size_t cap) {
+  wchar_t m[MAX_PATH * 2];
+  if (!marker_path(m, MAX_PATH * 2, nullptr, 0)) return false;
+  wchar_t* s = wcsrchr(m, L'\\');
+  if (!s) return false;
+  *s = 0;
+  _snwprintf_s(out, cap, _TRUNCATE, L"%s\\session.marker", m);
+  return true;
+}
+static void session_write(const char* scene) {
+  wchar_t p[MAX_PATH * 2], t[MAX_PATH * 2 + 8];
+  if (!session_path(p, MAX_PATH * 2)) return;
+  _snwprintf_s(t, MAX_PATH * 2 + 8, _TRUNCATE, L"%s.tmp", p);
+  char b[200];
+  FILETIME ft;
+  GetSystemTimeAsFileTime(&ft);
+  const long long unix_s = (long long)((((unsigned long long)ft.dwHighDateTime << 32) | ft.dwLowDateTime) / 10000000ull) - 11644473600ll;
+  const int n = _snprintf_s(b, sizeof b, _TRUNCATE, "pid=%lu\r\nstart=%llu\r\nscene=%s\r\nwhen=%lld\r\n", GetCurrentProcessId(), proc_start(GetCurrentProcessId()), scene ? scene : "", unix_s);
+  HANDLE f = CreateFileW(t, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (f == INVALID_HANDLE_VALUE) return;
+  DWORD w = 0;
+  const BOOL ok = WriteFile(f, b, (DWORD)(n > 0 ? n : 0), &w, nullptr);
+  CloseHandle(f);
+  if (!ok || !MoveFileExW(t, p, MOVEFILE_REPLACE_EXISTING)) DeleteFileW(t);
+}
+static char g_session_scene[48];
+static bool g_session_on = false;
+// the title screen (or the lab menu) opened: from here a crash is a crash during play
+extern "C" void snap_session_begin() {
+  if (g_session_on || !session_enabled() || getenv("SNAP_SAFE_MODE")) { return; }   // a safe-mode session is not offered a resume
+  g_session_on = true;
+  session_write("");
+}
+// a UI scene opened (host/mods/routes.cpp); only a change is written
+extern "C" void snap_session_scene(const char* scene) {
+  if (!g_session_on || !scene || !strcmp(scene, g_session_scene) || !strcmp(scene, "?")) return;
+  _snprintf_s(g_session_scene, sizeof g_session_scene, _TRUNCATE, "%s", scene);
+  session_write(g_session_scene);
+}
+// every clean exit: the window closed, the guest quit, the run ended. Only the owner removes it.
+extern "C" void snap_session_end() {
+  if (!g_session_on) return;
+  g_session_on = false;
+  wchar_t p[MAX_PATH * 2];
+  if (session_path(p, MAX_PATH * 2)) DeleteFileW(p);
+}
+// The launcher: 0 = nothing to report, 1 = the last session ended without closing. `scene` gets its last UI scene, `when` the unix time of its last
+// update, `crashed` whether _crash.txt was written after it. The marker is left in place: the next session replaces it, or the launcher calls snap_session_forget.
+extern "C" int snap_session_check(char* scene, int cap, long long* when, int* crashed) {
+  if (scene && cap > 0) scene[0] = 0;
+  if (when) *when = 0;
+  if (crashed) *crashed = 0;
+  if (!session_enabled()) return 0;
+  wchar_t p[MAX_PATH * 2], m[MAX_PATH * 2], cf[MAX_PATH * 2];
+  if (!session_path(p, MAX_PATH * 2) || !marker_path(m, MAX_PATH * 2, cf, MAX_PATH * 2)) return 0;
+  char b[300] = {};
+  HANDLE f = CreateFileW(p, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (f == INVALID_HANDLE_VALUE) return 0;
+  DWORD n = 0;
+  ReadFile(f, b, sizeof b - 1, &n, nullptr);
+  CloseHandle(f);
+  const char* pp = strstr(b, "pid=");
+  const char* ps = strstr(b, "start=");
+  const char* sc = strstr(b, "scene=");
+  const char* wh = strstr(b, "when=");
+  const DWORD pid = pp ? (DWORD)strtoul(pp + 4, nullptr, 10) : 0;
+  const unsigned long long start = ps ? strtoull(ps + 6, nullptr, 10) : 0;
+  if (pid == GetCurrentProcessId()) return 0;
+  if (pid) { const unsigned long long cur = proc_start(pid); if (cur && cur == start) return 0; }   // still running (a second copy)
+  if (scene && cap > 0 && sc) {
+    sc += 6;
+    int i = 0;
+    while (sc[i] && sc[i] != '\r' && sc[i] != '\n' && i < cap - 1) { scene[i] = sc[i]; i++; }
+    scene[i] = 0;
+  }
+  if (when && wh) *when = strtoll(wh + 5, nullptr, 10);
+  if (crashed) *crashed = file_time(cf) >= file_time(p) ? 1 : 0;
+  return 1;
+}
+extern "C" void snap_session_forget() {
+  wchar_t p[MAX_PATH * 2];
+  if (session_path(p, MAX_PATH * 2)) DeleteFileW(p);
+}
+
 // SNAP_CRASH_TEST=<kind> (test aid, off unless set): "av" dereferences null on the calling thread, "abort" calls abort(), "gpu" takes the GPU-loss
 // exit, "terminate" throws out of a noexcept function. Called from the present hook after SNAP_CRASH_TEST_AT presents (default 120).
 void snap_crashlog_test_tick(unsigned long long present) {
   static const char* kind = getenv("SNAP_CRASH_TEST");
   if (!kind || !*kind) return;
-  static const unsigned long long at = [] { const char* e = getenv("SNAP_CRASH_TEST_AT"); return e && atoi(e) > 0 ? (unsigned long long)atoi(e) : 120ull; }();
-  if (present != at) return;
+  // SNAP_CRASH_TEST_AT=ride:<n>: n presents after the ride starts (the route's "ride" condition), so a test can crash the game mid-course
+  static const char* ate = getenv("SNAP_CRASH_TEST_AT");
+  static long long ride_seen = -1;
+  if (ate && !strncmp(ate, "ride:", 5)) {
+    char why[8];
+    if (ride_seen < 0 && snap_route_cond("ride", why, sizeof why)) ride_seen = (long long)present;
+    if (ride_seen < 0 || (long long)present != ride_seen + atoll(ate + 5)) return;
+  } else {
+    static const unsigned long long at = [] { const char* e = getenv("SNAP_CRASH_TEST_AT"); return e && atoi(e) > 0 ? (unsigned long long)atoi(e) : 120ull; }();
+    if (present != at) return;
+  }
   fprintf(stderr, "[crash-test] SNAP_CRASH_TEST=%s at present %llu\n", kind, present);
   fflush(stderr);
   if (!strcmp(kind, "av")) { *(volatile int*)nullptr = 1; }
+  else if (!strcmp(kind, "quit")) { snap_fs_drain_for_exit(2000); ExitProcess(0); }   // the clean exit path (a window close or the guest quitting): the session marker must be gone afterwards
+  else if (!strcmp(kind, "kill")) TerminateProcess(GetCurrentProcess(), 0xDEAD);   // no handler, no cleanup: a power cut or a task kill
   else if (!strcmp(kind, "abort")) abort();
   else if (!strcmp(kind, "gpu")) { snap_crashlog_fatal("fatal GPU error", "test: vkQueuePresentKHR: VK_ERROR_DEVICE_LOST (SNAP_CRASH_TEST=gpu)"); ExitProcess(1); }
   else if (!strcmp(kind, "terminate")) { []() noexcept { throw 1; }(); }

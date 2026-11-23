@@ -81,6 +81,10 @@ int main() {
     { auto g = snap_cli::parse({"--gpl", "auto"}); CHECK(g.error.empty() && g.env.size() == 1 && g.env[0].second == "auto"); }
     CHECK(!snap_cli::parse({"--gpl", "maybe"}).error.empty());
     CHECK(!snap_cli::parse({"--gpl"}).error.empty());
+    { auto r = snap_cli::parse({"--play", "--resume", "--crash-prompt", "off"}); CHECK(r.error.empty() && r.rest.empty() && r.play);
+      CHECK(env_of(r, "SNAP_CRASH_RESUME") == "resume" && env_of(r, "SNAP_CRASH_PROMPT") == "0"); }
+    CHECK(env_of(snap_cli::parse({"--crash-prompt", "yes"}), "SNAP_CRASH_PROMPT") == "1");
+    CHECK(!snap_cli::parse({"--crash-prompt", "sometimes"}).error.empty());
     CHECK(!snap_cli::parse({"--pause-in-background", "maybe"}).error.empty());
     CHECK(!snap_cli::parse({"--update-channel", "nightly"}).error.empty());
     CHECK(!snap_cli::parse({"--mute-in-background"}).error.empty());

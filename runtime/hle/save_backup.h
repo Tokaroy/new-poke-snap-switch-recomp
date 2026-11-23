@@ -46,6 +46,10 @@ std::string queued_restore(const std::string& save_root);       // the folder na
 void cancel_queued_restore(const std::string& save_root);
 void apply_queued_restore();                                    // at start; logs one line; a failed restore never blocks the game
 
+// Crash resume (host/crash_resume.h): true when a user folder of the save has files but no generation a mount could load, or CURRENT names an
+// incomplete generation. A kill in the middle of a commit is not damage (the mount handles the leftover CURRENT.tmp and the unpublished generation).
+bool save_flagged(const std::string& save_root, std::string* why);
+
 // Called once at start, after the save profile is chosen and before the save mounts. Logs one line. Does nothing for a test run
 // that sets SNAP_SAVE_DIR unless SNAP_SAVE_BACKUP=1.
 void backup_at_launch();

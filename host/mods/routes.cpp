@@ -25,6 +25,8 @@
 #include "loader.h"
 
 extern "C" void snap_launchmark_clear();   // host/mods/crashlog.cpp: the start reached the title screen (docs/safe-mode.md)
+extern "C" void snap_session_begin();     // host/mods/crashlog.cpp: the crash-resume marker (docs/crash-resume.md)
+extern "C" void snap_session_scene(const char* scene);
 
 namespace hle::input {   // runtime/hle/input_core.cpp
 bool route_on();
@@ -76,11 +78,21 @@ static void launchmark_watch(Cpu* c) {
     if (*(const int*)pe != 2) return;   // 2 = scene opened
     char nm[40];
     player_name(*(const uint64_t*)pp, nm, sizeof nm);
-    if (!strcmp(nm, "title") || !strcmp(nm, "main_menu")) { done = true; snap_launchmark_clear(); }
+    if (!strcmp(nm, "title") || !strcmp(nm, "main_menu")) { done = true; snap_launchmark_clear(); snap_session_begin(); }
+}
+
+// every scene that opens, for the crash-resume marker: the last one tells the launcher where to pick up (docs/crash-resume.md)
+static void session_watch(Cpu* c) {
+    uint64_t pe = c->x[1], pp = c->x[2];
+    if (!pe || !pp || IsBadReadPtr((void*)pe, 4) || IsBadReadPtr((void*)pp, 8) || *(const int*)pe != 2) return;
+    char nm[40];
+    player_name(*(const uint64_t*)pp, nm, sizeof nm);
+    snap_session_scene(nm);
 }
 
 extern "C" void rt_gm_route_ui_event(Cpu* c) {
     launchmark_watch(c);
+    session_watch(c);
     if (!hle::input::route_on()) return;
     uint64_t pe = c->x[1], pp = c->x[2];
     if (!pe || !pp || IsBadReadPtr((void*)pe, 4) || IsBadReadPtr((void*)pp, 8)) return;

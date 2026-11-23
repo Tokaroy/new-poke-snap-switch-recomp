@@ -5,6 +5,8 @@
 //
 //   --play                        skip the launcher window and start the game; the process ends when the game closes
 //   --safe-mode                   docs/safe-mode.md
+//   --resume                      after a session that did not close, skip the title screen and menus back to where it was (docs/crash-resume.md)
+//   --crash-prompt on|off         the "The game closed unexpectedly" question (SNAP_CRASH_PROMPT); this run only
 //   --fullscreen | --borderless   borderless full-screen window on the chosen monitor (the game has no exclusive mode)
 //   --windowed                    a normal window
 //   --monitor <n>  --width <px>  --height <px>
@@ -121,17 +123,18 @@ inline Parsed parse(const std::vector<std::string>& args) {
     else if (a == "--play") p.play = true;
     else if (a == "--safe-mode") p.safe = true;
     else if (a == "--no-prompt") p.no_prompt = true;
+    else if (a == "--resume") p.env.push_back({"SNAP_CRASH_RESUME", "resume"});
     else if (a == "--fullscreen" || a == "--borderless") p.env.push_back({"SNAP_WINDOW_MODE", "borderless"});
     else if (a == "--windowed") p.env.push_back({"SNAP_WINDOW_MODE", "windowed"});
     else if (a == "--steam-deck") {
       for (auto& kv : snapdeck::env()) p.env.push_back(kv);
       for (const snapdeck::Kv& kv : snapdeck::cfg()) p.sets.push_back({kv.key, kv.val});
     }
-    else if (a == "--pause-in-background" || a == "--mute-in-background" || a == "--update-check") {
+    else if (a == "--pause-in-background" || a == "--mute-in-background" || a == "--update-check" || a == "--crash-prompt") {
       if (!value(i, &v)) break;
       const std::string b = on_off(v);
       if (b.empty()) { p.error = a + " needs on or off, got \"" + v + "\""; break; }
-      p.env.push_back({a == "--pause-in-background" ? "SNAP_WINDOW_PAUSE" : a == "--mute-in-background" ? "SNAP_WINDOW_MUTE_BG" : "SNAP_UPDATE_CHECK", b});
+      p.env.push_back({a == "--pause-in-background" ? "SNAP_WINDOW_PAUSE" : a == "--mute-in-background" ? "SNAP_WINDOW_MUTE_BG" : a == "--crash-prompt" ? "SNAP_CRASH_PROMPT" : "SNAP_UPDATE_CHECK", b});
     } else if (a == "--frame-cap") {
       if (!value(i, &v)) break;
       if (!is_number(v)) { p.error = a + " needs a whole number of frames per second (0 = no extra limit), got \"" + v + "\""; break; }

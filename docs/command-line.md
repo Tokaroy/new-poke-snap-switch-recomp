@@ -13,6 +13,8 @@ SnapRecomp.exe --play [options]     start the game without the launcher window
 | --- | --- |
 | `--play` | Skips the launcher window. The game-folder check still runs first. The process ends when the game closes, so the caller can wait on it. No window of ours opens: a start that cannot go on prints the reason and ends with exit code 1 (the game folder failed its check) or 2 (the converted files are missing or damaged). The first-start upscaler offer waits for a start without `--play`, and after a start that failed the safe-mode question becomes a printed line; add `--safe-mode` to use it. |
 | `--safe-mode` | One start with mods, HD packs, enhanced effects and the shader cache off ([safe-mode.md](safe-mode.md)). |
+| `--resume` | After a session that ended without closing (a crash or a kill), skips the title screen and menus back to the lab menu or the course map, whichever was open last. Does nothing after a clean exit. With `--play` the question is never asked: this flag is the answer ([crash-resume.md](crash-resume.md)). |
+| `--crash-prompt on\|off` | The "The game closed unexpectedly" question in the launcher, and the marker that makes it possible. This start only; config.json `crash_prompt` is the stored setting. |
 | `--fullscreen`, `--borderless` | Borderless full-screen window. Both names do the same thing. |
 | `--windowed` | Normal window. |
 | `--steam-deck` | The Steam Deck preset: borderless 1280 x 800, a lighter 3D picture, a 150% HUD and Xbox button icons ([steam-deck.md](steam-deck.md)). Flags after it win. |

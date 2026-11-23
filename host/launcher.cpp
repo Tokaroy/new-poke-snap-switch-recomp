@@ -36,6 +36,7 @@
 #include "hle/sync_backup.h"
 #include "launcher.h"
 #include "cli_flags.h"
+#include "crash_resume.h"
 #include "mods/mods_core.h"
 #include "mods/problem_report.h"
 #include "mods/install_check.h"
@@ -97,6 +98,8 @@ std::string lower(std::string s) {
 
 extern "C" void snap_crashlog_rotate(const wchar_t* logs_dir);   // host/mods/crashlog.cpp
 extern "C" void snap_crashlog_set_dir(const char* utf8_dir);
+extern "C" int snap_session_check(char* scene, int cap, long long* when, int* crashed);   // host/mods/crashlog.cpp: the last session did not close (docs/crash-resume.md)
+extern "C" void snap_session_forget();
 extern "C" int snap_launchmark_check(char* why, int cap);   // host/mods/crashlog.cpp: 0 none, 1 the last start never reached the title screen, 2 and it was a safe-mode start
 
 namespace snap_launcher {
@@ -302,6 +305,88 @@ static void restore_backup_flow(const fs::path& cfg_path) {
   if (ok) message("Snap Recomp", "The backup was restored.\n\n" + hle::saveport::format_report(r, true), MB_ICONINFORMATION);
   else message("Snap Recomp", "The backup was not restored.\n\n" + err, MB_ICONWARNING);
 }
+
+static fs::path logs_dir();
+// ---- Crash resume (docs/crash-resume.md): the last session ended without closing. On by default; config.json "crash_prompt": false, SNAP_CRASH_PROMPT=0 or --crash-prompt off turns it off.
+static bool crash_prompt_enabled(const hle::Json& cfg) {
+  if (const char* e = std::getenv("SNAP_CRASH_PROMPT"); e && *e) return *e != '0';
+  const hle::Json* j = cfg.get("crash_prompt");
+  return !(j && j->type == hle::Json::Bool && !j->b);
+}
+enum class CrashAnswer { None, Start, Resume };
+// Returns what to do. Interactive: a window with the choices. --play: never asks; --resume (SNAP_CRASH_RESUME=resume) is the answer, else a normal start.
+// A test run (SNAP_LAUNCHER_AUTOPLAY) logs what would be asked and takes SNAP_LAUNCHER_CRASH_ANSWER (start | resume | none).
+static CrashAnswer crash_resume_ask(const fs::path& cfg_path, const hle::Json& cfg, bool autoplay, bool play, std::string* target_out) {
+  if (!crash_prompt_enabled(cfg)) { _putenv_s("SNAP_CRASH_PROMPT", "0"); return CrashAnswer::None; }   // the game then writes no marker either
+  char scene[48] = {};
+  long long when = 0;
+  int crashed = 0;
+  if (!snap_session_check(scene, (int)sizeof scene, &when, &crashed)) return CrashAnswer::None;
+  hle::load_config(U8(cfg_path.wstring()));
+  std::string label;
+  const std::string root = hle::saveport::target_save_root("", &label);
+  std::string fwhy;
+  const bool flagged = !root.empty() && hle::savebackup::save_flagged(root, &fwhy);
+  const std::string target = snap_resume::target_for(scene);
+  const std::string where = snap_resume::scene_label(scene);
+  const std::string why = std::string("The game closed unexpectedly") + (where.empty() ? "" : " (the last screen it showed was " + where + ")") + ".";
+  const char* env_resume = std::getenv("SNAP_CRASH_RESUME");
+  const bool want_resume = env_resume && !std::strcmp(env_resume, "resume");
+  CrashAnswer a = CrashAnswer::Start;
+  if (autoplay || play) {
+    std::fprintf(stderr, "launcher: crash resume offered: %s scene=%s target=%s crashed=%d save_flagged=%d%s%s\n", why.c_str(), scene, target.c_str(), crashed, flagged ? 1 : 0, flagged ? " " : "", flagged ? fwhy.c_str() : "");
+    const char* ans = std::getenv("SNAP_LAUNCHER_CRASH_ANSWER");
+    if (autoplay && ans && *ans) a = !std::strcmp(ans, "resume") ? CrashAnswer::Resume : !std::strcmp(ans, "none") ? CrashAnswer::None : CrashAnswer::Start;
+    else if (want_resume) a = CrashAnswer::Resume;
+  } else if (want_resume) {
+    a = CrashAnswer::Resume;
+  } else {
+    for (;;) {
+      std::vector<std::wstring> links;
+      std::vector<int> act;   // 0 start, 1 resume, 2 report, 3 restore
+      links.push_back(L"Start the game again\nYour save is as the game last committed it"); act.push_back(0);
+      if (!target.empty()) { links.push_back(W(std::string("Resume where you were\nSkips the title screen") + (target == "map_select" ? " and the lab menu, to the course map" : ", to the lab menu"))); act.push_back(1); }
+      if (crashed) { links.push_back(L"Open the problem report\nOne zip with the logs, to attach to a bug report; nothing is uploaded"); act.push_back(2); }
+      if (flagged && !hle::savebackup::list(root).empty()) { links.push_back(L"Restore a save backup\nThe save looks damaged; a backup is made each time the game starts"); act.push_back(3); }
+      const std::string body = why + (flagged ? "\n\nThe save looks damaged (" + fwhy + ")." : "\n\nThe save is as the game last committed it.");
+      const int sel = choose(L"Snap Recomp - the game closed unexpectedly", W(body), links);
+      if (sel < 0 || (size_t)sel >= act.size()) return CrashAnswer::None;   // closed the window: the normal launcher; the marker stays for next time
+      if (act[(size_t)sel] == 0) { a = CrashAnswer::Start; break; }
+      if (act[(size_t)sel] == 1) { a = CrashAnswer::Resume; break; }
+      if (act[(size_t)sel] == 2) {
+        char path[1024] = {}, rwhy[512] = {};
+        if (snap_problem_report("launcher", path, (int)sizeof path, rwhy, (int)sizeof rwhy)) {
+          message("Snap Recomp", std::string("The problem report is here:\n") + path + "\n\nNothing was uploaded.", MB_ICONINFORMATION);
+          ShellExecuteW(nullptr, L"open", L"explorer.exe", (L"/select,\"" + W(path) + L"\"").c_str(), nullptr, SW_SHOWNORMAL);
+        } else message("Snap Recomp", std::string("The problem report could not be made: ") + rwhy, MB_ICONWARNING);
+        continue;
+      }
+      restore_backup_flow(cfg_path);   // the same list as the Saves card; it asks before it changes anything
+    }
+  }
+  if (a == CrashAnswer::None) return a;
+  snap_session_forget();
+  if (a == CrashAnswer::Resume && target.empty()) a = CrashAnswer::Start;   // it never got past the title screen: nothing to skip to
+  if (a == CrashAnswer::Resume) *target_out = target;
+  return a;
+}
+// Writes the resume script and points the game's scripted input at it (unless the caller already set one).
+static void crash_resume_prepare(const std::string& target) {
+  if (const char* e = std::getenv("SNAP_INPUT_SCRIPT"); e && *e) { std::fprintf(stderr, "launcher: resume skipped: SNAP_INPUT_SCRIPT is already set\n"); return; }
+  const fs::path lg = logs_dir();
+  if (lg.empty()) return;
+  std::error_code ec;
+  fs::create_directories(lg, ec);
+  const fs::path f = lg / L"resume_script.txt";
+  std::ofstream o(f, std::ios::binary | std::ios::trunc);
+  o << snap_resume::script_for(target);
+  o.close();
+  if (!o) return;
+  _putenv_s("SNAP_INPUT_SCRIPT", U8(f.wstring()).c_str());
+  _putenv_s("SNAP_ROUTE_TIMEOUT", "continue");   // a wait that runs out leaves the game running for the player
+  std::fprintf(stderr, "launcher: resuming to %s\n", target.c_str());
+}
+
 
 // ---- profile backups to a sync folder (runtime/hle/sync_backup.h, docs/sync-backups.md): the Backups page rows, --backups, and the run after the game closes
 
@@ -1478,6 +1563,12 @@ bool prepare(Result& r) {
         if (MessageBoxW(nullptr, W(q).c_str(), L"Snap Recomp - safe mode", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON1 | MB_SETFOREGROUND) == IDYES) safe = play_now = true;
       }
     }
+  }
+  {   // docs/crash-resume.md: the last session ended without closing (the safe-mode question above wins when the start never reached the title screen)
+    std::string resume_target;
+    const CrashAnswer ca = safe ? CrashAnswer::None : crash_resume_ask(cfg_path, cfg, autoplay, r.play, &resume_target);
+    if (ca != CrashAnswer::None) play_now = true;
+    if (ca == CrashAnswer::Resume) crash_resume_prepare(resume_target);
   }
   for (;;) {
     std::string romfs = cfg.get("romfs_root") ? cfg.get("romfs_root")->str() : "";

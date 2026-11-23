@@ -129,6 +129,33 @@ static void prune(const std::string& save_root, int keep) {
   }
 }
 
+// A save looks damaged when a user folder with generations has none the game could load (a torn or missing CURRENT with no valid
+// generation behind it), or when CURRENT names a generation that is not valid and a scan would load an older one. A kill mid-commit is
+// not damage: the leftover CURRENT.tmp or the newer unpublished generation are handled by the mount (runtime/hle/save_gen.h).
+bool save_flagged(const std::string& save_root, std::string* why) {
+  namespace sfs = std::filesystem;
+  const sfs::path root = sfs::u8path(save_root);
+  std::error_code ec;
+  for (sfs::directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
+    std::error_code e1;
+    if (!it->is_directory(e1) || e1) continue;
+    const sfs::path uid = it->path();
+    const bool has_ptr = sfs::exists(uid / "CURRENT", e1) || sfs::exists(uid / "CURRENT.tmp", e1);
+    const bool has_gens = sfs::is_directory(uid / "gens", e1) && sfs::directory_iterator(uid / "gens", e1) != sfs::directory_iterator();
+    if (!has_ptr && !has_gens) continue;   // not a save folder, or an empty one
+    uint64_t n = 0;
+    bool pointed = false;
+    if (!sg::committed_gen(uid, &n, &pointed)) { if (why) *why = "no complete save generation"; return true; }
+    uint64_t p = 0;
+    if (sg::read_pointer_file(uid / "CURRENT", &p) && !sg::gen_valid(uid, p) && !pointed) {
+      if (why) *why = "the save pointer names an incomplete generation";
+      return true;
+    }
+  }
+  return false;
+}
+
+
 bool make(const std::string& save_root, const char* reason, std::string* made, std::string* err, int keep) {
   if (made) made->clear();
   if (keep < 0) keep = keep_count();
