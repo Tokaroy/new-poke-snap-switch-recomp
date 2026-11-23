@@ -362,6 +362,7 @@ int ShadowFilterTaps();      // nvn_shadowpcf.cpp: SNAP_SHADOW_FILTER 0 (off) / 
 float ShadowFilterRadius();  // nvn_shadowpcf.cpp: SNAP_SHADOW_SOFTNESS kernel radius in UV units
 bool SpvSetLocalSize(std::vector<uint32_t>& spv, uint32_t x, uint32_t y, uint32_t z);   // compute workgroup size from the NVN control section
 bool SpvAddEarlyFragmentTests(std::vector<uint32_t>& spv);              // nvn_alpha.cpp: layout(early_fragment_tests) from control+0x718 bit 0
+void SpvSaltForTest(std::vector<uint32_t>& spv);                           // nvn_alpha.cpp: SNAP_SPV_SALT (driver shader cache miss for measurements)
 bool SpvAddStorageImageCaps(std::vector<uint32_t>& spv);                  // nvn_alpha.cpp: SPIR-V fixes for the translated modules
 uint32_t SpvVertexInputMask(const std::vector<uint32_t>& in);
 std::vector<int> SpvFragmentOutputs(const std::vector<uint32_t>& in);

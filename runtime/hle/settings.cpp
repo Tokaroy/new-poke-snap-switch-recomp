@@ -141,6 +141,7 @@ const struct { const char* key; const char* env; } kEnvKeys[] = {
     {"gfx_ssao_samples", "SNAP_SSAO_SAMPLES"}, {"gfx_ssao_hbao", "SNAP_SSAO_HBAO"},
     {"gfx_shadow_dist", "SNAP_SHADOW_DISTANCE"}, {"gfx_hdr_expand", "SNAP_HDR_EXPAND"},   // 2026-11-14, docs/advanced-graphics-options.md
     {"gfx_ultrawide", "SNAP_ULTRAWIDE"},   // auto (default) | off (docs/ultrawide.md)
+    {"gfx_gpl", "SNAP_GPL"},   // Pipeline libraries row (auto | on | off; runtime/nvn/nvn_vk.cpp; restart)
     {"vsync", "SNAP_VSYNC"},   // the F1 / native Vsync row (live through snap_vsync_set; this carries it to the next start)
     {"contact_shadows", "SNAP_CONTACT_SHADOWS"},
     {"water_ssr", "SNAP_WATER_SSR"}, {"water_caustics", "SNAP_WATER_CAUSTICS"}, {"water_foam", "SNAP_WATER_FOAM"}, {"water_ocean", "SNAP_WATER_OCEAN"},   // water rows ("1" or unset; live through snap_water_fx_set, runtime/nvn/nvn_ssr.cpp)

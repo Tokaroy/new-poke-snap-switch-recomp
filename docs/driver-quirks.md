@@ -10,6 +10,7 @@ Date: 2026-11-15. A small table in `runtime/nvn/nvn_quirks.{h,cpp}`, keyed by GP
 | `custom_border_color` | `VK_EXT_custom_border_color`: arbitrary RGBA sampler borders | `SNAP_VK_BORDER=0` |
 | `subgroup_pin` | pins shaders that use subgroup operations to 32 lanes (`subgroupSizeControl`) | `SNAP_VK_SGPIN=0` |
 | `present_wait` | `VK_KHR_present_id` + `present_wait`, the queue depth cap in the frame pacer | `SNAP_PACE_WAIT=0` |
+| `gpl` | `VK_EXT_graphics_pipeline_library` fast linking, only when the setting `gfx_gpl` is `auto` (`on` and `off` override the table) | `SNAP_GPL=off` |
 
 The renderer asks `snap_quirks::Off("<feature>")` right where it would enable the feature (`nvn_vk.cpp` device creation, `nvn_pace.cpp`). Without a match nothing changes.
 
@@ -34,7 +35,9 @@ One line at every start, with or without a match:
 
 A matching entry adds `[quirk] applied <name>: turns off <features> (seen: <where>)` before it. A forced feature adds `[quirk] SNAP_QUIRK: <feature> off`, and the summary line ends with `; features off: ...`. The same text goes into the problem report (`logs/stderr.log`) and into `_crash.txt` (see `docs/crash-logs.md`).
 
-## The table today: empty, on purpose
+## The table today: one entry
+
+Three entries, all for the feature `gpl` (the Automatic setting of `gfx_gpl`; `on` and `off` override the table): `amd_rdna12_gpl` (2026-11-22; AMD RDNA 1 and 2 discrete GPUs, device IDs 0x7310 to 0x743F; evidence is another recomp project's selector turning Automatic off on that driver branch, not reproduced here, no AMD card on the development PC), `nvidia_gpl` (2026-11-23; any NVIDIA GPU; measured on an RTX 4090, runs listed in the entry) and `gpl_unmeasured` (every other GPU, until one is measured). Numbers: `docs/shader-prebuild.md`, section Pipeline libraries.
 
 Entries need evidence: a real log, run or note where that GPU and driver misbehaved. None exists yet. Every run so far was on one NVIDIA RTX 4090, and no log or note shows a driver or GPU bug; the AMD and Intel paths are untested (the owner has no AMD card), and AMD-only fixes stay on hold until a tester shows a real problem. So the machinery ships with an empty table and the four switches above.
 

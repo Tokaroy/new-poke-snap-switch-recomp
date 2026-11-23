@@ -6,6 +6,7 @@
 //   provoking_vertex      VK_EXT_provoking_vertex (flat varyings from the last vertex)        env SNAP_VK_PROVOKING=0
 //   custom_border_color   VK_EXT_custom_border_color (arbitrary RGBA sampler borders)          env SNAP_VK_BORDER=0
 //   subgroup_pin          pinning shaders that use subgroup ops to 32 lanes (subgroupSizeControl)  env SNAP_VK_SGPIN=0
+//   gpl                   VK_EXT_graphics_pipeline_library fast linking (setting gfx_gpl = auto only; on / off override)  env SNAP_GPL=off
 //   present_wait          VK_KHR_present_id + present_wait (queue depth cap in the pacer)       env SNAP_PACE_WAIT=0
 //
 // Overrides (read once, at device creation):

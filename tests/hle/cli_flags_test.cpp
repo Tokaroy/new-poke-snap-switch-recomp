@@ -76,6 +76,11 @@ int main() {
     { auto s = snap_cli::parse({"--shiny", "64"}); CHECK(s.error.empty() && s.env.size() == 2 && s.env[1].second == "64"); }
     CHECK(!snap_cli::parse({"--shiny", "often"}).error.empty());
     CHECK(!snap_cli::parse({"--frame-cap", "fast"}).error.empty());
+    { auto g = snap_cli::parse({"--gpl", "on"}); CHECK(g.error.empty() && g.env.size() == 1 && g.env[0].first == "SNAP_GPL" && g.env[0].second == "on"); }
+    { auto g = snap_cli::parse({"--gpl", "0"}); CHECK(g.error.empty() && g.env.size() == 1 && g.env[0].second == "off"); }
+    { auto g = snap_cli::parse({"--gpl", "auto"}); CHECK(g.error.empty() && g.env.size() == 1 && g.env[0].second == "auto"); }
+    CHECK(!snap_cli::parse({"--gpl", "maybe"}).error.empty());
+    CHECK(!snap_cli::parse({"--gpl"}).error.empty());
     CHECK(!snap_cli::parse({"--pause-in-background", "maybe"}).error.empty());
     CHECK(!snap_cli::parse({"--update-channel", "nightly"}).error.empty());
     CHECK(!snap_cli::parse({"--mute-in-background"}).error.empty());

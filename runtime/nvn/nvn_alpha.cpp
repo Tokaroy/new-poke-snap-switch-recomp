@@ -130,6 +130,27 @@ constexpr uint32_t kDecLocation = 30, kDecComponent = 31, kDecIndex = 32, kDecBu
 constexpr uint32_t kScInput = 1, kScOutput = 3, kScPrivate = 6;
 }  // namespace
 
+// Test knob SNAP_SPV_SALT=<text>: adds an OpSourceExtension "<text>" to every translated module, so the code is identical but the driver's own on-disk shader
+// cache (which this game cannot clear) misses: a pipeline compile then costs what it costs on a PC that has never seen the shader. Used by the pipeline
+// library (gfx_gpl) measurements, docs/shader-prebuild.md. Unset = no change.
+void SpvSaltForTest(std::vector<uint32_t>& spv) {
+  static const std::string salt = [] { const char* e = getenv("SNAP_SPV_SALT"); return std::string(e && *e ? e : ""); }();
+  if (salt.empty() || spv.size() < 6 || spv[0] != 0x07230203) return;
+  size_t i = 5;
+  while (i < spv.size()) {   // the header ends at the first instruction that is not capability, extension, import, memory model, entry point or execution mode
+    const uint32_t op = spv[i] & 0xFFFFu, n = spv[i] >> 16;
+    if (!n || i + n > spv.size()) return;
+    if (op != 17 && op != 10 && op != 11 && op != 14 && op != 15 && op != 16 && op != 331) break;
+    i += n;
+  }
+  std::vector<uint32_t> str((salt.size() + 4) / 4, 0u);
+  memcpy(str.data(), salt.data(), salt.size());
+  std::vector<uint32_t> ins;
+  ins.push_back(((uint32_t)(1 + str.size()) << 16) | 4u);   // OpSourceExtension
+  ins.insert(ins.end(), str.begin(), str.end());
+  spv.insert(spv.begin() + (std::ptrdiff_t)i, ins.begin(), ins.end());
+}
+
 // A storage image declared with an unknown format needs StorageImageRead/WriteWithoutFormat; the translator omits the capability.
 bool SpvAddStorageImageCaps(std::vector<uint32_t>& spv) {
   if (spv.size() < 6 || spv[0] != 0x07230203) return false;

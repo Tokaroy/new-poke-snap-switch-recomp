@@ -49,6 +49,7 @@
 namespace nvn {
 
 extern bool g_provokingLast;                  // nvn_vk.cpp: VK_EXT_provoking_vertex enabled (NVN flat varyings come from the LAST vertex)
+extern bool g_gplOn;                          // nvn_vk.cpp: VK_EXT_graphics_pipeline_library enabled (gfx_gpl)
 extern VkShaderStageFlags g_sgPinStages;      // nvn_vk.cpp: stages that accept requiredSubgroupSize = 32
 bool ModuleUsesSubgroup(VkShaderModule m);    // nvn_shader.cpp
 
@@ -329,8 +330,52 @@ static int IntColorKind(VkFormat f) {
   }
 }
 
+// ---- graphics pipeline libraries (setting gfx_gpl, VK_EXT_graphics_pipeline_library) --------------------------------------------------------------
+// A pipeline the game needs now but the driver has not compiled yet (not in the VkPipelineCache) is fast-linked from four libraries instead:
+// vertex input, pre-raster (vertex stage + raster state), fragment shader (+ depth/stencil) and fragment output (blend + formats). Each library is built
+// once per distinct input and shared by every pipeline that has it, so a new pipeline that only differs in blend or depth state links in about a millisecond.
+// The caller then compiles the whole pipeline in the background (CreateGraphicsPipeline, filling the VkPipelineCache) and swaps it in; the draw never waits.
+// Library keys are built from explicit fields (no struct padding), so equal state always finds the same library.
+struct GplKey {
+  std::string s;
+  template <class T> void add(const T& v) { s.append(reinterpret_cast<const char*>(&v), sizeof v); }
+  void stage(const VkPipelineShaderStageCreateInfo& si) {
+    add(si.stage); add(si.module);
+    if (si.pSpecializationInfo) { add(si.pSpecializationInfo->dataSize); s.append(static_cast<const char*>(si.pSpecializationInfo->pData), si.pSpecializationInfo->dataSize); } else add((size_t)0);
+    add((int)(si.pNext != nullptr));   // the required-subgroup-size pin (the only thing hung on a stage)
+  }
+};
+struct GplCache {
+  std::mutex mu;
+  std::unordered_map<std::string, VkPipeline> lib[4];   // 0 vertex input, 1 pre-raster, 2 fragment shader, 3 fragment output
+  std::atomic<uint32_t> built{0}, reused{0}, links{0}, linkFail{0}, hits{0};
+  std::atomic<uint64_t> linkNs{0}, libNs{0};
+};
+static GplCache& Gpl() { static GplCache* g = new GplCache; return *g; }   // never destroyed: the pipelines are freed with the device
+
+// Builds (or finds) library `kind`; `gi` is the create info with its state pointers set. Returns VK_NULL_HANDLE on failure.
+static VkPipeline GplGetLib(Host* h, int kind, const GplKey& key, VkGraphicsPipelineCreateInfo gi, VkGraphicsPipelineLibraryFlagsEXT flag) {
+  GplCache& g = Gpl();
+  { std::lock_guard<std::mutex> lk(g.mu); auto it = g.lib[kind].find(key.s); if (it != g.lib[kind].end()) { g.reused++; return it->second; } }
+  VkGraphicsPipelineLibraryCreateInfoEXT lci{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_LIBRARY_CREATE_INFO_EXT};
+  lci.flags = flag; lci.pNext = const_cast<void*>(gi.pNext);
+  gi.pNext = &lci; gi.flags = VK_PIPELINE_CREATE_LIBRARY_BIT_KHR;
+  const uint64_t t0 = snap_perf::now_ns();
+  VkPipeline p = VK_NULL_HANDLE;
+  // No VkPipelineCache here: the libraries are only a stand-in until the whole pipeline is compiled, so they stay out of the saved cache blob.
+  if (vkCreateGraphicsPipelines(h->device, VK_NULL_HANDLE, 1, &gi, nullptr, &p) != VK_SUCCESS) return VK_NULL_HANDLE;
+  g.libNs += snap_perf::now_ns() - t0;
+  std::lock_guard<std::mutex> lk(g.mu);
+  auto ins = g.lib[kind].emplace(key.s, p);
+  if (!ins.second) { vkDestroyPipeline(h->device, p, nullptr); g.reused++; return ins.first->second; }   // another worker built the same library first
+  g.built++;
+  return p;
+}
+
 // Builds the Vulkan graphics pipeline for `pd` from stage objects st[0..4] and `layout`. Safe to call from any thread.
-VkPipeline CreateGraphicsPipelineImpl(Host* h, const PipeDesc& pd, StageProg* const st[6], VkPipelineLayout layout) {
+// `optLater` != null (a pipeline the game waits for) with gfx_gpl on: the driver's cache is asked first (FAIL_ON_PIPELINE_COMPILE_REQUIRED, so a hit costs what it
+// always did); on a miss the pipeline is fast-linked from libraries and *optLater is set: the caller must compile the whole pipeline later and replace this one.
+VkPipeline CreateGraphicsPipelineImpl(Host* h, const PipeDesc& pd, StageProg* const st[6], VkPipelineLayout layout, bool* optLater) {
   static std::mutex fragMu;   // StageProg::fragMods is shared by every pipeline built from the same fragment stage
   auto valid = [&](int s) { return st[s] && st[s]->valid; };
   const VkPrimitiveTopology topo = (VkPrimitiveTopology)pd.topo;
@@ -505,6 +550,79 @@ VkPipeline CreateGraphicsPipelineImpl(Host* h, const PipeDesc& pd, StageProg* co
   gi.pViewportState = &vp; gi.pRasterizationState = &rs; gi.pMultisampleState = &ms; gi.pDepthStencilState = &dss;
   gi.pColorBlendState = &cb; gi.pDynamicState = &ds; gi.layout = layout;
   VkPipeline pipe = VK_NULL_HANDLE;
+  if (optLater && g_gplOn) {
+    // 1) whole pipeline from the driver cache only: a hit is as fast as before and needs no later compile
+    const uint64_t gT0 = snap_perf::on ? snap_perf::now_ns() : 0;
+    auto account = [&](const char* what) {   // the same SNAP_PERF accounting as a whole-pipeline compile (pipe_ms, pipes_created, a "pipeline" event)
+      if (!snap_perf::on) return;
+      const uint64_t dt = snap_perf::now_ns() - gT0;
+      snap_perf::add(snap_perf::C_PIPE, dt); snap_perf::count(snap_perf::V_PIPES_CREATED);
+      char det[128]; snprintf(det, sizeof det, "gpl %s vs=%s fs=%s", what, pd.stage[0], pd.stage[1]);
+      snap_perf::event("pipeline", (double)dt / 1e6, det);
+    };
+    gi.flags = VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT;
+    const VkResult cr = vkCreateGraphicsPipelines(h->device, h->pipelineCache, 1, &gi, nullptr, &pipe);
+    gi.flags = 0;
+    if (cr == VK_SUCCESS) { Gpl().hits++; account("cache-hit"); return pipe; }
+    pipe = VK_NULL_HANDLE;
+    if (cr == VK_PIPELINE_COMPILE_REQUIRED) {
+      // 2) a miss: fast-link the four libraries
+      const uint64_t t0 = snap_perf::now_ns();
+      GplCache& g = Gpl();
+      std::vector<VkPipelineShaderStageCreateInfo> preStages, fsStages;
+      for (const auto& si : stages) (si.stage == VK_SHADER_STAGE_FRAGMENT_BIT ? fsStages : preStages).push_back(si);
+      GplKey kVi, kPr, kFs, kFo;
+      for (const auto& b : binds) { kVi.add(b.binding); kVi.add(b.stride); kVi.add(b.inputRate); }
+      kVi.add((int)-1);
+      for (const auto& a : attrs) { kVi.add(a.location); kVi.add(a.binding); kVi.add(a.format); kVi.add(a.offset); }
+      kVi.add((int)topo);
+      for (const auto& si : preStages) kPr.stage(si);
+      kPr.add(layout); kPr.add((int)rs.polygonMode); kPr.add((uint32_t)rs.cullMode); kPr.add((int)rs.frontFace); kPr.add((uint32_t)rs.depthBiasEnable); kPr.add((int)(rs.pNext != nullptr));
+      kPr.add(topo == VK_PRIMITIVE_TOPOLOGY_PATCH_LIST ? ts.patchControlPoints : 0u);
+      for (const auto& si : fsStages) kFs.stage(si);
+      kFs.add(layout); kFs.add((uint32_t)dss.depthTestEnable); kFs.add((uint32_t)dss.depthWriteEnable); kFs.add((int)dss.depthCompareOp); kFs.add((uint32_t)dss.stencilTestEnable);
+      for (const VkStencilOpState* so : {&dss.front, &dss.back}) { kFs.add((int)so->failOp); kFs.add((int)so->passOp); kFs.add((int)so->depthFailOp); kFs.add((int)so->compareOp); }
+      kFs.add((int)ms.rasterizationSamples); kFs.add((uint32_t)ms.alphaToCoverageEnable); kFs.add((int)ri.depthAttachmentFormat); kFs.add((int)ri.stencilAttachmentFormat);
+      kFo.add((int)ms.rasterizationSamples); kFo.add((uint32_t)ms.alphaToCoverageEnable); kFo.add((int)ri.depthAttachmentFormat); kFo.add((int)ri.stencilAttachmentFormat);
+      kFo.add(cb.attachmentCount);
+      for (uint32_t i = 0; i < cb.attachmentCount; i++) {
+        const auto& a = cba[i];
+        kFo.add((int)colorFmts[i]); kFo.add((uint32_t)a.blendEnable); kFo.add((int)a.srcColorBlendFactor); kFo.add((int)a.dstColorBlendFactor); kFo.add((int)a.colorBlendOp);
+        kFo.add((int)a.srcAlphaBlendFactor); kFo.add((int)a.dstAlphaBlendFactor); kFo.add((int)a.alphaBlendOp); kFo.add((uint32_t)a.colorWriteMask);
+      }
+      VkGraphicsPipelineCreateInfo lg{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+      lg.layout = layout; lg.pDynamicState = &ds;
+      VkGraphicsPipelineCreateInfo gVi = lg, gPr = lg, gFs = lg, gFo = lg;
+      gVi.pVertexInputState = &vi; gVi.pInputAssemblyState = &ia;
+      gPr.stageCount = (uint32_t)preStages.size(); gPr.pStages = preStages.data(); gPr.pViewportState = &vp; gPr.pRasterizationState = &rs;
+      gPr.pTessellationState = topo == VK_PRIMITIVE_TOPOLOGY_PATCH_LIST ? &ts : nullptr;
+      gFs.stageCount = (uint32_t)fsStages.size(); gFs.pStages = fsStages.data(); gFs.pDepthStencilState = &dss; gFs.pMultisampleState = &ms; gFs.pNext = &ri;
+      gFo.pColorBlendState = &cb; gFo.pMultisampleState = &ms; gFo.pNext = &ri;
+      const VkPipeline lVi = GplGetLib(h, 0, kVi, gVi, VK_GRAPHICS_PIPELINE_LIBRARY_VERTEX_INPUT_INTERFACE_BIT_EXT);
+      const VkPipeline lPr = lVi ? GplGetLib(h, 1, kPr, gPr, VK_GRAPHICS_PIPELINE_LIBRARY_PRE_RASTERIZATION_SHADERS_BIT_EXT) : VK_NULL_HANDLE;
+      const VkPipeline lFs = lPr ? GplGetLib(h, 2, kFs, gFs, VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_SHADER_BIT_EXT) : VK_NULL_HANDLE;
+      const VkPipeline lFo = lFs ? GplGetLib(h, 3, kFo, gFo, VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_OUTPUT_INTERFACE_BIT_EXT) : VK_NULL_HANDLE;
+      if (lFo) {
+        const VkPipeline libs[4] = {lVi, lPr, lFs, lFo};
+        VkPipelineLibraryCreateInfoKHR li{VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR};
+        li.libraryCount = 4; li.pLibraries = libs;
+        VkGraphicsPipelineCreateInfo link{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        link.pNext = &li; link.layout = layout;   // no LINK_TIME_OPTIMIZATION flag: a fast link
+        if (vkCreateGraphicsPipelines(h->device, VK_NULL_HANDLE, 1, &link, nullptr, &pipe) == VK_SUCCESS) {
+          const uint64_t dt = snap_perf::now_ns() - t0;
+          g.links++; g.linkNs += dt;
+          account("link");
+          *optLater = true;
+          return pipe;
+        }
+        pipe = VK_NULL_HANDLE;
+      }
+      g.linkFail++;
+      static std::atomic<bool> warned{false};
+      if (!warned.exchange(true)) LogError("gpl: fast link failed, building whole pipelines (further failures are counted, not logged)");
+    }
+    // 3) anything else: the normal whole-pipeline compile below
+  }
   const uint64_t perfT0 = snap_perf::on ? snap_perf::now_ns() : 0;
   if (vkCreateGraphicsPipelines(h->device, h->pipelineCache, 1, &gi, nullptr, &pipe) != VK_SUCCESS) {
     LogError("vkCreateGraphicsPipelines failed");
@@ -1713,7 +1831,20 @@ void DoCopyBufferToTexture(ReplayCtx& cx, const Cmd& c) {
 extern "C" void snap_ui_smooth_set(int on) { UiSmoothUser().store(on ? 1 : 0, std::memory_order_relaxed); }   // F1 > Frame rate > Smooth interface (runtime/ui/ui_options.cpp)
 extern "C" int snap_ui_smooth_get() { return UiSmoothUser().load(std::memory_order_relaxed); }
 
-VkPipeline CreateGraphicsPipeline(Host* h, const PipeDesc& pd, StageProg* const st[6], VkPipelineLayout layout) { return CreateGraphicsPipelineImpl(h, pd, st, layout); }
+VkPipeline CreateGraphicsPipeline(Host* h, const PipeDesc& pd, StageProg* const st[6], VkPipelineLayout layout) { return CreateGraphicsPipelineImpl(h, pd, st, layout, nullptr); }
+}  // namespace nvn
+extern "C" void snap_gpl_stats(uint32_t* links, uint32_t* libsBuilt, uint32_t* libsReused, uint32_t* hits, uint32_t* fails, double* linkMs, double* libMs) {
+  nvn::GplCache& g = nvn::Gpl();
+  if (links) *links = g.links;
+  if (libsBuilt) *libsBuilt = g.built;
+  if (libsReused) *libsReused = g.reused;
+  if (hits) *hits = g.hits;
+  if (fails) *fails = g.linkFail;
+  if (linkMs) *linkMs = (double)g.linkNs.load() / 1e6;
+  if (libMs) *libMs = (double)g.libNs.load() / 1e6;
+}
+namespace nvn {
+VkPipeline CreateGraphicsPipelineLatency(Host* h, const PipeDesc& pd, StageProg* const st[6], VkPipelineLayout layout, bool* optLater) { return CreateGraphicsPipelineImpl(h, pd, st, layout, optLater); }
 
 // ---- exported to nvn_vk.cpp -------------------------------------------------------------------------------------------------
 void EndRendering(ReplayCtx& c) {

@@ -10,7 +10,7 @@
 namespace snap_quirks {
 namespace {
 
-const char* const kFeatures[] = {"provoking_vertex", "custom_border_color", "subgroup_pin", "present_wait", nullptr};
+const char* const kFeatures[] = {"provoking_vertex", "custom_border_color", "subgroup_pin", "present_wait", "gpl", nullptr};
 
 // The table. An entry exists only for a problem that was actually seen on that GPU and driver (the `evidence` field names the run, report
 // or note). As of 2026-11-15 no such problem is on record: every run so far was on one NVIDIA RTX 4090 and none of the logs or notes
@@ -18,6 +18,17 @@ const char* const kFeatures[] = {"provoking_vertex", "custom_border_color", "sub
 // here, and SNAP_QUIRK=<feature> turns a feature off by hand for a bug report or a test. Shape of an entry:
 //   {"name", vendor, dev_lo, dev_hi, drv_lo_major, drv_lo_minor, drv_hi_major, drv_hi_minor, {"feature", nullptr}, "run or report"},
 const Quirk kTable[] = {
+    // gpl: VK_EXT_graphics_pipeline_library fast linking (gfx_gpl = auto). Off by default on the AMD RDNA 1 and RDNA 2 discrete GPUs (Navi 10, 12, 14, 21,
+    // 22, 23, 24: device IDs 0x7310-0x743F, any driver). Evidence: another recomp project's GPL selector turns Automatic off on that driver branch; not
+    // reproduced here (no AMD GPU on the development PC). "On" in the setting overrides this entry.
+    {"amd_rdna12_gpl", 0x1002, 0x7310, 0x743F, 0, 0, 0, 0, {"gpl", nullptr}, "rival GPL selector finding (2026-11-22), not reproduced"},
+    // gpl on NVIDIA, measured (2026-11-23, RTX 4090, driver 621.24, Florio ride start, ABBA, driver shader cache defeated with SNAP_SPV_SALT): fast-linked
+    // pipelines gave no fewer frame hitches and doubled the compile work, because a library compile costs what the whole-pipeline compile costs and the link itself is
+    // 0.06 ms. Runs 0-20261123_021401 .. 0-20261123_023528, docs/shader-prebuild.md "Pipeline libraries".
+    {"nvidia_gpl", 0x10de, 0, 0, 0, 0, 0, 0, {"gpl", nullptr}, "runs 0-20261123_021401, _022115, _022936, _023528 (docs/shader-prebuild.md)"},
+    // gpl everywhere else: not measured. The library is built when the draw first needs it, so on any driver whose compile cost is in the shader (not the link) it
+    // costs a second compile for nothing, as on NVIDIA. Automatic stays off until a GPU shows a gain; gfx_gpl = on is for testers.
+    {"gpl_unmeasured", 0, 0, 0, 0, 0, 0, 0, {"gpl", nullptr}, "no measurement outside NVIDIA; see nvidia_gpl"},
 #ifdef SNAP_QUIRKS_TEST_TABLE   // tests/quirks only: one entry for the RTX 4090 range on driver 600 and up
     {"test_entry", 0x10de, 0x2680, 0x2690, 600, 0, 0, 0, {"present_wait", "provoking_vertex"}, "unit test"},
 #endif

@@ -31,6 +31,9 @@ static_assert(std::is_trivially_copyable_v<PipeDesc> && sizeof(PipeDesc) == 464,
 // ---- implemented in nvn_draw.cpp (needs the replay helpers) -------------------------------------------------------------
 // Builds the Vulkan pipeline for `pd` from the stage objects in `st[0..4]` (nullptr = absent) and `layout`. Thread-safe.
 VkPipeline CreateGraphicsPipeline(Host* h, const PipeDesc& pd, StageProg* const st[6], VkPipelineLayout layout);
+// Same for a pipeline a draw is waiting for. With gfx_gpl on (g_gplOn) a pipeline missing from the driver cache comes back fast-linked from graphics pipeline
+// libraries and *optLater is set: compile the whole pipeline later with CreateGraphicsPipeline and replace this one. Otherwise identical to CreateGraphicsPipeline.
+VkPipeline CreateGraphicsPipelineLatency(Host* h, const PipeDesc& pd, StageProg* const st[6], VkPipelineLayout layout, bool* optLater);
 
 // ---- implemented in nvn_shader.cpp --------------------------------------------------------------------------------------
 // module + reflection from the translation cache; `eft`: add layout(early_fragment_tests) even without the .efz marker (*eftApplied: it has it)

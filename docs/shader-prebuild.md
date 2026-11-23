@@ -66,3 +66,27 @@ The sweep plays on a scratch profile that copies the player's own graphics setti
 
 - A pipeline depends on state that is only known at draw time, so it cannot be listed ahead of time. The routes cover what a normal ride draws. A rare path (an unusual photo subject, a mod that adds materials) can still compile once on first use; the pipeline service handles that the way it always has.
 - The sweep needs the game files and a working GPU driver. It stops with `failed` in `prepare.json` if a course exits with an error or runs past the time limit.
+
+## Pipeline libraries (`gfx_gpl`, experimental, off)
+
+Setting `gfx_gpl` = `auto` | `on` | `off` (env `SNAP_GPL`, flag `--gpl`, F1 Graphics "Pipeline libraries"; restart). On, the device enables `VK_EXT_graphics_pipeline_library` and `pipelineCreationCacheControl`. A pipeline the game waits for (a hot job, or a must-have draw on the replay thread) is first asked from the driver with `FAIL_ON_PIPELINE_COMPILE_REQUIRED`; on a miss it is fast-linked from four libraries (vertex input, pre-raster, fragment shader, fragment output; each built once per distinct input and shared) and the whole pipeline is compiled on an idle worker and swapped in (the fast-linked one is destroyed 10 s later). Any failure builds the whole pipeline as before. The `VkPipelineCache` blob and `pipeline_keys.bin` are unchanged (libraries are created without the cache, so they never reach the blob); `kFormatVersion` stays 1. Code: `runtime/nvn/nvn_vk.cpp` (device setup, `[gpl]` log line), `nvn_draw.cpp` (`CreateGraphicsPipelineLatency`, library cache), `nvn_pipeline.cpp` (`QueueOptimize`, `RunOpt`).
+
+**Automatic is off on every GPU** (`runtime/nvn/nvn_quirks.cpp`, feature `gpl`): `nvidia_gpl` (measured, below), `amd_rdna12_gpl` (another project's finding for RDNA 1 and 2, not reproduced here), and `gpl_unmeasured` for the rest. `on` overrides the list; a driver without the extension or without fast linking falls back to whole pipelines.
+
+Measured on the development PC (RTX 4090, driver 621.24), Florio `florio_eval`, exclusive runs, ABBA order, empty shader cache dir, no pipeline seed (`SNAP_PIPELINE_SEED=0`). The driver keeps its own on-disk shader cache that this game cannot clear (`__GL_SHADER_DISK_CACHE=0` had no effect), so a plain cold run only measured cheap driver-cache hits (89 compiles in the course-start window at 2.6 ms on average). `SNAP_SPV_SALT=<text>` (test knob, `nvn_alpha.cpp`) adds an `OpSourceExtension` to every translated module, which makes every shader new to the driver; the salted runs below compile at 31 ms on average (172 ms at most).
+
+| Window | | off 1 | on 1 | on 2 | off 2 |
+| --- | --- | --- | --- | --- | --- |
+| Course start to ride + 30 s | frames over 50 ms | 18 | 19 | 21 | 28 |
+| | frames over 100 ms | 9 | 10 | 12 | 13 |
+| | replay-thread pipeline wait (`getpipe_ms`) | 1,137 ms | 1,401 ms | 1,637 ms | 1,083 ms |
+| Ride + 30 s | frames over 25 ms | 30 | 20 | 25 | 50 |
+| | frames over 50 ms | 3 | 5 | 5 | 11 |
+| Whole run | pipelines compiled or linked | 254 | 208 links + 206 whole | 203 links + 201 whole | 257 |
+| | compile CPU | 7.8 s | 17.2 s | 19.3 s | 9.2 s |
+
+Runs `0-20261123_021401` (off 1), `_022115` (on 1), `_022936` (on 2), `_023528` (off 2); all reached `ui=evaluation:End`. The game paces presents at 60 Hz with 30 Hz game frames, so "over 25 ms" counts every ordinary frame and the 50 and 100 ms counts are the hitches; they differ between the two off runs as much as between off and on (other processes on the PC, texture loads: the largest frame in the ride window, 918 to 951 ms, is not a pipeline compile). On the on runs the fast link itself took 0.06 ms; the 397 library builds took 7.4 s, the same as the whole-pipeline compiles they replace, so time to ready did not improve (the replay thread waited 37% longer on average) and the background whole-pipeline pass doubled the compile work. 435 library lookups were reused, but the libraries are built when the draw first asks for them, not before.
+
+Warm cache (the pipeline cache and key list of an off run, mode `now`, driver cache warm): 258 pipelines rebuilt in 248 ms at start, 1 pipeline compiled in the whole ride, no fast link, no change in frame counts beyond the run-to-run spread (ride + 30 s over 50 ms: off 13 and 7, on 1 and 8; runs `0-20261123_025927`, `_031633`, `_033103`, `_034626`).
+
+What would make it pay: build the pre-raster and fragment libraries before the draw (at program creation, with the state the key list already knows), so the draw only links. Not done.

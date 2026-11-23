@@ -12,6 +12,7 @@
 //                                 bigger HUD, Xbox button icons. Flags after it win (--set hud_scale=200, --width ...).
 //   --pause-in-background on|off  --mute-in-background on|off  --frame-cap <fps>   the F1 / launcher Window rows (0 = no extra limit); this run only
 //   --vsync on|adaptive|fast|off  --aniso off|2|4|8|16   present mode and texture filtering (SNAP_VSYNC, SNAP_ANISO); this run only
+//   --gpl auto|on|off             Vulkan graphics pipeline libraries (fast-linked pipelines, SNAP_GPL); this run only
 //   --update-check on|off  --update-channel stable|testing                            the launcher's update rows; this run only
 //   --backup on|off  --backup-folder <folder>  --backup-keep <n>  --backup-include <saves,settings,photos>
 //                                 the profile backups to a sync folder (docs/sync-backups.md): after the game closes, and with --backups now; this run only
@@ -145,6 +146,12 @@ inline Parsed parse(const std::vector<std::string>& args) {
       if (!value(i, &v)) break;
       if (v != "on" && v != "adaptive" && v != "fast" && v != "off") { p.error = a + " needs on, adaptive, fast or off, got \"" + v + "\""; break; }
       p.env.push_back({"SNAP_VSYNC", v});
+    } else if (a == "--gpl") {
+      if (!value(i, &v)) break;
+      if (v == "1" || v == "yes") v = "on";
+      if (v == "0" || v == "no") v = "off";
+      if (v != "auto" && v != "on" && v != "off") { p.error = a + " needs auto, on or off, got \"" + v + "\""; break; }
+      p.env.push_back({"SNAP_GPL", v});
     } else if (a == "--aniso") {
       if (!value(i, &v)) break;
       if (v == "off") v = "0";
@@ -254,6 +261,7 @@ inline const char* help_text() {
          "  --mute-in-background on|off   mute the game while its window is in the background\n"
          "  --frame-cap <fps>            frame rate limit, 0 = no extra limit\n"
          "  --vsync on|adaptive|fast|off present mode (FIFO, FIFO_RELAXED, MAILBOX, IMMEDIATE); a missing mode falls back to FIFO\n"
+         "  --gpl auto|on|off            Vulkan graphics pipeline libraries (fast-linked pipelines); auto = on where the driver has fast linking\n"
          "  --aniso off|2|4|8|16         anisotropic texture filtering, off = the game's own 1x\n"
          "  --update-check on|off        check for updates at launcher start\n"
          "  --update-channel stable|testing\n"

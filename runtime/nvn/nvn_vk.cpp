@@ -51,6 +51,8 @@ extern "C" void snap_fs_drain_none(int) {}
 
 namespace nvn {
 
+bool g_gplOn = false;   // VK_EXT_graphics_pipeline_library + pipelineCreationCacheControl enabled (setting gfx_gpl / SNAP_GPL): pipelines the game needs now are fast-linked from libraries, see nvn_draw.cpp
+static char g_gplState[160] = "off (not set up yet)";
 bool g_provokingLast = false, g_customBorder = false;   // device features enabled in Host::Init (provoking vertex LAST, custom border colors)
 VkShaderStageFlags g_sgPinStages = 0;                    // stages that accept requiredSubgroupSize = 32 (0: no pin)
 
@@ -344,6 +346,7 @@ bool Host::Init(bool wantValidation) {
   // env switch (=0) for A/B runs: SNAP_VK_PROVOKING, SNAP_VK_BORDER, SNAP_VK_SGPIN.
   VkPhysicalDeviceProvokingVertexFeaturesEXT pvf{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT};
   VkPhysicalDeviceCustomBorderColorFeaturesEXT cbf{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT};
+  VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT gplf{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT};
   {
     auto on = [](const char* n) { const char* e = getenv(n); return !(e && e[0] == '0'); };
     uint32_t ne = 0;
@@ -354,9 +357,36 @@ bool Host::Init(bool wantValidation) {
     VkPhysicalDeviceProvokingVertexFeaturesEXT qpv{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT};
     VkPhysicalDeviceCustomBorderColorFeaturesEXT qcb{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT};
     VkPhysicalDeviceVulkan13Features q13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
-    qpv.pNext = &qcb; qcb.pNext = &q13;
+    VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT qgpl{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT};
+    qpv.pNext = &qcb; qcb.pNext = &q13; q13.pNext = &qgpl;
     VkPhysicalDeviceFeatures2 q2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &qpv};
     vkGetPhysicalDeviceFeatures2(phys, &q2);
+    {   // gfx_gpl (SNAP_GPL = auto | on | off): fast-linked graphics pipeline libraries for the pipelines the game needs before the compile finished
+      const char* ge = getenv("SNAP_GPL");
+      const int want = (!ge || !*ge || !_stricmp(ge, "auto")) ? 0 : (!_stricmp(ge, "off") || !strcmp(ge, "0") || !_stricmp(ge, "false") || !_stricmp(ge, "no")) ? -1 : 1;   // 0 auto, 1 on, -1 off
+      const bool ext = has(VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME) && has(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME) && qgpl.graphicsPipelineLibrary && q13.pipelineCreationCacheControl;
+      bool fast = false;
+      if (ext) {
+        VkPhysicalDeviceGraphicsPipelineLibraryPropertiesEXT gp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_PROPERTIES_EXT};
+        VkPhysicalDeviceProperties2 pp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &gp};
+        vkGetPhysicalDeviceProperties2(phys, &pp);
+        fast = gp.graphicsPipelineLibraryFastLinking == VK_TRUE;
+      }
+      const char* why = "";
+      bool use = false;
+      if (want < 0) why = "off: gfx_gpl is off";
+      else if (!ext) why = "off: the driver does not offer graphics pipeline libraries";
+      else if (want == 0 && !fast) why = "off: auto, and the driver has no fast linking";
+      else if (want == 0 && snap_quirks::Off("gpl")) why = "off: auto, and this GPU and driver are on the driver list (nvn_quirks.cpp)";
+      else { use = true; why = want == 1 ? (fast ? "on: gfx_gpl is on" : "on: gfx_gpl is on (the driver reports no fast linking)") : "on: auto, fast linking available"; }
+      snprintf(g_gplState, sizeof g_gplState, "%s", why);
+      if (use) {
+        dext.push_back(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME); dext.push_back(VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME);
+        gplf.graphicsPipelineLibrary = VK_TRUE; f13.pipelineCreationCacheControl = VK_TRUE; g_gplOn = true;
+        gplf.pNext = f11.pNext; f11.pNext = &gplf;
+      }
+      fprintf(stderr, "[gpl] %s\n", g_gplState);
+    }
     if (has(VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME) && qpv.provokingVertexLast && on("SNAP_VK_PROVOKING") && !snap_quirks::Off("provoking_vertex")) {
       dext.push_back(VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME); pvf.provokingVertexLast = VK_TRUE; g_provokingLast = true;
       pvf.pNext = f11.pNext; f11.pNext = &pvf;
@@ -1641,6 +1671,8 @@ extern "C" const char* snap_vsync_fallback() {
   const int a = nvn::g_vsyncActual.load();
   return a < 0 || a == nvn::VsyncMode() ? "" : k[a];
 }
+// Graphics pipeline library state for the options row: "on: ..." or "off: <why>" (decided once at device creation, restart to change).
+extern "C" const char* snap_gpl_state() { return nvn::g_gplState; }
 extern "C" const char* snap_vsync_get() { static const char* const k[] = {"on", "adaptive", "fast", "off"}; return k[nvn::VsyncMode()]; }
 namespace nvn {
 

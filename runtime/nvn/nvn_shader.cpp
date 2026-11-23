@@ -283,6 +283,7 @@ void LoadAbAlt(Host* h, const uint8_t* data, uint32_t dataSize, int stage, uint3
   memcpy(words.data(), spv.data(), words.size() * 4);
   if (eft) SpvAddEarlyFragmentTests(words);
   SpvAddStorageImageCaps(words);
+  SpvSaltForTest(words);
   AaPatchFragment(words, baseKey.c_str());
   VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
   ci.codeSize = words.size() * 4; ci.pCode = words.data();
@@ -478,6 +479,7 @@ bool BuildStage(Host* h, const ShaderData& sd, StageProg* out) {
     if (!ReadFile(base + ".efz", &mark)) WriteFile(base + ".efz", "1", 1);   // the cache key hashes only the data section, so the pipeline service needs this marker
   }
   SpvAddStorageImageCaps(words);   // the translator omits StorageImageRead/WriteWithoutFormat for storage images of unknown format
+  SpvSaltForTest(words);
   if (stage == 1) GtaoPatchFragment(words, key.c_str());   // SNAP_SSAO_GTAO (nvn_gtao.cpp)
   if (stage == 1) AaPatchFragment(words, key.c_str());   // SNAP_AA=off/smaa: FXAA tonemap shaders lose their edge test (nvn_aa.cpp)
   if (stage == 0) snap_rt::PatchVertexXfb(words, key.c_str());   // [rt] SNAP_RT=1: gl_Position transform feedback decorations (no-op otherwise)
@@ -531,6 +533,7 @@ bool LoadStageFromCacheImpl(Host* h, const std::string& key, StageProg* out, boo
   memcpy(words.data(), spv.data(), words.size() * 4);
   { std::vector<uint8_t> mark; if (sp.stage == 1 && (eft || ReadFile(base + ".efz", &mark)) && SpvAddEarlyFragmentTests(words) && eftApplied) *eftApplied = true; }
   SpvAddStorageImageCaps(words);
+  SpvSaltForTest(words);
   if (sp.stage == 1) GtaoPatchFragment(words, key.c_str());
   if (sp.stage == 1) AaPatchFragment(words, key.c_str());   // same patch for pipelines built by the pipeline service
   if (sp.stage == 0) snap_rt::PatchVertexXfb(words, key.c_str());   // [rt]

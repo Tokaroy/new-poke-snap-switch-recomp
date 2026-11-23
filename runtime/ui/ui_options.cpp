@@ -46,6 +46,7 @@ namespace nvn { const char* FgNotice(); }   // nvn_framegen.cpp: why frame gener
 extern "C" void snap_vsync_set(const char* mode);   // runtime/nvn/nvn_vk.cpp [vsync]: live, the next present rebuilds the swapchain
 extern "C" const char* snap_vsync_get();
 extern "C" const char* snap_vsync_fallback();   // "" or the present mode used instead of the chosen one
+extern "C" const char* snap_gpl_state();   // runtime/nvn/nvn_vk.cpp: "on: <why>" or "off: <why>", decided at device creation
 extern "C" void snap_contact_shadows_set(int on);   // runtime/nvn/nvn_contact.cpp: live, the next scene frame
 extern "C" int snap_contact_shadows_get();
 extern "C" int snap_live_size_blocked(void);   // runtime/nvn/nvn_retarget.cpp: bit 0 the anti-aliasing mode, bit 1 the size rows could not follow (restart)
@@ -154,6 +155,12 @@ std::string vsync_note() {
   if (f.empty()) return "";
   return f == "MAILBOX" ? "Your graphics driver does not offer this mode, so Vsync Fast (MAILBOX) is used instead."
                         : "Your graphics driver does not offer this mode, so Vsync On (FIFO) is used instead.";
+}
+// Under the Pipeline libraries row: what is in effect this run, and why (the row only applies at the next start).
+std::string gpl_note() {
+  std::string s = snap_gpl_state();
+  if (s.empty() || s.find("not set up") != std::string::npos) return "";
+  return "This run: " + s + ".";
 }
 void set_vsync(const std::string& v) {
   if (v == "on") st::erase("vsync");
@@ -625,6 +632,12 @@ std::vector<Opt>& graphics_opts() {
        "On: no tearing (the default). Adaptive: tears only while below the refresh rate. Fast: no tearing and lower latency, renders extra frames. "
        "Off: lowest latency, may tear. The game's own frame pacing is unchanged.", "on",
        {{"on", "On"}, {"adaptive", "Adaptive"}, {"fast", "Fast"}, {"off", "Off"}}, 0, 0, "", "SNAP_VSYNC", get_vsync, set_vsync, nullptr, nullptr, vsync_note},
+      // runtime/nvn/nvn_vk.cpp (device setup), nvn_draw.cpp (library fast link), nvn_pipeline.cpp (background optimize); driver list: nvn_quirks.cpp
+      {"gfx_gpl", "Pipeline libraries", kChoice, kRestart,
+       "Experimental. A graphics pipeline the game needs before its shader cache is warm is linked from graphics pipeline libraries while the full version compiles in the "
+       "background. On the one GPU measured (NVIDIA RTX 4090) it did not reduce stutter and doubled the compile work, so Automatic is Off on every GPU for now; On is for testing. "
+       "Pictures, photos and scores are identical either way.", "default",
+       {{"default", "Automatic"}, {"on", "On"}, {"off", "Off"}}, 0, 0, "", "SNAP_GPL", nullptr, nullptr, nullptr, nullptr, gpl_note},
       {"ui_smooth", "Smooth interface", kChoice, kLive,
        "Above 60 FPS the menus and the frame and reticle over a Pokemon step 60 times a second, as the game does. On draws them every displayed frame, "
        "moving a moving element a fraction of a step ahead along its own motion, with no added delay. Display only: the game, the score and your photos are unchanged. "

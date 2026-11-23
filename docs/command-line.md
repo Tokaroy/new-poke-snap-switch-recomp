@@ -23,6 +23,7 @@ SnapRecomp.exe --play [options]     start the game without the launcher window
 | `--shiny <off\|on\|n>` | Rare shiny Pokemon (needs the shiny pack): `on` is 1 in 512, a number is 1 in that many, `1` makes every Pokemon shiny (test). Colors only; scores, spawns and saves do not change. This start only. |
 | `--frame-cap <fps>` | Frame rate limit. 0 is no extra limit. This start only. |
 | `--vsync on\|adaptive\|fast\|off` | Present mode: On is FIFO, Adaptive is FIFO_RELAXED, Fast is MAILBOX, Off is IMMEDIATE. A mode the driver lacks falls back to FIFO (Off tries MAILBOX first). This start only. |
+| `--gpl auto\|on\|off` | Vulkan graphics pipeline libraries. A pipeline the game needs before its compile finished is fast-linked from pre-built parts and replaced by the full compile in the background. Auto is off on every GPU for now (list and evidence in `runtime/nvn/nvn_quirks.cpp`): measured on NVIDIA it gave no fewer hitches and doubled the compile work. On is for testing. Settings key `gfx_gpl`, variable `SNAP_GPL`. This start only. |
 | `--aniso off\|2\|4\|8\|16` | Anisotropic texture filtering. Off is the game's own 1x. This start only. |
 | `--update-check on\|off` | Check for updates when the launcher starts. This start only; config.json is not changed. |
 | `--update-channel stable\|testing` | Which update channel the check follows. This start only. |

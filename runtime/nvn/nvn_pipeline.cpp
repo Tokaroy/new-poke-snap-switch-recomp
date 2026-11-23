@@ -35,7 +35,11 @@
 #include "os/perf.h"
 #include "shaderprecompile.h"
 
+extern "C" void snap_gpl_stats(uint32_t* links, uint32_t* libsBuilt, uint32_t* libsReused, uint32_t* hits, uint32_t* fails, double* linkMs, double* libMs);   // nvn_draw.cpp
+
 namespace nvn {
+
+extern bool g_gplOn;   // nvn_vk.cpp
 
 namespace {
 
@@ -87,6 +91,7 @@ struct Tmpl {
 };
 
 struct Job { PipeDesc pd; bool hot; };
+struct OptJob { PipeDesc pd; VkPipeline fast; };   // gfx_gpl: compile the whole pipeline for an entry that went live fast-linked, then swap it in
 
 struct Svc {
   Host* h = nullptr;
@@ -111,6 +116,10 @@ struct Svc {
   std::mutex qm;
   std::condition_variable qcv;
   std::deque<Job> hot, cold;
+  std::deque<OptJob> opt;                 // gfx_gpl optimize jobs: run only on an idle worker, after every hot and cold job
+  std::mutex rm;                          // gfx_gpl: fast-linked pipelines replaced by the whole one, destroyed 10 s later (a command buffer may still hold them)
+  std::vector<std::pair<VkPipeline, uint64_t>> retired;
+  std::atomic<uint32_t> optDone{0}, optSkipped{0};
   std::vector<std::thread> workers;
   std::atomic<int> activeLimit{2};
   int running = 0;
@@ -438,6 +447,7 @@ bool LoadCache(Host* h) {
   }
   return false;
 }
+void LogGplStats();
 void SaveCache(bool force) {
   Host* h = S->h;
   if (!h->pipelineCache || (!force && !S->dirty.exchange(false))) return;
@@ -461,7 +471,16 @@ void SaveCache(bool force) {
   if (!MoveFileExA(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING)) { DeleteFileA(tmp.c_str()); return; }
   S->lastSaveNs = snap_perf::now_ns();
   Log("pipeline cache saved (%zu bytes)", n);
+  LogGplStats();
   WriteStatus();
+}
+
+void LogGplStats() {
+  if (!g_gplOn) return;
+  uint32_t links = 0, built = 0, reused = 0, hits = 0, fails = 0; double linkMs = 0, libMs = 0;
+  snap_gpl_stats(&links, &built, &reused, &hits, &fails, &linkMs, &libMs);
+  Log("gpl: %u fast links (%.1f ms incl. new libraries), %u libraries built (%.1f ms), %u reused, %u driver-cache hits, %u link failures, %u optimized, %u optimize skipped",
+      links, linkMs, built, libMs, reused, hits, fails, S->optDone.load(), S->optSkipped.load());
 }
 
 // ---- compile jobs -----------------------------------------------------------------------------------------------------------------
@@ -477,6 +496,16 @@ Ent* FindOrNull(const PipeDesc& pd, uint64_t hsh) {   // caller holds pm
   return nullptr;
 }
 
+void EnsureWorkers(int want);
+int WorkerCountFor(int mode);
+
+// gfx_gpl: `e` went live fast-linked (`fast`); queue the whole-pipeline compile that replaces it. Runs after everything else, on an idle worker.
+void QueueOptimize(Ent* e, VkPipeline fast) {
+  EnsureWorkers(std::max(S->activeLimit.load(), WorkerCountFor(S->mode.load())));
+  { std::lock_guard<std::mutex> lk(S->qm); S->opt.push_back({e->pd, fast}); }
+  S->qcv.notify_one();
+}
+
 void RunJob(const Job& j) {
   const uint64_t hsh = HashDesc(j.pd);
   Ent* e;
@@ -485,28 +514,70 @@ void RunJob(const Job& j) {
   StageProg* st[6];
   ProgramImpl* lay = GetLayoutFor(j.pd, st);
   VkPipeline pipe = VK_NULL_HANDLE;
-  if (lay) pipe = CreateGraphicsPipeline(S->h, j.pd, st, lay->layout);
+  bool optLater = false;
+  if (lay) pipe = j.hot ? CreateGraphicsPipelineLatency(S->h, j.pd, st, lay->layout, &optLater) : CreateGraphicsPipeline(S->h, j.pd, st, lay->layout);
   StoreResult(e, pipe, ES_NEEDS_INLINE);   // a failed background build is retried inline by the replay thread (it has the real program)
   if (pipe) S->dirty = true;
+  if (pipe && optLater) QueueOptimize(e, pipe);
+}
+
+void RunOpt(const OptJob& j) {
+  const uint64_t hsh = HashDesc(j.pd);
+  Ent* e;
+  { std::lock_guard<std::mutex> lk(S->pm); e = FindOrNull(j.pd, hsh); }
+  if (!e || e->state.load() != ES_READY || e->pipe.load() != j.fast || e->stale.load()) { S->optSkipped++; return; }
+  StageProg* st[6];
+  ProgramImpl* lay = GetLayoutFor(j.pd, st);
+  VkPipeline full = lay ? CreateGraphicsPipeline(S->h, j.pd, st, lay->layout) : VK_NULL_HANDLE;
+  if (!full) { S->optSkipped++; return; }   // keeps running on the fast-linked pipeline
+  VkPipeline expect = j.fast;
+  if (e->stale.load() || !e->pipe.compare_exchange_strong(expect, full)) { vkDestroyPipeline(S->h->device, full, nullptr); S->optSkipped++; return; }   // a stale rebuild got there first
+  { std::lock_guard<std::mutex> lk(S->rm); S->retired.push_back({j.fast, snap_perf::now_ns()}); }
+  S->optDone++;
+  S->dirty = true;
+}
+
+void FlushRetired(bool all) {
+  std::vector<VkPipeline> dead;
+  {
+    std::lock_guard<std::mutex> lk(S->rm);
+    const uint64_t now = snap_perf::now_ns();
+    for (size_t i = 0; i < S->retired.size();) {
+      if (all || now - S->retired[i].second > 10ull * 1000000000ull) { dead.push_back(S->retired[i].first); S->retired[i] = S->retired.back(); S->retired.pop_back(); }
+      else i++;
+    }
+  }
+  for (VkPipeline p : dead) vkDestroyPipeline(S->h->device, p, nullptr);
 }
 
 void Worker() {
   for (;;) {
     Job j;
     bool isHot;
+    bool isOpt = false;
+    OptJob oj{};
     {
       std::unique_lock<std::mutex> lk(S->qm);
       for (;;) {
         if (S->stop) return;
         const bool canRun = S->running < S->activeLimit.load() || !S->hot.empty();
         if (canRun && (!S->hot.empty() || (!S->cold.empty() && !S->cancel.load()))) break;
+        if (S->running < S->activeLimit.load() && !S->opt.empty() && S->hot.empty() && (S->cold.empty() || S->cancel.load())) { isOpt = true; break; }
         if (S->cancel.load() && !S->cold.empty()) { S->cold.clear(); }
         S->qcv.wait_for(lk, std::chrono::milliseconds(200));
       }
-      isHot = !S->hot.empty();
-      if (isHot) { j = S->hot.front(); S->hot.pop_front(); }
+      isHot = !isOpt && !S->hot.empty();
+      if (isOpt) { oj = S->opt.front(); S->opt.pop_front(); }
+      else if (isHot) { j = S->hot.front(); S->hot.pop_front(); }
       else { j = S->cold.front(); S->cold.pop_front(); }
       S->running++;
+    }
+    if (isOpt) {
+      SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+      RunOpt(oj);
+      { std::lock_guard<std::mutex> lk(S->qm); S->running--; }
+      S->qcv.notify_all();
+      continue;
     }
     SetThreadPriority(GetCurrentThread(), isHot ? THREAD_PRIORITY_NORMAL
                                                 : (S->mode.load() == SHADERPRECOMPILE_MODE_NOW ? THREAD_PRIORITY_NORMAL : THREAD_PRIORITY_BELOW_NORMAL));
@@ -553,6 +624,7 @@ void Housekeeping() {
       std::lock_guard<std::mutex> lk(S->qm);
       if (S->stop) return;
     }
+    FlushRetired(false);
     if (S->dirty.load() && (snap_perf::now_ns() - S->lastSaveNs.load()) > 30ull * 1000000000ull) SaveCache(false);
   }
 }
@@ -667,6 +739,8 @@ void PipelineServiceShutdown(Host* h) {
   for (auto& t : S->workers) if (t.joinable()) t.join();
   if (S->housekeeper.joinable()) S->housekeeper.join();
   SaveCache(true);
+  FlushRetired(true);
+  LogGplStats();
   for (auto& kv : S->map)
     for (Ent* e = kv.second; e;) { Ent* n = e->next; if (e->pipe) vkDestroyPipeline(h->device, e->pipe, nullptr); delete e; e = n; }
   S->map.clear();
@@ -735,9 +809,11 @@ VkPipeline PipelineAcquire(Host* h, const PipeDesc& pd, ProgramImpl* p, bool* pe
     // ES_NEEDS_INLINE: the background build failed (e.g. a stage missing from the translation cache): build on this thread with the real program
     StageProg* sts[6] = {};
     for (int s = 0; s < 5; s++) sts[s] = p->st[s].valid ? &p->st[s] : nullptr;
-    VkPipeline pipe = CreateGraphicsPipeline(h, pd, sts, p->layout);
+    bool optLater = false;
+    VkPipeline pipe = CreateGraphicsPipelineLatency(h, pd, sts, p->layout, &optLater);
     StoreResult(e, pipe, ES_FAILED);
     if (pipe) S->dirty = true;
+    if (pipe && optLater) QueueOptimize(e, pipe);
     return pipe;
   }
   // first request of this pipeline in this run
@@ -766,9 +842,11 @@ VkPipeline PipelineAcquire(Host* h, const PipeDesc& pd, ProgramImpl* p, bool* pe
   }
   StageProg* sts[6] = {};
   for (int s = 0; s < 5; s++) sts[s] = p->st[s].valid ? &p->st[s] : nullptr;
-  VkPipeline pipe = CreateGraphicsPipeline(h, pd, sts, p->layout);
+  bool optLater = false;
+  VkPipeline pipe = CreateGraphicsPipelineLatency(h, pd, sts, p->layout, &optLater);   // the draw waits for this one: fast-linked on a driver-cache miss when gfx_gpl is on
   StoreResult(e, pipe, ES_FAILED);
   if (pipe) S->dirty = true;
+  if (pipe && optLater) QueueOptimize(e, pipe);
   return pipe;
 }
 

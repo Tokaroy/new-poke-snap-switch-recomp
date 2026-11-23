@@ -43,7 +43,7 @@ int main() {
   CHECK(Matches(open_hi, gpu(0x8086, 1, 999, 0)));           // no high end: open
   CHECK(Matches(any_gpu, gpu(0x1234, 0x5678, 0, 0)));
 
-  // the real table (nvn_quirks.cpp) ships empty until a problem is on record: Init applies nothing and Off() stays false
+  // the real table (nvn_quirks.cpp) has no entry for these features: Off() stays false for them (it turns off "gpl" only)
   Init(0x10de, 0x2684, (621u << 22) | (14u << 14), "Test GPU");
 #ifndef SNAP_QUIRKS_TEST_TABLE
   CHECK(!Off("present_wait"));
