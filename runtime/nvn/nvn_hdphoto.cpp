@@ -28,6 +28,7 @@
 #include "nvn_capture.h"
 #include "hle/hle_config.h"
 #include "hle/settings.h"          // hires_photos
+#include "nvn_hdrphoto.h"
 #include "nvn_shot.h"              // PNG writer (full-size photo PNGs)
 
 #include <algorithm>
@@ -320,6 +321,7 @@ void TrimDir() {
   for (size_t i = kMaxFiles; i < fs.size(); i++) {
     DeleteFileA((Dir() + "\\" + fs[i].name).c_str());
     DeleteFileA((Dir() + "\\" + fs[i].name.substr(0, 8) + ".png").c_str());   // its full-size PNG, if any
+    DeleteFileA((Dir() + "\\" + fs[i].name.substr(0, 8) + ".hdr.png").c_str());   // its HDR copy, if any
   }
   fprintf(stderr, "[hdphoto] trimmed %zu old HD files (limit %zu)\n", fs.size() - kMaxFiles, kMaxFiles);
 }
@@ -335,6 +337,11 @@ void WriteIfReady(const HdP& hd) {   // g_mu held
     const std::string p = PathOf(crc);
     const bool ok = WriteAtomic(p, *data);
     fprintf(stderr, "[hdphoto] %s %s (%zu bytes)\n", ok ? "wrote" : "FAILED to write", p.c_str(), data->size());
+    // SNAP_HDR_PHOTOS with HDR output on: a reconstructed HDR copy next to the JPEG (<crc>.hdr.png), made from the same pixels. Extra file only.
+    if (ok && HdrPhotoEnabled()) {
+      std::vector<uint8_t> px;
+      if (DecodeJpeg(*data, px)) HdrPhotoWrite(HdrPhotoPathFor(p), px.data(), (uint32_t)kW, (uint32_t)kH, false);
+    }
   });
 }
 

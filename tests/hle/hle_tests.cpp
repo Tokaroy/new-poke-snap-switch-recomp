@@ -41,6 +41,7 @@ namespace stdfs = std::filesystem;
 using namespace hle;
 namespace nvn { int g_presentCount = 0; int g_fdBurst = 0; }   // input_core.cpp reads the nvn frame clock; the renderer is not linked into this test
 #include "../../runtime/os/os.h"
+#include "../../runtime/nvn/hdrphoto_core.h"
 extern "C" void os_get_stats(OsStats* o) { *o = OsStats{}; }   // runtime/os/perf.cpp (linked for fs_core's counters) reads the os layer, which is not linked here
 
 
@@ -3284,6 +3285,57 @@ static void test_guest_tls_image() {
 #include "cheats_tests.h"
 #include "readonly_tests.h"
 
+// HDR photo copies (runtime/nvn/hdrphoto_core.h): the SDR-to-PQ conversion and the PNG chunks, no GPU.
+static void test_hdrphoto() {
+  using namespace snap_hdrphoto;
+  Params pr; pr.paper = 200.f; pr.peak = 1000.f; pr.expand = 0.3f;
+  const uint8_t px[4 * 4] = {0, 0, 0, 255,   128, 128, 128, 255,   255, 255, 255, 255,   255, 0, 0, 255};
+  std::vector<uint16_t> out; Stats st;
+  convert(px, 4, 1, false, pr, out, st);
+  CHECK_EQ(out.size(), 12u);
+  CHECK_EQ(out[0], 0);
+  CHECK(out[3] < out[6]);                                   // grey < white
+  auto nits = [](uint16_t v) {                              // PQ EOTF
+    const double m1 = 0.1593017578125, m2 = 78.84375, c1 = 0.8359375, c2 = 18.8515625, c3 = 18.6875;
+    const double e = std::pow(v / 65535.0, 1.0 / m2);
+    return 10000.0 * std::pow(std::max(e - c1, 0.0) / (c2 - c3 * e), 1.0 / m1);
+  };
+  const double white = nits(out[6]);                        // BT.2020 white: R=G=B
+  CHECK(white > 200.0);                                     // above SDR paper white (200 nits): the highlight lift
+  CHECK(white <= 1000.5);                                   // never above the peak
+  CHECK(std::fabs(nits(out[6]) - nits(out[7])) < 2.0 && std::fabs(nits(out[7]) - nits(out[8])) < 2.0);   // neutral stays neutral
+  CHECK(std::fabs(st.maxCll - (float)white) < 5.f);
+  CHECK(st.maxFall > 0.f && st.maxFall <= st.maxCll);
+  const double mid = nits(out[3]);                          // sRGB 128 = 21.6% linear = 43 nits at paper 200 (no lift below 0.75)
+  CHECK(mid > 40.0 && mid < 46.0);
+  Params flat = pr; flat.expand = 0.f;                      // expand 0: white is paper white
+  convert(px, 4, 1, false, flat, out, st);
+  CHECK(std::fabs(nits(out[6]) - 200.0) < 3.0);
+  convert(px, 4, 1, true, pr, out, st);                     // BGRA: the red pixel is blue now, so the pure-blue BT.2020 channel dominates
+  CHECK(out[11] > out[9]);
+  // PNG chunks
+  std::vector<uint8_t> png = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13, 'I', 'H', 'D', 'R'};
+  png.resize(33, 0);
+  { std::vector<uint8_t> d = {0, 0, 0, 0}; chunk(png, "gAMA", d); chunk(png, "sRGB", d); chunk(png, "IEND", {}); }   // WIC's colour chunks must go
+  const std::vector<uint8_t> before = png;
+  Stats s2; s2.maxCll = 1000.f; s2.maxFall = 150.f;
+  CHECK(add_hdr_chunks(png, pr, s2));
+  CHECK_EQ(png.size(), before.size() + (12 + 4) + (12 + 24) + (12 + 8) - 2 * (12 + 4));
+  CHECK(std::memcmp(png.data() + png.size() - 8, "IEND", 4) == 0);
+  CHECK(std::search(png.begin(), png.end(), (const uint8_t*)"gAMA", (const uint8_t*)"gAMA" + 4) == png.end());
+  CHECK(std::search(png.begin(), png.end(), (const uint8_t*)"sRGB", (const uint8_t*)"sRGB" + 4) == png.end());
+  CHECK(std::memcmp(png.data() + 33 + 4, "cICP", 4) == 0 && png[33 + 8] == 9 && png[33 + 9] == 16 && png[33 + 10] == 0 && png[33 + 11] == 1);
+  CHECK(std::memcmp(png.data() + 33 + 16 + 4, "mDCv", 4) == 0);
+  CHECK(std::memcmp(png.data() + 33 + 16 + 36 + 4, "cLLi", 4) == 0);
+  const size_t li = 33 + 16 + 36;
+  CHECK_EQ(((uint32_t)png[li + 8] << 24) | (png[li + 9] << 16) | (png[li + 10] << 8) | png[li + 11], 10000000u);   // MaxCLL 1000 nits in 0.0001 units
+  const uint32_t crc = ((uint32_t)png[li + 16] << 24) | (png[li + 17] << 16) | (png[li + 18] << 8) | png[li + 19];
+  CHECK_EQ(crc, crc32(png.data() + li + 4, 12));
+  CHECK_EQ(crc32((const uint8_t*)"123456789", 9), 0xCBF43926u);
+  std::vector<uint8_t> bad = {1, 2, 3};
+  CHECK(!add_hdr_chunks(bad, pr, s2));
+}
+
 int main(int argc, char** argv) {
   if (argc > 1) g_root = argv[1];
   else g_root = stdfs::path(__FILE__).parent_path().parent_path().parent_path();
@@ -3296,6 +3348,7 @@ int main(int argc, char** argv) {
 
   struct T { const char* name; void (*fn)(); } tests[] = {
       {"access.rows", test_access},
+      {"hdrphoto.core", test_hdrphoto},
       {"tls.main_image", test_guest_tls_image},
       {"cheats.wiring", test_cheats},
       {"fs.rom", test_fs_rom},

@@ -222,6 +222,8 @@ bool LiveChanged() {
 bool IsScrgb() { return g_active == M_SCRGB; }
 float Peak() { return g_peak; }
 float Paper() { return g_paper; }
+bool Active() { return g_active != M_OFF; }
+float ExpandAmount() { return Expand(); }
 const char* ModeName() { return g_active == M_SCRGB ? "scrgb (inverse tone map)" : "hdr10 (inverse tone map)"; }
 
 void AppendInstanceExt(std::vector<const char*>& ext) {   // asked for whether or not HDR is on at start: the row can be switched on later with no restart

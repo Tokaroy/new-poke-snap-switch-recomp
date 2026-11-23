@@ -111,6 +111,7 @@ Every player option and where it lives: the launcher page, the F1 menu tab and s
 | Detail preset | `gfx_preset` | - | Graphics / Picture quality | - | - | restart |
 | PNG folder | `photo_dir` | - | Photo / Photo files | - | `--set photo_dir` | restart |
 | Full-size photo PNGs | `hires_photos` | - | Photo / Photo files | - | `--set hires_photos` | restart |
+| HDR photo copies | `hdr_photos` | - | Photo / Photo files | - | `--hdr-photos`, `--set hdr_photos` | restart |
 | Screenshot folder | `shot_dir` | - | Photo / Screenshots | - | `--set shot_dir` | live |
 | Include the HUD | `shot_hud` | - | Photo / Screenshots | - | `--set shot_hud` | live |
 | Free camera | `freecam` | - | Photo / Free camera | - | `--set freecam` | restart |

@@ -724,7 +724,10 @@ std::vector<Opt>& photo_opts() {
        "With a render scale or upscaler at 4K, photo select and the album show each photo at 2160x1440 instead of the game's small copy. The game's own photo, save and scoring are unchanged. Uses more disk (about 1 to 2 MB per saved photo, in the save folder's photos_hd) and more GPU memory (up to 256 MB).", snapdef::def("SNAP_HD_PHOTOS"), {}, 0, 1, "%.2f", nullptr, nullptr, nullptr, nullptr, "SNAP_HD_PHOTOS"},
       // runtime/nvn/nvn_hdphoto.cpp (SNAP_HIRES_PHOTOS), read at start; opt-in
       {"hires_photos", "Full-size photo PNGs", kToggle, kRestart,
-       "With HD photos on, each photo the game saves to the album is also written as a lossless PNG at the full render height in the photo's 3:2 shape (4860x3240 with Enhanced at 4K), named like its HD copy in the save folder's photos_hd. The game's photo, its save and scoring are unchanged. About 20 to 30 MB per photo.", "0", {}, 0, 0, "", "SNAP_HIRES_PHOTOS"},      {"", "Expedition", kSection, kLive, "", ""},
+       "With HD photos on, each photo the game saves to the album is also written as a lossless PNG at the full render height in the photo's 3:2 shape (4860x3240 with Enhanced at 4K), named like its HD copy in the save folder's photos_hd. The game's photo, its save and scoring are unchanged. About 20 to 30 MB per photo.", "0", {}, 0, 0, "", "SNAP_HIRES_PHOTOS"},
+      // runtime/nvn/nvn_hdrphoto.cpp (SNAP_HDR_PHOTOS), read at start; opt-in
+      {"hdr_photos", "HDR photo copies", kToggle, kRestart,
+       "Needs HDR output (Graphics tab). Each HD photo copy and each screenshot is also written as a 16-bit HDR PNG (PQ, BT.2020, with brightness data) next to the normal file. It rebuilds the bright parts from the normal picture the same way the HDR display does; it does not record the scene's real light. With HDR output off nothing is written. The game's photo, its save and scoring are unchanged.", "0", {}, 0, 0, "", "SNAP_HDR_PHOTOS"},      {"", "Expedition", kSection, kLive, "", ""},
       {"neo_speed", "NEO-ONE speed", kSlider, kRestart,
        "How fast the NEO-ONE rides through a course (0.5 to 3, 1 is the game's own). The ride is shorter or longer, so you see less or more of each scene; Pokemon behave as before. Photos and scoring are not changed.",
        "1", {}, 0.5f, 3.0f, "%.2fx", "SNAP_NEO_SPEED"},

@@ -18,6 +18,8 @@ bool Requested();            // SNAP_HDR=hdr10|scrgb
 bool LiveChanged();          // once per present: true when the HDR rows changed and the swapchain has to be made again
 float Peak();
 float Paper();
+bool Active();                // an HDR swapchain (hdr10 or scrgb) is in use now (SNAP_HDR requested and the display took it)
+float ExpandAmount();         // SNAP_HDR_EXPAND, live
 const char* ModeName();      // "itm" or "guided"
 
 // Instance/device extension helpers: append VK_EXT_swapchain_colorspace / VK_EXT_hdr_metadata when requested and available.

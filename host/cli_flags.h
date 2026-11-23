@@ -13,6 +13,7 @@
 //   --steam-deck                  the Steam Deck preset (host/steamdeck.h, docs/steam-deck.md): borderless 1280 x 800, handheld picture settings,
 //                                 bigger HUD, Xbox button icons. Flags after it win (--set hud_scale=200, --width ...).
 //   --pause-in-background on|off  --mute-in-background on|off  --frame-cap <fps>   the F1 / launcher Window rows (0 = no extra limit); this run only
+//   --hdr-photos on|off           also write <name>.hdr.png (PQ, BT.2020) beside HD photo copies and screenshots; needs HDR output (docs/hdr-photos.md)
 //   --vsync on|adaptive|fast|off  --aniso off|2|4|8|16   present mode and texture filtering (SNAP_VSYNC, SNAP_ANISO); this run only
 //   --gpl auto|on|off             Vulkan graphics pipeline libraries (fast-linked pipelines, SNAP_GPL); this run only
 //   --update-check on|off  --update-channel stable|testing                            the launcher's update rows; this run only
@@ -139,6 +140,11 @@ inline Parsed parse(const std::vector<std::string>& args) {
       if (!value(i, &v)) break;
       if (!is_number(v)) { p.error = a + " needs a whole number of frames per second (0 = no extra limit), got \"" + v + "\""; break; }
       p.env.push_back({"SNAP_WINDOW_FRAME_CAP", v});
+    } else if (a == "--hdr-photos") {   // HDR copies of HD photos and screenshots (runtime/nvn/nvn_hdrphoto.cpp, docs/hdr-photos.md); needs HDR output
+      if (!value(i, &v)) break;
+      const std::string b = on_off(v);
+      if (b.empty()) { p.error = a + " needs on or off, got \"" + v + "\""; break; }
+      p.env.push_back({"SNAP_HDR_PHOTOS", b});
     } else if (a == "--shiny") {   // rare shiny Pokemon (runtime/nvn/nvn_shiny.cpp): off, on (1 in 512) or 1 in <n>; --shiny 1 forces every Pokemon (test)
       if (!value(i, &v)) break;
       if (v == "off" || v == "0" || v == "no") p.env.push_back({"SNAP_SHINY", "0"});
@@ -266,6 +272,7 @@ inline const char* help_text() {
          "  --vsync on|adaptive|fast|off present mode (FIFO, FIFO_RELAXED, MAILBOX, IMMEDIATE); a missing mode falls back to FIFO\n"
          "  --gpl auto|on|off            Vulkan graphics pipeline libraries (fast-linked pipelines); auto = on where the driver has fast linking\n"
          "  --aniso off|2|4|8|16         anisotropic texture filtering, off = the game's own 1x\n"
+         "  --hdr-photos on|off          also save <name>.hdr.png (HDR) beside HD photo copies and screenshots; needs HDR output\n"
          "  --update-check on|off        check for updates at launcher start\n"
          "  --update-channel stable|testing\n"
          "                               which update channel the check follows\n"

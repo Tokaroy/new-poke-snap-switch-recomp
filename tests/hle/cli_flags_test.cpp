@@ -51,6 +51,14 @@ int main() {
     CHECK(env_of(p, "SNAP_WINDOW_MODE") == "windowed");
     CHECK(env_of(snap_cli::parse({"--borderless"}), "SNAP_WINDOW_MODE") == "borderless");
   }
+  {   // --hdr-photos on|off -> SNAP_HDR_PHOTOS
+    auto p = snap_cli::parse({"--hdr-photos", "on"});
+    CHECK(p.error.empty() && p.rest.empty() && env_of(p, "SNAP_HDR_PHOTOS") == "1");
+    CHECK(env_of(snap_cli::parse({"--hdr-photos", "off"}), "SNAP_HDR_PHOTOS") == "0");
+    CHECK(!snap_cli::parse({"--hdr-photos", "maybe"}).error.empty());
+    CHECK(!snap_cli::parse({"--hdr-photos"}).error.empty());
+    CHECK(std::strstr(snap_cli::help_text(), "--hdr-photos") != nullptr);
+  }
   {   // --set: the value may hold '=' and may be empty; a missing key or '=' is an error
     auto p = snap_cli::parse({"--set", "look=warm=1", "--set", "photo_dir="});
     CHECK(p.error.empty() && p.sets.size() == 2);

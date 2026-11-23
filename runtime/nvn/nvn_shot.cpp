@@ -22,6 +22,7 @@
 #include "hle/input_core.h"
 #include "hle/settings.h"
 #include "nvn_aa.h"
+#include "nvn_hdrphoto.h"
 #include "nvn_internal.h"
 
 #pragma comment(lib, "windowscodecs")
@@ -300,6 +301,7 @@ void ShotAfterSubmit(Host* h, VkSemaphore timeline, uint64_t value) {
     const std::string path = dir + name;
     const bool ok = ShotWritePng(path, static_cast<const uint8_t*>(c.map), c.w, c.h, c.bgra);
     fprintf(stderr, "[shot] screenshot %s %s (%ux%u, %s, present %d)\n", ok ? "saved" : "FAILED", path.c_str(), c.w, c.h, c.hud ? "with HUD" : "no HUD", c.present);
+    if (ok && HdrPhotoEnabled()) HdrPhotoWrite(HdrPhotoPathFor(path), static_cast<const uint8_t*>(c.map), c.w, c.h, c.bgra);   // SNAP_HDR_PHOTOS: reconstructed HDR copy beside the PNG
     free_copy(dev, c);
     --g_inFlight;
   });
