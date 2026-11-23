@@ -2758,7 +2758,7 @@ static void test_padfx() {
   CHECK(pad_fx().gyro_on.load() && std::fabs(pad_fx().gyro_sens.load() - 2.5f) < 1e-4f);
   settings::use_path_for_test(f);            // re-read from disk
   CHECK(settings::get("look") == "warm" && settings::get_bool("gyro_on", false) && std::fabs(settings::get_float("gyro_sens", 0) - 2.5f) < 1e-3f);
-  CHECK(!std::getenv("SNAP_LOOK") || !*std::getenv("SNAP_LOOK"));   // env is exported only by load(), not while editing
+  CHECK(std::getenv("SNAP_LOOK") && std::string(std::getenv("SNAP_LOOK")).rfind("warm:", 0) == 0);   // look is a live row: exported while editing
   settings::apply(true);
   CHECK(std::getenv("SNAP_LOOK") && std::string(std::getenv("SNAP_LOOK")).rfind("warm:", 0) == 0);
   CHECK(std::getenv("SNAP_SSAO_QUALITY") && std::string(std::getenv("SNAP_SSAO_QUALITY")) == "high");
