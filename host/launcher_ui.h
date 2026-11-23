@@ -48,11 +48,12 @@ struct UiInfo {
   std::function<void()> verify_again;         // starts a fresh check and replaces `verify`
   bool game_ok = true;                        // the romfs check passed (used when `verify` is null)
   std::string game_msg;                       // short reason when it did not
+  std::string backup_status;                  // one line about the last profile backup (Backups page, under Back up now); empty = none yet
   bool update_available = false;
   std::string update_version, update_detail;
 };
 
-enum class UiResult { Failed, Quit, Play, GameFolder, OpenSaves, ImportSave, ExportSave, Upscalers, HdTextures, Updates, Benchmark, ProblemReport, CheckInstall, RestoreBackup, SafeMode };
+enum class UiResult { Failed, Quit, Play, GameFolder, OpenSaves, ImportSave, ExportSave, Upscalers, HdTextures, Updates, Benchmark, ProblemReport, CheckInstall, RestoreBackup, SafeMode, BackupFolder, BackupNow, RestoreSyncBackup };
 
 // Shows the window and runs until the user picks something that needs the caller (or closes it). Failed = the window or D3D11 could not be
 // created; the caller falls back to the task-dialog launcher. Test switches: SNAP_LAUNCHER_UI_SHOT=<file.bmp> with SNAP_LAUNCHER_UI_VIEW=

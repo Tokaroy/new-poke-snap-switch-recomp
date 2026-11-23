@@ -22,6 +22,7 @@ int main(int argc, char** argv) {
   ui.version = "1.0.0";
   ui.update_available = std::getenv("SNAP_TEST_UPDATE") != nullptr;
   ui.update_version = "1.1.0";
+  if (const char* b = std::getenv("SNAP_TEST_BACKUP_STATUS")) ui.backup_status = b;   // the Backups page line under Back up now
   ui.new_profile = [&ui]() { ui.profiles.push_back({"p3", "Profile 3", 0}); return std::string("p3"); };
   char exe[MAX_PATH];
   GetModuleFileNameA(nullptr, exe, MAX_PATH);

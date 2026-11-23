@@ -210,7 +210,7 @@ uint64_t rd64(const uint8_t* p) { return (uint64_t)rd32(p) | ((uint64_t)rd32(p +
 
 }  // namespace
 
-bool list(const fs::path& zp, std::vector<Entry>& out, std::string* err) {
+bool list(const fs::path& zp, std::vector<Entry>& out, std::string* err, uint64_t max_total) {
   std::ifstream f(zp, std::ios::binary);
   if (!f) { *err = "The zip file could not be opened: " + S(zp); return false; }
   f.seekg(0, std::ios::end);
@@ -269,7 +269,7 @@ bool list(const fs::path& zp, std::vector<Entry>& out, std::string* err) {
     if (flags & 1) { *err = "That zip file is password protected."; return false; }
     if (++files > kMaxFiles) { *err = "That zip file has too many files (more than " + std::to_string(kMaxFiles) + ")."; return false; }
     total_us += us;
-    if (us > (4ull << 30) || total_us > (4ull << 30)) { *err = "That zip file expands to more than 4 GB, so it was refused."; return false; }
+    if (us > max_total || total_us > max_total) { *err = "That zip file expands to more than 4 GB, so it was refused."; return false; }
     Entry se;
     se.rel = name; se.size = us; se.csize = cs; se.lho = lho; se.method = method; se.crc = crc;
     out.push_back(se);

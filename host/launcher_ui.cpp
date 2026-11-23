@@ -126,7 +126,7 @@ struct JsonFile {
 };
 
 // ---------------------------------------------------------------------------------------------------------------- settings model
-enum Store { S_CFG, S_WIN, S_AUD };
+enum Store { S_CFG, S_WIN, S_AUD, S_BAK };   // S_BAK: backup.json in the data folder (the profile backups, runtime/hle/sync_backup.h)
 enum Kind { K_CHOICE, K_PRESET, K_ACTION, K_LOOK, K_PACING, K_AA, K_PERF, K_PROFILE, K_DEVICE, K_INFO };   // K_INFO: a read-only row (label and a line of text in cur), e.g. the key bindings summary   // K_PRESET / K_LOOK / K_PACING / K_AA / K_PERF / K_PROFILE are worked out from or write several stored values
 enum Enc { E_STR, E_INT, E_VOL, E_BOOL };   // how a window.json / audio.json value is stored
 
@@ -216,7 +216,7 @@ struct G {
   bool block_hot = false;        // a dialog is open: the screen under it ignores the mouse
 
   CfgFile cfg;
-  JsonFile win, aud;
+  JsonFile win, aud, bak;
   std::vector<Page> pages;
   size_t profile_idx = 0;
 
@@ -573,7 +573,7 @@ std::string read_value(const Item& it) {
     }
     return v;
   }
-  const JsonFile& f = it.store == S_WIN ? g.win : g.aud;
+  const JsonFile& f = it.store == S_WIN ? g.win : it.store == S_BAK ? g.bak : g.aud;
   const hle::Json* x = f.j.get(it.key);
   if (!x) return it.def;
   if (it.enc == E_STR) return x->type == hle::Json::Str ? x->s : it.def;
@@ -596,7 +596,7 @@ void write_value(Item& it, const std::string& val) {
     g.cfg.save();
     return;
   }
-  JsonFile& f = it.store == S_WIN ? g.win : g.aud;
+  JsonFile& f = it.store == S_WIN ? g.win : it.store == S_BAK ? g.bak : g.aud;
   if (it.enc == E_STR) f.j.set(it.key, hle::Json::string(v));
   else if (it.enc == E_BOOL) f.j.set(it.key, hle::Json::boolean_(v != "0"));
   else f.j.set(it.key, hle::Json::number(std::atof(v.c_str())));
@@ -630,9 +630,20 @@ void refresh_picture_text() {
     }
   }
 }
+// The two Backups rows that show a state under their label: the folder chosen, and how the last backup went.
+void refresh_backup_text() {
+  const hle::Json* f = g.bak.j.get("folder");
+  const std::string folder = f ? f->str() : std::string();
+  for (Page& p : g.pages) for (Item& it : p.items) {
+    if (it.kind != K_ACTION) continue;
+    if (it.act == UiResult::BackupFolder) it.brief = folder.empty() ? "No folder chosen yet" : folder;
+    else if (it.act == UiResult::BackupNow) it.brief = g.info && !g.info->backup_status.empty() ? g.info->backup_status : "Copies your profile to the backup folder now";
+  }
+}
 void refresh_values() {
   for (Page& p : g.pages) for (Item& it : p.items) if (it.kind != K_ACTION && it.kind != K_INFO) it.cur = read_value(it);
   refresh_picture_text();
+  refresh_backup_text();
 }
 
 std::string cfg_path_for(const std::string& id) {
@@ -658,6 +669,8 @@ void load_stores() {
   g.win.load();
   g.aud.path = g.info->data_dir + "\\audio.json";
   g.aud.load();
+  g.bak.path = g.info->data_dir + "\\backup.json";
+  g.bak.load();
   apply_look_to_defaults();
   read_display();
   refresh_defaults();
@@ -1065,6 +1078,30 @@ void build_pages() {
                              {{"off", "Off"}, {"ZL", "ZL (zoom)"}, {"ZR", "ZR (shutter)"}, {"ZL,ZR", "ZL and ZR"}, {"ZL,ZR,L,R,X,Y,A,B", "Every action button"}},
                              "A press holds the button down until the next press, for buttons the game wants held. Applies the next time the game starts."));
     p.items.push_back(choice("Mono audio", "access_mono", S_CFG, "0", {{"0", "Off"}, {"1", "On"}}, "Plays the same sound in both ears."));
+    g.pages.push_back(p);
+  }
+  // Backups (docs/sync-backups.md): one zip of the profile in a folder you pick, kept in step by the game and this page; stored in backup.json
+  {
+    Page p; p.name = "Backups";
+    p.items.push_back(choice("Back up my profile", "enabled", S_BAK, "0", {{"0", "Off"}, {"1", "On"}},
+                             "Copies your save, settings and photos into one zip in the backup folder each time the game closes after your save changed. Pick a OneDrive or Dropbox folder and the copies leave this PC too. A save that is being written or waits for recovery is never copied; the launcher says so here. Command line: --backup on|off.", E_BOOL));
+    Item fo; fo.label = "Backup folder..."; fo.kind = K_ACTION; fo.act = UiResult::BackupFolder;
+    fo.help = "Pick the folder the backup zips go in, for example a folder inside OneDrive or Dropbox. Each zip is written under a temporary name and renamed when it is finished and checked, so a sync program never uploads half a file. Command line: --backup-folder.";
+    p.items.push_back(fo);
+    p.items.push_back(choice("Copies to keep", "keep", S_BAK, "3", {{"1", "1"}, {"2", "2"}, {"3", "3"}, {"5", "5"}, {"10", "10"}, {"20", "20"}},
+                             "How many backup zips of each profile stay in the folder. The oldest is deleted only after the new one has been written and checked. Command line: --backup-keep.", E_INT));
+    p.items.push_back(choice("Back up saves", "saves", S_BAK, "1", {{"1", "On"}, {"0", "Off"}},
+                             "The save of the profile you start with: the current generation of every user, copied only while the game is not writing it.", E_BOOL));
+    p.items.push_back(choice("Back up settings", "settings", S_BAK, "1", {{"1", "On"}, {"0", "Off"}},
+                             "This profile's settings, the window and audio files and the controls mapping.", E_BOOL));
+    p.items.push_back(choice("Back up photos", "photos", S_BAK, "1", {{"1", "On"}, {"0", "Off"}},
+                             "Your exported photos and screenshots. They can be large; the zip handles more than 4 GB. HD texture packs and shader caches are never included: they can be rebuilt.", E_BOOL));
+    Item now; now.label = "Back up now..."; now.kind = K_ACTION; now.act = UiResult::BackupNow;
+    now.help = "Makes a backup right now, even if nothing changed. Command line: --backups now.";
+    p.items.push_back(now);
+    Item rs; rs.label = "Restore a backup..."; rs.kind = K_ACTION; rs.act = UiResult::RestoreSyncBackup;
+    rs.help = "Lists the backups in the folder with their date and size and puts one into a NEW profile. Your current profile is not touched unless you pick that and confirm twice. Command line: --backups restore.";
+    p.items.push_back(rs);
     g.pages.push_back(p);
   }
   // The line under each row's label: a short version of its help. Rows not listed here use the first sentence of the help.

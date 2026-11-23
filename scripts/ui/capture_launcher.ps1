@@ -12,7 +12,7 @@ New-Item -ItemType Directory -Force $Out | Out-Null
 $data = Join-Path $root 'build\ui_polish_data'
 Remove-Item -Recurse -Force $data -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $data | Out-Null
-$pages = 'Display', 'Picture', 'Detail', 'Upscaling', 'Frame_rate', 'Sound', 'Controls', 'Gameplay', 'Accessibility'
+$pages = 'Display', 'Picture', 'Detail', 'Upscaling', 'Frame_rate', 'Sound', 'Controls', 'Gameplay', 'Accessibility', 'Backups'
 $views = @(, @('home', 'home'))
 for ($i = 0; $i -lt $pages.Count; $i++) { $views += , @("settings_$($pages[$i])", "settings:$i") }
 $views += , @('pulldown_Picture_Look', 'pulldown:1:0')

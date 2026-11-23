@@ -22,7 +22,9 @@ struct Entry {
 
 uint32_t crc32_update(uint32_t crc, const uint8_t* p, size_t n);
 // The files of a zip (folders skipped). False with a user-facing message in *err for a damaged, encrypted or non-zip file.
-bool list(const std::filesystem::path& zip, std::vector<Entry>& out, std::string* err);
+// max_total: the largest uncompressed size (one entry, and all of them together) it accepts; the default is the 4 GB the save and mod readers want, the
+// whole-profile backups (sync_backup.cpp) pass a larger one because their photos can be big.
+bool list(const std::filesystem::path& zip, std::vector<Entry>& out, std::string* err, uint64_t max_total = (4ull << 30));
 // Writes entry `e` to `dst` (overwriting) and checks its size and CRC32.
 bool extract(const std::filesystem::path& zip, const Entry& e, const std::filesystem::path& dst, std::string* err);
 

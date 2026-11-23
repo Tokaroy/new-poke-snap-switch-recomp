@@ -23,6 +23,9 @@ struct Result {
 // Call when the command line holds no command of its own (player flags only). Returns false when there is no config.json next to the exe (nothing happened).
 bool prepare(Result& r);
 
+// The game calls this when it closes normally: with profile backups on, starts `--backups auto` as a detached process (docs/sync-backups.md).
+void spawn_backup_after_exit();
+
 // Offers the upscaler downloads (host/launcher_upscalers.cpp). first_start = only the pre-selected one (FSR). Returns the number installed.
 int offer_upscalers(const std::filesystem::path& exe_dir, const hle::Json& data, bool first_start);
 

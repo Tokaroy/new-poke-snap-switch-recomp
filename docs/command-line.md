@@ -26,6 +26,10 @@ SnapRecomp.exe --play [options]     start the game without the launcher window
 | `--aniso off\|2\|4\|8\|16` | Anisotropic texture filtering. Off is the game's own 1x. This start only. |
 | `--update-check on\|off` | Check for updates when the launcher starts. This start only; config.json is not changed. |
 | `--update-channel stable\|testing` | Which update channel the check follows. This start only. |
+| `--backup on\|off` | Copy the profile to the backup folder when the game closes (and for `--backups now`). This start only; the launcher's Backups page keeps the saved choice. |
+| `--backup-folder <folder>` | The folder the backup zips go in, for example a OneDrive or Dropbox folder. |
+| `--backup-keep <n>` | Zips kept per profile, 1 to 100. The default is 3. |
+| `--backup-include <list>` | What goes in: any of `saves`, `settings`, `photos`. The default is all three. HD packs and shader caches are never included. |
 | `--profile <name>` | The profile to play, or the one `--import-save` and `--export-save` use. |
 | `--set <key>=<value>` | One setting for this start only. Repeat it for more settings. The settings file is not changed. |
 | `--data-dir <folder>` | Keeps saves, settings, mods, caches and logs in this folder. The folder is created when it is missing. |
@@ -91,10 +95,11 @@ Each of these does one launcher job without the launcher window. The game does n
 | `--check-install` | Checks the game files and prints the result. Exit code 0 when everything is in order, 1 when something is wrong. |
 | `--report` | Makes the problem report zip and prints its path. Nothing is uploaded. |
 | `--restore-backup` | Prints the save backups, newest first. `--restore-backup latest` or `--restore-backup <number>` puts that one back; the current save is backed up first. Exit code 0 done, 1 not restored, 2 wrong argument. |
+| `--backups` | The profile backups to the backup folder ([sync-backups.md](sync-backups.md)). No argument or `list`: the backups, newest first. `now`: make one. `verify [<number>]`: re-read one against its manifest. `restore <number>` or `restore latest`: put one into a new profile. `restore ... --into-current --yes`: replace the current profile's save instead. Exit code 0 done, 1 failed or skipped (the save is in use, mid-write or waiting for recovery), 2 wrong argument. |
 | `--upscalers` | Prints DLSS, FSR and XeSS, whether each is installed, and where its license is. `--upscalers <name> --accept-license <name>` downloads that one from the vendor. Without `--accept-license` nothing is downloaded: the license is yours to accept. |
 | `--hdtex` | Prints the HD texture state. With options it runs the HD texture tool with them, for example `--hdtex --level hd --dry-run`; `builder\HD-TEXTURES.md` lists the options. HD shadows: `--hdtex --cats shadow --pack-id hd-shadows --from-romfs <romfs folder> --level hd --shadow-source upscaled` (the game's maps enlarged) or `--shadow-source rebaked` (re-traced on the graphics card, upscaled where a re-bake does not match; needs ray tracing), and `--hdtex --level off --pack-id hd-shadows` turns both off. The exit code is the tool's. |
 
-None of these opens a window. `--restore-backup`, `--upscalers` and `--hdtex` take everything after them as their own arguments, so put `--data-dir` and the other player flags before them.
+None of these opens a window. `--restore-backup`, `--backups`, `--upscalers` and `--hdtex` take everything after them as their own arguments, so put `--data-dir` and the other player flags before them.
 
 ## Setup flags
 

@@ -594,7 +594,7 @@ static void wait_for_previous_run() {
 }
 static LRESULT CALLBACK game_wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
     { LRESULT wr = 0; if (snap_window_proc(h, m, w, l, &wr)) return wr; }   // host/window_opts.cpp: F11, focus, mute, remembered placement
-    if (m == WM_CLOSE || m == WM_DESTROY) { snap_audio_log_checks(); snap_launchmark_clear(); snap_perf_flush(0); fflush(stderr); nvnHostShotDrain(5000); snap_fs_drain_for_exit(5000); maybe_return_to_launcher(); ExitProcess(0); }   // waits (5 s) for a save commit in progress
+    if (m == WM_CLOSE || m == WM_DESTROY) { snap_audio_log_checks(); snap_launchmark_clear(); snap_perf_flush(0); fflush(stderr); nvnHostShotDrain(5000); snap_fs_drain_for_exit(5000); snap_launcher::spawn_backup_after_exit(); maybe_return_to_launcher(); ExitProcess(0); }   // waits (5 s) for a save commit in progress
     if (m == WM_TIMER) { snap_capture_window(h); return 0; }
     return DefWindowProcW(h, m, w, l);
 }
@@ -1237,6 +1237,7 @@ int main(int argc, char **argv) {
     }
     DWORD rc = 1;
     GetExitCodeThread(h, &rc);
+    if (rc == 0) snap_launcher::spawn_backup_after_exit();   // profile backups to the sync folder (docs/sync-backups.md); a crash never gets here
     maybe_return_to_launcher();
     return (int)rc;
 }

@@ -13,16 +13,19 @@
 //   --pause-in-background on|off  --mute-in-background on|off  --frame-cap <fps>   the F1 / launcher Window rows (0 = no extra limit); this run only
 //   --vsync on|adaptive|fast|off  --aniso off|2|4|8|16   present mode and texture filtering (SNAP_VSYNC, SNAP_ANISO); this run only
 //   --update-check on|off  --update-channel stable|testing                            the launcher's update rows; this run only
+//   --backup on|off  --backup-folder <folder>  --backup-keep <n>  --backup-include <saves,settings,photos>
+//                                 the profile backups to a sync folder (docs/sync-backups.md): after the game closes, and with --backups now; this run only
 //   --profile <name or id>        the profile to play (also the profile of --import-save / --export-save)
 //   --set <key>=<value>           one settings key for this run only (repeatable); a name that starts with SNAP_ sets that variable.
 //                                 Rows kept outside settings.cfg (window.json, audio.json, input.json) take their key from set_key_env() below.
 //   --data-dir <folder>           one folder for saves, settings, mods, caches and logs
-//   --update | --check-install | --report | --restore-backup | --upscalers | --hdtex
+//   --update | --check-install | --report | --restore-backup | --backups | --upscalers | --hdtex
 //                                 one launcher action without the launcher window (host/launcher.cpp run_action); the game does not start.
-//                                 No action opens a dialog. --restore-backup, --upscalers and --hdtex take everything after them as their
-//                                 own arguments (action_takes_args), so the other player flags go before them.
+//                                 No action opens a dialog. --restore-backup, --backups, --upscalers and --hdtex take everything after them as
+//                                 their own arguments (action_takes_args), so the other player flags go before them.
 //   --help | -h | /?   --version
 #pragma once
+#include <cctype>
 #include <cstdlib>
 #include <string>
 #include <utility>
@@ -74,13 +77,31 @@ inline std::string on_off(const std::string& s) {
 
 // Launcher actions that have a flag of their own: "--" + name.
 inline const std::vector<std::string>& action_names() {
-  static const std::vector<std::string> k = {"update", "check-install", "report", "restore-backup", "upscalers", "hdtex"};
+  static const std::vector<std::string> k = {"update", "check-install", "report", "restore-backup", "backups", "upscalers", "hdtex"};
   return k;
 }
 
-// These actions own every argument after them: --restore-backup [latest | <n>], --upscalers [<name> --accept-license <name>],
-// --hdtex [the builder's hdtex options]. Without arguments each one prints its state and changes nothing.
-inline bool action_takes_args(const std::string& n) { return n == "restore-backup" || n == "upscalers" || n == "hdtex"; }
+// These actions own every argument after them: --restore-backup [latest | <n>], --backups [list | now | auto | verify [<n>] | restore <n|latest> ...],
+// --upscalers [<name> --accept-license <name>], --hdtex [the builder's hdtex options]. Without arguments each one prints its state and changes nothing.
+inline bool action_takes_args(const std::string& n) { return n == "restore-backup" || n == "backups" || n == "upscalers" || n == "hdtex"; }
+
+// "saves,settings,photos" (any subset, comma or space separated) -> the same list in lower case, or "" when a word is not one of them.
+inline std::string backup_include(const std::string& s) {
+  std::string out;
+  size_t i = 0;
+  while (i <= s.size()) {
+    size_t j = s.find_first_of(", ;", i);
+    if (j == std::string::npos) j = s.size();
+    std::string w = s.substr(i, j - i);
+    for (char& c : w) c = (char)std::tolower((unsigned char)c);
+    i = j + 1;
+    if (w.empty()) continue;
+    if (w != "saves" && w != "settings" && w != "photos") return "";
+    if (!out.empty()) out += ",";
+    out += w;
+  }
+  return out;
+}
 
 inline Parsed parse(const std::vector<std::string>& args) {
   Parsed p;
@@ -126,6 +147,24 @@ inline Parsed parse(const std::vector<std::string>& args) {
       if (v == "off") v = "0";
       if (v != "0" && v != "1" && v != "2" && v != "4" && v != "8" && v != "16") { p.error = a + " needs off, 2, 4, 8 or 16, got \"" + v + "\""; break; }
       p.env.push_back({"SNAP_ANISO", v});
+    } else if (a == "--backup") {
+      if (!value(i, &v)) break;
+      const std::string b = on_off(v);
+      if (b.empty()) { p.error = a + " needs on or off, got \"" + v + "\""; break; }
+      p.env.push_back({"SNAP_SYNC_BACKUP", b});
+    } else if (a == "--backup-folder") {
+      if (!value(i, &v)) break;
+      if (v.empty()) { p.error = a + " needs a folder"; break; }
+      p.env.push_back({"SNAP_SYNC_BACKUP_FOLDER", v});
+    } else if (a == "--backup-keep") {
+      if (!value(i, &v)) break;
+      if (!is_number(v) || std::atol(v.c_str()) < 1 || std::atol(v.c_str()) > 100) { p.error = a + " needs a whole number from 1 to 100, got \"" + v + "\""; break; }
+      p.env.push_back({"SNAP_SYNC_BACKUP_KEEP", v});
+    } else if (a == "--backup-include") {
+      if (!value(i, &v)) break;
+      const std::string inc = backup_include(v);
+      if (inc.empty()) { p.error = a + " needs some of saves, settings and photos (for example saves,settings), got \"" + v + "\""; break; }
+      p.env.push_back({"SNAP_SYNC_BACKUP_INCLUDE", inc});
     } else if (a == "--update-channel") {
       if (!value(i, &v)) break;
       if (v != "stable" && v != "testing") { p.error = a + " needs stable or testing, got \"" + v + "\""; break; }
@@ -216,6 +255,10 @@ inline const char* help_text() {
          "  --update-check on|off        check for updates at launcher start\n"
          "  --update-channel stable|testing\n"
          "                               which update channel the check follows\n"
+         "  --backup on|off              copy the profile to the backup folder when the game closes\n"
+         "  --backup-folder <folder>     where the backup zips go (a OneDrive or Dropbox folder, for example)\n"
+         "  --backup-keep <n>            backup zips kept per profile, 1 to 100 (default 3)\n"
+         "  --backup-include <list>      what goes in: any of saves, settings, photos (default all three)\n"
          "  --profile <name>             profile to play or to import to / export from\n"
          "  --set <key>=<value>          one setting for this start only, repeatable (keys: docs/command-line.md);\n"
          "                               a name that starts with SNAP_ sets that environment variable\n"
@@ -227,6 +270,8 @@ inline const char* help_text() {
          "  --report                     make the problem report zip and print where it is; nothing is uploaded\n"
          "  --restore-backup [latest|<n>]\n"
          "                               list the save backups, or put one back (no window)\n"
+         "  --backups [list | now | verify [<n>] | restore <n|latest> [--into-current --yes]]\n"
+         "                               the profile backups: list them, back up now, check one, or restore one into a new profile (no window)\n"
          "  --upscalers [<name> --accept-license <name>]\n"
          "                               list DLSS / FSR / XeSS, or download one whose license you accept (no window)\n"
          "  --hdtex [options]            HD texture state, or the HD texture tool with its own options (no window)\n"

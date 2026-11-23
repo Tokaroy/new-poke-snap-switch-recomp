@@ -3279,6 +3279,7 @@ static void test_guest_tls_image() {
 
 #include "save_port_tests.h"
 #include "save_backup_tests.h"
+#include "sync_backup_tests.h"
 #include "cheats_tests.h"
 
 int main(int argc, char** argv) {
@@ -3356,6 +3357,14 @@ int main(int argc, char** argv) {
 #ifdef _WIN32
       {"savebackup.running", sb_test::test_restore_refused_running},
 #endif
+      {"syncbackup.settings", sy_test::test_sha_and_settings},
+      {"syncbackup.zip", sy_test::test_backup_zip_and_manifest},
+      {"syncbackup.zip64", sy_test::test_zip64},
+      {"syncbackup.rotation", sy_test::test_rotation},
+      {"syncbackup.interrupted", sy_test::test_interrupted_write},
+      {"syncbackup.not_ready", sy_test::test_save_not_ready},
+      {"syncbackup.restore_new", sy_test::test_restore_new_profile},
+      {"syncbackup.restore_replace", sy_test::test_restore_replace_current},
       {"padfx", test_padfx},
       {"aimfeel", test_aimfeel},
       {"focus_guard", test_focus_guard},

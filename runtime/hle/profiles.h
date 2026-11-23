@@ -84,6 +84,8 @@ class Store {
   int next_n_ = 1;
 };
 
+// True while a running game (this process or another) holds <save_root>'s lock (<save_root>/.snap.lock); the same test Store::in_use makes.
+bool save_in_use(const std::string& save_root);
 // Copies <src_save_root> to <dst_save_root> as one consistent generation per user (CURRENT, its gen dir and .ok).
 bool copy_consistent(const std::string& src_save_root, const std::string& dst_save_root, std::string* err);
 // True when <dir> looks like a save root (a <uid>/CURRENT inside), or a uid folder (CURRENT inside).

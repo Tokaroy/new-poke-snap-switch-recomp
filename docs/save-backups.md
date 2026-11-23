@@ -42,3 +42,5 @@ In the game, F1 > Saves > **Restore a backup** shows the same list for the runni
 
 Code: `runtime/hle/save_backup.{h,cpp}`. Tests: `savebackup.*` in `tests/hle/hle_tests.cpp`
 (`tests/hle/save_backup_tests.h`).
+
+Whole-profile backups to a folder of your choice (a OneDrive or Dropbox folder, say), with a manifest, verification and restore into a new profile, are a separate feature: [sync-backups.md](sync-backups.md).

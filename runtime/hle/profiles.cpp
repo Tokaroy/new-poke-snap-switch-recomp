@@ -376,6 +376,7 @@ static bool save_lock_held(const fs::path& save_root) {
 }
 
 bool Store::in_use(const std::string& id) const { return save_lock_held(P(save_dir(id))); }
+bool save_in_use(const std::string& save_root) { return save_lock_held(P(save_root)); }
 
 // Copies `from` into the new folder `to` (except its top-level .snap.lock) and checks every copy's size. Stops at the first error.
 static bool copy_tree_verified(const fs::path& from, const fs::path& to, std::error_code* why) {

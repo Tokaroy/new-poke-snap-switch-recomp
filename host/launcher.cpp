@@ -33,6 +33,7 @@
 #include "hle/json_lite.h"
 #include "hle/save_backup.h"
 #include "hle/save_port.h"
+#include "hle/sync_backup.h"
 #include "launcher.h"
 #include "cli_flags.h"
 #include "mods/problem_report.h"
@@ -299,6 +300,93 @@ static void restore_backup_flow(const fs::path& cfg_path) {
   SetCursor(old);
   if (ok) message("Snap Recomp", "The backup was restored.\n\n" + hle::saveport::format_report(r, true), MB_ICONINFORMATION);
   else message("Snap Recomp", "The backup was not restored.\n\n" + err, MB_ICONWARNING);
+}
+
+// ---- profile backups to a sync folder (runtime/hle/sync_backup.h, docs/sync-backups.md): the Backups page rows, --backups, and the run after the game closes
+
+static std::string backup_status_line() {
+  const hle::syncbackup::Last l = hle::syncbackup::last_result(hle::syncbackup::config_dir());
+  if (l.status.empty()) return "";
+  std::string s = (l.status == "warning" ? "Warning " : l.status == "failed" ? "Failed " : "Last backup ") + hle::profiles::format_time(l.when) + ": " + l.message;
+  for (char& c : s) if (c == '\n' || c == '\r') c = ' ';
+  return s;
+}
+
+static bool backup_ready(const fs::path& cfg_path, hle::syncbackup::Settings* set, hle::syncbackup::Source* src, std::string* err) {
+  *set = hle::syncbackup::read_settings(hle::syncbackup::config_dir());
+  if (set->folder.empty()) { *err = "No backup folder is chosen yet. Pick one with \"Backup folder...\" first."; return false; }
+  hle::load_config(U8(cfg_path.wstring()));
+  return hle::syncbackup::resolve_source("", src, err);
+}
+
+static void backup_folder_flow() {
+  const std::string dir = hle::syncbackup::config_dir();
+  hle::syncbackup::Settings set = hle::syncbackup::read_settings(dir, false);
+  const std::string f = pick_folder(set.folder, L"Pick the folder the backups go in (for example a folder inside OneDrive or Dropbox)");
+  if (f.empty()) return;
+  set.folder = f;
+  std::string err;
+  if (!hle::syncbackup::write_settings(dir, set, &err)) { message("Snap Recomp", err, MB_ICONWARNING); return; }
+  if (!set.enabled &&
+      MessageBoxW(nullptr, W("Backups will go to:\n" + f + "\n\nTurn on \"Back up my profile\" now, so a backup is made each time the game closes after your save changed?").c_str(), L"Snap Recomp",
+                  MB_YESNO | MB_ICONQUESTION) == IDYES) {
+    set.enabled = true;
+    hle::syncbackup::write_settings(dir, set, &err);
+  }
+}
+
+static void backup_now_flow(const fs::path& cfg_path) {
+  hle::syncbackup::Settings set;
+  hle::syncbackup::Source src;
+  std::string err;
+  if (!backup_ready(cfg_path, &set, &src, &err)) { message("Snap Recomp", err, MB_ICONWARNING); return; }
+  HCURSOR old = SetCursor(LoadCursor(nullptr, IDC_WAIT));
+  const hle::syncbackup::RunResult r = hle::syncbackup::run_backup(src, set, true);
+  SetCursor(old);
+  hle::syncbackup::write_last(hle::syncbackup::config_dir(), r);
+  std::string text = r.message;
+  for (const std::string& n : r.notes) text += "\n" + n;
+  message("Snap Recomp", (r.outcome == hle::syncbackup::Outcome::Made ? "" : r.outcome == hle::syncbackup::Outcome::Unchanged ? "" : "The backup was not made.\n\n") + text,
+          r.outcome == hle::syncbackup::Outcome::Made || r.outcome == hle::syncbackup::Outcome::Unchanged ? MB_ICONINFORMATION : MB_ICONWARNING);
+}
+
+static void backup_restore_flow(const fs::path& cfg_path) {
+  hle::syncbackup::Settings set;
+  hle::syncbackup::Source src;
+  std::string err;
+  if (!backup_ready(cfg_path, &set, &src, &err)) { message("Snap Recomp", err, MB_ICONWARNING); return; }
+  const auto backups = hle::syncbackup::list_backups(set.folder);
+  if (backups.empty()) { message("Snap Recomp", "There are no backups in\n" + set.folder + "\n\nA backup is made when the game closes after your save changed, and by \"Back up now\".", MB_ICONINFORMATION); return; }
+  std::vector<std::wstring> links;
+  const size_t shown = std::min<size_t>(backups.size(), 8);
+  for (size_t i = 0; i < shown; ++i) links.push_back(W(hle::syncbackup::describe(backups[i]) + "\n" + (backups[i].valid ? backups[i].summary : std::string("This file cannot be restored"))));
+  const int sel = choose(L"Restore a backup", L"Pick the backup to restore. It is checked against its manifest first.", links);
+  if (sel < 0 || (size_t)sel >= shown) return;
+  const hle::syncbackup::Backup& b = backups[(size_t)sel];
+  if (!b.valid) { message("Snap Recomp", "That backup is damaged and cannot be restored:\n" + b.problem, MB_ICONWARNING); return; }
+  const int how = choose(L"Where should it go?", W("Backup from " + hle::profiles::format_time(b.when) + " (" + b.summary + ")"),
+                         {L"Into a new profile (recommended)\nYour current profile is not touched", L"Replace the current profile's save\nThe current save is kept as an older generation and as a local backup"});
+  if (how < 0) return;
+  HCURSOR old = SetCursor(LoadCursor(nullptr, IDC_WAIT));
+  hle::syncbackup::RestoreReport rep;
+  bool ok = false, running = false;
+  if (how == 0) ok = hle::syncbackup::restore_new_profile(b.path, src, hle::syncbackup::RestoreOptions(), &rep, &err);
+  SetCursor(old);
+  if (how == 1) {   // two separate confirmations before the current profile is touched
+    if (MessageBoxW(nullptr, W("Replace the save of " + src.profile_name + " with the backup from " + hle::profiles::format_time(b.when) + "?").c_str(), L"Snap Recomp", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) return;
+    if (MessageBoxW(nullptr, L"Are you sure? The current save stays on disk as an older generation and as a local backup, but the game will load the backup's save.", L"Snap Recomp - second confirmation",
+                    MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) return;
+    old = SetCursor(LoadCursor(nullptr, IDC_WAIT));
+    ok = hle::syncbackup::restore_replace_current(b.path, src, hle::syncbackup::RestoreOptions(), true, &rep, &err, &running);
+    SetCursor(old);
+  }
+  if (!ok) { message("Snap Recomp", "The backup was not restored.\n\n" + err, MB_ICONWARNING); return; }
+  std::string t = how == 0 ? "The backup is now the profile \"" + rep.profile_name + "\". Pick it from the profile list to play it.\n\n" : "The current profile now holds the backup.\n\n";
+  t += hle::saveport::format_report(rep.save, true);
+  if (rep.settings_restored) t += "\nSettings restored.";
+  if (rep.photos_restored || rep.photos_kept) t += "\nPhotos: " + std::to_string(rep.photos_restored) + " restored, " + std::to_string(rep.photos_kept) + " already there (never overwritten).";
+  for (const std::string& n : rep.notes) t += "\n" + n;
+  message("Snap Recomp", t, MB_ICONINFORMATION);
 }
 
 static void export_save_flow(const fs::path& cfg_path) {
@@ -1072,6 +1160,7 @@ static int ask_themed(const UpdateNotice& notice, const fs::path& cfg_path, cons
     };
   }
   snap::ui::game_font_ttf(ui.font_ttf);   // the game's own UI font, decoded now from the user's files; empty when missing
+  ui.backup_status = backup_status_line();
   using R = snap_launcher::UiResult;
   const R res = snap_launcher::show(ui);
   if (res == R::Failed) return -1;
@@ -1093,6 +1182,9 @@ static int ask_themed(const UpdateNotice& notice, const fs::path& cfg_path, cons
     case R::CheckInstall: return 11;
     case R::RestoreBackup: return 12;
     case R::SafeMode: return 13;
+    case R::BackupFolder: return 14;
+    case R::BackupNow: return 15;
+    case R::RestoreSyncBackup: return 16;
     default: return 0;
   }
 }
@@ -1140,6 +1232,78 @@ static int restore_backup_cli(const fs::path& cfg_path, const std::vector<std::s
   if (!hle::savebackup::restore(root, backups[pick].folder, &r, &err, nullptr)) { say("The backup was not restored. " + err); return 1; }
   say("The backup from " + hle::savebackup::describe(backups[pick]) + " was restored.\n" + hle::saveport::format_report(r, true));
   return 0;
+}
+
+// --backups without a window (docs/sync-backups.md). list (the default) | now | auto | verify [<n>] | restore <n|latest> [--into-current --yes].
+// `auto` is what the game starts after it closes: it does nothing unless backups are on, waits for the game to let go of the save, and skips a run when
+// nothing changed. Exit code 0 done (or nothing to do), 1 failed or skipped with a warning, 2 the arguments are wrong.
+static int backups_cli(const fs::path& cfg_path, const std::vector<std::string>& args, const std::function<void(const std::string&)>& say) {
+  namespace sb = hle::syncbackup;
+  const std::string dir = sb::config_dir();
+  sb::Settings set = sb::read_settings(dir);
+  const std::string sub = args.empty() ? "list" : args[0];
+  if (sub != "list" && sub != "now" && sub != "auto" && sub != "verify" && sub != "restore") { say("--backups takes list, now, verify [<number>] or restore <number|latest> [--into-current --yes], got \"" + sub + "\""); return 2; }
+  if (sub == "auto" && (!set.enabled || set.folder.empty())) return 0;
+  if (set.folder.empty()) { say("No backup folder is set. Use --backup-folder <folder>, or pick one on the launcher's Backups page."); return sub == "list" ? 0 : 1; }
+  if (sub == "list" || sub == "verify" || sub == "restore") {
+    const auto backups = sb::list_backups(set.folder);
+    if (sub == "list") {
+      if (backups.empty()) { say("There are no backups in " + set.folder + " yet."); return 0; }
+      say("Backups in " + set.folder + ", newest first:");
+      for (size_t i = 0; i < backups.size(); ++i) say("  " + std::to_string(i + 1) + "  " + sb::describe(backups[i]) + (backups[i].valid ? "  " + backups[i].summary : ""));
+      return 0;
+    }
+    size_t pick = 0;
+    const std::string which = args.size() > 1 ? args[1] : "latest";
+    if (which != "latest") {
+      if (!snap_cli::is_number(which) || std::atoi(which.c_str()) < 1) { say("Pick a backup by its number from --backups list, or latest; got \"" + which + "\""); return 2; }
+      pick = (size_t)std::atoi(which.c_str()) - 1;
+    }
+    if (pick >= backups.size()) { say(backups.empty() ? "There are no backups in " + set.folder + " yet." : "There is no backup number " + which + "; the list has " + std::to_string(backups.size()) + "."); return 1; }
+    const sb::Backup& b = backups[pick];
+    if (sub == "verify") {
+      std::string err;
+      if (!sb::verify_zip(b.path, &err)) { say(b.file + " did not verify: " + err); return 1; }
+      say(b.file + " verified: every file matches its manifest.");
+      return 0;
+    }
+    bool into_current = false, yes = false;
+    for (size_t i = 2; i < args.size(); ++i) {
+      if (args[i] == "--into-current") into_current = true;
+      else if (args[i] == "--yes") yes = true;
+      else { say("Unknown option " + args[i] + " for --backups restore (--into-current, --yes)"); return 2; }
+    }
+    if (into_current && !yes) { say("Replacing the current profile's save needs --yes as well. Without --into-current the backup goes into a new profile."); return 2; }
+    sb::Source src;
+    std::string err;
+    hle::load_config(U8(cfg_path.wstring()));
+    if (!sb::resolve_source("", &src, &err)) { say(err); return 1; }
+    sb::RestoreReport rep;
+    bool running = false;
+    const bool ok = into_current ? sb::restore_replace_current(b.path, src, sb::RestoreOptions(), true, &rep, &err, &running)
+                                 : sb::restore_new_profile(b.path, src, sb::RestoreOptions(), &rep, &err);
+    if (!ok) { say("The backup was not restored. " + err); return 1; }
+    say(into_current ? "The current profile now holds the backup from " + hle::profiles::format_time(b.when) + "."
+                     : "The backup from " + hle::profiles::format_time(b.when) + " is now the new profile \"" + rep.profile_name + "\".");
+    say(hle::saveport::format_report(rep.save, true));
+    if (rep.settings_restored) say("Settings restored.");
+    say("Photos: " + std::to_string(rep.photos_restored) + " restored, " + std::to_string(rep.photos_kept) + " already there (never overwritten).");
+    for (const std::string& n : rep.notes) say(n);
+    return 0;
+  }
+  // now | auto
+  sb::Source src;
+  std::string err;
+  hle::load_config(U8(cfg_path.wstring()));
+  if (!sb::resolve_source("", &src, &err)) { say(err); sb::RunResult f; f.message = err; sb::write_last(dir, f); return 1; }
+  if (sub == "auto") {   // the game that started this has just closed: give it a moment to release the save folder
+    for (int i = 0; i < 40 && hle::profiles::save_in_use(src.save_root); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  }
+  const sb::RunResult r = sb::run_backup(src, set, sub == "now");
+  sb::write_last(dir, r);
+  say(r.message);
+  for (const std::string& n : r.notes) say(n);
+  return r.outcome == sb::Outcome::Made || r.outcome == sb::Outcome::Unchanged ? 0 : 1;
 }
 
 // One command-line argument, quoted for CreateProcess when it needs it.
@@ -1214,10 +1378,35 @@ static int run_action(const std::string& action, const std::vector<std::string>&
   }
   // These three never open a window from the command line (release standard: every option has a flag another launcher can use).
   if (action == "restore-backup") return restore_backup_cli(cfg_path, args, say);
+  if (action == "backups") return backups_cli(cfg_path, args, say);
   if (action == "upscalers") return upscalers_cli(exe_dir, data, args, say);
   if (action == "hdtex") return hdtex_cli(cfg, args, test, say);
   say("unknown action " + action);
   return 2;
+}
+
+// Called by the game when it closes normally (host/boot.cpp). When profile backups are on, starts this exe again as `--backups auto`: a detached, windowless,
+// BelowNormal process that waits for this one to end, so it never reads a save the game is still writing, and then backs up if the save changed.
+void spawn_backup_after_exit() {
+  const char* sd = std::getenv("SNAP_SAVE_DIR");
+  const char* force = std::getenv("SNAP_SYNC_BACKUP");
+  if ((std::getenv("SNAP_LAUNCHER_AUTOPLAY") || (sd && *sd)) && !(force && *force == '1')) return;   // a test run keeps its own folders
+  wchar_t mp[MAX_PATH * 2] = {};
+  GetModuleFileNameW(nullptr, mp, (DWORD)(sizeof mp / sizeof mp[0]));
+  const fs::path exe = mp;
+  std::error_code ec;
+  if (!fs::exists(exe.parent_path() / L"config.json", ec)) return;   // not launcher mode: no actions to run
+  const hle::syncbackup::Settings set = hle::syncbackup::read_settings(hle::syncbackup::config_dir());
+  if (!set.enabled || set.folder.empty()) return;
+  _putenv_s("SNAP_WAIT_PID", std::to_string(GetCurrentProcessId()).c_str());
+  std::wstring cmd = L"\"" + exe.wstring() + L"\" --backups auto";
+  STARTUPINFOW si{};
+  si.cb = sizeof si;
+  PROCESS_INFORMATION pi{};
+  if (CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS | CREATE_NEW_PROCESS_GROUP, nullptr, exe.parent_path().c_str(), &si, &pi)) {
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+  }
 }
 
 bool prepare(Result& r) {
@@ -1313,6 +1502,9 @@ bool prepare(Result& r) {
     if (choice == 4) { offer_upscalers(exe_dir, data, false); continue; }
     if (choice == 5) { import_save_flow(cfg_path); continue; }
     if (choice == 12) { restore_backup_flow(cfg_path); continue; }
+    if (choice == 14) { backup_folder_flow(); continue; }
+    if (choice == 15) { backup_now_flow(cfg_path); continue; }
+    if (choice == 16) { backup_restore_flow(cfg_path); continue; }
     if (choice == 6) { export_save_flow(cfg_path); continue; }
     if (choice == 3) {   // the active profile's save folder (the one the game would use), else the legacy folder
       std::string sf, label;

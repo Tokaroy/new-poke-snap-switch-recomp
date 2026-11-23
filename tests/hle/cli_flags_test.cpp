@@ -154,6 +154,31 @@ int main() {
     CHECK(!snap_cli::parse({"--check-install", "latest"}).error.empty());   // the other actions still take nothing
     CHECK(snap_cli::action_takes_args("hdtex") && !snap_cli::action_takes_args("update"));
   }
+  {   // profile backups to a sync folder: four settings flags (env for this run) and the --backups action
+    auto p = snap_cli::parse({"--play", "--backup", "on", "--backup-folder", "D:/Sync/Snap Backups", "--backup-keep", "5", "--backup-include", "Saves, photos"});
+    CHECK(p.error.empty() && p.rest.empty() && p.action.empty());
+    CHECK(env_of(p, "SNAP_SYNC_BACKUP") == "1");
+    CHECK(env_of(p, "SNAP_SYNC_BACKUP_FOLDER") == "D:/Sync/Snap Backups");
+    CHECK(env_of(p, "SNAP_SYNC_BACKUP_KEEP") == "5");
+    CHECK(env_of(p, "SNAP_SYNC_BACKUP_INCLUDE") == "saves,photos");
+    CHECK(env_of(snap_cli::parse({"--backup", "off"}), "SNAP_SYNC_BACKUP") == "0");
+    CHECK(!snap_cli::parse({"--backup", "sometimes"}).error.empty());
+    CHECK(!snap_cli::parse({"--backup-folder"}).error.empty());
+    CHECK(!snap_cli::parse({"--backup-folder", ""}).error.empty());
+    CHECK(!snap_cli::parse({"--backup-keep", "0"}).error.empty());
+    CHECK(!snap_cli::parse({"--backup-keep", "101"}).error.empty());
+    CHECK(!snap_cli::parse({"--backup-keep", "many"}).error.empty());
+    CHECK(!snap_cli::parse({"--backup-include", "saves,hdpacks"}).error.empty());   // HD packs and shader caches are never included
+    CHECK(!snap_cli::parse({"--backup-include", ""}).error.empty());
+    auto a = snap_cli::parse({"--backup-folder", "D:/Sync", "--backups", "restore", "latest", "--into-current", "--yes"});
+    CHECK(a.error.empty() && a.action == "backups" && a.action_args == V({"restore", "latest", "--into-current", "--yes"}) && a.rest.empty());
+    CHECK(env_of(a, "SNAP_SYNC_BACKUP_FOLDER") == "D:/Sync");
+    a = snap_cli::parse({"--backups"});
+    CHECK(a.error.empty() && a.action == "backups" && a.action_args.empty());
+    CHECK(!snap_cli::parse({"--play", "--backups", "now"}).error.empty());
+    CHECK(snap_cli::action_takes_args("backups"));
+    CHECK(snap_cli::backup_include("settings") == "settings" && snap_cli::backup_include("saves photos") == "saves,photos");
+  }
   if (g_fail) { std::printf("cli_flags_test: %d FAILED\n", g_fail); return 1; }
   std::printf("cli_flags_test: all passed\n");
   return 0;
