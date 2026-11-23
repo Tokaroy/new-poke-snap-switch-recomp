@@ -647,6 +647,10 @@ std::vector<Opt>& graphics_opts() {
        "moving a moving element a fraction of a step ahead along its own motion, with no added delay. Display only: the game, the score and your photos are unchanged. "
        "Does nothing at 60 FPS.", "default",
        {{"default", "On"}, {"0", "Off"}}, 0, 0, "", "SNAP_UI_SMOOTH", get_ui_smooth, set_ui_smooth},
+      // runtime/nvn/nvn_smoothcam.cpp (camera render interpolation; the swapchain and scene tracking are set up at start)
+      {"smooth_camera", "Smooth camera", kChoice, kRestart,
+       "On a screen faster than the game, the camera turns and pans on every refresh: each extra frame shows the newest game frame from a camera between the last two. Pokemon and the HUD still move at the game's rate. Adds about one frame of delay. Display only: the game, your photos and scores are unchanged. Not with frame generation or HDR output.", "default",
+       {{"default", "Off"}, {"1", "On"}}, 0, 0, "", "SNAP_SMOOTH_CAMERA"},
       {"fps_overlay", "Performance overlay", kChoice, kLive,
        "Off is the original game. FPS: the frame rate in a corner. Detailed adds frame time and a frame-time graph, 1% low, CPU and GPU time, "
        "render and output size, upscaler and anti-aliasing, frame cap and vsync. F3 cycles it (unless F3 is bound to a game button). "

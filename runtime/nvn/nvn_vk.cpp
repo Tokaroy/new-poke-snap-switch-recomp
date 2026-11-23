@@ -24,6 +24,7 @@
 #include "nvn_pace.h"   // [pace] frame clock for the limiter and the guest vsync (SNAP_PACE=legacy restores the old limiter)
 #include "upscale/upscale_nvn.h"   // [upscale] DLSS / FSR / XeSS (SNAP_UPSCALER)
 #include "nvn_framegen.h"          // [framegen] FSR frame generation (SNAP_FRAMEGEN)
+#include "nvn_smoothcam.h"         // [smoothcam] camera render interpolation (SNAP_SMOOTH_CAMERA)
 #include "nvn_motionaa.h"          // [motionaa] image stability rows, SNAP_AA_PROBE test pan
 #include "nvn_shot.h"              // screenshot key (F12)
 #include "os/perf.h"   // SNAP_PERF instrumentation (off unless the env var is set)
@@ -422,6 +423,7 @@ bool Host::Init(bool wantValidation) {
   snap_rt::DeviceCreated(this);   // [rt]
   UpscaleDeviceCreated(this);   // [upscale]
   FgDeviceCreated(this);   // [framegen]
+  ScDeviceCreated(this);   // [smoothcam]
   VkPipelineCacheCreateInfo pci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
   VKCHK(vkCreatePipelineCache(device, &pci, nullptr, &pipelineCache));
   {
@@ -454,6 +456,7 @@ void Host::Shutdown() {
   ProgramJobsShutdown();   // background shader builds (nvn_shader.cpp) create Vulkan objects
   if (device) vkDeviceWaitIdle(device);
   if (device) ShotShutdown();   // the screenshot writer (queued PNGs, full-size photo PNGs) finishes and stops before anything it uses is destroyed
+  if (device) ScDestroy(this);   // [smoothcam] (stops the presenter thread)
   if (device) FgDestroy(this);   // [framegen] (before the upscaler: it shares the FidelityFX device)
   if (device) UpscaleDestroy(this);   // [upscale]
   if (device) snap_rt::DeviceShutdown(this);   // [rt]
@@ -747,6 +750,7 @@ void DestroyTexture(TextureImpl* t) {
   TexPrefetchForget(t);   // [perf] a prefetch job may be reading its guest data
   UpscaleForgetTexture(t);   // [upscale]
   FgForgetTexture(t);        // [framegen]
+  ScForgetTexture(t);        // [smoothcam]
   AaForgetTexture(t);   // drops the AA step's cached UNORM views of this image (the graveyard calls this once the GPU is done with it)
   if (t->bcShadow) { DestroyTexture(t->bcShadow); t->bcShadow = nullptr; }
   if (t->xferShadow) { DestroyTexture(t->xferShadow); t->xferShadow = nullptr; }
@@ -1733,6 +1737,7 @@ bool WindowImpl::Recreate() {
   // [framegen] each game frame presents twice and the presenter thread holds both images until their due time: two more images, so the
   // game thread can acquire the next frame's images while the last ones wait (FgWaitQueued below keeps the count inside the limit)
   if (FgWanted()) minImages += 2;
+  minImages += ScExtraImages();   // [smoothcam] up to 8 passes of one game frame wait on the presenter thread
   if (caps.maxImageCount) minImages = std::min(minImages, caps.maxImageCount);
 
   VkSwapchainCreateInfoKHR ci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
@@ -1782,7 +1787,7 @@ bool WindowImpl::Recreate() {
 
 void DestroyWindow(WindowImpl* w) {
   Host* h = w->host;
-  if (h && h->device && FgWanted()) FgDrainPresents();   // [framegen] no queued present may name this swapchain
+  if (h && h->device && (FgWanted() || ScWanted())) FgDrainPresents();   // [framegen] no queued present may name this swapchain
   if (h && h->device) {
     vkDeviceWaitIdle(h->device);
     for (auto s : w->renderDone) vkDestroySemaphore(h->device, s, nullptr);
@@ -1878,14 +1883,19 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
   const bool fgThr = fgPend && !snap_pace::Legacy() && FgThreaded();   // both presents of this frame go through the presenter thread
   bool fgGeneratedQueued = false;
   if (!fgThr && FgWanted() && !snap_pace::Legacy() && FgThreaded()) { lk.unlock(); FgDrainPresents(); lk.lock(); }   // keep the order: earlier queued presents first
+  // [smoothcam] Above the game rate the frame goes out as plan.n passes on the display clock (in-between cameras), made by the presenter
+  // thread one game frame later (nvn_smoothcam.h). Otherwise it is presented now, after any queued passes of earlier frames.
+  ScPlan scPlan;
+  const bool scThr = !fgPend && ScWanted() && !snap_pace::Legacy() && ScBeginPresent(h, src, w->hdr, &scPlan);
+  if (!scThr && ScWanted()) { lk.unlock(); FgDrainPresents(); lk.lock(); }
   for (int pass = 0;; pass++) {
   bool realPass = true;
   uint32_t idx = 0;
   // The acquire semaphore must have no pending wait: gate reuse on the timeline value of the submit that waited it.
-  if (w->needRecreate) { if (FgWanted()) { lk.unlock(); FgDrainPresents(); lk.lock(); } if (!w->Recreate()) return false; }   // [framegen] no queued present may name the old swapchain
+  if (w->needRecreate) { if (FgWanted() || ScWanted()) { lk.unlock(); FgDrainPresents(); lk.lock(); } if (!w->Recreate()) return false; }   // [framegen] no queued present may name the old swapchain
   // [framegen] images queued on the presenter thread are still acquired: an acquire with no timeout is only valid while the app holds at most
   // count - minImageCount images (more returned VK_NOT_READY on the RTX 4090 and dropped the frame, 13 times in run 0-20261122_194444)
-  if (fgThr) { lk.unlock(); FgWaitQueued(w->acqLimit); lk.lock(); }
+  if (fgThr || scThr) { lk.unlock(); FgWaitQueued(w->acqLimit); lk.lock(); }
   const uint32_t ak = w->acquireNext++ % (uint32_t)w->acquireSems.size();
   // [pace] The timeline wait and vkAcquireNextImageKHR block on the GPU and the display but touch no queue, so the default model
   // drops the queue lock around them (other threads keep submitting); Recreate (vkDeviceWaitIdle) retakes it. Legacy holds it.
@@ -1900,7 +1910,7 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
   }
   for (int attempt = 0; attempt < 3; attempt++) {
     if (w->needRecreate) {
-      if (FgWanted() && dropLock) FgDrainPresents();   // [framegen] (lock is dropped here)
+      if ((FgWanted() || ScWanted()) && dropLock) FgDrainPresents();   // [framegen] [smoothcam] (lock is dropped here)
       if (dropLock) lk.lock();
       const bool ok = w->Recreate();
       if (dropLock) lk.unlock();
@@ -1964,6 +1974,11 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
   VkImage blitSrc = src->image;   // [framegen] the interpolated image on pass 0
   if (fgPend && pass == 0) {
     if (VkImage gen = FgRecordGenerate(h, cb, src)) { blitSrc = gen; realPass = false; }
+  }
+  ScShown scShown;   // [smoothcam] the re-projected image of this pass (or src), and what it shows for the trace
+  if (ScWanted()) {
+    if (scThr) realPass = pass == scPlan.n - 1;   // the last pass carries the real-frame jobs (screenshot, dumps)
+    if (VkImage im = ScRecordPass(h, q, cb, src, scPlan, scThr ? pass : 0, &scShown)) blitSrc = im;
   }
   if (realPass) ShotOnPresent(h, cb, src);   // screenshot key (nvn_shot.cpp): the window texture at render size, before the downscale
   // Debug frame dump (NVN_FRAME_DUMP=<dir> [NVN_FRAME_DUMP_FROM=<sec> _TO=<sec> _EVERY=<sec> _MAX=<n>]): copies the game's window texture (no overlay) into a host buffer
@@ -2190,7 +2205,7 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
   // taking the queue mutex itself; otherwise it runs here with the mutex held (lockHeld).
   const VkSemaphore rdSem = w->renderDone[idx];
   const bool generatedFrame = !realPass;
-  auto doPresent = [h, w, rdSem, idx, generatedFrame](bool lockHeld) {
+  auto doPresent = [h, w, rdSem, idx, generatedFrame, scShown](bool lockHeld) {
     std::unique_lock<std::mutex> ql(h->queueMutex, std::defer_lock);
     if (!lockHeld) ql.lock();
     uint32_t pidx = idx;
@@ -2209,6 +2224,7 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
     else if (pr < 0) { LogError("vkQueuePresentKHR failed: %d", (int)pr); if (FgWanted()) FgFail("a present failed"); }
     if (generatedFrame && FgWanted() && FgForcedFail("present")) FgFail("forced failure at present (SNAP_FRAMEGEN_FAIL=present)");
     if (FgWanted()) FgNotePresent(generatedFrame);   // [framegen]
+    if (scShown.on) ScNotePresent(scShown);           // [smoothcam]
   };
   if (fgThr) {
     // The interpolated frame goes out as soon as it is ready; the real frame half a base frame after the game frame's present time.
@@ -2216,12 +2232,13 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
     if (realPass && fgGeneratedQueued) due = FgReleaseNs() + (int64_t)(std::clamp(FgBaseDt() > 0 ? FgBaseDt() : 0.0167, 0.004, 0.05) * 0.5e9);
     FgPresentAt([doPresent]() { doPresent(false); }, due);
     if (!realPass) fgGeneratedQueued = true;
-  } else doPresent(true);
+  } else if (scThr) FgPresentAt([doPresent]() { doPresent(false); }, scPlan.due[pass]);   // [smoothcam]
+  else doPresent(true);
   w->acquireValue[ak] = v;
   w->slotSem[slot] = q->timeline;
   w->slotValue[slot] = v;
   if (realPass) break;
-  if (!fgThr) { lk.unlock(); FgSleepHalf(); lk.lock(); }   // the real frame follows half a base frame after the interpolated one
+  if (!fgThr && !scThr) { lk.unlock(); FgSleepHalf(); lk.lock(); }   // the real frame follows half a base frame after the interpolated one
   }
   return true;
 }

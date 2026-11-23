@@ -34,6 +34,7 @@ extern "C" void snap_fs_state_save();                          // runtime/hle/fs
 extern "C" void snap_fs_state_load(int* closed, int* reopened);
 extern "C" void snap_upscale_state_loaded();    // runtime/nvn/upscale/upscale.cpp: temporal history reset
 extern "C" void snap_framegen_state_loaded();   // runtime/nvn/nvn_framegen.cpp
+extern "C" void snap_smoothcam_state_loaded();  // runtime/nvn/nvn_smoothcam.cpp
 
 extern "C" {
 struct SnapStateHooks {
@@ -172,7 +173,7 @@ int PreLoad(char *why, int cap) {
 
 void PostLoad() {   // guest memory is restored; the GPU is idle; every guest thread is parked
   std::lock_guard<std::mutex> lk(g_mu);
-  snap_upscale_state_loaded(); snap_framegen_state_loaded();   // the camera jumped: no temporal history across a load
+  snap_upscale_state_loaded(); snap_framegen_state_loaded(); snap_smoothcam_state_loaded();   // the camera jumped: no temporal history across a load
   hle::input::route_state_loaded();   // the HLE route signals (film counter) were reported for the state that is gone
   // 1. objects made since the save: the restored guest names none of them
   std::vector<Zombie> dead;

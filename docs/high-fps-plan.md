@@ -180,6 +180,10 @@ frame generation as an independent add-on.
   presented rate and the sim rate separately; camera cuts show no blend (check cut frames in a
   logged trace); validation clean; guest thread stays at or under 16.6 ms with the extra replay.
 - Later tiers (objects, skinned lerp, GPU re-submit) are a separate decision after M2 numbers.
+- Status (2026-11-23, branch `smoothcam`): built as `SNAP_SMOOTH_CAMERA=1` / `--smooth-camera on`, off by default
+  (`docs/smooth-camera.md`). It does not re-run the frame: the in-between frames re-project the newest game picture with its
+  depth to the interpolated camera and copy the HUD pixels unchanged (the frame generation HUD-less copy and presenter thread),
+  so no command list runs twice and nothing the game reads is written. Numbers and limits are in the AGENTS.md entry.
 
 ### Milestone 3: frame generation opt-in (10 to 14 days). Independent, can run in parallel
 

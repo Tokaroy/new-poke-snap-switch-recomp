@@ -12,6 +12,7 @@
 #include "nvn_internal.h"
 #include "nvn_aa.h"
 #include "nvn_framegen.h"
+#include "nvn_smoothcam.h"   // [smoothcam]
 #include "nvn_foliage.h"
 #include "hle/live.h"
 #include "hle/lighting_preset.h"
@@ -88,6 +89,7 @@ int Swap(Host* h, VkCommandBuffer cb, TextureImpl* t, float scale, float wide, u
   }
   TexPrefetchForget(t);
   FgForgetTexture(t);
+  ScForgetTexture(t);   // [smoothcam]
   t->image = VK_NULL_HANDLE; t->memory = VK_NULL_HANDLE; t->layout = VK_IMAGE_LAYOUT_UNDEFINED;
   t->subLayout.clear(); t->views.clear(); t->viewTypes.clear();
   t->viewLast = VK_NULL_HANDLE; memset(t->viewLastKey, 0, sizeof t->viewLastKey);

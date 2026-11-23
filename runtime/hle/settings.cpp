@@ -155,6 +155,7 @@ const struct { const char* key; const char* env; } kEnvKeys[] = {
     {"skip_course_intro", "SNAP_SKIP_INTRO"},   // "1" or unset: skip the 10.6 s course fly-over (host/mods/introskip.cpp)
     {"ui_smooth", "SNAP_UI_SMOOTH"},            // "0" or unset: smooth interface above 60 fps off / on (runtime/nvn/nvn_uismooth.h; live in F1)
     {"hud_scale", "SNAP_HUD_SCALE"},            // auto | 100 | 125 | 150 | 175 | 200 (runtime/nvn/nvn_hud.cpp)
+    {"smooth_camera", "SNAP_SMOOTH_CAMERA"},   // Smooth camera row ("1" or unset; camera render interpolation above the game rate, runtime/nvn/nvn_smoothcam.cpp; restart)
     {"frame_generation", "SNAP_FRAMEGEN"},   // Frame generation row ("fsr" or the older "1" = FSR, "dlss" = NVIDIA DLSS, unset = off; runtime/nvn/nvn_framegen.cpp; restart)
     {"foliage_aa", "SNAP_FOLIAGE_AA"}, {"leaf_translucency", "SNAP_LEAF_TRANSLUCENCY"}, {"soft_particles", "SNAP_SOFT_PARTICLES"}, {"gfx_hd_effects", "SNAP_HD_EFFECTS"},   // foliage / particle rows (runtime/nvn/nvn_foliage.cpp; restart)
     {"specular_aa", "SNAP_SPECULAR_AA"},   // image stability row (runtime/nvn/nvn_motionaa.cpp; live)

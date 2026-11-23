@@ -395,6 +395,7 @@ static void PresenterStop() {
   P.started = false; P.q.clear(); P.busy = false;
 }
 
+void FgPresenterShutdown() { PresenterStop(); }
 int64_t FgReleaseNs() { return G.releaseNs; }
 double FgBaseDt() { return G.dtEma; }
 int64_t FgNowNs() { return NowNs(); }

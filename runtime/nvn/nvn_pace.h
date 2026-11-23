@@ -30,6 +30,9 @@ void DeviceCreated(VkDevice dev);
 void SwapchainCreated(VkSwapchainKHR sc, void* hwnd);
 // Present mode of the new swapchain is IMMEDIATE (SNAP_VSYNC=off): locked releases go right after the vblank, not mid-frame.
 void SetImmediate(bool on);
+// The smooth camera presents each game frame later, from its presenter thread (nvn_smoothcam.cpp): the queue depth cap below would only
+// stall the game thread on those delayed presents, so it is skipped while this is on.
+void SetPresenterOwned(bool on);
 
 // Frame limiter, called before the present. basePeriodNs = presentInterval / paceHz (and the frame cap), 0 = unlimited;
 // vsyncNs = 1 / paceHz (the guest vsync period before it is fitted to the display).

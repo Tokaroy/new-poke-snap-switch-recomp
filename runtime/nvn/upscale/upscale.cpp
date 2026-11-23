@@ -30,6 +30,7 @@
 #include "../nvn_internal.h"
 #include "../nvn_aa.h"   // HostWindowHeight
 #include "../nvn_framegen.h"   // [framegen] FgPrepare, FgWanted
+#include "../nvn_smoothcam.h"  // [smoothcam] ScPrepare, ScWanted
 #include "framegen.h"
 #include "../../hle/input_core.h"
 #include "upscale_mv_spv.h"
@@ -261,6 +262,7 @@ struct State {
   VkCommandBuffer ecb = VK_NULL_HANDLE; float ejx = 0, ejy = 0;   // jitter the viewports of ecb were last emitted with
   // camera
   Mat cur{}, prev{}; bool haveCur = false, havePrev = false;
+  Mat proj{};                 // projection of `cur` (smooth camera)
   double eye[3] = {}, prevEye[3] = {}, fwd[3] = {}, prevFwd[3] = {};
   float nearZ = 0.1f, farZ = 1000.f, fovY = 0.6f;
   bool invDepth = true, infFar = true;   // from the projection (reversed infinite in the course; checked per frame)
@@ -417,6 +419,7 @@ void TakeCamera(const uint8_t* p) {
   U.cur = FromColumns(f);
   memcpy(f, p + kOffProj, 64);
   const Mat P = FromColumns(f);
+  U.proj = P;
   float e[3]; memcpy(e, p + kOffCamPos, 12);
   for (int i = 0; i < 3; i++) U.eye[i] = e[i];
   // forward: the w row of viewProjection is minus the view direction (scaled by 1 for a perspective P)
@@ -484,7 +487,7 @@ void UpscaleDeviceExtensions(Host* h, std::vector<const char*>& ext, void** chai
   snap_upscale::AddDeviceExtensions(h->instance, h->phys, ext, chainHead, f11, f12, f13);
 }
 void UpscaleDeviceCreated(Host* h) {
-  const bool fgAlone = !U.wanted && !snap_upscale::Wanted() && FgWanted();
+  const bool fgAlone = !U.wanted && !snap_upscale::Wanted() && (FgWanted() || ScWanted());   // [smoothcam] needs the same scene tracking
   if (!U.wanted && !snap_upscale::Wanted() && !fgAlone) return;
   U.h = h;
   snap_upscale::DeviceCtx c;
@@ -494,7 +497,7 @@ void UpscaleDeviceCreated(Host* h) {
   U.mvOk = MakeMvPipeline(h);
   if (!U.mvOk) Logf("motion-vector pipeline creation failed: zero motion");
   U.on = fgAlone ? U.mvOk : snap_upscale::ActiveBackend() != BK_OFF;
-  if (fgAlone) Logf("frame generation without an upscaler: scene depth and motion vectors are tracked for it (%s)", U.on ? "on" : "off");
+  if (fgAlone) Logf("%s without an upscaler: scene depth and camera are tracked for it (%s)", FgWanted() ? "frame generation" : "smooth camera", U.on ? "on" : "off");
 }
 void UpscaleDestroy(Host* h) {
   if (!U.h || U.h != h) return;
@@ -515,6 +518,16 @@ void UpscaleDestroy(Host* h) {
   if (U.out) DestroyTexture(U.out);
   for (TextureImpl*& t : U.cmpOut) if (t) { DestroyTexture(t); t = nullptr; }
   U = State{};
+}
+
+// [smoothcam] this frame's camera and depth for the in-between frames (nvn_smoothcam.cpp); recorded on cx.cb, depth read-only
+static void ScHand(ReplayCtx& cx, TextureImpl* disp, TextureImpl* z, uint32_t w, uint32_t h, bool cut) {
+  if (!ScWanted() || !U.haveCur) return;
+  ScScene s;
+  s.display = disp; s.depthView = z->View(nullptr, true); s.rw = w; s.rh = h; s.cut = cut;
+  memcpy(s.vp, U.cur.m, sizeof s.vp); memcpy(s.proj, U.proj.m, sizeof s.proj);
+  for (int i = 0; i < 3; i++) s.eye[i] = U.eye[i];
+  ScPrepare(cx, s);
 }
 
 static void Resolve(ReplayCtx& cx) {
@@ -540,8 +553,8 @@ static void Resolve(ReplayCtx& cx) {
     if (std::sqrt(d2) > 5.0 || dot < std::cos(30.0 * 3.14159265358979 / 180.0)) { cut = true; U.cuts++; }
   }
   if (!U.haveCur) U.noCam++;
-  // motion vectors
-  if (U.mvOk) {
+  // motion vectors (not needed when only the smooth camera uses the tracking)
+  if (U.mvOk && (!U.fgOnly || FgWanted())) {
     if (g_perfPassOn) PerfMark(U.h, cb, "upscale mv");
     MvBarrier(cb, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT);
     Mat R{};
@@ -567,7 +580,12 @@ static void Resolve(ReplayCtx& cx) {
     MvBarrier(cb, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
   }
   if (U.fgOnly) {   // [framegen] no upscale: hand the frame's depth, motion vectors and camera to the interpolator
-    if (U.mvOk && U.haveCur) {
+    ScHand(cx, disp, z, w, h, cut || U.reset);   // [smoothcam]
+    if (!FgWanted()) {   // smooth camera alone: this frame's tracking counts as evaluated for the gap check in UpscaleOnPresent
+      U.reset = false;
+      if (U.haveCur) U.lastEvalPresent = g_presentCount;
+    }
+    if (U.mvOk && U.haveCur && FgWanted()) {
       FgScene fs;
       fs.display = disp; fs.depth = z->image; fs.depthView = z->View(nullptr, true); fs.depthFormat = z->fi->vk;
       fs.mv = U.mvImg; fs.mvView = U.mvView; fs.rw = w; fs.rh = h; fs.jx = 0; fs.jy = 0;
@@ -637,6 +655,7 @@ static void Resolve(ReplayCtx& cx) {
   if (evOk) {
     U.evaluated = true; U.evals++;
     o->uploaded = true;
+    ScHand(cx, disp, z, w, h, e.reset);   // [smoothcam] the upscaled frame's camera and depth
     if (FgWanted() && U.haveCur) {   // [framegen] the upscaled frame's depth, vectors and camera (jitter as used by the scene draws)
       FgScene fs;
       fs.display = disp; fs.depth = z->image; fs.depthView = z->View(nullptr, true); fs.depthFormat = z->fi->vk;

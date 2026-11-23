@@ -71,6 +71,7 @@ Every player option and where it lives: the launcher page, the F1 menu tab and s
 | Frame rate target | `fps_target` | Frame rate | Graphics / Frame rate | Performance | `--set fps_target` | live |
 | Sharpening | `gfx_sharpen` | Picture | Graphics / Picture quality | Upscaler | `--set gfx_sharpen` | live |
 | Frame generation | `frame_generation` | Upscaling | Graphics / Picture quality | Upscaler | `--set frame_generation` | restart |
+| Smooth camera | `smooth_camera` | Frame rate | Graphics / Frame rate | Upscaler | `--set smooth_camera` | restart |
 | HUD scale | `hud_scale` | Display | Display / Window | Interface | `--set hud_scale` | live |
 | Skip course intro | `skip_course_intro` | Gameplay | Photo / Skips | Interface | `--set skip_course_intro` | restart |
 | Ultrawide | `gfx_ultrawide` | Display | Display / Window | Interface | `--set gfx_ultrawide` | live |

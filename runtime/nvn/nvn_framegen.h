@@ -66,4 +66,5 @@ uint32_t FgQueued();                                 // presents queued or in pr
 int64_t FgReleaseNs();                              // steady-clock ns of the last FgBeginPresent (the game frame's present time)
 double FgBaseDt();                                  // smoothed base frame time in seconds (0 until measured)
 int64_t FgNowNs();
+void FgPresenterShutdown();                          // stops the presenter thread (smooth camera uses it without frame generation; nvn_smoothcam.cpp)
 }  // namespace nvn

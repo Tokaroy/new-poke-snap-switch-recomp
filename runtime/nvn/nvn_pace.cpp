@@ -317,7 +317,9 @@ void UpdateDisplay(void* hwnd, int64_t now) {
 
 // Waits for the present two frames back (queue depth cap). Never past `deadline`; after 3 timeouts in a row (minimized, hidden
 // desktop, a driver that never signals) it only polls until a present completes again.
+std::atomic<bool> g_presenterOwned{false};
 void QueueCap(VkSwapchainKHR sc, int64_t deadline) {
+  if (g_presenterOwned.load(std::memory_order_relaxed)) return;
   if (!g_pwOn || !g_waitPresent || sc != g_sc || !g_last2) return;
   const int64_t t0 = NowNs();
   const uint64_t timeout = g_pwSuspended ? 0 : (uint64_t)std::max<int64_t>(0, deadline - t0);
@@ -333,6 +335,7 @@ void QueueCap(VkSwapchainKHR sc, int64_t deadline) {
 
 }  // namespace
 
+void SetPresenterOwned(bool on) { g_presenterOwned.store(on, std::memory_order_relaxed); }
 bool Legacy() { return kLegacy; }
 bool LogOn() { return kLogPath && *kLogPath; }
 // Refresh rate of the window's monitor (0 = unknown), for the frame generation rate gate.

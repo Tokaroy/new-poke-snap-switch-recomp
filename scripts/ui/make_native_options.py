@@ -286,6 +286,8 @@ TABS = [
             'Contrast-adaptive sharpening after anti-aliasing. An upscaler turns it off unless set.' + R),
         row('Frame generation', 'p', 'opt', 'frame_generation', 'default', (('default', 'Off'), ('1', 'On')),
             'Adds computed frames for smoother motion (AMD FSR). Turns off below 50 fps.' + R),
+        row('Smooth camera', 'c', 'opt', 'smooth_camera', 'default', (('default', 'Off'), ('1', 'On')),
+            'On a faster screen the camera pans on every refresh. Photos and scores unchanged.' + R),
     ]),
     # Tab 14: HUD scale is live (runtime/nvn/nvn_hud.cpp snap_hud_scale_set); Skip course intro is read at start (host/mods/introskip.cpp)
     ('Interface', 'HUD size and course intro.', [

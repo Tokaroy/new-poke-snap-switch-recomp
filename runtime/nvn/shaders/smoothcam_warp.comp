@@ -1,0 +1,49 @@
+#version 450
+// SPDX-License-Identifier: MIT
+// Smooth camera (runtime/nvn/nvn_smoothcam.cpp, project code, ours): one in-between frame for a camera between the last two
+// 60 Hz camera states. The finished 3D scene of the newest game frame (HUD-less copy, taken before the game drew its interface)
+// is re-projected to the in-between camera with that frame's depth; interface pixels come from the finished frame unchanged.
+//
+// For an output pixel x (window position of the in-between camera A) we need the source position s in the game frame N with
+// f(s) = x, where f(s) = proj_A(unproj_N(s, depth_N(s))) is one 4x4 matrix F = VP_A * inverse(VP_N) applied to (ndc_s, depth, 1)
+// (made on the CPU in double precision). A few fixed-point steps s += x - f(s) solve it; a pure turn is solved by the first step
+// (and the sky, depth 0 in the reversed infinite projection, is a pure turn at any camera move).
+// Window y grows downwards from ndc y = +1 (the NVN layer's UPPER_LEFT origin, as in upscale_mv.comp). Depth is 0..1 (mode.x = 1:
+// -1..1). Images hold the stored (gamma) bytes through UNORM views, so nothing is converted.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform sampler2D scene_tex;   // HUD-less scene of frame N, display size, linear filter, clamp to edge
+layout(binding = 1) uniform sampler2D pres_tex;    // finished frame N (scene + interface), display size
+layout(binding = 2) uniform sampler2D depth_tex;   // frame N depth (R32F), render size
+layout(binding = 3, rgba8) uniform writeonly image2D out_img;
+layout(push_constant) uniform P {
+    vec4 r0, r1, r2, r3;   // rows of F (row-major)
+    vec2 size;             // output (display) size
+    vec2 dsize;            // depth size
+    vec4 mode;             // x: 1 for -1..1 depth; y: interface threshold (0..1 units)
+} pc;
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= int(pc.size.x) || p.y >= int(pc.size.y)) return;
+    vec4 pr = texelFetch(pres_tex, p, 0);
+    vec4 sc = texelFetch(scene_tex, p, 0);
+    vec3 dif = abs(pr.rgb - sc.rgb);
+    if (max(dif.r, max(dif.g, dif.b)) > pc.mode.y) { imageStore(out_img, p, pr); return; }   // interface (or anything drawn after the scene)
+    vec2 uv = (vec2(p) + 0.5) / pc.size;
+    vec2 xn = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+    vec2 s = xn;
+    for (int i = 0; i < 4; i++) {
+        vec2 su = vec2(s.x * 0.5 + 0.5, 0.5 - s.y * 0.5);
+        ivec2 dp = clamp(ivec2(su * pc.dsize), ivec2(0), ivec2(pc.dsize) - 1);
+        float d = texelFetch(depth_tex, dp, 0).r;
+        float z = pc.mode.x > 0.5 ? d * 2.0 - 1.0 : d;
+        vec4 n = vec4(s, z, 1.0);
+        vec4 c = vec4(dot(pc.r0, n), dot(pc.r1, n), dot(pc.r2, n), dot(pc.r3, n));
+        if (c.w <= 1e-6) break;
+        vec2 step = xn - c.xy / c.w;
+        s += clamp(step, vec2(-0.5), vec2(0.5));
+        if (dot(step, step) < 1e-10) break;
+    }
+    vec2 su = vec2(s.x * 0.5 + 0.5, 0.5 - s.y * 0.5);
+    imageStore(out_img, p, textureLod(scene_tex, su, 0.0));
+}

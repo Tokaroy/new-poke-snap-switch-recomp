@@ -3284,6 +3284,7 @@ static void test_guest_tls_image() {
 #include "crash_resume_tests.h"
 #include "cheats_tests.h"
 #include "readonly_tests.h"
+#include "smoothcam_tests.h"
 
 // HDR photo copies (runtime/nvn/hdrphoto_core.h): the SDR-to-PQ conversion and the PNG chunks, no GPU.
 static void test_hdrphoto() {
@@ -3349,6 +3350,8 @@ int main(int argc, char** argv) {
   struct T { const char* name; void (*fn)(); } tests[] = {
       {"access.rows", test_access},
       {"hdrphoto.core", test_hdrphoto},
+      {"smoothcam.core", smoothcam_test::test_core},
+      {"smoothcam.schedule", smoothcam_test::test_schedule},
       {"tls.main_image", test_guest_tls_image},
       {"cheats.wiring", test_cheats},
       {"fs.rom", test_fs_rom},

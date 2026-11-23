@@ -624,6 +624,13 @@ Off by default. It never counts toward the real frame rate figures.
 - Test aids: `SNAP_FRAMEGEN_LOG=1` (base, presented and generated fps once a second), `SNAP_FRAMEGEN_TRACE=<csv>` (one row per present), `SNAP_FRAMEGEN_FORCE=1` (skip the rate gate), `SNAP_FRAMEGEN_PANEL=<hz>`, `SNAP_FRAMEGEN_PAUSE=1` (live off switch for A/B), `SNAP_FRAMEGEN_FAIL=init|prepare|generate|present|acquire` (forced fallback; `acquire` fails the acquires at presents 600, 1200 and 1800), `SNAP_FRAMEGEN_THREAD=0` (old present path that sleeps on the game thread). `NVN_FRAME_DUMP_GEN=1` with `NVN_FRAME_DUMP_AT=<presents>` dumps each point as 6 consecutive images, generated (`g` prefix) and real (`f`).
 - With it on, the swapchain gets two more images, and the game thread never holds more acquired images than the surface allows (`FgWaitQueued`). If an acquire still returns `VK_NOT_READY` or `VK_TIMEOUT`, the swapchain is made again at the next present; the third time turns frame generation off for the session (`[framegen] acquire returned ...` lines).
 
+## Smooth camera (2026-11-23; `runtime\nvn\nvn_smoothcam.{h,cpp}`, `runtime\nvn\smoothcam_core.h`, `docs\smooth-camera.md`)
+
+Off by default. Display only: the game still simulates and renders at its own rate, and timing, photos and scores are unchanged.
+
+- `SNAP_SMOOTH_CAMERA=1` (settings key `smooth_camera`, `--smooth-camera on|off`, restart): on a display faster than the game, each game frame is presented 2 to 3 times (144 Hz at 60 fps) on the display clock, one game frame late. Each present re-projects the newest game picture with its depth to a camera between the last two game cameras; HUD and menu pixels come from the finished frame unchanged. The presents go through the frame generation presenter thread, and the swapchain gets 5 more images. Gate: present rate at least 1.5 times the game rate. Off with frame generation and with HDR output.
+- Test aids: `SNAP_SMOOTH_CAMERA_HZ=<hz>` (present rate on hidden desktops), `SNAP_SMOOTH_CAMERA_PAUSE=1` (gate shut, still traced), `SNAP_SMOOTH_CAMERA_LOG=1` (rates and counters once a second), `SNAP_SMOOTH_CAMERA_TRACE=<csv>` (one row per present with the shown camera). `python -I scripts\smoothcam_trace.py <csv> --hz 144` reports how even the camera steps are while turning.
+
 ## F1 menu look (2026-11-15, `runtime/ui/ui_skin.cpp`)
 
 - The F1 menu is drawn in the game's Settings style (see `analysis/ui/f1_skin.md`). Scale follows the window height (`max(0.75, height / 1080)` times the Menu size row). The last page used is kept in settings key `menu_tab`.

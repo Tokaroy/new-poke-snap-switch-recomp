@@ -986,6 +986,8 @@ void build_pages() {
     p.items.push_back(choice("Frame rate target", "fps_target", S_CFG, "default",
                              {{"default", "60 (the game's own)"}, {"72", "72"}, {"90", "90"}, {"120", "120"}, {"144", "144"}, {"165", "165"}, {"240", "240"}},
                              "How fast the game runs. 90 to 240 run the game itself faster and need a fast processor. Menus and dialogue keep their original speed."));
+    p.items.push_back(choice("Smooth camera", "smooth_camera", S_CFG, "default", {{"default", "Off"}, {"1", "On"}},
+                             "On a screen faster than the game, the camera turns and pans on every refresh. Adds about one frame of delay. Photos and scores are unchanged."));
     p.items.push_back(choice("Frame rate limit", "frame_cap", S_WIN, "0",
                              {{"0", "Off (the game's pacing)"}, {"30", "30"}, {"45", "45"}, {"60", "60"}, {"75", "75"}, {"90", "90"}, {"120", "120"}, {"144", "144"}, {"165", "165"}, {"240", "240"}},
                              "Stops the game from drawing faster than this. Off keeps the game's own pacing.", E_INT));

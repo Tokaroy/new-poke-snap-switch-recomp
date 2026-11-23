@@ -30,6 +30,7 @@ SnapRecomp.exe --play [options]     start the game without the launcher window
 | `--gpl auto\|on\|off` | Vulkan graphics pipeline libraries. A pipeline the game needs before its compile finished is fast-linked from pre-built parts and replaced by the full compile in the background. Auto is off on every GPU for now (list and evidence in `runtime/nvn/nvn_quirks.cpp`): measured on NVIDIA it gave no fewer hitches and doubled the compile work. On is for testing. Settings key `gfx_gpl`, variable `SNAP_GPL`. This start only. |
 | `--distant-scenery off\|high\|ultra` | Farther model detail and draw distance, display only (Original is off). High is 3x detail distance and 2x draw distance, Ultra 8x and 4x. Photo scoring keeps the game's own picks. This start only. See [draw-distance.md](draw-distance.md). |
 | `--aniso off\|2\|4\|8\|16` | Anisotropic texture filtering. Off is the game's own 1x. This start only. |
+| `--smooth-camera on\|off` | Smooth camera: on a screen faster than the game, the camera turns and pans on every refresh (in-between camera frames re-projected from the newest game frame). Display only: timing, photos and scores are unchanged. Settings key `smooth_camera`, variable `SNAP_SMOOTH_CAMERA`. docs/smooth-camera.md. This start only. |
 | `--hdr-photos on\|off` | Also write `<name>.hdr.png` (16-bit PNG, PQ, BT.2020) beside each HD photo copy and screenshot. Needs HDR output (`--set gfx_hdr=hdr10` or `scrgb`); with it off nothing is written. Highlights are reconstructed from the normal picture, not captured from the scene. Settings key `hdr_photos`, variable `SNAP_HDR_PHOTOS`. docs/hdr-photos.md. This start only. |
 | `--update-check on\|off` | Check for updates when the launcher starts. This start only; config.json is not changed. |
 | `--update-channel stable\|testing` | Which update channel the check follows. This start only. |
@@ -66,7 +67,7 @@ SnapRecomp.exe --play --data-dir D:\SnapData
 
 | Group | Keys |
 | --- | --- |
-| Frame rate | `fps_target`, `vsync`, `frame_generation`, `gfx_full_rate_anim`, `fps_overlay`, `fps_overlay_corner` |
+| Frame rate | `fps_target`, `vsync`, `frame_generation`, `smooth_camera`, `gfx_full_rate_anim`, `fps_overlay`, `fps_overlay_corner` |
 | Resolution and upscaling | `gfx_render_scale`, `gfx_upscaler`, `gfx_upscale_quality`, `gfx_aa`, `gfx_smaa_quality`, `gfx_sharpen`, `gfx_ultrawide` |
 | Detail | `gfx_aniso`, `gfx_lod_bias`, `gfx_draw_dist`, `gfx_lod_dist`, `gfx_lod_force0`, `gfx_pom`, `foliage_aa`, `leaf_translucency`, `soft_particles`, `specular_aa` |
 | Lighting and shadows | `gfx_lighting`, `gfx_bounce`, `gfx_shadow_res`, `gfx_shadow_dist`, `contact_shadows`, `ssao_quality`, `gfx_ssao_samples`, `gfx_ssao_hbao` |

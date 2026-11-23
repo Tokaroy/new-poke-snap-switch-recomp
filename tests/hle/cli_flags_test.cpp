@@ -59,6 +59,14 @@ int main() {
     CHECK(!snap_cli::parse({"--hdr-photos"}).error.empty());
     CHECK(std::strstr(snap_cli::help_text(), "--hdr-photos") != nullptr);
   }
+  {   // --smooth-camera on|off -> SNAP_SMOOTH_CAMERA (runtime/nvn/nvn_smoothcam.cpp)
+    auto p = snap_cli::parse({"--smooth-camera", "on"});
+    CHECK(p.error.empty() && p.rest.empty() && env_of(p, "SNAP_SMOOTH_CAMERA") == "1");
+    CHECK(env_of(snap_cli::parse({"--smooth-camera", "off"}), "SNAP_SMOOTH_CAMERA") == "0");
+    CHECK(!snap_cli::parse({"--smooth-camera", "fast"}).error.empty());
+    CHECK(!snap_cli::parse({"--smooth-camera"}).error.empty());
+    CHECK(std::strstr(snap_cli::help_text(), "--smooth-camera") != nullptr);
+  }
   {   // --set: the value may hold '=' and may be empty; a missing key or '=' is an error
     auto p = snap_cli::parse({"--set", "look=warm=1", "--set", "photo_dir="});
     CHECK(p.error.empty() && p.sets.size() == 2);

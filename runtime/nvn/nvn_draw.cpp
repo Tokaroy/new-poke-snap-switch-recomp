@@ -41,6 +41,7 @@
 #include "nvn_state.h"
 #include "upscale/upscale_nvn.h"   // [upscale]
 #include "nvn_framegen.h"          // [framegen]
+#include "nvn_smoothcam.h"         // [smoothcam]
 #include "nvn_freecam.h"           // free camera clean shot
 #include "nvn_shot.h"              // screenshot key (F12)
 #include "nvn_pom.h"               // parallax occlusion mapping
@@ -1657,6 +1658,7 @@ void DoDraw(ReplayCtx& cx, const Cmd& c0) {
   FxAfterDraw(cx, p->st[1].key);   // [fx] post-tonemap slot (nvn_fx.cpp)
   AaAfterDraw(cx, p->st[1].key);   // SNAP_AA=smaa / SNAP_SHARPEN: in-place pass after the game's tonemap draw (nvn_aa.cpp)
   FgAfterDraw(cx, p->st[1].key);   // [framegen] HUD-less copy of the finished 3D scene (nvn_framegen.cpp)
+  ScAfterDraw(cx, p->st[1].key);   // [smoothcam] the same copy for the in-between camera frames (nvn_smoothcam.cpp)
   FcShotAfterDraw(cx, p->st[1].key);   // free camera clean shot (nvn_freecam.cpp)
   ShotAfterDraw(cx, p->st[1].key);   // screenshot key without the HUD (nvn_shot.cpp)
   if (thumbDraw) {
