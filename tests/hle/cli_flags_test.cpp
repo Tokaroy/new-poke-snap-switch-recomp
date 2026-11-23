@@ -94,6 +94,12 @@ int main() {
     { auto g = snap_cli::parse({"--distant-scenery", "original"}); CHECK(g.error.empty() && g.env.size() == 1 && g.env[0].second == "off"); }
     CHECK(!snap_cli::parse({"--distant-scenery", "huge"}).error.empty());
     CHECK(!snap_cli::parse({"--distant-scenery"}).error.empty());
+    { auto w = snap_cli::parse({"--shader-workers", "6"}); CHECK(w.error.empty() && env_of(w, "SNAP_XLATE_WORKERS") == "6"); }
+    { auto w = snap_cli::parse({"--shader-workers", "auto"}); CHECK(w.error.empty() && env_of(w, "SNAP_XLATE_WORKERS") == "0"); }
+    { auto w = snap_cli::parse({"--shader-workers", "1"}); CHECK(w.error.empty() && env_of(w, "SNAP_XLATE_WORKERS") == "1"); }
+    CHECK(!snap_cli::parse({"--shader-workers", "many"}).error.empty());
+    CHECK(!snap_cli::parse({"--shader-workers", "65"}).error.empty());
+    CHECK(!snap_cli::parse({"--shader-workers"}).error.empty());
     CHECK(!snap_cli::parse({"--gpl"}).error.empty());
     { auto r = snap_cli::parse({"--play", "--resume", "--crash-prompt", "off"}); CHECK(r.error.empty() && r.rest.empty() && r.play);
       CHECK(env_of(r, "SNAP_CRASH_RESUME") == "resume" && env_of(r, "SNAP_CRASH_PROMPT") == "0"); }

@@ -34,9 +34,35 @@ course intro at 60 fps. The comparison that matters is wall time minus presents/
 Launcher cost on the rival side (launcher start to game process start, 3 runs): 1.63, 0.45, 0.58 s; its Play step prepares
 the "observed" shader variants first (72 variants, 18 ms in these runs).
 
+## First-ever launch after the change (worker fastshaders, 2026-11-23)
+
+Programs whose shaders are not in the translated-shader cache are now built in the background by several translator processes, and a
+draw that needs one waits for it (`docs/shader-prebuild.md` "First launch"). Route `boottime_first`, empty translated-shader cache and
+empty pipeline cache, no pipeline seed (as on a user's first start), seconds on the log clock to `ui=title`, runs interleaved in the same
+half hour while another worker's game shared the PC (CPU about 77% busy before these runs started):
+
+| Build | Translator | Runs | Median |
+|---|---|---|---|
+| `origin/main` | dev checkout's `tools\shader_harness`, built 2026-11-16, before `--nvn-serve` existed: one process per shader | 429.0 | 429.0 |
+| `origin/main` | harness built from today's source (`--nvn-serve`, what a release ships), one process, inline | 27.1, 28.8, 35.1 | 28.8 |
+| `fastshaders`, 8 workers | same harness | 9.9, 14.3, 44.4 | 14.3 |
+| `fastshaders`, warm translated cache (pipeline cache still empty) | not used | 11.9, 15.8, 17.8 | 15.8 |
+
+Single runs before the series: `fastshaders` 9.0 s (8 workers), 12.4 s (16 workers); `fastshaders` with the old one-process-per-shader
+harness 17.9 s (before binds moved queued programs forward). The 44.4 s run had the whole process starved for 10 s (the 1 s CPU sampler
+thread ran 9.9 s late), so the median is the fair figure. With a cold cache the first launch is now as fast as a warm one: the loader no
+longer builds programs itself, the workers do it in parallel.
+
+One correction to the first-ever table above: the 357.8 s first-ever figure was made with the stale dev harness (no serve mode, so a process start
+for every shader, about 240 ms each). A release harness is built from the current source and has serve mode, so a release's first launch
+was about 29 s on this PC before the change, not 6 minutes. The dev checkout's `tools\shader_harness` should be rebuilt
+(`dotnet build scripts\shader_harness\ShaderHarness.csproj -c Release`) so dev runs match.
+
+Florio check, same build: a ride from an empty translated-shader cache reached `evaluation:End` (run `0-20261123_073834`) and the cache it wrote matches a cache built inline before the change: 1,647 entries, 4,941 files byte-identical, none different or missing. A warm ride (`0-20261123_074354`) also reached the end; the scores differ (Dodrio 2,469 cold, 2,438 warm) because the live ride takes a different photo each run (see the frames), so same-photo score equality is not proven; the checkpoint score method reloads in the same process, where the cache is already warm.
+
 ## Where we are slower
 
-1. First-ever launch: 357.8 s to the title against 6.7 s. Ours creates every shader program at boot (about 6,200 programs, about 1,650
+1. First-ever launch (fixed 2026-11-23, see the section above): 357.8 s to the title against 6.7 s. Ours creates every shader program at boot (about 6,200 programs, about 1,650
    distinct shaders) and translates each one inline when the guest calls `nvnProgramSetShaders`, one after another on the loader
    threads: the log counted 1,600+ shaders translated ("first-run shader translation" lines) at about 3.8 shaders/s on a loaded PC.
    `builder/README.md` says the first launch takes "several minutes". The rival translates only what a draw needs, on 2 background

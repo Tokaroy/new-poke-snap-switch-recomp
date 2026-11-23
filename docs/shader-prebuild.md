@@ -67,6 +67,38 @@ The sweep plays on a scratch profile that copies the player's own graphics setti
 - A pipeline depends on state that is only known at draw time, so it cannot be listed ahead of time. The routes cover what a normal ride draws. A rare path (an unusual photo subject, a mod that adds materials) can still compile once on first use; the pipeline service handles that the way it always has.
 - The sweep needs the game files and a working GPU driver. It stops with `failed` in `prepare.json` if a course exits with an error or runs past the time limit.
 
+## First launch: shaders translated in the background
+
+The game creates all of its shader programs while it boots (about 6,200 programs from about 1,650 distinct shaders). A program whose shader
+is not in the translated-shader cache (`nvn_cache`, in `portable_data\Local\SnapRecomp\` beside a portable exe) needs the translator
+(`shader_harness`). That used to happen inline, one shader after another, on the thread that loads the game, so the first launch waited for
+all of them before the title screen.
+
+Now (`runtime/nvn/nvn_shader.cpp`, `ProgramJob`):
+
+1. A program whose shaders are all in the cache is built at once, as before.
+2. Any other program is queued and the game carries on. Worker threads, each with its own translator process (`xlate::Pool` in
+   `runtime/nvn/nvn_xlate_server.h`), build the queue in order.
+3. When the game records a bind of a queued program, that program moves to the front of the queue.
+4. Nothing is drawn without its shader. Every use of a program (the draw replay, the persistent draw state, destroying or re-creating it)
+   first waits for it, and a program still queued at that point is built on the waiting thread at once. Draws are never skipped for a
+   shader, so a photo cannot catch a missing one.
+5. The translation and the files it writes are exactly those of the inline path: same translator, same request, same key, same publish
+   by rename. Only the order and the number of processes change.
+
+`--shader-workers <n|auto>` (variable `SNAP_XLATE_WORKERS`) sets the number of workers. `auto` (default) is half the logical processors,
+at most 8. `1` is the old behavior: one process and inline translation. The log prints `background shader build: done, N programs built
+by W workers in S s` each time the queue empties.
+
+Measured on the development PC (32 logical processors, other test runs sharing it), route `boottime_first`, empty translated-shader and
+pipeline caches, seconds from start to the title (median of 3, interleaved): one translator inline 28.8 s, 8 background workers 14.3 s,
+a warm translated-shader cache 15.8 s (details in `docs/boot-time-vs-rival.md` "First-ever launch after the change"). The pipeline cache is
+not a factor before the title: 37 pipelines, about 0.1 s of compile in total.
+
+Why not translate during the build instead: the release builder has no Oodle decoder, so it cannot read the shaders out of the game's
+archives without starting the game, and the game boot now does the whole set in a few seconds anyway. The builder's smoke run (the
+first boot, to the title) gets faster by the same amount.
+
 ## Pipeline libraries (`gfx_gpl`, experimental, off)
 
 Setting `gfx_gpl` = `auto` | `on` | `off` (env `SNAP_GPL`, flag `--gpl`, F1 Graphics "Pipeline libraries"; restart). On, the device enables `VK_EXT_graphics_pipeline_library` and `pipelineCreationCacheControl`. A pipeline the game waits for (a hot job, or a must-have draw on the replay thread) is first asked from the driver with `FAIL_ON_PIPELINE_COMPILE_REQUIRED`; on a miss it is fast-linked from four libraries (vertex input, pre-raster, fragment shader, fragment output; each built once per distinct input and shared) and the whole pipeline is compiled on an idle worker and swapped in (the fast-linked one is destroyed 10 s later). Any failure builds the whole pipeline as before. The `VkPipelineCache` blob and `pipeline_keys.bin` are unchanged (libraries are created without the cache, so they never reach the blob); `kFormatVersion` stays 1. Code: `runtime/nvn/nvn_vk.cpp` (device setup, `[gpl]` log line), `nvn_draw.cpp` (`CreateGraphicsPipelineLatency`, library cache), `nvn_pipeline.cpp` (`QueueOptimize`, `RunOpt`).

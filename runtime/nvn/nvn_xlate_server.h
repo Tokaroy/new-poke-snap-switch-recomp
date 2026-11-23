@@ -20,9 +20,11 @@
 #include <cstdio>
 #include <condition_variable>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace nvn::xlate {
 
@@ -171,6 +173,51 @@ class Server {
   uint64_t served_ = 0, lastUseMs_ = 0;
   int failures_ = 0;
   std::atomic<int> starts_{0};
+};
+
+// Up to `max` Servers for one command line, for callers on several threads (the background shader build, nvn_shader.cpp ProgramJob): a caller
+// borrows an idle process, starts a new one while under the limit, or waits until one is handed back. The most recently returned process is
+// lent first, so a short burst keeps reusing warm processes. Never shrinks; each Server still closes its own process when idle.
+class Pool {
+ public:
+  Pool(std::string cmdline, int max) : cmd_(std::move(cmdline)), max_(std::max(1, max)) {}
+  Pool(const Pool&) = delete;
+  Pool& operator=(const Pool&) = delete;
+
+  Server* Acquire() {
+    std::unique_lock<std::mutex> lk(mu_);
+    for (;;) {
+      if (!idle_.empty()) { Server* s = idle_.back(); idle_.pop_back(); return s; }
+      if ((int)all_.size() < max_) { all_.push_back(std::make_unique<Server>(cmd_)); return all_.back().get(); }
+      cv_.wait(lk);
+    }
+  }
+  void Release(Server* s) {
+    { std::lock_guard<std::mutex> lk(mu_); idle_.push_back(s); }
+    cv_.notify_one();
+  }
+  // Translate on a borrowed process (Server::Translate's results).
+  Server::Result Translate(const std::string& bin, const std::string& spv, const std::string& json, int stage, uint32_t constOff, uint32_t codeOff, std::string* msg = nullptr) {
+    Server* s = Acquire();
+    const Server::Result r = s->Translate(bin, spv, json, stage, constOff, codeOff, msg);
+    Release(s);
+    return r;
+  }
+  int servers() const { std::lock_guard<std::mutex> lk(mu_); return (int)all_.size(); }
+  int starts() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    int n = 0;
+    for (auto& s : all_) n += s->starts();
+    return n;
+  }
+
+ private:
+  const std::string cmd_;
+  const int max_;
+  mutable std::mutex mu_;
+  std::condition_variable cv_;
+  std::vector<std::unique_ptr<Server>> all_;
+  std::vector<Server*> idle_;
 };
 
 }  // namespace nvn::xlate

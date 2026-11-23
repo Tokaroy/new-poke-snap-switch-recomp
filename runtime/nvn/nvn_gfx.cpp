@@ -457,7 +457,7 @@ void CommandBufferBindVertexStreamState(void* cb, int n, const void* states) {
   }
 }
 void CommandBufferBindProgram(void* cb, const void* prog, int stages) {
-  if (Cmd* c = Rec(cb, Op::BindProgram)) { c->p[0] = Impl<ProgramImpl>(prog, MAGIC_PROGRAM); c->i[0] = stages; }
+  if (Cmd* c = Rec(cb, Op::BindProgram)) { c->p[0] = Impl<ProgramImpl>(prog, MAGIC_PROGRAM); c->i[0] = stages; ProgramHint(static_cast<ProgramImpl*>(c->p[0])); }
 }
 struct BufferRange { uint64_t addr, size; };   // NVNbufferRange {address, size}
 void CommandBufferBindVertexBuffers(void* cb, int first, int n, const BufferRange* r) {

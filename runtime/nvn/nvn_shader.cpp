@@ -20,6 +20,8 @@
 #include <atomic>
 #include <cstring>
 #include <fstream>
+#include <condition_variable>
+#include <deque>
 #include <map>
 #include <memory>
 #include <sstream>
@@ -188,6 +190,32 @@ bool WriteFile(const std::string& path, const void* d, size_t n) {
   return f.good();
 }
 
+// Translator processes that may run at once (SNAP_XLATE_WORKERS, --shader-workers). 1 = the old way: one process, and a program whose shader
+// is not in the cache is translated on the thread that creates it. More than 1: such programs are built in the background by this many
+// workers (ProgramSetShadersImpl), each with its own process. auto (default) = half the logical processors, at most 8.
+// Measured 2026-11-23: a warm --nvn-serve process takes 6 ms a shader alone and 7 ms (median) while the game boots; 1,647 of them one after
+// another held the first launch to the title at 25.6 s against 9.0 s with 8 workers (docs/boot-time-vs-rival.md).
+int XlateWorkers() {
+  static const int n = [] {
+    const char* e = getenv("SNAP_XLATE_WORKERS");
+    const int v = (e && *e) ? atoi(e) : 0;   // "auto", empty or unreadable = automatic
+    if (v > 0) return std::min(v, 64);
+    const int cores = (int)GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+    return std::max(1, std::min(cores / 2, 8));
+  }();
+  return n;
+}
+
+// Never destroyed: background workers may still be inside a request at process exit (the job object ends the processes).
+xlate::Pool& ServerPoolFor(const std::string& launch) {
+  static std::mutex& mu = *new std::mutex;
+  static auto& pools = *new std::map<std::string, std::unique_ptr<xlate::Pool>>;
+  std::lock_guard<std::mutex> lk(mu);
+  auto& p = pools[launch];
+  if (!p) p = std::make_unique<xlate::Pool>(launch + " --nvn-serve", XlateWorkers());
+  return *p;
+}
+
 // Run the dotnet shader harness (BelowNormal priority, 10 minute cap). Returns true when the manifest exists.
 bool RunHarness(const std::string& bin, const std::string& spv, const std::string& json, int stage, uint32_t constOff,
                 uint32_t codeOff) {
@@ -216,17 +244,10 @@ bool RunHarness(const std::string& bin, const std::string& spv, const std::strin
   // the one-process-per-shader path; a harness without --nvn-serve, or any trouble with the process, falls through to it as well.
   static const bool serveOn = [] { const char* e = getenv("SNAP_XLATE_SERVE"); return !(e && *e == '0'); }();
   if (serveOn) {
-    static std::mutex serversMu;
-    static std::map<std::string, std::unique_ptr<xlate::Server>> servers;   // by launch line: a SNAP_XLATE_REV switch never reuses another revision's process
-    xlate::Server* srv;
-    {
-      std::lock_guard<std::mutex> lk(serversMu);
-      auto& slot = servers[launch];
-      if (!slot) slot = std::make_unique<xlate::Server>(launch + " --nvn-serve");
-      srv = slot.get();
-    }
+    // Up to XlateWorkers() processes per launch line (a SNAP_XLATE_REV switch never reuses another revision's process); a caller borrows an
+    // idle one, starts a new one while under the limit, or waits for one. One process answers one request at a time, as before.
     std::string msg;
-    switch (srv->Translate(bin, spv, json, stage, constOff, codeOff, &msg)) {
+    switch (ServerPoolFor(launch).Translate(bin, spv, json, stage, constOff, codeOff, &msg)) {
       case xlate::Server::Result::Ok: return GetFileAttributesA(json.c_str()) != INVALID_FILE_ATTRIBUTES;
       case xlate::Server::Result::Failed: LogError("shader harness failed: %s", msg.c_str()); return false;
       case xlate::Server::Result::Unavailable: break;
@@ -376,7 +397,17 @@ void XMemoPrefetch(const std::string& dir) {
   }).detach();
 }
 
-bool BuildStage(Host* h, const ShaderData& sd, StageProg* out) {
+// One stage of a ProgramSetShaders call, read out of guest memory at the call: the control section is only valid during the call, and a
+// program built in the background (ProgramSetShadersImpl) works on these copies. The bytes are the ones the old inline path read.
+constexpr size_t kCtlCopy = 0x758;   // BuildStage reads control words up to 0x750..0x753
+struct StageIn {
+  std::vector<uint8_t> ctl, data;
+  uint32_t constOff = 0, dataSize = 0, codeOff = 0;
+  int stage = 5;
+  std::string key;
+};
+
+bool PrepStage(Host* h, const ShaderData& sd, StageIn* in) {
   static std::once_flag prefetchOnce;
   std::call_once(prefetchOnce, [&] { XMemoPrefetch(h->cacheDir); });
   PoolImpl* pool = nullptr; uint64_t off = 0;
@@ -408,9 +439,27 @@ bool BuildStage(Host* h, const ShaderData& sd, StageProg* out) {
     }
   }
   // The key hashes the data section, stage and codeOff; constOff is recorded next to the entry and only changes the key on a mismatch (nvn_xcache.h).
-  const std::string key = xcache::ResolveKeyWith([&](const std::string& extra) { return Sha256Hex(data, dataSize, extra); }, TranslatorSaltStr(), stage, codeOff, constOff,
-                                                 [&](const std::string& k, uint32_t* have) { return XMemoCo(h->cacheDir, k, have); });
-  if (key.empty()) return false;
+  in->key = xcache::ResolveKeyWith([&](const std::string& extra) { return Sha256Hex(data, dataSize, extra); }, TranslatorSaltStr(), stage, codeOff, constOff,
+                                   [&](const std::string& k, uint32_t* have) { return XMemoCo(h->cacheDir, k, have); });
+  if (in->key.empty()) return false;
+  in->ctl.assign(static_cast<const uint8_t*>(sd.control), static_cast<const uint8_t*>(sd.control) + kCtlCopy);
+  in->data.assign(data, data + dataSize);
+  in->constOff = constOff; in->dataSize = dataSize; in->codeOff = codeOff; in->stage = stage;
+  return true;
+}
+
+// The stage's translation is already in the cache (in memory or on disk), so building it needs no translator.
+bool StageCached(Host* h, const StageIn& in) {
+  if (XMemoFind(in.key)) return true;
+  return GetFileAttributesA((h->cacheDir + "\\" + in.key + ".json").c_str()) != INVALID_FILE_ATTRIBUTES;
+}
+
+bool BuildStage(Host* h, const StageIn& in, StageProg* out) {
+  const uint8_t* data = in.data.data();
+  const void* ctl = in.ctl.data();
+  const uint32_t constOff = in.constOff, dataSize = in.dataSize, codeOff = in.codeOff;
+  const int stage = in.stage;
+  const std::string& key = in.key;
   bool coKnown = false;
   if (XMemoCapBytes()) { std::lock_guard<std::mutex> l(g_xmMu); auto it = g_xmCo.find(key); coKnown = it != g_xmCo.end() && it->second == constOff; }
   const std::string base = h->cacheDir + "\\" + key;
@@ -455,7 +504,7 @@ bool BuildStage(Host* h, const ShaderData& sd, StageProg* out) {
   StageProg sp;
   sp.valid = true; sp.stage = stage; snprintf(sp.key, sizeof sp.key, "%.12s", key.c_str()); sp.fragOutputMap = m.i("fragmentOutputMap");
   snprintf(sp.fkey, sizeof sp.fkey, "%s", key.c_str());
-  PipelineRegisterStageKey(sp.key, sp.fkey, stage == 1 && (Rd32(sd.control, 0x718) & 1));
+  PipelineRegisterStageKey(sp.key, sp.fkey, stage == 1 && (Rd32(ctl, 0x718) & 1));
   if (auto* a = m.get("cbuffers")) for (auto& c : a->arr) sp.cb.push_back({c.i("slot"), c.i("set"), c.i("binding")});
   if (auto* a = m.get("sbuffers"))
     for (auto& c : a->arr) sp.sb.push_back({c.i("slot"), c.i("set"), c.i("binding"), c.i("sbCbSlot"), c.i("sbCbOffset"), c.i("write")});
@@ -469,11 +518,11 @@ bool BuildStage(Host* h, const ShaderData& sd, StageProg* out) {
   std::vector<uint32_t> words(spv.size() / 4);
   memcpy(words.data(), spv.data(), words.size() * 4);
   if (stage == 5) {   // workgroup size: u32 x, y, z at control+0x748 (checked on the three resource.drp compute programs: 1x1x1, 16x16x1, 16x16x1)
-    const uint32_t lx = Rd32(sd.control, 0x748), ly = Rd32(sd.control, 0x74C), lz = Rd32(sd.control, 0x750);
+    const uint32_t lx = Rd32(ctl, 0x748), ly = Rd32(ctl, 0x74C), lz = Rd32(ctl, 0x750);
     if (lx && ly && lz && lx <= 1024 && ly <= 1024 && lz <= 64 && lx * ly * lz <= 1024) { SpvSetLocalSize(words, lx, ly, lz); Log("compute shader %s: local size %ux%ux%u", key.c_str(), lx, ly, lz); }
     else LogError("compute shader %s: implausible local size %u %u %u in the control section", key.c_str(), lx, ly, lz);
   }
-  if (stage == 1 && (Rd32(sd.control, 0x718) & 1)) {   // layout(early_fragment_tests): see SpvAddEarlyFragmentTests
+  if (stage == 1 && (Rd32(ctl, 0x718) & 1)) {   // layout(early_fragment_tests): see SpvAddEarlyFragmentTests
     if (SpvAddEarlyFragmentTests(words)) Log("fragment shader %s: early fragment tests", key.c_str());
     std::vector<uint8_t> mark;
     if (!ReadFile(base + ".efz", &mark)) WriteFile(base + ".efz", "1", 1);   // the cache key hashes only the data section, so the pipeline service needs this marker
@@ -490,7 +539,7 @@ bool BuildStage(Host* h, const ShaderData& sd, StageProg* out) {
   if (stage == 0) sp.inputMask = SpvVertexInputMask(words);
   if (stage == 1) { sp.spv = words; sp.outLocs = SpvFragmentOutputs(words); }
   if (stage == 0 && FoliageSwayKeepSpv()) sp.spv = words;   // vertex program kept for the wind sway wrapper (nvn_foliage.cpp)
-  if (stage == 1 && getenv("SNAP_XLATE_AB")) LoadAbAlt(h, data, dataSize, stage, codeOff, constOff, (Rd32(sd.control, 0x718) & 1) != 0, key, &sp);
+  if (stage == 1 && getenv("SNAP_XLATE_AB")) LoadAbAlt(h, data, dataSize, stage, codeOff, constOff, (Rd32(ctl, 0x718) & 1) != 0, key, &sp);
   // c[1]: the constant-data blob that follows the code (data section tail)
   sp.constSize = dataSize - constOff;
   bool needC1 = false;
@@ -572,7 +621,150 @@ bool CreateHostBuffer(Host* h, uint64_t size, VkBufferUsageFlags usage, VkBuffer
   return snapnvn::CreateHostBufferWith(ops, size, usage, buf, mem, mapped);
 }
 
+// ---- Programs built in the background (2026-11-23, worker fastshaders; docs/shader-prebuild.md "First launch") ----------------------------------
+// The game creates every program at boot (about 6,200 from about 1,650 distinct shaders). With an empty translation cache each one used to be
+// translated inline, one after another, on the loader thread: 358 s to the title on the first launch against 6.4 s with a warm cache. Now a
+// program whose shader is not in the cache is queued and ProgramSetShaders returns at once; XlateWorkers() threads, each with its own translator
+// process, build the queue in order. Nothing is ever drawn without its shader: every use of a program goes through ProgramResolve (draw replay,
+// the persistent draw state) or ProgramDestroy, and both wait for the program first. A program that is still queued when it is needed is built
+// on the waiting thread at once instead of waiting its turn. The translation and the files it writes are the same as on the inline path.
+struct ProgramJob {
+  ProgramImpl* p = nullptr;
+  std::vector<StageIn> in;
+  std::atomic<int> state{0};   // 0 queued, 1 building, 2 done
+  std::atomic<bool> hinted{false};   // moved to the front of the queue once (ProgramHint)
+  std::mutex mu;
+  std::condition_variable cv;
+};
+namespace {
+std::mutex& g_jobMu = *new std::mutex;   // ProgramImpl::job
+std::atomic<int> g_jobsOpen{0};           // queued or building; 0 = nothing to wait for
+std::mutex& g_qMu = *new std::mutex;
+std::condition_variable& g_qCv = *new std::condition_variable;
+auto& g_q = *new std::deque<std::shared_ptr<ProgramJob>>;
+int g_workers = 0;
+struct JobStats { uint64_t firstNs = 0; int programs = 0, stolen = 0; };
+JobStats g_jobStats;   // under g_qMu
+std::atomic<bool> g_jobStop{false};   // device shutdown: no new builds (ProgramJobsShutdown)
+std::atomic<int> g_jobBuilding{0};
+
+// Moves j from queued to building for this thread. False when another thread has it or the device is shutting down.
+bool TakeJob(const std::shared_ptr<ProgramJob>& j) {
+  g_jobBuilding.fetch_add(1);
+  int z = 0;
+  if (!g_jobStop.load() && j->state.compare_exchange_strong(z, 1)) return true;
+  g_jobBuilding.fetch_sub(1);
+  return false;
+}
+
+void ProgramDestroyNow(ProgramImpl* p);
+bool BuildProgram(ProgramImpl* p, const std::vector<StageIn>& in) {
+  Host* h = p->host;
+  for (const StageIn& si : in) {
+    StageProg sp;
+    if (!BuildStage(h, si, &sp)) { ProgramDestroyNow(p); return false; }
+    if (p->st[sp.stage].valid) {
+      LogError("ProgramSetShaders: two shaders for stage %d", sp.stage);
+      FreeStage(h, sp); ProgramDestroyNow(p);
+      return false;
+    }
+    p->st[sp.stage] = std::move(sp);
+  }
+  return ProgramBuildLayout(p);
+}
+
+void RunJob(const std::shared_ptr<ProgramJob>& j) {   // after TakeJob
+  if (!BuildProgram(j->p, j->in)) LogError("a program built in the background failed: it draws nothing (the inline path would have returned false to the game)");
+  j->in.clear(); j->in.shrink_to_fit();
+  { std::lock_guard<std::mutex> lk(j->mu); j->state.store(2, std::memory_order_release); }
+  j->cv.notify_all();
+  g_jobBuilding.fetch_sub(1);
+  if (g_jobsOpen.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+    std::lock_guard<std::mutex> lk(g_qMu);   // the backlog is done (a later miss starts a new one)
+    fprintf(stderr, "[nvn] background shader build: done, %d programs built by %d workers in %.1f s (%d of them built early for a draw)\n", g_jobStats.programs,
+            g_workers, (double)(snap_perf::now_ns() - g_jobStats.firstNs) / 1e9, g_jobStats.stolen);
+  }
+}
+
+void JobWorker() {
+  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+  for (;;) {
+    std::shared_ptr<ProgramJob> j;
+    {
+      std::unique_lock<std::mutex> lk(g_qMu);
+      g_qCv.wait(lk, [] { return !g_q.empty(); });
+      j = std::move(g_q.front());
+      g_q.pop_front();
+    }
+    if (TakeJob(j)) RunJob(j);   // else a waiting thread took it (or the device is going away)
+  }
+}
+
+void Enqueue(ProgramImpl* p, std::vector<StageIn>&& in) {
+  auto j = std::make_shared<ProgramJob>();
+  j->p = p; j->in = std::move(in);
+  const bool first = g_jobsOpen.fetch_add(1, std::memory_order_acq_rel) == 0;
+  { std::lock_guard<std::mutex> lk(g_jobMu); p->job = j; }
+  {
+    std::lock_guard<std::mutex> lk(g_qMu);
+    if (first) g_jobStats = JobStats{snap_perf::now_ns(), 0, 0};
+    g_jobStats.programs++;
+    while (g_workers < XlateWorkers()) { std::thread(JobWorker).detach(); g_workers++; }
+    g_q.push_back(std::move(j));
+  }
+  g_qCv.notify_one();
+}
+
+}  // namespace
+
+// The game recorded a bind of p (CommandBufferBindProgram): if p is still queued, move it to the front so the workers build it before the
+// replay needs it. A frame binds many programs; without this the replay thread built them one after another itself.
+void ProgramHint(ProgramImpl* p) {
+  if (!p || g_jobsOpen.load(std::memory_order_acquire) == 0) return;
+  std::shared_ptr<ProgramJob> j;
+  { std::lock_guard<std::mutex> lk(g_jobMu); j = p->job; }
+  if (!j || j->state.load(std::memory_order_acquire) != 0 || j->hinted.exchange(true)) return;
+  { std::lock_guard<std::mutex> lk(g_qMu); g_q.push_front(std::move(j)); }   // the copy further back is skipped when a worker reaches it
+  g_qCv.notify_one();
+}
+
+namespace {
+// Returns when p is fully built (or its build failed). Cheap when nothing is queued.
+void ProgramWait(ProgramImpl* p) {
+  if (!p || g_jobsOpen.load(std::memory_order_acquire) == 0) return;
+  std::shared_ptr<ProgramJob> j;
+  { std::lock_guard<std::mutex> lk(g_jobMu); j = p->job; }
+  if (!j) return;
+  if (g_jobStop.load()) return;   // shutting down: the program stays empty
+  if (TakeJob(j)) {   // still queued: build it here, now
+    { std::lock_guard<std::mutex> lk(g_qMu); g_jobStats.stolen++; }
+    RunJob(j);
+  } else {
+    std::unique_lock<std::mutex> lk(j->mu);   // another thread builds it (or, while shutting down, nobody will: stop waiting then)
+    while (!j->cv.wait_for(lk, std::chrono::milliseconds(20), [&] {
+      const int st = j->state.load(std::memory_order_acquire);
+      return st == 2 || (st == 0 && g_jobStop.load());
+    })) {}
+  }
+  std::lock_guard<std::mutex> lk(g_jobMu);
+  if (p->job == j) p->job.reset();
+}
+
+}  // namespace
+
+// Host::Shutdown, before the device goes: queued programs are not built any more and the builds under way finish.
+void ProgramJobsShutdown() {
+  g_jobStop.store(true);
+  for (int i = 0; i < 20000 && g_jobBuilding.load() > 0; i++) Sleep(1);
+}
+
 void ProgramDestroy(ProgramImpl* p) {
+  ProgramWait(p);
+  ProgramDestroyNow(p);
+}
+
+namespace {
+void ProgramDestroyNow(ProgramImpl* p) {
   if (!p) return;
   Host* h = p->host;
   if (h && h->device) {
@@ -594,25 +786,23 @@ void ProgramDestroy(ProgramImpl* p) {
   for (auto& l : p->setLayout) l = VK_NULL_HANDLE;
   for (auto& u : p->setUsed) u = false;
 }
+}  // namespace
 
 // Binding model (see the harness): set 0 = support buffer (0) + c[s] of stage at 1 + stage*16 + s; set 1 = storage
 // buffers stage*16 + n; set 2 = combined image samplers stage*32 + n; set 3 = storage images stage*8 + n.
 bool ProgramSetShadersImpl(ProgramImpl* p, int n, const ShaderData* sd) {
   Host* h = p->host;
   snap_perf::Scope perfShader(snap_perf::C_SHADER); snap_perf::count(snap_perf::V_SHADERS);
-  ProgramDestroy(p);
+  ProgramDestroy(p);   // waits for an earlier background build of this program
   if (n < 1 || n > 6 || !sd) return false;
+  std::vector<StageIn> in(n);
+  bool miss = false;
   for (int i = 0; i < n; i++) {
-    StageProg sp;
-    if (!BuildStage(h, sd[i], &sp)) { ProgramDestroy(p); return false; }
-    if (p->st[sp.stage].valid) {
-      LogError("ProgramSetShaders: two shaders for stage %d", sp.stage);
-      FreeStage(h, sp); ProgramDestroy(p);
-      return false;
-    }
-    p->st[sp.stage] = std::move(sp);
+    if (!PrepStage(h, sd[i], &in[i])) return false;
+    if (!miss && !StageCached(h, in[i])) miss = true;
   }
-  return ProgramBuildLayout(p);
+  if (miss && XlateWorkers() > 1) { Enqueue(p, std::move(in)); return true; }   // see ProgramJob
+  return BuildProgram(p, in);
 }
 
 bool ProgramBuildLayout(ProgramImpl* p) {
@@ -666,6 +856,7 @@ bool ProgramBuildLayout(ProgramImpl* p) {
 }
 
 ProgramImpl* ProgramResolve(Host* h, ProgramImpl* const src[6]) {
+  for (int s = 0; s < 6; s++) ProgramWait(src[s]);   // a program built in the background is complete before anything reads it
   ProgramImpl* first = nullptr;
   int bound = 0;
   std::array<uint64_t, 6> key{};

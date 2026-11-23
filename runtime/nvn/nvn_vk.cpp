@@ -451,6 +451,7 @@ bool Host::Init(bool wantValidation) {
 }
 
 void Host::Shutdown() {
+  ProgramJobsShutdown();   // background shader builds (nvn_shader.cpp) create Vulkan objects
   if (device) vkDeviceWaitIdle(device);
   if (device) ShotShutdown();   // the screenshot writer (queued PNGs, full-size photo PNGs) finishes and stops before anything it uses is destroyed
   if (device) FgDestroy(this);   // [framegen] (before the upscaler: it shares the FidelityFX device)

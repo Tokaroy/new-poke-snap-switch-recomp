@@ -116,7 +116,7 @@ Double-click `SnapRecomp.exe` in the `out` folder. With no command-line argument
 - It checks the RomFS folder from `config.json` against the published file check every time it starts. If the drive is missing or the folder is wrong, it says so in plain words.
 - A small window offers Play, "Change game folder...", "Open save folder", save import and export, upscalers and Updates.
 - Play passes the converted game files and the RomFS path to the game, with no arguments from you.
-- The first launch translates the game's shaders with the `shader_harness` program next to the exe (a self-contained build of the MIT-licensed Ryubing shader translator; its notice is in `shader_harness`). Translated shaders go to `%LOCALAPPDATA%\SnapRecomp\nvn_cache`, so the first start takes several minutes and later starts are fast. The log shows a progress line every 100 shaders.
+- The first launch translates the game's shaders with the `shader_harness` program next to the exe (a self-contained build of the MIT-licensed Ryubing shader translator; its notice is in `shader_harness`). Translated shaders go to `%LOCALAPPDATA%\SnapRecomp\nvn_cache` (`portable_data\Local\SnapRecomp\nvn_cache` for a portable exe). Several translator processes work in the background while the game boots, so the first start reaches the title in about the time of a later one (`--shader-workers`, [docs/shader-prebuild.md](../docs/shader-prebuild.md) "First launch"). The log shows a progress line every 100 shaders.
 - Logs go to `portable_data\Local\SnapRecomp\logs` next to the built exe (`%LOCALAPPDATA%\SnapRecomp\logs` for a development build). The icon is an original fallback icon, not the game's.
 
 ## Function lists

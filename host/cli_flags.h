@@ -18,6 +18,8 @@
 //   --gpl auto|on|off             Vulkan graphics pipeline libraries (fast-linked pipelines, SNAP_GPL); this run only
 //   --mods-readahead on|off       read a course's HD pack files into the file cache ahead of the loader (docs/mods.md); this run only
 //   --distant-scenery off|high|ultra   farther model detail and draw distance, display only (SNAP_DISTANT_SCENERY, docs/draw-distance.md); this run only
+//   --shader-workers <n|auto>     translator processes for shaders missing from the cache (SNAP_XLATE_WORKERS, docs/shader-prebuild.md); 1 = translate
+//                                 inline one at a time (the old first launch); this run only
 //   --update-check on|off  --update-channel stable|testing                            the launcher's update rows; this run only
 //   --backup on|off  --backup-folder <folder>  --backup-keep <n>  --backup-include <saves,settings,photos>
 //                                 the profile backups to a sync folder (docs/sync-backups.md): after the game closes, and with --backups now; this run only
@@ -168,6 +170,11 @@ inline Parsed parse(const std::vector<std::string>& args) {
       if (v == "0" || v == "original" || v == "no") v = "off";
       if (v != "off" && v != "high" && v != "ultra") { p.error = a + " needs off, high or ultra, got \"" + v + "\""; break; }
       p.env.push_back({"SNAP_DISTANT_SCENERY", v});
+    } else if (a == "--shader-workers") {   // runtime/nvn/nvn_shader.cpp XlateWorkers: background shader translation on the first launch
+      if (!value(i, &v)) break;
+      if (v == "auto") v = "0";
+      if (!is_number(v) || std::atol(v.c_str()) > 64) { p.error = a + " needs auto or a number of translator processes from 1 to 64, got \"" + v + "\""; break; }
+      p.env.push_back({"SNAP_XLATE_WORKERS", v});
     } else if (a == "--aniso") {
       if (!value(i, &v)) break;
       if (v == "off") v = "0";
@@ -282,6 +289,7 @@ inline const char* help_text() {
          "  --hdr-photos on|off          also save <name>.hdr.png (HDR) beside HD photo copies and screenshots; needs HDR output\n"
          "  --mods-readahead on|off      read the HD texture files of the course that is loading ahead of the game\n"
          "  --distant-scenery off|high|ultra  farther model detail and draw distance (display only), off = the game's own\n"
+         "  --shader-workers <n|auto>    shader translator processes on a first launch (auto = half the cores, at most 8; 1 = one at a time)\n"
          "  --update-check on|off        check for updates at launcher start\n"
          "  --update-channel stable|testing\n"
          "                               which update channel the check follows\n"

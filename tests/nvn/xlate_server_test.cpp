@@ -103,6 +103,30 @@ int main(int argc, char** argv) {
     CHECK(ok == 40);
     CHECK(s.starts() == 1);
   }
+  {  // a pool of 4 for 8 threads: never more than 4 processes, every request answered, and the requests overlap
+    nvn::xlate::Pool pool(Cmd("slow"), 4);
+    std::vector<std::thread> th; std::atomic<int> ok{0};
+    const DWORD t0 = GetTickCount();
+    for (int i = 0; i < 8; i++) th.emplace_back([&, i] {
+      for (int j = 0; j < 5; j++) {
+        std::string n = "q" + std::to_string(i) + "_" + std::to_string(j) + ".spv";
+        if (pool.Translate("a.bin", P(n.c_str()), P("x.json"), 1, 0, 0) == Server::Result::Ok &&
+            GetFileAttributesA(P(n.c_str()).c_str()) != INVALID_FILE_ATTRIBUTES) ok++;
+      }
+    });
+    for (auto& t : th) t.join();
+    const DWORD ms = GetTickCount() - t0;
+    CHECK(ok == 40);
+    CHECK(pool.servers() == 4 && pool.starts() == 4);
+    CHECK(ms < 40 * 30);   // 40 requests of 30 ms each one after another would take 1.2 s
+    printf("pool of 4: 40 requests of 30 ms in %lu ms\n", (unsigned long)ms);
+  }
+  {  // a pool of 1 is the single process of before
+    nvn::xlate::Pool pool(Cmd("echo"), 1);
+    CHECK(pool.Translate("a.bin", P("p1.spv"), P("p1.json"), 1, 0, 0) == Server::Result::Ok);
+    CHECK(pool.Translate("reject.bin", P("p2.spv"), P("p2.json"), 1, 0, 0, &msg) == Server::Result::Failed);
+    CHECK(pool.servers() == 1 && pool.starts() == 1);
+  }
   {  // the child ends with the client (job object): destroy while running, nothing left behind to hold the exe
     { Server s(Cmd("echo")); CHECK(s.Translate("a.bin", P("h.spv"), P("h.json"), 1, 0, 0) == Server::Result::Ok); }
   }

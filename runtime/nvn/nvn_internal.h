@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -335,10 +336,12 @@ inline void CopyStageMeta(StageProg& d, const StageProg& s) {
   d.inputMask = s.inputMask; d.outLocs = s.outLocs; d.constBuf = s.constBuf; d.constMem = s.constMem; d.constSize = s.constSize;
 }
 struct ShaderData { uint64_t data; const void* control; };   // [TOTK-NVN] NVNshaderData: {address, control*}
+struct ProgramJob;   // nvn_shader.cpp: a program built in the background
 struct ProgramImpl {
   Host* host = nullptr;
   uint64_t id = 0;
   StageProg st[6];
+  std::shared_ptr<ProgramJob> job;   // set while a background build is queued or running (guarded in nvn_shader.cpp); ProgramResolve waits for it
   bool composite = false;   // stage copies of several separable programs: owns only the layout, never the stage objects
   bool setUsed[4] = {};
   VkDescriptorSetLayout setLayout[4] = {};
@@ -373,6 +376,8 @@ bool ProgramBuildLayout(ProgramImpl* p);
 // BindProgram(prog, stagesMask) is per stage (the game binds a vertex-only and a fragment-only program). Returns the program whose stages
 // are src[s]->st[s] for every s with a valid stage: the program itself when one program supplies every one of its stages, else a cached composite.
 ProgramImpl* ProgramResolve(Host* h, ProgramImpl* const src[6]);
+void ProgramJobsShutdown();   // Host::Shutdown: stop the background program builds before the device is destroyed
+void ProgramHint(ProgramImpl* p);   // a bind was recorded: a program still being built in the background goes to the front of its queue
 void ProgramDestroy(ProgramImpl* p);
 
 // ---- replay context (shared by nvn_vk.cpp and nvn_draw.cpp) -----------------------------------------------------

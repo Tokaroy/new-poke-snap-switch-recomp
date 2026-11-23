@@ -226,7 +226,7 @@ For the command-line route you need Windows 10 or 11 x64, a Vulkan 1.3 driver, P
 
 Other launchers can do all of this without our windows: `SnapRecomp.exe --game <folder> --yes` builds, `SnapRecomp.exe --play` starts the game, and every launcher option has a flag ([docs/command-line.md](docs/command-line.md)).
 
-The first build takes 25 to 50 minutes, most of it Ghidra and compiling. The first start translates shaders and takes several minutes.
+The first build takes 25 to 50 minutes, most of it Ghidra and compiling. The first start also translates the game's shaders, in the background while it boots, and takes a few seconds longer than later starts.
 
 The command-line route runs in a terminal; the one-click setup needs none. The finished `SnapRecomp.exe` opens its own launcher window: Play, settings, saves, mods, HD textures, Add to Steam, updates and the game folder.
 
