@@ -1,0 +1,4 @@
+# fixture: unlock_all
+# First-ever launch with an empty translated-shader cache: wait for the title only (worker boottime, 2026-11-23).
+wait ui=title timeout=560
+end @f30
