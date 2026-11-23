@@ -80,6 +80,8 @@ def main():
     ap.add_argument('--version')
     ap.add_argument('--recomp-dir', help='take recomp/*.py from this folder instead of the tree (matches an older prebuilt)')
     ap.add_argument('--romfs', help='romfs folder for the game-file-name check of the leak scan (read only)')
+    ap.add_argument('--test-report', metavar='BUILD_DIR', help='optional: after the zip is checked, run scripts/release/test_report.ps1 on this build and keep the report in build/release/test_report/v<version> (local only, never part of the zip; a failing report does not stop the release, read it)')
+    ap.add_argument('--test-report-full', action='store_true', help='with --test-report: the full report (second ride, A/B captures, launcher pictures) instead of -Quick')
     ci_gate.add_args(ap)
     a = ap.parse_args()
     ci_gate.gate(a, 'release_package')
@@ -105,6 +107,13 @@ def main():
         zp.unlink()
         raise SystemExit('leak scan failed; the zip was deleted')
     print('leak scan clean')
+    if a.test_report:   # optional evidence step, never a blocker (docs/release-test-report.md)
+        rep = out / 'test_report' / f'v{version}'
+        cmd = ['powershell', '-NoProfile', '-File', str(ROOT / 'scripts' / 'release' / 'test_report.ps1'), '-BuildDir', a.test_report, '-Out', str(rep)]
+        if not a.test_report_full:
+            cmd.append('-Quick')
+        rc = subprocess.run(cmd).returncode
+        print(f'test report {"PASS" if rc == 0 else "NOT clean (exit " + str(rc) + ")"}: {rep / "report.md"} (local only; holds game frames)')
 
 
 if __name__ == '__main__':
