@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[2]
 ARGS = [a for a in sys.argv[1:] if a != '--rebuild']
 EXE = Path(ARGS[0]) if ARGS else ROOT / 'build' / 'snap' / 'snap_boot.exe'
 # What the checks below exercise. An exe built before any of these changed cannot pass, whatever the code says now.
-SOURCES = ('host/cli_flags.h', 'host/launcher.cpp', 'host/launcher_upscalers.cpp', 'host/boot.cpp', 'host/portable.cpp')
+SOURCES = ('host/cli_flags.h', 'host/launcher.cpp', 'host/launcher_upscalers.cpp', 'host/boot.cpp', 'host/portable.cpp', 'host/readonly_install.cpp', 'host/readonly_logic.h')
 
 
 def stale_against(exe, sources, root=ROOT):

@@ -97,6 +97,14 @@ int main() {
     CHECK(!snap_cli::parse({"--data-dir"}).error.empty());
     CHECK(!snap_cli::parse({"--data-dir", ""}).error.empty());
   }
+  {   // --no-prompt: no question window (docs/readonly-install.md); it combines with --data-dir, --play and an action, and the help lists it
+    CHECK(!snap_cli::parse({"--play"}).no_prompt);
+    auto p = snap_cli::parse({"--no-prompt", "--play", "--data-dir", "D:\\Snap"});
+    CHECK(p.error.empty() && p.no_prompt && p.play && p.data_dir == "D:\\Snap" && p.rest.empty());
+    p = snap_cli::parse({"--no-prompt", "--check-install"});
+    CHECK(p.error.empty() && p.no_prompt && p.action == "check-install");
+    CHECK(std::strstr(snap_cli::help_text(), "--no-prompt"));
+  }
   {   // help and version
     CHECK(snap_cli::parse({"--help"}).help && snap_cli::parse({"-h"}).help && snap_cli::parse({"/?"}).help);
     CHECK(snap_cli::parse({"--version"}).version);

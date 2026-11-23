@@ -3281,6 +3281,7 @@ static void test_guest_tls_image() {
 #include "save_backup_tests.h"
 #include "sync_backup_tests.h"
 #include "cheats_tests.h"
+#include "readonly_tests.h"
 
 int main(int argc, char** argv) {
   if (argc > 1) g_root = argv[1];
@@ -3365,6 +3366,10 @@ int main(int argc, char** argv) {
       {"syncbackup.not_ready", sy_test::test_save_not_ready},
       {"syncbackup.restore_new", sy_test::test_restore_new_profile},
       {"syncbackup.restore_replace", sy_test::test_restore_replace_current},
+      {"readonly.probe", ro_test::test_probe},
+      {"readonly.pointer", ro_test::test_pointer},
+      {"readonly.resolve", ro_test::test_resolve},
+      {"readonly.move", ro_test::test_move},
       {"padfx", test_padfx},
       {"aimfeel", test_aimfeel},
       {"focus_guard", test_focus_guard},

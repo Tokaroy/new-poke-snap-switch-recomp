@@ -33,6 +33,7 @@ SnapRecomp.exe --play [options]     start the game without the launcher window
 | `--profile <name>` | The profile to play, or the one `--import-save` and `--export-save` use. |
 | `--set <key>=<value>` | One setting for this start only. Repeat it for more settings. The settings file is not changed. |
 | `--data-dir <folder>` | Keeps saves, settings, mods, caches and logs in this folder. The folder is created when it is missing. |
+| `--no-prompt` | Never opens a question window. A game folder the exe cannot write to ends the start with exit code 3 and a message on stderr unless `--data-dir` is given ([readonly-install.md](readonly-install.md)). `--play`, the launcher actions and the other commands already behave this way. |
 | `--help`, `-h`, `/?` | Prints the flag list and exits with code 0. |
 | `--version` | Prints the version and exits with code 0. |
 
@@ -84,6 +85,8 @@ Other keys from `settings.cfg` work too. Safe mode still ignores the settings it
 A release build keeps everything the game writes in `portable_data` next to the built exe: `Roaming\SnapRecomp` holds saves, settings, profiles and mods, and `Local\SnapRecomp` holds caches and logs. The `portable.txt` file next to the built exe switches this on. [install-folder.md](install-folder.md) shows the whole folder.
 
 `--data-dir <folder>` uses that folder in place of `portable_data`, with the same two subfolders. Nothing is copied into it, so a new folder starts with a fresh save. Import one with `--import-save` and the same `--data-dir`.
+
+When the exe's own folder cannot be written (Program Files, a read-only share, Controlled Folder Access), a plain start asks whether to move the game or to keep its data in another folder; `--data-dir` skips the question. See [readonly-install.md](readonly-install.md).
 
 ## Launcher actions
 
@@ -142,3 +145,4 @@ These do one job and exit. None opens the launcher.
 | 0 | The game or the command ended normally |
 | 1 | A command failed |
 | 2 | A bad command line, a data folder that could not be created, or converted game files that are missing or damaged |
+| 3 | The exe's own folder cannot be written and no `--data-dir` was given, in a start where no window may open ([readonly-install.md](readonly-install.md)) |

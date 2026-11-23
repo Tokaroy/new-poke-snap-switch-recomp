@@ -8,6 +8,7 @@
 #include "shaderprep.h"
 #include "portable.h"
 #include "cli_flags.h"
+#include "readonly_install.h"
 #include "hle/settings.h"
 #include "hle/presets.h"
 #include <filesystem>
@@ -1098,6 +1099,16 @@ int main(int argc, char **argv) {
     }
     {   // --data-dir, else portable.txt next to the exe: settings, saves, caches and update state live in one folder (host/portable.cpp)
         std::wstring dd;
+        {   // an exe folder the game cannot write to (host/readonly_install.cpp, docs/readonly-install.md): ask, or use the folder remembered for this exe
+            snap_ro::StartArgs ra;
+            ra.data_dir = cli.data_dir;
+            ra.play = cli.play;
+            ra.has_action = !cli.action.empty();
+            ra.no_prompt = cli.no_prompt;
+            ra.has_rest = !cli.rest.empty();
+            const int rc = snap_ro::startup(ra, &dd);
+            if (rc >= 0) return rc;
+        }
         if (!cli.data_dir.empty()) {
             const int n = MultiByteToWideChar(CP_ACP, 0, cli.data_dir.c_str(), -1, nullptr, 0);   // the manifest makes the ANSI code page UTF-8
             dd.resize((size_t)(n > 0 ? n : 1));

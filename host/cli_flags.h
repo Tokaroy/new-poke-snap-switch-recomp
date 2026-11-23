@@ -19,6 +19,8 @@
 //   --set <key>=<value>           one settings key for this run only (repeatable); a name that starts with SNAP_ sets that variable.
 //                                 Rows kept outside settings.cfg (window.json, audio.json, input.json) take their key from set_key_env() below.
 //   --data-dir <folder>           one folder for saves, settings, mods, caches and logs
+//   --no-prompt                   never open a window to ask a question: a game folder the exe cannot write to ends the start with exit code 3
+//                                 and a message on stderr (docs/readonly-install.md). --play, the actions and the other commands behave this way already.
 //   --update | --check-install | --report | --restore-backup | --backups | --upscalers | --hdtex
 //                                 one launcher action without the launcher window (host/launcher.cpp run_action); the game does not start.
 //                                 No action opens a dialog. --restore-backup, --backups, --upscalers and --hdtex take everything after them as
@@ -36,7 +38,7 @@
 namespace snap_cli {
 
 struct Parsed {
-  bool help = false, version = false, play = false, safe = false;
+  bool help = false, version = false, play = false, safe = false, no_prompt = false;
   std::string data_dir, profile;
   std::string action;                                      // one launcher action (action_names) without its "--", or ""
   std::vector<std::string> action_args;                    // what followed an action that takes arguments (action_takes_args)
@@ -117,6 +119,7 @@ inline Parsed parse(const std::vector<std::string>& args) {
     else if (a == "--version") p.version = true;
     else if (a == "--play") p.play = true;
     else if (a == "--safe-mode") p.safe = true;
+    else if (a == "--no-prompt") p.no_prompt = true;
     else if (a == "--fullscreen" || a == "--borderless") p.env.push_back({"SNAP_WINDOW_MODE", "borderless"});
     else if (a == "--windowed") p.env.push_back({"SNAP_WINDOW_MODE", "windowed"});
     else if (a == "--steam-deck") {
@@ -263,6 +266,7 @@ inline const char* help_text() {
          "  --set <key>=<value>          one setting for this start only, repeatable (keys: docs/command-line.md);\n"
          "                               a name that starts with SNAP_ sets that environment variable\n"
          "  --data-dir <folder>          keep saves, settings, mods, caches and logs in this folder\n"
+         "  --no-prompt                  never open a question window; a folder the game cannot write to exits with code 3\n"
          "\n"
          "Launcher actions without the launcher window (the game does not start):\n"
          "  --update                     install the newest version; it runs in its own window (exit 0 = started)\n"
