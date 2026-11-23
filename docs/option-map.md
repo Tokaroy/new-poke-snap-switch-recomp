@@ -59,7 +59,7 @@ Every player option and where it lives: the launcher page, the F1 menu tab and s
 | NEO-ONE speed | `neo_speed` | - | Photo / Photo files | Photos | `--set neo_speed` | restart |
 | Photos per expedition | `film` | - | Photo / Photo files | Photos | `--set film` | restart |
 | Skip dialogue | `skip_cutscenes` | - | Photo / Skips | Photos | `--set skip_cutscenes` | restart |
-| Shiny Pokémon | `shiny` | - | Photo / Skips | Photos | `--set shiny` | restart |
+| Shiny Pokémon | `shiny` | - | Photo / Skips | Photos | `--shiny`, `--set shiny` | restart |
 | Shadow distance | `gfx_shadow_dist` | - | Graphics / Textures and shadows | Shadows & AO | `--set gfx_shadow_dist` | live |
 | Contact shadows | `contact_shadows` | - | Graphics / Textures and shadows | Shadows & AO | `--set contact_shadows` | live |
 | Leaf edge smoothing | `foliage_aa` | - | Graphics / Textures and shadows | Shadows & AO | `--set foliage_aa` | live |

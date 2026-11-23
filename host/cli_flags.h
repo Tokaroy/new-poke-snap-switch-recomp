@@ -110,6 +110,12 @@ inline Parsed parse(const std::vector<std::string>& args) {
       if (!value(i, &v)) break;
       if (!is_number(v)) { p.error = a + " needs a whole number of frames per second (0 = no extra limit), got \"" + v + "\""; break; }
       p.env.push_back({"SNAP_WINDOW_FRAME_CAP", v});
+    } else if (a == "--shiny") {   // rare shiny Pokemon (runtime/nvn/nvn_shiny.cpp): off, on (1 in 512) or 1 in <n>; --shiny 1 forces every Pokemon (test)
+      if (!value(i, &v)) break;
+      if (v == "off" || v == "0" || v == "no") p.env.push_back({"SNAP_SHINY", "0"});
+      else if (v == "on" || v == "yes") p.env.push_back({"SNAP_SHINY", "1"});
+      else if (is_number(v) && std::atol(v.c_str()) >= 1) { p.env.push_back({"SNAP_SHINY", "1"}); p.env.push_back({"SNAP_SHINY_ODDS", v}); }
+      else { p.error = a + " needs off, on or a whole number n for 1 in n, got \"" + v + "\""; break; }
     } else if (a == "--update-channel") {
       if (!value(i, &v)) break;
       if (v != "stable" && v != "testing") { p.error = a + " needs stable or testing, got \"" + v + "\""; break; }

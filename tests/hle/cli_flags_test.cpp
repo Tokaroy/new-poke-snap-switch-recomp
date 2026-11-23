@@ -72,6 +72,9 @@ int main() {
     auto q = snap_cli::parse({"--pause-in-background", "on", "--update-check", "true"});
     CHECK(env_of(q, "SNAP_WINDOW_PAUSE") == "1" && env_of(q, "SNAP_UPDATE_CHECK") == "1");
     CHECK(!snap_cli::parse({"--frame-cap"}).error.empty());
+    { auto s = snap_cli::parse({"--shiny", "on"}); CHECK(s.error.empty() && s.env.size() == 1 && s.env[0].second == "1"); }
+    { auto s = snap_cli::parse({"--shiny", "64"}); CHECK(s.error.empty() && s.env.size() == 2 && s.env[1].second == "64"); }
+    CHECK(!snap_cli::parse({"--shiny", "often"}).error.empty());
     CHECK(!snap_cli::parse({"--frame-cap", "fast"}).error.empty());
     CHECK(!snap_cli::parse({"--pause-in-background", "maybe"}).error.empty());
     CHECK(!snap_cli::parse({"--update-channel", "nightly"}).error.empty());

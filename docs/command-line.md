@@ -20,6 +20,7 @@ SnapRecomp.exe --play [options]     start the game without the launcher window
 | `--width <px>`, `--height <px>` | Window size. |
 | `--pause-in-background on\|off` | Pause the game while its window is in the background (the F1 and launcher Window row). This start only. |
 | `--mute-in-background on\|off` | Mute the game while its window is in the background. This start only. |
+| `--shiny <off\|on\|n>` | Rare shiny Pokemon (needs the shiny pack): `on` is 1 in 512, a number is 1 in that many, `1` makes every Pokemon shiny (test). Colors only; scores, spawns and saves do not change. This start only. |
 | `--frame-cap <fps>` | Frame rate limit. 0 is no extra limit. This start only. |
 | `--update-check on\|off` | Check for updates when the launcher starts. This start only; config.json is not changed. |
 | `--update-channel stable\|testing` | Which update channel the check follows. This start only. |

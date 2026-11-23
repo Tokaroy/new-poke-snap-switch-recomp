@@ -2,7 +2,7 @@
 // Shiny Pokemon mod, renderer side (docs/shiny-mod-plan.md). Cosmetic only: a draw that samples a known body texture of a shiny
 // instance samples a recolored twin of it instead. Nothing in the guest, the saves or the scoring is touched.
 //   SNAP_SHINY=1            master switch (off by default)
-//   SNAP_SHINY_ODDS=<n>     1 in n per instance (default 4096; 1 = every instance)
+//   SNAP_SHINY_ODDS=<n>     1 in n per instance (default 512; 1 = every instance)
 //   SNAP_SHINY_FORCE=<key>  hex data key of one body texture whose draws are always shiny (testing)
 //   SNAP_SHINY_TRACE=<key>  log the draw state of draws sampling that key (hex key, or "all" = one line per texture)
 //   SNAP_SHINY_DIR=<dir>    pack folder (default %APPDATA%\SnapRecomp\mods\shiny-pokemon), holds shiny_table.txt + twin .nutexb files
@@ -24,7 +24,7 @@ namespace nvn {
 namespace {
 struct TwinFile { uint32_t w = 0, h = 0, mips = 0; std::string file, species; const uint8_t* data = nullptr; bool tried = false; };
 struct Cfg {
-  bool on = false; std::string only; unsigned odds = 4096; bool forceAll = false; uint64_t force = 0; bool trace = false, traceAll = false; uint64_t traceKey = 0;
+  bool on = false; std::string only; unsigned odds = 512; bool forceAll = false; uint64_t force = 0; bool trace = false, traceAll = false; uint64_t traceKey = 0;
   std::unordered_map<uint64_t, TwinFile> table; std::string dir;
 };
 const Cfg& C() {
