@@ -471,6 +471,7 @@ struct WindowImpl {
   std::vector<VkSemaphore> acquireSems;  // ring (images+1); reuse is gated on the timeline value below
   std::vector<uint64_t> acquireValue;
   uint32_t acquireNext = 0;
+  uint32_t acqLimit = 1;                 // [framegen] images the app may already hold when it calls vkAcquireNextImageKHR with no timeout (count - minImageCount)
   std::vector<TextureImpl*> tex;         // NVN-visible textures (slots)
   std::vector<uint64_t> slotValue;       // timeline value of the last present that read each slot
   std::vector<VkSemaphore> slotSem;

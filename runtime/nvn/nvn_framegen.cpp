@@ -139,7 +139,7 @@ bool EnsureImages(uint32_t w, uint32_t hh, VkFormat unorm) {
 }
 
 // Live fallback (2026-11-16): any frame generation error turns it off for the rest of the session and leaves normal presents. One log line,
-// and a sentence for the F1 menu (FgNotice). SNAP_FRAMEGEN_FAIL=init|prepare|generate|present forces that stage to fail (tests).
+// and a sentence for the F1 menu (FgNotice). SNAP_FRAMEGEN_FAIL=init|prepare|generate|present|acquire forces that stage to fail (tests).
 std::mutex g_noticeMu; std::string g_notice;
 void Fail(const char* why) {
   if (G.failed) return;   // the first cause is the one that is told
@@ -379,6 +379,14 @@ void FgDrainPresents() {
   if (!P.started) return;
   P.idleCv.wait(lk, [] { return P.q.empty() && !P.busy; });
 }
+
+void FgWaitQueued(uint32_t maxQueued) {
+  std::unique_lock<std::mutex> lk(P.mu);
+  if (!P.started) return;
+  P.idleCv.wait(lk, [maxQueued] { return P.q.size() + (P.busy ? 1u : 0u) <= maxQueued; });
+}
+
+uint32_t FgQueued() { std::lock_guard<std::mutex> lk(P.mu); return (uint32_t)P.q.size() + (P.busy ? 1u : 0u); }
 
 static void PresenterStop() {
   { std::unique_lock<std::mutex> lk(P.mu); if (!P.started) return; P.stop = true; P.cv.notify_all(); }

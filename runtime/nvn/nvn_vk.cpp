@@ -1697,6 +1697,9 @@ bool WindowImpl::Recreate() {
 
   if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT)) { LogError("surface lacks TRANSFER_DST"); return false; }
   uint32_t minImages = std::max(caps.minImageCount, 3u);
+  // [framegen] each game frame presents twice and the presenter thread holds both images until their due time: two more images, so the
+  // game thread can acquire the next frame's images while the last ones wait (FgWaitQueued below keeps the count inside the limit)
+  if (FgWanted()) minImages += 2;
   if (caps.maxImageCount) minImages = std::min(minImages, caps.maxImageCount);
 
   VkSwapchainCreateInfoKHR ci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
@@ -1725,6 +1728,8 @@ bool WindowImpl::Recreate() {
   if (hdr) snap_hdr::SetMetadata(h->device, swapchain);
   vkGetSwapchainImagesKHR(h->device, swapchain, &n, nullptr);
   scImages.resize(n);
+  acqLimit = n > caps.minImageCount ? n - caps.minImageCount : 0;
+  if (FgWanted()) fprintf(stderr, "[framegen] swapchain %ux%u: %u images (surface minimum %u, asked %u), mode %d\n", ext.width, ext.height, n, caps.minImageCount, minImages, (int)mode);
   vkGetSwapchainImagesKHR(h->device, swapchain, &n, scImages.data());
   VkSemaphoreCreateInfo sci{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
   for (uint32_t i = 0; i < n; i++) {
@@ -1845,6 +1850,9 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
   uint32_t idx = 0;
   // The acquire semaphore must have no pending wait: gate reuse on the timeline value of the submit that waited it.
   if (w->needRecreate) { if (FgWanted()) { lk.unlock(); FgDrainPresents(); lk.lock(); } if (!w->Recreate()) return false; }   // [framegen] no queued present may name the old swapchain
+  // [framegen] images queued on the presenter thread are still acquired: an acquire with no timeout is only valid while the app holds at most
+  // count - minImageCount images (more returned VK_NOT_READY on the RTX 4090 and dropped the frame, 13 times in run 0-20261122_194444)
+  if (fgThr) { lk.unlock(); FgWaitQueued(w->acqLimit); lk.lock(); }
   const uint32_t ak = w->acquireNext++ % (uint32_t)w->acquireSems.size();
   // [pace] The timeline wait and vkAcquireNextImageKHR block on the GPU and the display but touch no queue, so the default model
   // drops the queue lock around them (other threads keep submitting); Recreate (vkDeviceWaitIdle) retakes it. Legacy holds it.
@@ -1874,12 +1882,27 @@ static bool PresentWindowOnce(QueueImpl* q, WindowImpl* w, int slot) {
     static VkFence acqFence = VK_NULL_HANDLE;
     if (kAcqFence && !acqFence) { VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO}; if (vkCreateFence(h->device, &fci, nullptr, &acqFence) != VK_SUCCESS) acqFence = VK_NULL_HANDLE; }
     const VkFence useFence = (kAcqFence && dropLock) ? acqFence : VK_NULL_HANDLE;
+    const int64_t acqT0 = FgWanted() ? FgNowNs() : 0;   // [framegen] failure diagnostics below
+    // SNAP_FRAMEGEN_FAIL=acquire (tests): the acquires at presents 600, 1200 and 1800 report VK_NOT_READY without calling the driver
+    static int fgAcqForced = 0;
+    const bool fgAcqFail = FgWanted() && fgAcqForced < 3 && g_presentCount >= 600 * (fgAcqForced + 1) && FgForcedFail("acquire");
+    if (fgAcqFail) { fgAcqForced++; r = VK_NOT_READY; } else
     { snap_perf::Scope perfScope(snap_perf::C_ACQUIRE); r = vkAcquireNextImageKHR(h->device, w->swapchain, UINT64_MAX, w->acquireSems[ak], useFence, &idx);
       if (useFence && (r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR)) { vkWaitForFences(h->device, 1, &useFence, VK_TRUE, UINT64_MAX); vkResetFences(h->device, 1, &useFence); } }
     if (r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR) { if (r == VK_SUBOPTIMAL_KHR) w->needRecreate = true; break; }
     if (r == VK_ERROR_OUT_OF_DATE_KHR) { w->needRecreate = true; if (attempt == 2) return false; continue; }
     if (r == VK_ERROR_DEVICE_LOST || r == VK_ERROR_SURFACE_LOST_KHR) FatalGpuLoss("vkAcquireNextImageKHR", r);
     LogError("vkAcquireNextImageKHR failed: %d", (int)r);
+    if (FgWanted() && (r == VK_NOT_READY || r == VK_TIMEOUT)) {
+      // [framegen] Run 0-20261122_202907 (hidden desktop, FIFO, two presents per frame): from one frame on every acquire returned VK_NOT_READY
+      // and nothing was shown for the last 90 s of the ride. A new swapchain gives every image back: recreate it at the next present, and
+      // after the third time turn frame generation off for the session (normal frames go on).
+      static int stuck = 0;
+      fprintf(stderr, "[framegen] acquire returned %d after %.1f ms (%u images, may hold %u, %u presents queued): new swapchain at the next present (%d)\n", (int)r,
+              (double)(FgNowNs() - acqT0) * 1e-6, (unsigned)w->scImages.size(), w->acqLimit, FgQueued(), ++stuck);
+      w->needRecreate = true;
+      if (stuck >= 3) FgFail("the swapchain stopped handing out images");
+    }
     return false;
   }
   snap_pace::Stamp(snap_pace::M_ACQ_END);

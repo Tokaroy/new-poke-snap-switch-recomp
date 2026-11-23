@@ -189,8 +189,10 @@ def main():
                 ROOT / 'tools' / 'intel' / 'xess_3.0.2' / 'bin' / 'libxess.dll'):
         if dll.exists() and (not (out / dll.name).exists() or (out / dll.name).stat().st_size != dll.stat().st_size):
             shutil.copyfile(dll, out / dll.name)
-    fsr = ROOT / 'tools' / 'amd' / 'ffx_sdk_v2.4.0' / 'Kits' / 'FidelityFX' / 'signedbin' / 'amd_fidelityfx_upscaler_vk.dll'   # dev copy of the fetched DLL
-    if fsr.exists():
+    sbin = ROOT / 'tools' / 'amd' / 'ffx_sdk_v2.4.0' / 'Kits' / 'FidelityFX' / 'signedbin'   # dev copies of the fetched DLLs (upscaler, frame generation)
+    for fsr in (sbin / 'amd_fidelityfx_upscaler_vk.dll', sbin / 'amd_fidelityfx_framegeneration_vk.dll'):
+        if not fsr.exists():
+            continue
         (out / 'upscalers').mkdir(exist_ok=True)
         if not (out / 'upscalers' / fsr.name).exists() or (out / 'upscalers' / fsr.name).stat().st_size != fsr.stat().st_size:
             shutil.copyfile(fsr, out / 'upscalers' / fsr.name)

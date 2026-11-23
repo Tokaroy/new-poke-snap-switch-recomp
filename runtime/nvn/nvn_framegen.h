@@ -27,7 +27,7 @@ void FgDestroy(Host* h);               // device is going away
 void FgForgetTexture(const TextureImpl* t);   // DestroyTexture: drops a pending frame keyed by that window texture
 const char* FgNotice();                // null while frame generation is fine; once it turned itself off this session, the reason for the F1 menu
 void FgFail(const char* why);          // turns frame generation off for this session (a present or swapchain error): one log line, normal frames go on
-bool FgForcedFail(const char* stage);  // SNAP_FRAMEGEN_FAIL=init|prepare|generate|present (tests): true when that stage is to fail
+bool FgForcedFail(const char* stage);  // SNAP_FRAMEGEN_FAIL=init|prepare|generate|present|acquire (tests): true when that stage is to fail
 bool FgActive();                       // the rate gate currently lets frames be prepared and generated
 
 // Scene inputs of one frame (upscale.cpp Resolve, recorded on cx.cb after the motion-vector pass).
@@ -61,6 +61,8 @@ void FgNotePresent(bool generated);    // every vkQueuePresentKHR (generated = t
 bool FgThreaded();                                  // the presenter thread is in use (frame generation on, SNAP_FRAMEGEN_THREAD not 0)
 void FgPresentAt(std::function<void()> present, int64_t dueNs);   // runs `present` on the presenter thread at dueNs (steady clock ns)
 void FgDrainPresents();                             // waits until every queued present was made; call with the queue mutex NOT held
+void FgWaitQueued(uint32_t maxQueued);              // waits until at most maxQueued presents are queued or in progress (each holds an acquired image); queue mutex NOT held
+uint32_t FgQueued();                                 // presents queued or in progress on the presenter thread (diagnostics)
 int64_t FgReleaseNs();                              // steady-clock ns of the last FgBeginPresent (the game frame's present time)
 double FgBaseDt();                                  // smoothed base frame time in seconds (0 until measured)
 int64_t FgNowNs();
