@@ -19,7 +19,7 @@ def main():
     imgui = ROOT / 'runtime' / 'ui' / 'third_party' / 'imgui'
     env = vc_env()
     srcs = [ROOT / 'host' / 'launcher_ui.cpp', ROOT / 'host' / 'launcher_ui_test.cpp',
-            ROOT / 'runtime' / 'mods' / 'mods_core.cpp', ROOT / 'runtime' / 'hle' / 'zip_read.cpp',
+            ROOT / 'runtime' / 'mods' / 'mods_core.cpp', ROOT / 'runtime' / 'hle' / 'zip_read.cpp', ROOT / 'runtime' / 'mods' / 'mods_thumb.cpp', ROOT / 'runtime' / 'nvn' / 'nvn_tex.cpp',
             ROOT / 'host' / 'album.cpp', ROOT / 'host' / 'shaderprep.cpp', ROOT / 'runtime' / 'hle' / 'input_core.cpp', ROOT / 'runtime' / 'hle' / 'profiles.cpp', ROOT / 'host' / 'launcher_ui_test_stubs.cpp'] + [imgui / f for f in (   # the Mods page reads packs and conflicts with the game's loader
         'imgui.cpp', 'imgui_draw.cpp', 'imgui_tables.cpp', 'imgui_widgets.cpp', 'imgui_impl_dx11.cpp', 'imgui_impl_win32.cpp')]
     objs = []
@@ -28,7 +28,7 @@ def main():
         if 'third_party' in str(s) and o.exists() and o.stat().st_mtime > s.stat().st_mtime:   # the vendored ImGui sources do not change
             objs.append(str(o))
             continue
-        r = subprocess.run([str(LLVM / 'clang++.exe'), '-std=c++20', '-O1', '-w', '-D_CRT_SECURE_NO_WARNINGS', '-DNOMINMAX', '-I', str(ROOT / 'runtime'), '-I', str(ROOT / 'host'),
+        r = subprocess.run([str(LLVM / 'clang++.exe'), '-std=c++17' if s.parent.name == 'host' else '-std=c++20', '-O1', '-w', '-D_CRT_SECURE_NO_WARNINGS', '-DNOMINMAX', '-I', str(ROOT / 'runtime'), '-I', str(ROOT / 'host'),
                             '-I', str(imgui), '-c', str(s), '-o', str(o)], env=env, creationflags=BELOW_NORMAL)
         if r.returncode:
             return 1

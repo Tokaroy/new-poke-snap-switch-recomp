@@ -10,6 +10,8 @@
 
 #include "hle/zip_read.h"
 #include "mods/mods_core.h"
+#include "mods/mods_thumb.h"
+#include "nvn/nvn_tex.h"
 
 namespace fs = std::filesystem;
 static int g_fail = 0, g_n = 0;
@@ -358,6 +360,85 @@ int main() {
     CHECK(hle::zipr::list(r5 / "many_dirs.zip", ents, &err) && ents.size() == 1);
     if (!err.empty()) std::printf("  many_dirs.zip: %s\n", err.c_str());
     fs::remove_all(r5);
+  }
+
+  // --mods command line: list, conflicts, order, move, enable/disable on a throwaway root (one source with the loader)
+  {
+    fs::path r6 = fs::temp_directory_path() / ("mods_cli_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    fs::remove_all(r6);
+    for (const char* id : {"aa", "bb", "cc", "native-options"}) write(r6 / id / "pack.json", std::string("{\"name\":\"Pack ") + id + "\"}");
+    write(r6 / "aa" / "common/UI/x.drp/icon.nutexb", "A");
+    write(r6 / "bb" / "common/UI/x.drp/icon.nutexb", "B");
+    write(r6 / "cc" / "common/UI/x.drp/icon.nutexb", "C");
+    write(r6 / "cc" / "common/UI/x.drp/other.nutexb", "C2");
+    write(r6 / "bb" / "common/UI/x.drp/other.nutexb", "B2");
+    write(r6 / "mods.json", "{\"keep\":7,\"packs\":[{\"id\":\"bb\",\"enabled\":true},{\"id\":\"native-options\",\"enabled\":true},{\"id\":\"gone\",\"enabled\":true},\"aa\"]}");
+    const std::string R = r6.string();
+    int code = 9;
+    std::string o = cli(R, {"list"}, &code);
+    CHECK(code == 0 && o.find(" 1. [on ] bb") != std::string::npos && o.find(" 2. [on ] aa") != std::string::npos);
+    CHECK(o.find(" 3. [off] cc") != std::string::npos && o.find("(not in mods.json)") != std::string::npos && o.find("native-options") == std::string::npos);
+    o = cli(R, {"enable", "cc"}, &code);
+    CHECK(code == 0);
+    o = cli(R, {"conflicts"}, &code);
+    CHECK(code == 0 && o.find("2 files: bb beats cc") != std::string::npos && o.find("1 file: bb beats aa") != std::string::npos);
+    o = cli(R, {"conflicts", "--files", "aa"}, &code);
+    CHECK(o.find("icon.nutexb: bb beats aa") != std::string::npos && o.find("cc") == std::string::npos);
+    o = cli(R, {"move", "cc", "top"}, &code);
+    CHECK(code == 0 && o.find("1. [on] cc") != std::string::npos);
+    o = cli(R, {"conflicts"}, &code);
+    CHECK(o.find("cc beats bb") != std::string::npos && o.find("cc beats aa") != std::string::npos && o.find("1 file: cc beats aa") != std::string::npos);
+    o = cli(R, {"order", "aa", "bb"}, &code);
+    CHECK(code == 0 && o.find("1. [on] aa") != std::string::npos && o.find("2. [on] bb") != std::string::npos && o.find("3. [on] cc") != std::string::npos);
+    cli(R, {"move", "aa", "down"}, &code);
+    cli(R, {"disable", "bb"}, &code);
+    std::vector<std::string> w;
+    Index ix;
+    load(R, ix, w, false);
+    CHECK(ix.packs.size() == 4 || ix.packs.size() == 3);   // native-options is still listed and kept
+    std::string saved = slurp(r6 / "mods.json");
+    CHECK(saved.find("native-options") != std::string::npos && saved.find("gone") != std::string::npos && saved.find("\"keep\"") != std::string::npos);
+    CHECK(saved.find("\"id\": \"bb\"") != std::string::npos || saved.find("\"id\":\"bb\"") != std::string::npos);
+    o = cli(R, {"move", "nope", "up"}, &code);
+    CHECK(code == 2);
+    o = cli(R, {"order", "aa", "aa"}, &code);
+    CHECK(code == 2);
+    o = cli(R, {"bogus"}, &code);
+    CHECK(code == 2);
+    std::vector<std::string> w2;
+    auto lo = list_order(R, w2);
+    CHECK(lo.size() == 3 && lo[0].id == "bb" && !lo[0].enabled && lo[1].id == "aa" && lo[2].id == "cc");
+    fs::remove_all(r6);
+  }
+
+  // Thumbnail reader: a synthetic BC1 nutexb (swizzled with the same layout code) comes back as the linear blocks, and the mip is picked by size
+  {
+    const uint32_t W = 128, H = 64, MIPS = 4, bpb = 8;
+    nvn::SurfaceLayout lay = nvn::ComputeSurfaceLayout(W, H, 1, 1, MIPS, bpb, 4, 4);
+    std::vector<uint8_t> file((size_t)lay.total + 0xb0, 0);
+    std::vector<std::vector<uint8_t>> lin;
+    for (size_t m = 0; m < lay.levels.size(); m++) {
+      const auto& l = lay.levels[m];
+      std::vector<uint8_t> v((size_t)l.wb * bpb * l.hb);
+      for (size_t i = 0; i < v.size(); i++) v[i] = (uint8_t)(i * 7 + m * 31 + 3);
+      nvn::SwizzleLevel(v.data(), file.data() + l.offset, l, bpb);
+      lin.push_back(v);
+    }
+    uint8_t* f = file.data() + lay.total;
+    auto put = [&](size_t off, uint32_t v) { std::memcpy(f + off, &v, 4); };
+    put(0x84, W); put(0x88, H); put(0x8c, 1); put(0x90, 0x480); put(0x94, 2); put(0x98, MIPS); put(0x9c, 1); put(0xa0, 1);
+    put(0xa4, (uint32_t)lay.total); put(0xa8, 0x54455820);
+    mods::Thumb t;
+    std::string err;
+    CHECK(mods::nutexb_thumb(file.data(), file.size(), 1000, &t, &err) && t.mip == 0 && t.w == 128 && t.h == 64 && t.dxgi == 71 && t.format == "BC1" && t.blocks == lin[0]);
+    CHECK(mods::nutexb_thumb(file.data(), file.size(), 32, &t, &err) && t.mip == 2 && t.w == 32 && t.h == 16 && t.pitch == 8 * 8 && t.blocks == lin[2]);
+    CHECK(mods::nutexb_thumb(file.data(), file.size(), 1, &t, &err) && t.mip == 3 && t.w == 16 && t.h == 8 && t.blocks == lin[3]);   // never below one block
+    put(0x90, 0x4d7);   // BC6: not previewed
+    f = file.data() + lay.total;
+    CHECK(!mods::nutexb_thumb(file.data(), file.size(), 64, &t, &err) && !err.empty());
+    put(0x90, 0x480); put(0xa8, 0);
+    CHECK(!mods::nutexb_thumb(file.data(), file.size(), 64, &t, &err));
+    CHECK(!mods::nutexb_thumb(file.data(), 10, 64, &t, &err));
   }
 
   printf("%d checks, %d failed\n", g_n, g_fail);

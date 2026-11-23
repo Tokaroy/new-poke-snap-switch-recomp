@@ -36,6 +36,7 @@
 #include "hle/sync_backup.h"
 #include "launcher.h"
 #include "cli_flags.h"
+#include "mods/mods_core.h"
 #include "mods/problem_report.h"
 #include "mods/install_check.h"
 #include "elf_check.h"
@@ -1381,6 +1382,13 @@ static int run_action(const std::string& action, const std::vector<std::string>&
   if (action == "backups") return backups_cli(cfg_path, args, say);
   if (action == "upscalers") return upscalers_cli(exe_dir, data, args, say);
   if (action == "hdtex") return hdtex_cli(cfg, args, test, say);
+  if (action == "mods") {   // mod pack order and conflicts: the same loader the game and the Mods page use (runtime/mods/mods_core.cpp, docs/mods.md)
+    int code = 0;
+    std::string text = mods::cli(mods::default_root(), args, &code);
+    while (!text.empty() && text.back() == '\n') text.pop_back();
+    say(text);
+    return code;
+  }
   say("unknown action " + action);
   return 2;
 }

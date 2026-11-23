@@ -31,6 +31,7 @@ struct Override {
 struct Conflict {
   std::string path;
   int winner = 0, loser = 0;
+  std::string winner_file, loser_file;   // the two files on disk; empty for a whole-file (romfs) conflict or a zip that is only listed
 };
 
 uint32_t crc32(const void* data, size_t n);
@@ -66,6 +67,26 @@ std::string default_root();
 // unpack = false (the launcher's conflict list): enabled zips are read from their file list and not unpacked, so the
 // index has the same keys and conflicts but no servable files or romfs layers for them.
 void load(const std::string& root, Index& out, std::vector<std::string>& warnings, bool unpack = true);
+
+// ---- Order and conflicts for the command line and the launcher (one source: the same mods.json and loader as the game).
+struct OrderEntry {
+  std::string id;
+  bool enabled = false;
+  bool listed = true;        // in mods.json (false: a pack on disk that mods.json does not list; off until switched on)
+  std::string name;          // pack.json name (the id when there is none)
+};
+// The packs a player can order, in priority order: the packs mods.json lists that exist on disk, then packs on disk that it
+// does not list (off). "native-options" (the game's own settings tab) is never in it.
+std::vector<OrderEntry> list_order(const std::string& root, std::vector<std::string>& warnings);
+// Writes mods.json from `visible` (as list_order returned it, reordered or with flags changed), then the entries the list
+// does not show (native-options, packs whose folder is missing) as they were. Other keys of mods.json are kept. False + err on failure.
+bool save_order(const std::string& root, const std::vector<OrderEntry>& visible, std::string* err);
+// Command line: `--mods list|conflicts|order|move|enable|disable ...` (docs/mods.md). Returns the text to print and sets
+// *code (0 ok, 1 failed, 2 bad arguments). Changes mods.json only for order, move, enable and disable.
+std::string cli(const std::string& root, const std::vector<std::string>& args, int* code);
+// How many files each (winner, loser) pair of enabled packs shares, most first; ids, not indexes.
+struct PairCount { std::string winner, loser; int count = 0; };
+std::vector<PairCount> conflict_pairs(const Index& ix);
 
 // ---- Zipped packs. A pack may be a folder or <root>/<id>.zip with the same layout inside (at the top of the zip, or in
 // one folder at its top). The zip is never changed: an enabled zip is unpacked once into <root>/.unpacked/<id>/ and read

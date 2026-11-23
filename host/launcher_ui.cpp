@@ -39,6 +39,7 @@
 #include "hle/visual_defaults.h"
 #include "steamdeck.h"
 #include "mods/mods_core.h"
+#include "mods/mods_thumb.h"
 #include "shaderprep.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -233,7 +234,7 @@ struct G {
   bool prep_driver = false;         // the stale reason is a new graphics driver (the driver's own shader cache does not carry over)
   bool prep_stale = false;          // prepared, but with other shadow / foliage / parallax / effect settings than the player has now
 
-  enum View { HOME, SETTINGS, SAVES, STEAM, MODS, ALBUM } view = HOME;
+  enum View { HOME, SETTINGS, SAVES, STEAM, MODS, ALBUM, MODCMP } view = HOME;
   int home_sel = 0, tab = 0, row = 0;
   bool pulldown = false;
   int pd_sel = 0, pd_top = 0;
@@ -1540,7 +1541,7 @@ std::string lower_s(std::string t) { for (char& c : t) c = (char)std::tolower((u
 
 // Files two enabled packs both change, worked out by the game's own loader from mods.json as saved (zips are read from
 // their file list, not unpacked). Refreshed after every load and save.
-struct ModClash { std::string path, winner, loser; };   // winner / loser: pack ids
+struct ModClash { std::string path, winner, loser, winner_file, loser_file; };   // winner / loser: pack ids; the files on disk (empty for a listed-only zip)
 std::vector<ModClash> g_mod_clash;
 int g_mod_clash_top = 0;   // first line shown in the details panel (mouse wheel)
 void mods_find_conflicts() {
@@ -1549,7 +1550,7 @@ void mods_find_conflicts() {
   mods::Index ix;
   std::vector<std::string> warn;
   mods::load(g.mods_root, ix, warn, false);
-  for (const mods::Conflict& c : ix.conflicts) g_mod_clash.push_back({c.path, ix.packs[(size_t)c.winner].id, ix.packs[(size_t)c.loser].id});
+  for (const mods::Conflict& c : ix.conflicts) g_mod_clash.push_back({c.path, ix.packs[(size_t)c.winner].id, ix.packs[(size_t)c.loser].id, c.winner_file, c.loser_file});
 }
 // The conflicts one pack is part of (it won or lost).
 std::vector<const ModClash*> mods_clash_of(const std::string& id) {
@@ -1685,6 +1686,7 @@ std::string size_text(unsigned long long b) {
 
 // ---------------------------------------------------------------------------------------------------------------- drawing
 std::string album_home_sub();   // launcher_album.inc
+void modcmp_open(int mods_row);   // launcher_modcmp.inc: the "Which pack wins" page
 struct Home { const char* label; const char* help; };
 const Home kHome[] = {
     {"Play", "Starts the game with the settings shown on the right. This window closes while you play. Left and right switch profile; the last slot creates a new one."},
@@ -2346,6 +2348,13 @@ void draw_mods() {
   if (!g_mod_clash.empty())
     head = std::to_string(g_mod_clash.size()) + (g_mod_clash.size() == 1 ? " file is" : " files are") + " changed by two packs. The higher pack wins; select one to see which files.";
   text(182, 106, 17, C(g_mod_clash.empty() ? kGrey : 0xb0662e), head.c_str());
+  if (!g_mod_clash.empty()) {   // opens the "Which pack wins" page (X)
+    const float bx = 940, by = 92, bw = 260, bh = 38;
+    const bool h = hot(bx, by, bw, bh);
+    rrect(bx, by, bw, bh, 19, C(h ? 0xe0a06c : 0xd49a6a));
+    text(bx + bw / 2, by + bh / 2, 17, C(0xffffff), "Compare conflicts (X)", 1);
+    if (h && ImGui::IsMouseClicked(0)) modcmp_open(g.row);
+  }
   const int n = (int)g.mods.size();
   g.row = std::clamp(g.row, 0, n);
   const bool moved = ImGui::GetIO().MouseDelta.x != 0 || ImGui::GetIO().MouseDelta.y != 0;
@@ -2497,11 +2506,12 @@ void draw_mods() {
     }
   }
   help_bar(g.row == 0 ? "Opens the mods folder in Explorer. Put each pack in its own folder with a pack.json, or drop in its .zip."
-                       : "Enter turns the pack on or off. Q and E (or the arrows beside it) move it up or down the priority order. Changes apply at the next start.");
+                       : "Enter turns the pack on or off. Q and E (or the arrows beside it) move it up or down the priority order. X compares the files two packs both change. Changes apply at the next start.");
   if (click && hot(1186, 656, 94, 64)) g.view = G::HOME;
 }
 
 #include "launcher_album.inc"   // the Album page (draw_album, album_input, album_open, album_test_view)
+#include "launcher_modcmp.inc"   // the "Which pack wins" page (draw_modcmp, modcmp_input, modcmp_open)
 
 void draw_saves() {
   draw_home_bg();
@@ -2609,6 +2619,7 @@ void handle_input() {
     return;
   }
   if (g.view == G::ALBUM) { album_input(up, dn, lf, rt, ok, back, prev, next, x, y); return; }
+  if (g.view == G::MODCMP) { modcmp_input(up, dn, ok, back); return; }
   if (g.view == G::MODS) {
     if (back) { g.view = G::HOME; return; }
     const int n = (int)g.mods.size();
@@ -2617,6 +2628,7 @@ void handle_input() {
     if (ok) { if (g.row == 0) mods_open_folder(); else mods_toggle(g.row - 1); }
     if (g.row >= 1 && prev) mods_move(g.row - 1, -1);
     if (g.row >= 1 && next) mods_move(g.row - 1, +1);
+    if (x && !g_mod_clash.empty()) modcmp_open(g.row);
     return;
   }
   if (g.view == G::SAVES) {
@@ -2836,6 +2848,7 @@ void apply_test_view(const std::string& v) {
     g.pulldown = true; g.pd_sel = std::max(0, index_of(it, it.cur));
   } else if (v == "saves") { g.view = G::SAVES; g.row = 0; }
   else if (v.rfind("album", 0) == 0) album_test_view(v);
+  else if (v.rfind("modcmp", 0) == 0) { load_mods(); std::sscanf(v.c_str(), "modcmp:%d", &a); g.row = a; g.mods_top = 0; modcmp_open(a); }
   else if (v.rfind("mods", 0) == 0) { load_mods(); g.view = G::MODS; std::sscanf(v.c_str(), "mods:%d", &a); g.row = a; g.mods_top = 0; }
   else if (v == "steam" || v == "steam_run") {   // steam_run really does the job (against SNAP_STEAM_DIR) and shows the result
     refresh_steam_status(); g.steam_running = g.steam_status > 0 && steam_is_running(); g.steam_state = G::ST_ASK; g.view = G::STEAM;
@@ -2995,6 +3008,7 @@ UiResult show(UiInfo& info) {
     if (g.view == G::SETTINGS) draw_settings(&back);
     else if (g.view == G::SAVES) draw_saves();
     else if (g.view == G::MODS) draw_mods();
+    else if (g.view == G::MODCMP) draw_modcmp();
     else if (g.view == G::ALBUM) draw_album();
     else if (g.view == G::STEAM) { g.block_hot = true; draw_home(); g.block_hot = false; draw_steam(); }
     else draw_home();

@@ -102,6 +102,8 @@ void Index::add(int pack, const std::string& archive, const std::string& stem, u
     c.path = rel.empty() ? archive + "/" + stem : rel;
     c.winner = it->second.pack;
     c.loser = pack;
+    c.winner_file = it->second.file;
+    c.loser_file = file;
     conflicts.push_back(std::move(c));
     return;
   }
@@ -331,25 +333,30 @@ bool pack_info(const std::string& root, const std::string& id, Pack& p, std::vec
   return true;
 }
 
-void load(const std::string& root, Index& out, std::vector<std::string>& warn, bool unpack) {
-  std::error_code ec;
-  if (!fs::is_directory(root, ec)) return;
-  std::vector<std::pair<std::string, bool>> order;   // (folder, enabled)
+// mods.json as written: (id, enabled) in order. A plain string is enabled; "folder" is an old spelling of "id".
+static std::vector<std::pair<std::string, bool>> read_order_raw(const std::string& root, std::vector<std::string>& warn) {
+  std::vector<std::pair<std::string, bool>> order;
   std::string txt;
-  if (read_text(fs::path(root) / "mods.json", &txt)) {
-    hle::Json j;
-    std::string err;
-    if (!hle::json_parse(txt, j, err)) warn.push_back("mods.json: " + err);
-    else if (auto* arr = j.get("packs")) {
-      for (auto& e : arr->a) {
-        if (e.type == hle::Json::Str) order.push_back({e.s, true});
-        else if (e.type == hle::Json::Obj) {
-          std::string id = e.get("id") ? e.get("id")->str() : e.get("folder") ? e.get("folder")->str() : "";
-          if (!id.empty()) order.push_back({id, e.get("enabled") ? e.get("enabled")->boolean(true) : true});
-        }
+  if (!read_text(fs::path(root) / "mods.json", &txt)) return order;
+  hle::Json j;
+  std::string err;
+  if (!hle::json_parse(txt, j, err)) { warn.push_back("mods.json: " + err); return order; }
+  if (auto* arr = j.get("packs")) {
+    for (auto& e : arr->a) {
+      if (e.type == hle::Json::Str) order.push_back({e.s, true});
+      else if (e.type == hle::Json::Obj) {
+        std::string id = e.get("id") ? e.get("id")->str() : e.get("folder") ? e.get("folder")->str() : "";
+        if (!id.empty()) order.push_back({id, e.get("enabled") ? e.get("enabled")->boolean(true) : true});
       }
     }
   }
+  return order;
+}
+
+void load(const std::string& root, Index& out, std::vector<std::string>& warn, bool unpack) {
+  std::error_code ec;
+  if (!fs::is_directory(root, ec)) return;
+  std::vector<std::pair<std::string, bool>> order = read_order_raw(root, warn);   // (folder, enabled)
   // Without a mods.json nothing is enabled (the owner parked texture and mod packs; before 2026-11-13 every folder with a pack.json was).
   // Packs the game itself needs are the exception and are on unless mods.json lists them as disabled: "native-options" is the PC tabs of the
   // game's Settings screen that host/play.ps1 builds (host/mods/nativeopt.cpp reads its rows.txt only while that pack is active).
@@ -416,6 +423,182 @@ void load(const std::string& root, Index& out, std::vector<std::string>& warn, b
       out.add(idx, a, s, x, file, rel);
     }
   }
+}
+
+// ---- Order and conflicts for the command line and the launcher.
+std::vector<OrderEntry> list_order(const std::string& root, std::vector<std::string>& warn) {
+  std::vector<OrderEntry> v;
+  auto have = [&](const std::string& id) { for (auto& e : v) if (lower(e.id) == lower(id)) return true; return false; };
+  auto add = [&](const std::string& id, bool on, bool listed) {
+    Pack p;
+    if (id == "native-options" || have(id) || !pack_info(root, id, p, warn)) return;
+    OrderEntry e;
+    e.id = id; e.enabled = on; e.listed = listed; e.name = p.name.empty() ? id : p.name;
+    v.push_back(std::move(e));
+  };
+  for (auto& o : read_order_raw(root, warn)) add(o.first, o.second, true);
+  for (const std::string& id : packs_on_disk(root)) add(id, false, false);
+  return v;
+}
+
+bool save_order(const std::string& root, const std::vector<OrderEntry>& visible, std::string* err) {
+  std::vector<std::string> warn;
+  std::vector<std::pair<std::string, bool>> raw = read_order_raw(root, warn);
+  auto shown = [&](const std::string& id) { for (auto& e : visible) if (lower(e.id) == lower(id)) return true; return false; };
+  hle::Json arr = hle::Json::array();
+  auto put = [&](const std::string& id, bool on) {
+    hle::Json o = hle::Json::object();
+    o.set("id", hle::Json::string(id));
+    o.set("enabled", hle::Json::boolean_(on));
+    arr.a.push_back(std::move(o));
+  };
+  for (auto& e : visible) put(e.id, e.enabled);
+  std::vector<std::string> done;
+  for (auto& r : raw) {   // native-options and packs whose folder is missing stay as they were
+    bool dup = false;
+    for (auto& d : done) if (lower(d) == lower(r.first)) dup = true;
+    if (shown(r.first) || dup) continue;
+    done.push_back(r.first);
+    put(r.first, r.second);
+  }
+  hle::Json doc = hle::Json::object();
+  std::string txt;
+  hle::Json old;
+  std::string perr;
+  if (read_text(fs::path(root) / "mods.json", &txt) && hle::json_parse(txt, old, perr) && old.type == hle::Json::Obj) doc = old;
+  doc.set("packs", arr);
+  std::string out;
+  hle::json_dump(doc, out);
+  std::error_code ec;
+  fs::create_directories(fs::path(root), ec);
+  fs::path f = fs::path(root) / "mods.json", tmp = fs::path(root) / "mods.json.tmp";
+  {
+    std::ofstream o(tmp, std::ios::binary | std::ios::trunc);
+    o << out << "\n";
+    if (!o) { if (err) *err = "could not write " + tmp.string(); return false; }
+  }
+  fs::rename(tmp, f, ec);
+  if (ec) { ec.clear(); fs::remove(f, ec); ec.clear(); fs::rename(tmp, f, ec); }
+  if (ec) { if (err) *err = "could not replace mods.json: " + ec.message(); return false; }
+  return true;
+}
+
+std::vector<PairCount> conflict_pairs(const Index& ix) {
+  std::vector<PairCount> v;
+  for (const Conflict& c : ix.conflicts) {
+    const std::string& w = ix.packs[(size_t)c.winner].id;
+    const std::string& l = ix.packs[(size_t)c.loser].id;
+    bool found = false;
+    for (auto& p : v) if (p.winner == w && p.loser == l) { p.count++; found = true; break; }
+    if (!found) v.push_back({w, l, 1});
+  }
+  std::stable_sort(v.begin(), v.end(), [](const PairCount& a, const PairCount& b) { return a.count > b.count; });
+  return v;
+}
+
+std::string cli(const std::string& root, const std::vector<std::string>& args, int* code) {
+  int rc = 0;
+  if (!code) code = &rc;
+  *code = 0;
+  std::string out;
+  const std::string usage =
+      "usage: --mods list\n"
+      "       --mods conflicts [--files] [<pack id>]\n"
+      "       --mods order <id> [<id> ...]      put these packs on top, in this order\n"
+      "       --mods move <id> up|down|top|bottom|<position>\n"
+      "       --mods enable|disable <id> [<id> ...]\n"
+      "The first pack wins when two change the same file. Changes apply at the next game start.\n";
+  const std::string verb = args.empty() ? "list" : lower(args[0]);
+  std::vector<std::string> warn;
+  std::vector<OrderEntry> v = list_order(root, warn);
+  auto find = [&](const std::string& id) -> int { for (size_t i = 0; i < v.size(); i++) if (lower(v[i].id) == lower(id)) return (int)i; return -1; };
+  auto warnings = [&]() { for (auto& w : warn) out += "warning: " + w + "\n"; };
+  auto fail = [&](const std::string& m, int c) { out += m + "\n"; *code = c; return out; };
+  if (verb == "list") {
+    out += "mods folder: " + root + "\n";
+    if (v.empty()) out += "no packs\n";
+    for (size_t i = 0; i < v.size(); i++) {
+      char line[64];
+      snprintf(line, sizeof line, "%2zu. [%s] ", i + 1, v[i].enabled ? "on " : "off");
+      out += line + v[i].id + (v[i].name != v[i].id ? "  (" + v[i].name + ")" : "") + (v[i].listed ? "" : "  (not in mods.json)") + "\n";
+    }
+    warnings();
+    return out;
+  }
+  if (verb == "conflicts") {
+    bool files = false;
+    std::string only;
+    for (size_t i = 1; i < args.size(); i++) { if (args[i] == "--files") files = true; else only = args[i]; }
+    if (!only.empty() && find(only) < 0) return fail("no such pack: " + only, 2);
+    Index ix;
+    load(root, ix, warn, false);
+    int shown = 0;
+    if (files) {
+      for (const Conflict& c : ix.conflicts) {
+        const std::string& w = ix.packs[(size_t)c.winner].id;
+        const std::string& l = ix.packs[(size_t)c.loser].id;
+        if (!only.empty() && lower(only) != lower(w) && lower(only) != lower(l)) continue;
+        out += c.path + ": " + w + " beats " + l + "\n";
+        shown++;
+      }
+    } else {
+      for (const PairCount& p : conflict_pairs(ix)) {
+        if (!only.empty() && lower(only) != lower(p.winner) && lower(only) != lower(p.loser)) continue;
+        out += std::to_string(p.count) + " file" + (p.count == 1 ? "" : "s") + ": " + p.winner + " beats " + p.loser + "\n";
+        shown++;
+      }
+    }
+    if (!shown) out += "no conflicts between enabled packs\n";
+    else if (!files) out += "add --files to list every file\n";
+    warnings();
+    return out;
+  }
+  if (verb == "enable" || verb == "disable") {
+    if (args.size() < 2) return fail(usage, 2);
+    for (size_t i = 1; i < args.size(); i++) {
+      int k = find(args[i]);
+      if (k < 0) return fail("no such pack: " + args[i], 2);
+      v[(size_t)k].enabled = verb == "enable";
+    }
+  } else if (verb == "order") {
+    if (args.size() < 2) return fail(usage, 2);
+    std::vector<OrderEntry> top;
+    for (size_t i = 1; i < args.size(); i++) {
+      int k = find(args[i]);
+      if (k < 0) return fail("no such pack: " + args[i], 2);
+      bool dup = false;
+      for (auto& t : top) if (lower(t.id) == lower(args[i])) dup = true;
+      if (dup) return fail("pack named twice: " + args[i], 2);
+      top.push_back(v[(size_t)k]);
+    }
+    for (auto& e : v) { bool in = false; for (auto& t : top) if (lower(t.id) == lower(e.id)) in = true; if (!in) top.push_back(e); }
+    v = top;
+  } else if (verb == "move") {
+    if (args.size() != 3) return fail(usage, 2);
+    int k = find(args[1]);
+    if (k < 0) return fail("no such pack: " + args[1], 2);
+    const std::string w = lower(args[2]);
+    int to = k;
+    if (w == "up") to = k - 1;
+    else if (w == "down") to = k + 1;
+    else if (w == "top") to = 0;
+    else if (w == "bottom") to = (int)v.size() - 1;
+    else if (!w.empty() && w.size() < 5 && w.find_first_not_of("0123456789") == std::string::npos) to = atoi(w.c_str()) - 1;
+    else return fail(usage, 2);
+    to = std::clamp(to, 0, (int)v.size() - 1);
+    OrderEntry e = v[(size_t)k];
+    v.erase(v.begin() + k);
+    v.insert(v.begin() + to, e);
+  } else if (verb == "--help" || verb == "help" || verb == "-h") {
+    return usage;
+  } else {
+    return fail("unknown --mods command: " + args[0] + "\n" + usage, 2);
+  }
+  std::string err;
+  if (!save_order(root, v, &err)) return fail("mods.json was not changed: " + err, 1);
+  out += "mods.json saved. Order now:\n";
+  for (size_t i = 0; i < v.size(); i++) out += std::to_string(i + 1) + ". [" + (v[i].enabled ? "on" : "off") + "] " + v[i].id + "\n";
+  return out;
 }
 
 size_t chunk_header_len(size_t name_len) { return 0x18 + ((name_len + 4) & ~(size_t)3); }

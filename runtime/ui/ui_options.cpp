@@ -1168,6 +1168,22 @@ std::string read_all(const fs::path& p) {
   return ss.str();
 }
 
+// Files two enabled packs both change, from the game's own loader (mods::load) run on mods.json as saved. Worked out when the tab is opened,
+// on Rescan and after a save, not every few seconds: a big HD pack has thousands of files to list.
+bool g_conf_valid = false;
+std::vector<mods::PairCount> g_conf_pairs;
+std::vector<std::string> g_conf_lines;   // "<path>: <winner> beats <loser>", in loader order
+void mods_conflicts_refresh() {
+  g_conf_valid = true;
+  g_conf_pairs.clear();
+  g_conf_lines.clear();
+  mods::Index ix;
+  std::vector<std::string> warn;
+  mods::load(mods::default_root(), ix, warn, false);
+  g_conf_pairs = mods::conflict_pairs(ix);
+  for (const mods::Conflict& c : ix.conflicts) g_conf_lines.push_back(c.path + ": " + ix.packs[(size_t)c.winner].id + " beats " + ix.packs[(size_t)c.loser].id);
+}
+
 void mods_reload() {
   g_mods_loaded = now_secs();
   g_mods_root = mods::default_root();
@@ -1248,6 +1264,7 @@ bool mods_save() {
   if (ec) { g_mods_msg = sub(tr("Could not replace mods.json: %s"), ec.message()); g_mods_err = true; return false; }
   g_mods_msg = tr("Saved mods.json. The change applies after a restart.");
   g_mods_err = false;
+  g_conf_valid = false;
   return true;
 }
 
@@ -1364,7 +1381,7 @@ void tab_mods() {
   ImGui::Spacing();
   if (ImGui::Button(tr("Open mods folder"))) open_folder(g_mods_root);
   ImGui::SameLine();
-  if (ImGui::Button(tr("Rescan"))) mods_reload();
+  if (ImGui::Button(tr("Rescan"))) { mods_reload(); g_conf_valid = false; }
   ImGui::SameLine();
   ImGui::TextColored(t.conflict, "%s", tr("restart needed"));
   if (!g_mods_msg.empty()) ImGui::TextColored(g_mods_err ? t.error : t.good, "%s", g_mods_msg.c_str());
@@ -1406,6 +1423,19 @@ void tab_mods() {
   }
   if (move_from >= 0 && move_to >= 0 && move_to < (int)g_mods.size()) { std::swap(g_mods[move_from], g_mods[move_to]); changed = true; }
   if (changed) mods_save();
+  // Conflicts: the same list as the launcher's Mods page and `--mods conflicts` (one loader). The first pack of a pair is the one the game uses.
+  if (!g_conf_valid) mods_conflicts_refresh();
+  ImGui::Spacing();
+  ImGui::Separator();
+  ImGui::TextColored(t.text, "%s", tr("Conflicts (files two enabled packs both change)"));
+  if (g_conf_pairs.empty()) ImGui::TextColored(t.text_dim, "%s", tr("No file is changed by two enabled packs."));
+  for (const mods::PairCount& pc : g_conf_pairs) ImGui::TextColored(t.conflict, tr("%s beats %s on %d files"), pc.winner.c_str(), pc.loser.c_str(), pc.count);
+  if (!g_conf_lines.empty() && ImGui::TreeNode(tr("Every file"))) {
+    ImGuiListClipper clip;
+    clip.Begin((int)g_conf_lines.size());
+    while (clip.Step()) for (int i = clip.DisplayStart; i < clip.DisplayEnd; ++i) ImGui::TextColored(t.text_dim, "%s", g_conf_lines[(size_t)i].c_str());
+    ImGui::TreePop();
+  }
 }
 
 // ---- scripted-test entry points (ui_test.cpp): the same code the controls run

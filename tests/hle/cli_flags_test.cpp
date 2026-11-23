@@ -158,6 +158,10 @@ int main() {
     CHECK(p.error.empty() && p.action == "hdtex" && p.action_args.size() == 5 && p.sets.empty() && p.rest.empty());
     p = snap_cli::parse({"--hdtex"});
     CHECK(p.error.empty() && p.action_args.empty());
+    p = snap_cli::parse({"--mods", "move", "hd-auto", "top"});   // --mods owns what follows it (order, conflicts, enable, disable)
+    CHECK(p.error.empty() && p.action == "mods" && p.action_args == V({"move", "hd-auto", "top"}) && p.rest.empty());
+    CHECK(snap_cli::parse({"--mods"}).error.empty() && snap_cli::action_takes_args("mods"));
+    CHECK(!snap_cli::parse({"--play", "--mods", "list"}).error.empty());
     CHECK(!snap_cli::parse({"--play", "--restore-backup", "latest"}).error.empty());
     CHECK(!snap_cli::parse({"--check-install", "latest"}).error.empty());   // the other actions still take nothing
     CHECK(snap_cli::action_takes_args("hdtex") && !snap_cli::action_takes_args("update"));

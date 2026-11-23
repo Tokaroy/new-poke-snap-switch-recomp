@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[2]
 ARGS = [a for a in sys.argv[1:] if a != '--rebuild']
 EXE = Path(ARGS[0]) if ARGS else ROOT / 'build' / 'snap' / 'snap_boot.exe'
 # What the checks below exercise. An exe built before any of these changed cannot pass, whatever the code says now.
-SOURCES = ('host/cli_flags.h', 'host/launcher.cpp', 'host/launcher_upscalers.cpp', 'host/boot.cpp', 'host/portable.cpp', 'host/readonly_install.cpp', 'host/readonly_logic.h')
+SOURCES = ('host/cli_flags.h', 'runtime/mods/mods_core.cpp', 'host/launcher.cpp', 'host/launcher_upscalers.cpp', 'host/boot.cpp', 'host/portable.cpp', 'host/readonly_install.cpp', 'host/readonly_logic.h')
 
 
 def stale_against(exe, sources, root=ROOT):
@@ -183,6 +183,29 @@ def main():
         code, out = run(['--hdtex', '--level', 'hd', '--set', 'creature.scale=4', '--work', 'a b'])
         check('--hdtex <options>: passed on word for word', code == 0 and 'hdtex --level hd --set creature.scale=4 --work "a b"' in out, (code, out))
         (game / 'config.json').write_text(json.dumps(cfg))
+        # ---- --mods: order and conflicts of the packs in the mods folder (runtime/mods/mods_core.cpp), no window, no game
+        mroot = work / 'appdata' / 'SnapRecomp' / 'mods'
+        for pid in ('pack-a', 'pack-b'):
+            (mroot / pid / 'common' / 'UI' / 'x.drp').mkdir(parents=True, exist_ok=True)
+            (mroot / pid / 'pack.json').write_text(json.dumps({'name': 'Pack ' + pid[-1].upper()}))
+            (mroot / pid / 'common' / 'UI' / 'x.drp' / 'icon.nutexb').write_bytes(pid.encode())
+        (mroot / 'mods.json').write_text(json.dumps({'packs': [{'id': 'pack-a', 'enabled': True}, {'id': 'pack-b', 'enabled': True}]}))
+        code, out = run(['--mods', 'list'], autoplay=False)
+        check('--mods list: order and on/off, no window', code == 0 and out.index('pack-a') < out.index('pack-b') and '[on ]' in out and 'launcher: game folder' not in out, (code, out))
+        code, out = run(['--mods', 'conflicts', '--files'], autoplay=False)
+        check('--mods conflicts --files: the first pack wins', code == 0 and 'icon.nutexb: pack-a beats pack-b' in out, (code, out))
+        code, out = run(['--mods', 'move', 'pack-b', 'top'], autoplay=False)
+        saved = json.loads((mroot / 'mods.json').read_text())['packs']
+        check('--mods move: mods.json rewritten', code == 0 and [e['id'] for e in saved] == ['pack-b', 'pack-a'], (code, out, saved))
+        code, out = run(['--mods', 'conflicts'], autoplay=False)
+        check('--mods conflicts: the order change flips the winner', code == 0 and '1 file: pack-b beats pack-a' in out, (code, out))
+        code, out = run(['--mods', 'disable', 'nope'], autoplay=False)
+        check('--mods with a bad pack name: exit 2', code == 2 and 'no such pack' in out, (code, out))
+        code, out = run(['--mods', 'order', 'pack-a', 'pack-b'], autoplay=False)
+        saved = json.loads((mroot / 'mods.json').read_text())['packs']
+        check('--mods order: set the whole order', code == 0 and [e['id'] for e in saved] == ['pack-a', 'pack-b'], (code, out, saved))
+        code, out = run(['--mods', 'nonsense'], autoplay=False)
+        check('--mods with an unknown command: exit 2 and the usage', code == 2 and 'usage: --mods' in out, (code, out))
         code, out = run(['--update', '--report'])
         check('two actions: exit 2', code == 2 and '--report' in out, (code, out))
         code, out = run(['--play', '--hdtex'])

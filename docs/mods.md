@@ -88,6 +88,37 @@ the list wins. The loader logs each one at startup:
 The launcher's Mods page lists the same conflicts (it runs the same loader code): every path two enabled packs both
 change, and which pack wins. Move a pack up to make it win.
 
+### Seeing and changing the order
+
+One loader, one `mods.json`: every way below reads and writes the same file and shows the same conflicts.
+
+- **Launcher, Mods page.** The packs in priority order, with the arrows (or Q and E) beside each one to move it, and a count of shared
+  files per pack. **Compare conflicts** (or X) opens **Which pack wins**: every shared file, textures first. Pick one to see both
+  packs' versions side by side (the winner on the left, the hidden one on the right). A `.nutexb` is shown as a thumbnail (BC1 to BC5,
+  BC7 and RGBA8, any size; the picture is read from your own files, only for the screen, nothing is saved or sent); other files show
+  their sizes. **Enter** puts the losing pack just above the winner and saves `mods.json`. A zip pack is unpacked into
+  `.unpacked` on the first preview, as the game would at its start.
+- **In game, F1 menu, Mods tab.** The same order, arrows and on/off boxes, plus a Conflicts list (pairs of packs and how many files
+  they share, and every file under "Every file"). Order changes need a restart.
+- **Command line, no window** (the game does not start; `--data-dir` and other player flags go before it):
+
+  ```
+  SnapRecomp.exe --mods list                      order, on/off, names
+  SnapRecomp.exe --mods conflicts [--files] [id]  pairs and counts; --files lists every file and the winner; id limits to one pack
+  SnapRecomp.exe --mods order a b c               put these packs on top in this order (the rest follow)
+  SnapRecomp.exe --mods move id up|down|top|bottom|<position>
+  SnapRecomp.exe --mods enable id [id ...]        (and disable)
+  ```
+
+  Exit code 0 is done, 1 a failed write, 2 a bad argument. Packs that are on disk but not in `mods.json` are listed as off and are
+  written into it on the first change. `native-options` and entries whose folder is missing are kept as they are.
+- **Overlap report for a whole mods folder.** `python -I scripts\mods\overlap_report.py [--identical]` counts, for every pair of
+  enabled packs, the files both change and which wins, and writes `analysis\modorder\overlap.md` (read only).
+
+All HD packs (`hd-auto`, `hd-florio`, `hd-pokemon`, `hd_pikachu`, HD shadows and the rest) are ordinary packs: they load through
+`mods.json` like any other, so the same order and conflict list cover them. The only texture path outside `mods.json` is the shiny
+twin folder (`SNAP_SHINY_DIR`, `docs/shiny-mod-plan.md`), which the game reads separately and which is not ordered here.
+
 ## The HD texture pack
 
 The builder's AI texture upscaler (`builder\HD-TEXTURES.md`) writes an ordinary folder pack, `hd-ai-textures`, and adds
@@ -137,7 +168,8 @@ code indexes by the original length) must keep its size.
   atomic load and a return.
 - Zips are read by `runtime/hle/zip_read.cpp` (no third-party code; the save importer uses it too).
 - Tests: `tests\mods\run_tests.ps1` (path mapping, index priority, size override, zip packs, conflicts) and
-  `python -I tests\mods\test_make_override.py`.
+  `python -I tests\mods\test_make_override.py`. The same C++ test covers the `--mods` command (`mods::cli`) and the thumbnail
+  reader (`runtime/mods/mods_thumb.cpp`).
 
 ## Code hooks
 

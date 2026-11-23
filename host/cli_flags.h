@@ -21,9 +21,9 @@
 //   --data-dir <folder>           one folder for saves, settings, mods, caches and logs
 //   --no-prompt                   never open a window to ask a question: a game folder the exe cannot write to ends the start with exit code 3
 //                                 and a message on stderr (docs/readonly-install.md). --play, the actions and the other commands behave this way already.
-//   --update | --check-install | --report | --restore-backup | --backups | --upscalers | --hdtex
+//   --update | --check-install | --report | --restore-backup | --backups | --upscalers | --hdtex | --mods
 //                                 one launcher action without the launcher window (host/launcher.cpp run_action); the game does not start.
-//                                 No action opens a dialog. --restore-backup, --backups, --upscalers and --hdtex take everything after them as
+//                                 No action opens a dialog. --restore-backup, --backups, --upscalers, --hdtex and --mods take everything after them as
 //                                 their own arguments (action_takes_args), so the other player flags go before them.
 //   --help | -h | /?   --version
 #pragma once
@@ -79,13 +79,13 @@ inline std::string on_off(const std::string& s) {
 
 // Launcher actions that have a flag of their own: "--" + name.
 inline const std::vector<std::string>& action_names() {
-  static const std::vector<std::string> k = {"update", "check-install", "report", "restore-backup", "backups", "upscalers", "hdtex"};
+  static const std::vector<std::string> k = {"update", "check-install", "report", "restore-backup", "backups", "upscalers", "hdtex", "mods"};
   return k;
 }
 
 // These actions own every argument after them: --restore-backup [latest | <n>], --backups [list | now | auto | verify [<n>] | restore <n|latest> ...],
-// --upscalers [<name> --accept-license <name>], --hdtex [the builder's hdtex options]. Without arguments each one prints its state and changes nothing.
-inline bool action_takes_args(const std::string& n) { return n == "restore-backup" || n == "backups" || n == "upscalers" || n == "hdtex"; }
+// --upscalers [<name> --accept-license <name>], --hdtex [the builder's hdtex options], --mods list|conflicts|order|move|enable|disable (docs/mods.md). Without arguments each one prints its state and changes nothing.
+inline bool action_takes_args(const std::string& n) { return n == "restore-backup" || n == "backups" || n == "upscalers" || n == "hdtex" || n == "mods"; }
 
 // "saves,settings,photos" (any subset, comma or space separated) -> the same list in lower case, or "" when a word is not one of them.
 inline std::string backup_include(const std::string& s) {
@@ -279,6 +279,8 @@ inline const char* help_text() {
          "  --upscalers [<name> --accept-license <name>]\n"
          "                               list DLSS / FSR / XeSS, or download one whose license you accept (no window)\n"
          "  --hdtex [options]            HD texture state, or the HD texture tool with its own options (no window)\n"
+         "  --mods [list|conflicts [--files] [<id>]|order <id>...|move <id> up|down|top|bottom|<n>|enable <id>...|disable <id>...]\n"
+         "                               mod packs in priority order, which pack wins each shared file, or change the order (no window)\n"
          "\n"
          "Other commands (no game window unless noted):\n"
          "  --import-save <folder or zip>, --export-save <folder>\n"

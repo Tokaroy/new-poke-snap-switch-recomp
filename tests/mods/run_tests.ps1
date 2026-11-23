@@ -8,7 +8,7 @@ $env:PATH = "$root\tools\llvm\bin;" + $env:PATH
 $out = Join-Path $PSScriptRoot 'out'
 New-Item -ItemType Directory -Force $out | Out-Null
 $exe = Join-Path $out 'mods_tests.exe'
-& clang++ -std=c++20 -O1 -g -D_CRT_SECURE_NO_WARNINGS -I"$root\runtime" (Join-Path $PSScriptRoot 'mods_tests.cpp') (Join-Path $root 'runtime\mods\mods_core.cpp') (Join-Path $root 'runtime\hle\zip_read.cpp') -o $exe
+& clang++ -std=c++20 -O1 -g -D_CRT_SECURE_NO_WARNINGS -I"$root\runtime" (Join-Path $PSScriptRoot 'mods_tests.cpp') (Join-Path $root 'runtime\mods\mods_core.cpp') (Join-Path $root 'runtime\hle\zip_read.cpp') (Join-Path $root 'runtime\mods\mods_thumb.cpp') (Join-Path $root 'runtime\nvn\nvn_tex.cpp') -o $exe
 if ($LASTEXITCODE -ne 0) { throw "build failed" }
 $p = Start-Process -FilePath $exe -NoNewWindow -PassThru
 $p.PriorityClass = 'BelowNormal'
