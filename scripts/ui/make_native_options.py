@@ -97,7 +97,7 @@ TABS = [
     ]),
     ('Textures', 'Texture, shadow and shading detail.', [
         row('Anisotropic filtering', 'p', 'opt', 'gfx_aniso', '0',
-            (('0', 'Original'), ('2', '2x'), ('4', '4x'), ('8', '8x'), ('16', '16x')),
+            (('0', 'Off (1x)'), ('2', '2x'), ('4', '4x'), ('8', '8x'), ('16', '16x')),
             'Keeps ground and walls sharp when seen at a slant. 16x costs almost nothing on a PC.' + R),
         row('Texture sharpness', 'p', 'opt', 'gfx_lod_bias', 'auto',
             (('auto', 'Automatic'), ('-2', '-2 (sharpest)'), ('-1.5', '-1.5'), ('-1', '-1 (sharper)'), ('-0.5', '-0.5'),

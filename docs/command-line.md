@@ -22,6 +22,8 @@ SnapRecomp.exe --play [options]     start the game without the launcher window
 | `--mute-in-background on\|off` | Mute the game while its window is in the background. This start only. |
 | `--shiny <off\|on\|n>` | Rare shiny Pokemon (needs the shiny pack): `on` is 1 in 512, a number is 1 in that many, `1` makes every Pokemon shiny (test). Colors only; scores, spawns and saves do not change. This start only. |
 | `--frame-cap <fps>` | Frame rate limit. 0 is no extra limit. This start only. |
+| `--vsync on\|adaptive\|fast\|off` | Present mode: On is FIFO, Adaptive is FIFO_RELAXED, Fast is MAILBOX, Off is IMMEDIATE. A mode the driver lacks falls back to FIFO (Off tries MAILBOX first). This start only. |
+| `--aniso off\|2\|4\|8\|16` | Anisotropic texture filtering. Off is the game's own 1x. This start only. |
 | `--update-check on\|off` | Check for updates when the launcher starts. This start only; config.json is not changed. |
 | `--update-channel stable\|testing` | Which update channel the check follows. This start only. |
 | `--profile <name>` | The profile to play, or the one `--import-save` and `--export-save` use. |

@@ -45,6 +45,7 @@ namespace nvn { const char* FgNotice(); }   // nvn_framegen.cpp: why frame gener
 
 extern "C" void snap_vsync_set(const char* mode);   // runtime/nvn/nvn_vk.cpp [vsync]: live, the next present rebuilds the swapchain
 extern "C" const char* snap_vsync_get();
+extern "C" const char* snap_vsync_fallback();   // "" or the present mode used instead of the chosen one
 extern "C" void snap_contact_shadows_set(int on);   // runtime/nvn/nvn_contact.cpp: live, the next scene frame
 extern "C" int snap_contact_shadows_get();
 extern "C" int snap_live_size_blocked(void);   // runtime/nvn/nvn_retarget.cpp: bit 0 the anti-aliasing mode, bit 1 the size rows could not follow (restart)
@@ -147,6 +148,13 @@ std::string get_cap() { return std::to_string(snap_window_frame_cap()); }
 void set_cap(const std::string& v) { snap_window_set_frame_cap(std::atoi(v.c_str())); }
 // Vsync: live through the renderer, remembered as settings key "vsync" (exported as SNAP_VSYNC at the next start; "on" = erased)
 std::string get_vsync() { return snap_vsync_get(); }
+// Under the row: the driver lacks the chosen mode (snap_vsync_fallback names the mode used instead, "" = as chosen).
+std::string vsync_note() {
+  const std::string f = snap_vsync_fallback();
+  if (f.empty()) return "";
+  return f == "MAILBOX" ? "Your graphics driver does not offer this mode, so Vsync Fast (MAILBOX) is used instead."
+                        : "Your graphics driver does not offer this mode, so Vsync On (FIFO) is used instead.";
+}
 void set_vsync(const std::string& v) {
   if (v == "on") st::erase("vsync");
   else st::set("vsync", v);
@@ -616,7 +624,7 @@ std::vector<Opt>& graphics_opts() {
       {"vsync", "Vsync", kChoice, kLive,
        "On: no tearing (the default). Adaptive: tears only while below the refresh rate. Fast: no tearing and lower latency, renders extra frames. "
        "Off: lowest latency, may tear. The game's own frame pacing is unchanged.", "on",
-       {{"on", "On"}, {"adaptive", "Adaptive"}, {"fast", "Fast"}, {"off", "Off"}}, 0, 0, "", "SNAP_VSYNC", get_vsync, set_vsync},
+       {{"on", "On"}, {"adaptive", "Adaptive"}, {"fast", "Fast"}, {"off", "Off"}}, 0, 0, "", "SNAP_VSYNC", get_vsync, set_vsync, nullptr, nullptr, vsync_note},
       {"ui_smooth", "Smooth interface", kChoice, kLive,
        "Above 60 FPS the menus and the frame and reticle over a Pokemon step 60 times a second, as the game does. On draws them every displayed frame, "
        "moving a moving element a fraction of a step ahead along its own motion, with no added delay. Display only: the game, the score and your photos are unchanged. "

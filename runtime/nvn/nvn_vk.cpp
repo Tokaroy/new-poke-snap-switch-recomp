@@ -1616,6 +1616,7 @@ static SyncWaitResult WaitSyncRaw(const SyncImpl* s, uint64_t timeoutNs) {
 // Only the present mode changes; Pace() and the guest nn::vi vsync clock run the same in every mode.
 static std::atomic<int> g_vsyncMode{-1};   // 0 on, 1 adaptive, 2 fast, 3 off; -1 = not read yet
 static std::atomic<int> g_vsyncGen{0};
+static std::atomic<int> g_vsyncActual{-1};   // present mode the swapchain really uses (0 FIFO, 1 FIFO_RELAXED, 2 MAILBOX, 3 IMMEDIATE); -1 = no swapchain yet
 static int ParseVsync(const char* e) {
   if (!e || !*e) return 0;
   if (!_stricmp(e, "adaptive") || !_stricmp(e, "relaxed")) return 1;
@@ -1633,6 +1634,12 @@ static int VsyncMode() {
 extern "C" void snap_vsync_set(const char* mode) {
   const int m = nvn::ParseVsync(mode);
   if (nvn::g_vsyncMode.exchange(m) != m) nvn::g_vsyncGen.fetch_add(1);
+}
+// "" when the swapchain uses the requested mode (or none exists yet); else the mode name used instead ("FIFO", "MAILBOX", ...), for the options rows.
+extern "C" const char* snap_vsync_fallback() {
+  static const char* const k[] = {"FIFO", "FIFO_RELAXED", "MAILBOX", "IMMEDIATE"};
+  const int a = nvn::g_vsyncActual.load();
+  return a < 0 || a == nvn::VsyncMode() ? "" : k[a];
 }
 extern "C" const char* snap_vsync_get() { static const char* const k[] = {"on", "adaptive", "fast", "off"}; return k[nvn::VsyncMode()]; }
 namespace nvn {
@@ -1677,6 +1684,7 @@ bool WindowImpl::Recreate() {
     if (!has(want) && want == VK_PRESENT_MODE_IMMEDIATE_KHR) want = VK_PRESENT_MODE_MAILBOX_KHR;   // off: uncapped without tearing is next best
     if (!has(want)) want = VK_PRESENT_MODE_FIFO_KHR;   // FIFO is always offered
     mode = want;
+    g_vsyncActual.store(mode == VK_PRESENT_MODE_FIFO_RELAXED_KHR ? 1 : mode == VK_PRESENT_MODE_MAILBOX_KHR ? 2 : mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? 3 : 0);
     static int logged = -2; static VkPresentModeKHR loggedMode = VK_PRESENT_MODE_MAX_ENUM_KHR;
     if (logged != vm || loggedMode != mode) {
       static const char* const kName[] = {"on", "adaptive", "fast", "off"};

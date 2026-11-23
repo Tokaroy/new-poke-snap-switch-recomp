@@ -11,6 +11,7 @@
 //   --steam-deck                  the Steam Deck preset (host/steamdeck.h, docs/steam-deck.md): borderless 1280 x 800, handheld picture settings,
 //                                 bigger HUD, Xbox button icons. Flags after it win (--set hud_scale=200, --width ...).
 //   --pause-in-background on|off  --mute-in-background on|off  --frame-cap <fps>   the F1 / launcher Window rows (0 = no extra limit); this run only
+//   --vsync on|adaptive|fast|off  --aniso off|2|4|8|16   present mode and texture filtering (SNAP_VSYNC, SNAP_ANISO); this run only
 //   --update-check on|off  --update-channel stable|testing                            the launcher's update rows; this run only
 //   --profile <name or id>        the profile to play (also the profile of --import-save / --export-save)
 //   --set <key>=<value>           one settings key for this run only (repeatable); a name that starts with SNAP_ sets that variable.
@@ -116,6 +117,15 @@ inline Parsed parse(const std::vector<std::string>& args) {
       else if (v == "on" || v == "yes") p.env.push_back({"SNAP_SHINY", "1"});
       else if (is_number(v) && std::atol(v.c_str()) >= 1) { p.env.push_back({"SNAP_SHINY", "1"}); p.env.push_back({"SNAP_SHINY_ODDS", v}); }
       else { p.error = a + " needs off, on or a whole number n for 1 in n, got \"" + v + "\""; break; }
+    } else if (a == "--vsync") {
+      if (!value(i, &v)) break;
+      if (v != "on" && v != "adaptive" && v != "fast" && v != "off") { p.error = a + " needs on, adaptive, fast or off, got \"" + v + "\""; break; }
+      p.env.push_back({"SNAP_VSYNC", v});
+    } else if (a == "--aniso") {
+      if (!value(i, &v)) break;
+      if (v == "off") v = "0";
+      if (v != "0" && v != "1" && v != "2" && v != "4" && v != "8" && v != "16") { p.error = a + " needs off, 2, 4, 8 or 16, got \"" + v + "\""; break; }
+      p.env.push_back({"SNAP_ANISO", v});
     } else if (a == "--update-channel") {
       if (!value(i, &v)) break;
       if (v != "stable" && v != "testing") { p.error = a + " needs stable or testing, got \"" + v + "\""; break; }
@@ -201,6 +211,8 @@ inline const char* help_text() {
          "  --pause-in-background on|off  pause the game while its window is in the background\n"
          "  --mute-in-background on|off   mute the game while its window is in the background\n"
          "  --frame-cap <fps>            frame rate limit, 0 = no extra limit\n"
+         "  --vsync on|adaptive|fast|off present mode (FIFO, FIFO_RELAXED, MAILBOX, IMMEDIATE); a missing mode falls back to FIFO\n"
+         "  --aniso off|2|4|8|16         anisotropic texture filtering, off = the game's own 1x\n"
          "  --update-check on|off        check for updates at launcher start\n"
          "  --update-channel stable|testing\n"
          "                               which update channel the check follows\n"

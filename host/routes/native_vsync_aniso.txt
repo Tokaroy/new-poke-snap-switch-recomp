@@ -1,0 +1,29 @@
+# fixture: post_tutorial
+# UI polish audit: every PC tab of the game's own Settings screen, one picture each (scripts/ui/make_native_options.py, host/mods/nativeopt.cpp).
+# Native Settings screen picture walk for the Textures tab (Anisotropic filtering row) and the Output tab (Vsync row): R to Textures, picture; R x2 to Output, picture;
+# Down x5 to Vsync, picture; A opens the Vsync popup (On, Adaptive, Fast, Off), picture. Nothing is changed. Env as native_options_tabs.txt; run_boot -ShotMax 40.
+repeat @f200 @f1400 100 8 ZL
+repeat @f1500 @f30000 240 8 Up
+repeat @f1530 @f30000 240 8 A
+anchor options
+@f120 8 A
+@f300 8 R
+@f370 8 R
+@f440 8 R
+@f510 8 R
+@f650 8 R
+@f780 8 R
+@f850 12 shot=12
+@f890 8 R
+@f1000 8 R
+@f1070 12 shot=12
+@f1130 8 Down
+@f1180 8 Down
+@f1230 8 Down
+@f1280 8 Down
+@f1330 8 Down
+@f1400 12 shot=12
+@f1460 8 A
+@f1540 12 shot=12
+@f1620 8 B
+@f1700 8 B

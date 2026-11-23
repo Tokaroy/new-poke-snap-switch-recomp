@@ -185,6 +185,16 @@ bool* map_bool(hle::input::Mapping& m, const std::string& k) {
     return nullptr;
 }
 
+extern "C" const char* snap_vsync_fallback();   // runtime/nvn/nvn_vk.cpp: "" or the present mode used when the driver lacks the chosen one
+
+// Text after a pulldown's value: " (env)" when the variable was set by hand, and the Vsync row says when the driver lacks the mode.
+std::string value_suffix(const Row& r) {
+    std::string s;
+    if (r.store == "opt" && hle::settings::env_wins(r.key)) s += " (env)";
+    if (r.key == "vsync") { const std::string f = snap_vsync_fallback(); if (!f.empty()) s += " (" + f + ")"; }
+    return s;
+}
+
 std::string get_value(const Row& r) {
     ensure_settings();
     if (r.store == "opt") {
@@ -351,8 +361,7 @@ void row_vars(Cpu* c, uint64_t desc, int t, const Row& r) {
         return;
     }
     // "(env)": the row's SNAP_* variable was set by hand before start, so it wins over the saved value (settings.cpp env_wins)
-    const bool env = r.store == "opt" && hle::settings::env_wins(r.key);
-    add_var(c, desc, pre + "V", (cur >= 0 ? r.ch[(size_t)cur].second : v) + (env ? " (env)" : ""));
+    add_var(c, desc, pre + "V", (cur >= 0 ? r.ch[(size_t)cur].second : v) + value_suffix(r));
     for (size_t k = 0; k < r.ch.size(); k++) add_var(c, desc, pre + "I" + std::to_string(k + 1), (int)k == cur ? "lb_active" : "lb_unselect");
 }
 
@@ -497,7 +506,7 @@ void redraw_row(Cpu* c, uint64_t player, const Row& r) {
         return;
     }
     std::string path = std::string(sel) + "/selector_pulldown_mc/dt_select_pulldown_mc/dt_select_pulldown";
-    GStr p(path), txt((cur >= 0 ? r.ch[(size_t)cur].second : v) + (r.store == "opt" && hle::settings::env_wins(r.key) ? " (env)" : ""));
+    GStr p(path), txt((cur >= 0 ? r.ch[(size_t)cur].second : v) + value_suffix(r));
     alignas(8) uint64_t args[3] = {0, 0, 0};
     call_guest_nested(c, vfn(player, 0xa8), {player, p.p(), txt.p(), (uint64_t)(uintptr_t)args});
 }
