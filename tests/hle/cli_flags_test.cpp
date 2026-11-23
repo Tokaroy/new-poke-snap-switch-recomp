@@ -79,6 +79,8 @@ int main() {
     CHECK(env_of(p, "SNAP_UPDATE_CHANNEL") == "testing");
     auto q = snap_cli::parse({"--pause-in-background", "on", "--update-check", "true"});
     CHECK(env_of(q, "SNAP_WINDOW_PAUSE") == "1" && env_of(q, "SNAP_UPDATE_CHECK") == "1");
+    { auto s = snap_cli::parse({"--mods-readahead", "off"}); CHECK(s.error.empty() && env_of(s, "SNAP_MODS_READAHEAD") == "0"); }
+    CHECK(!snap_cli::parse({"--mods-readahead", "maybe"}).error.empty());
     CHECK(!snap_cli::parse({"--frame-cap"}).error.empty());
     { auto s = snap_cli::parse({"--shiny", "on"}); CHECK(s.error.empty() && s.env.size() == 1 && s.env[0].second == "1"); }
     { auto s = snap_cli::parse({"--shiny", "64"}); CHECK(s.error.empty() && s.env.size() == 2 && s.env[1].second == "64"); }

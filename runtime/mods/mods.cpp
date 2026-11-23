@@ -15,6 +15,12 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <deque>
+#include <functional>
+#include <thread>
+#include <unordered_set>
 #include <cstdio>
 #include <cstring>
 #include <map>
@@ -26,6 +32,8 @@
 
 #include "../cpu.h"
 #include "mods_core.h"
+
+namespace ra { void report(); void note_open(const std::string& a); int before_read(const mods::Override* o, const std::string& archive); void after_read(const std::string& archive, double ms); }
 
 namespace {
 
@@ -40,6 +48,7 @@ std::vector<const mods::Override*> g_ovr;
 
 void summary() {
   if (g_state.load() != 2) return;
+  ra::report();
   fprintf(stderr, "[mods] summary: %u replacements served, %u failed, %zu overrides installed\n",
           g_hits.load(), g_failed.load(), g_index.map.size());
   for (size_t i = 0; i < g_ovr.size(); i++)
@@ -245,6 +254,272 @@ bool same_header(const BuiltChunk* b, const uint8_t* chunk, size_t hdr) {
 }
 }  // namespace
 
+// ---- Course read-ahead (SNAP_MODS_READAHEAD, setting mods_readahead, --mods-readahead; docs/mods.md "Read-ahead").
+// The game opens a course's pack file (nx/Pack/LevelComposite/master/LC_<id>_<x>.drp, then its characters and UI packs) and then
+// loads every entry of it in a burst. The first load of each replaced texture reads the file from disk on the loader thread
+// (read_file below), so with a big pack the first ride of a session waits on the disk. When the game opens a .drp that has
+// replacements, a low-priority thread reads those files once into the Windows file cache, so the loader's own read is a memory
+// copy. Bounded: at most SNAP_MODS_READAHEAD_MB (default 1536) of files read but not yet loaded by the game, and opening a
+// different LC_ course cancels the unread rest of the old one (queued and running). A wrong guess only wastes reads; nothing
+// here changes what the game receives, and the loader never waits for it.
+namespace ra {
+constexpr bool kDefaultOn = true;   // measured 2026-11-23, docs/mods.md "Read-ahead"
+bool enabled() {
+  static const bool on = [] { const char* e = getenv("SNAP_MODS_READAHEAD"); return e && *e ? *e != '0' : kDefaultOn; }();
+  return on;
+}
+struct St { int st = 0; int64_t sz = 0; };   // 1 reading, 2 in the cache, 3 loaded by the game
+struct ArcStat { double open = -1, first = -1, last = -1; unsigned hits = 0, ready = 0, racing = 0, late = 0; double wait_ms = 0; double pf_start = -1, pf_end = -1; unsigned pf_files = 0, pf_skip = 0, shown_hits = 0, shown_pf = 0; };
+std::mutex mu;
+std::condition_variable cv;
+std::unordered_map<std::string, std::vector<const mods::Override*>> by_archive;
+bool indexed = false, started = false;
+std::deque<std::string> queue;
+std::unordered_set<std::string> seen;
+std::unordered_map<const mods::Override*, St> state;
+std::map<std::string, ArcStat> arcs;
+std::string cur_group;
+std::atomic<uint64_t> epoch{0};
+int64_t ahead = 0;                      // bytes read ahead and not yet loaded by the game (under mu)
+int64_t peak_ahead = 0;
+std::atomic<bool> dirty{false};
+void reporter();
+std::atomic<uint64_t> n_files{0}, n_bytes{0}, n_cancel{0}, n_skip{0}, n_wait_files{0}, n_wait_us{0}, n_slow{0};
+
+// Seconds since process start: the same clock as the "[  36.2657]" stamps of the run log, within a few ms.
+double uptime() {
+  static FILETIME ct = [] { FILETIME c, e, k, u; GetProcessTimes(GetCurrentProcess(), &c, &e, &k, &u); return c; }();
+  FILETIME now;
+  GetSystemTimeAsFileTime(&now);
+  ULARGE_INTEGER a, b;
+  a.LowPart = ct.dwLowDateTime; a.HighPart = ct.dwHighDateTime; b.LowPart = now.dwLowDateTime; b.HighPart = now.dwHighDateTime;
+  return (double)(b.QuadPart - a.QuadPart) / 1e7;
+}
+// "nx/pack/levelcomposite/master/lc_001_a.drp" -> "lc_001"; other packs: ""
+std::string group_of(const std::string& a) {
+  size_t p = a.find("levelcomposite/master/lc_");
+  if (p == std::string::npos) return "";
+  p += strlen("levelcomposite/master/");
+  if (atoi(a.c_str() + p + 3) >= 100) return "";   // the lab and hub packs (LC_101 and up) belong to no course: never cancelled
+  size_t q = a.find('_', p + 3);
+  return a.substr(p, q == std::string::npos ? std::string::npos : q - p);
+}
+int64_t budget() {
+  static const int64_t b = [] { const char* e = getenv("SNAP_MODS_READAHEAD_MB"); long v = e ? atol(e) : 1536; return (int64_t)(v < 16 ? 16 : v) << 20; }();
+  return b;
+}
+
+// Reads the file through the cache. Returns bytes read, 0 when stopped early or unreadable.
+int64_t read_through(const std::string& path, const std::function<bool()>& stop) {
+  HANDLE h = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return 0;
+  static thread_local std::vector<uint8_t> buf(1 << 20);
+  int64_t total = 0;
+  for (;;) {
+    if (stop()) { total = 0; break; }
+    DWORD got = 0;
+    if (!ReadFile(h, buf.data(), (DWORD)buf.size(), &got, nullptr) || !got) break;
+    total += got;
+  }
+  CloseHandle(h);
+  return total;
+}
+
+void worker() {
+  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
+  for (;;) {
+    std::string arc;
+    uint64_t my_epoch;
+    std::vector<const mods::Override*> files;
+    {
+      std::unique_lock<std::mutex> g(mu);
+      cv.wait(g, [] { return !queue.empty(); });
+      arc = queue.front();
+      queue.pop_front();
+      my_epoch = epoch.load();
+      files = by_archive[arc];
+      arcs[arc].pf_start = uptime();
+    }
+    const std::string grp = group_of(arc);
+    auto cancelled = [&] { return !grp.empty() && epoch.load() != my_epoch; };
+    for (const mods::Override* o : files) {
+      if (cancelled()) { n_cancel++; break; }
+      int64_t sz = 0;
+      {   // wait for budget room (the game loading what we read frees it); skip files the game already loaded or another worker has
+        std::unique_lock<std::mutex> g(mu);
+        if (state.find(o) != state.end()) { n_skip++; arcs[arc].pf_skip++; continue; }
+        WIN32_FILE_ATTRIBUTE_DATA fa;
+        if (!GetFileAttributesExA(o->file.c_str(), GetFileExInfoStandard, &fa)) continue;
+        sz = ((int64_t)fa.nFileSizeHigh << 32) | fa.nFileSizeLow;
+        while (ahead > 0 && ahead + sz > budget() && !cancelled()) cv.wait_for(g, std::chrono::milliseconds(20));
+        if (cancelled()) { n_cancel++; break; }
+        if (state.find(o) != state.end()) { n_skip++; continue; }
+        state[o] = St{1, sz};
+        ahead += sz;
+        if (ahead > peak_ahead) peak_ahead = ahead;
+      }
+      const int64_t got = read_through(o->file, cancelled);
+      {
+        std::lock_guard<std::mutex> g(mu);
+        auto it = state.find(o);
+        if (it != state.end() && it->second.st == 1) {
+          if (got > 0) { it->second.st = 2; n_files++; n_bytes += (uint64_t)got; arcs[arc].pf_files++; arcs[arc].pf_end = uptime(); }
+          else { ahead -= it->second.sz; state.erase(it); }   // stopped or unreadable: leave no trace
+        }
+      }
+    }
+  }
+}
+
+void ensure_index_locked() {
+  if (indexed) return;
+  indexed = true;
+  for (const mods::Override* o : g_ovr) {
+    size_t p = o->label.find(".drp/");
+    if (p != std::string::npos) by_archive[o->label.substr(0, p + 4)].push_back(o);
+  }
+}
+
+// Ride courses are LC_001 .. LC_099 (the lab and hub packs are LC_101 and up). The player's recent course packs are kept in
+// <mods root>\.readahead.txt, one normalized archive name per line, most recent first (at most 4; names of the player's own
+// packs only, no game data). When the course-select scene opens, the most recent one is read ahead before the player has chosen:
+// a wrong guess costs reads and is cancelled by the pack the game really opens.
+std::vector<std::string> history;
+std::vector<std::string> startup;   // pack files with replacements that the game opened in its first two minutes (the menus), in order, at most 100
+std::string hist_path;
+bool ride_course(const std::string& a) {
+  const size_t p = a.find("levelcomposite/master/lc_");
+  return p != std::string::npos && atoi(a.c_str() + p + strlen("levelcomposite/master/lc_")) < 100;
+}
+void load_history() {
+  hist_path = mods::default_root() + "/.readahead.txt";
+  if (FILE* f = fopen(hist_path.c_str(), "rb")) {
+    char line[512];
+    while (fgets(line, sizeof line, f)) {
+      std::string s = line;
+      while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' ')) s.pop_back();
+      const bool u = s.size() > 2 && s[0] == 'u' && s[1] == ' ';
+      if (s.size() > 2 && s[1] == ' ' && (s[0] == 'u' || s[0] == 'c')) s = s.substr(2);
+      if (u) { if (startup.size() < 100) startup.push_back(s); }
+      else if (ride_course(s) && history.size() < 4) history.push_back(s);
+    }
+    fclose(f);
+  }
+}
+void save_history() {
+  if (FILE* f = fopen(hist_path.c_str(), "wb")) {
+    for (auto& s : history) fprintf(f, "c %s\n", s.c_str());
+    for (auto& s : startup) fprintf(f, "u %s\n", s.c_str());
+    fclose(f);
+  }
+}
+
+// Queue archive `a` (has replacements). Called with mu held.
+void enqueue_locked(const std::string& a) {
+  const std::string grp = group_of(a);
+  if (!grp.empty() && grp != cur_group) {   // another course: drop the old course's unread files
+    if (!cur_group.empty()) {
+      epoch++;
+      for (auto q = queue.begin(); q != queue.end();) { if (!group_of(*q).empty()) q = queue.erase(q); else ++q; }
+      for (auto s = seen.begin(); s != seen.end();) { if (!group_of(*s).empty()) s = seen.erase(s); else ++s; }
+      for (auto st = state.begin(); st != state.end();) {   // forget the old course's read-ahead that the game has not loaded, so its budget is free
+        if (st->second.st != 3 && !group_of(st->first->label).empty()) { ahead -= st->second.sz; st = state.erase(st); } else ++st;
+      }
+      if (ahead < 0) ahead = 0;
+    }
+    cur_group = grp;
+  }
+  if (!seen.insert(a).second) return;
+  queue.push_back(a);
+  if (!started) {
+    started = true;
+    static const int n = [] { const char* e = getenv("SNAP_MODS_READAHEAD_THREADS"); int v = e ? atoi(e) : 2; return v < 1 ? 1 : v > 8 ? 8 : v; }();
+    for (int i = 0; i < n; i++) std::thread(worker).detach();
+  }
+  cv.notify_all();
+}
+
+// The game opened archive `a` (normalized).
+void note_open(const std::string& a) {
+  std::lock_guard<std::mutex> g(mu);
+  ArcStat& as = arcs[a];
+  if (as.open < 0) as.open = uptime();
+  if (!enabled()) return;
+  if (!indexed) {
+    ensure_index_locked();
+    load_history();
+    for (const std::string& s : startup) if (by_archive.count(s)) enqueue_locked(s);   // the menus' packs, before the game gets to them
+  }
+  if (!ride_course(a) && uptime() < 120 && startup.size() < 100 && by_archive.count(a) && std::find(startup.begin(), startup.end(), a) == startup.end()) {
+    startup.push_back(a);
+    save_history();
+  }
+  if (ride_course(a) && (history.empty() || history[0] != a)) {
+    history.erase(std::remove(history.begin(), history.end(), a), history.end());
+    history.insert(history.begin(), a);
+    if (history.size() > 4) history.resize(4);
+    save_history();
+  }
+  if (by_archive.find(a) != by_archive.end()) enqueue_locked(a);
+  if (a.size() > 21 && a.compare(a.size() - 21, 21, "scenes/map_select.drp") == 0 && !history.empty() && by_archive.count(history[0])) {
+    if (const char* p = getenv("SNAP_MODS_READAHEAD_GUESS"); !(p && *p == '0')) enqueue_locked(history[0]);
+  }
+}
+
+// The loader is about to read `o` from disk for the first time (called with or without read-ahead, for the report).
+int before_read(const mods::Override* o, const std::string& archive) {
+  static std::once_flag rep_once;
+  std::call_once(rep_once, [] { std::thread(reporter).detach(); });
+  dirty = true;
+  std::lock_guard<std::mutex> g(mu);
+  int st = 0;
+  auto it = state.find(o);
+  if (it != state.end()) {
+    st = it->second.st;
+    if (st == 3) return 3;   // loaded before (the chunk header differed): not a first load
+    if (st != 3) { ahead -= it->second.sz; it->second.st = 3; cv.notify_all(); }
+  } else {
+    state[o] = St{3, 0};
+  }
+  ArcStat& s = arcs[archive];
+  const double now = uptime();
+  if (s.first < 0) s.first = now;
+  s.last = now;
+  s.hits++;
+  if (st == 2) s.ready++; else if (st == 1) s.racing++; else s.late++;
+  return st;
+}
+void after_read(const std::string& archive, double ms) {
+  std::lock_guard<std::mutex> g(mu);
+  arcs[archive].wait_ms += ms;
+  n_wait_files++;
+  n_wait_us += (uint64_t)(ms * 1000);
+  if (ms > 50) n_slow++;
+}
+// Test runs end the process without running atexit handlers, so the totals are also printed every 3 s while they change.
+void reporter() {
+  for (;;) {
+    std::this_thread::sleep_for(std::chrono::seconds(3));
+    if (dirty.exchange(false)) report();
+  }
+}
+void report() {
+  std::lock_guard<std::mutex> g(mu);
+  unsigned ready = 0, racing = 0, late = 0;
+  for (auto& kv : arcs) { ready += kv.second.ready; racing += kv.second.racing; late += kv.second.late; }
+  fprintf(stderr, "[mods] readahead %s: loader read %llu files, wait %.0f ms total (%llu reads over 50 ms); in cache when loaded %u, still reading %u, not started %u; read ahead %llu files %.0f MiB, skipped %llu, cancelled %llu, peak unread %.0f MiB\n",
+          enabled() ? "on" : "off", (unsigned long long)n_wait_files.load(), n_wait_us.load() / 1000.0, (unsigned long long)n_slow.load(), ready, racing, late,
+          (unsigned long long)n_files.load(), n_bytes.load() / 1048576.0, (unsigned long long)n_skip.load(), (unsigned long long)n_cancel.load(), peak_ahead / 1048576.0);
+  for (auto& kv : arcs) {   // only the pack files that changed since the last print
+    ArcStat& s = kv.second;
+    if (!s.hits || (s.hits == s.shown_hits && s.pf_files == s.shown_pf)) continue;
+    s.shown_hits = s.hits;
+    s.shown_pf = s.pf_files;
+    fprintf(stderr, "[mods]   %s: opened %.2f s, first load %.2f s, last %.2f s, %u files (%u ready, %u racing, %u late), loader read wait %.0f ms; read ahead %u files (%u already loaded) from %.2f to %.2f s\n", kv.first.c_str(), s.open, s.first, s.last, s.hits, s.ready, s.racing, s.late, s.wait_ms, s.pf_files, s.pf_skip, s.pf_start, s.pf_end);
+  }
+}
+}  // namespace ra
+
 // Texture capture (SNAP_TEXDUMP, mods_core.h texdump_*): host/mods/texdump.cpp sets this; it saves the original entry
 // before any replacement is swapped in. g_texdump_on is fixed at start-up, so the off path costs one load.
 void (*g_snap_texdump)(Cpu* c, const std::string& archive) = nullptr;
@@ -301,7 +576,14 @@ extern "C" void rt_mod_entry(Cpu* c) {
   }
   if (!sp) {
     auto fresh = std::make_shared<std::vector<uint8_t>>();
-    if (!read_file(o->file, *fresh)) {
+    const int ra_st = ra::before_read(o, archive);
+    LARGE_INTEGER q0, q1, qf;
+    QueryPerformanceCounter(&q0);
+    const bool read_ok = read_file(o->file, *fresh);
+    QueryPerformanceCounter(&q1);
+    QueryPerformanceFrequency(&qf);
+    if (ra_st != 3) ra::after_read(archive, (double)(q1.QuadPart - q0.QuadPart) * 1000.0 / (double)qf.QuadPart);
+    if (!read_ok) {
       if (g_failed++ < 20) fprintf(stderr, "[mods] cannot read %s (%s): using the original\n", o->file.c_str(), o->label.c_str());
       return;
     }
@@ -361,8 +643,8 @@ std::map<uint64_t, Range> g_ranges;                                  // buffer s
 void tap_open(uint64_t id, const char* path) {
   std::string a = mods::norm_archive(path);
   if (a.size() < 4 || a.compare(a.size() - 4, 4, ".drp") != 0) return;
-  std::lock_guard<std::mutex> g(g_tap_mu);
-  g_handles[id] = a;
+  { std::lock_guard<std::mutex> g(g_tap_mu); g_handles[id] = a; }
+  ra::note_open(a);
 }
 void tap_close(uint64_t id) {
   std::lock_guard<std::mutex> g(g_tap_mu);

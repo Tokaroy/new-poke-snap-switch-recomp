@@ -157,6 +157,47 @@ allocates 4x the memory. Whether the rest of the game copes is a content questio
 height and mip sizes, so a self-consistent bigger texture works. Data whose size is fixed elsewhere (tables that other
 code indexes by the original length) must keep its size.
 
+## Read-ahead
+
+A big HD pack makes the first load of a course wait on the disk: the loader reads every replaced texture from the pack folder
+when the game first asks for it (the log's `[mods] hit` lines), up to thousands of files for one course. Read-ahead reads those
+files into the Windows file cache a little earlier, on a low-priority thread, so the loader's own read is a copy from memory.
+It never changes what the game receives and the loader never waits for it.
+
+- Setting `mods_readahead` (`0` or `1`), variable `SNAP_MODS_READAHEAD`, flag `--mods-readahead on|off`. On by default.
+  Needs no per-course list: the replacements of a pack file are found from the pack index.
+- When the game opens a pack file (`.drp`) that has replacements, those files are queued. The course packs
+  (`LevelComposite/master/LC_<id>_<x>.drp`) are grouped by course: opening another course cancels what is still unread of
+  the old one, queued and running.
+- Before the player picks a course, the course-select scene's pack file opens. At that point the most recent ride course
+  of this player is read ahead (the same variant, for example day or night), from `.readahead.txt` in the mods folder: up to four
+  pack file names, written by the game as courses open. A wrong guess costs reads and is cancelled by the pack the game really
+  opens. `SNAP_MODS_READAHEAD_GUESS=0` turns the guess off.
+- The menus' pack files are read ahead too: `.readahead.txt` also lists (as `u <name>` lines) the pack files with replacements
+  that the game opened in its first two minutes, at most 100, so the next start reads them while the title screen loads.
+  Delete the file to forget both lists.
+- Bounded: no more than `SNAP_MODS_READAHEAD_MB` (default 1536) of files are read ahead and not yet loaded by the game, two
+  reader threads (`SNAP_MODS_READAHEAD_THREADS`, 1 to 8), thread priority lowest. Files the game loaded already are skipped.
+- The log carries `[mods] readahead on|off: ...` (loader read wait in total, files in the cache when the loader got to them,
+  still reading, not started) and one line per pack file with its first and last load times. It is also printed every 3 seconds
+  while it changes, because test runs end without a clean exit. The off figures are measured too, so on and off compare.
+
+Measured with the Florio ride (`host/routes/florio_eval.txt`), the 99 packs it loads copied with unbuffered I/O so the file
+cache starts cold, hd-auto 4 GB, hidden and muted, NVMe: five runs off and two on (final design); hard disk: two of each, in alternating order (2026-11-23):
+
+| | read-ahead off | read-ahead on |
+|---|---|---|
+| NVMe: loader wait for the course pack (405 files) | 2.5 to 3.9 s | 0.47 to 0.67 s |
+| NVMe: loader wait over the whole run | 25 to 53 s | 5.6 s |
+| NVMe: reads over 50 ms | 6 to 101 | 0 |
+| hard disk: loader wait for the course pack | 14.3 s, 16.9 s | 0.85 s, 0.54 s |
+| hard disk: course pack opened to ride playable | 22.9 s, 22.4 s | 19.2 s, 16.1 s |
+| hard disk: loader wait over the whole run | 205 s, 138 s | 141 s, 115 s |
+
+On NVMe the frames over 25 ms and the time to the ride did not change beyond run-to-run noise (the waits are on loader
+threads, not the render thread). The wait that remains is the copy out of memory plus the CRC check of each file, and menu
+packs opened for the first time in a session.
+
 ## How it works (for developers)
 
 - `recomp/snap_gen.py` `MAIN_INLINE_HOOKS` makes the generated code call `rt_mod_entry(Cpu*)` just before `main+0x5e3a58`,
