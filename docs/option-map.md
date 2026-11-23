@@ -28,6 +28,7 @@ Every player option and where it lives: the launcher page, the F1 menu tab and s
 | HDR highlights | `gfx_hdr_expand` | - | Graphics / Color | Output | `--set gfx_hdr_expand` | live |
 | Frame rate limit | `frame_cap` | Frame rate | Graphics / Frame rate | Output | `--set frame_cap` | live |
 | Vsync | `vsync` | Frame rate | Graphics / Frame rate | Output | `--set vsync` | live |
+| Distant scenery | `gfx_distant_scenery` | - | Graphics / View | View | `--distant-scenery`, `--set gfx_distant_scenery` | live |
 | Detail distance | `gfx_lod_dist` | - | Graphics / View | View | `--set gfx_lod_dist` | live |
 | Always full detail | `gfx_lod_force0` | - | Graphics / View | View | `--set gfx_lod_force0` | live |
 | Draw distance | `gfx_draw_dist` | - | Graphics / View | View | `--set gfx_draw_dist` | live |

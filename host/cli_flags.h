@@ -17,6 +17,7 @@
 //   --vsync on|adaptive|fast|off  --aniso off|2|4|8|16   present mode and texture filtering (SNAP_VSYNC, SNAP_ANISO); this run only
 //   --gpl auto|on|off             Vulkan graphics pipeline libraries (fast-linked pipelines, SNAP_GPL); this run only
 //   --mods-readahead on|off       read a course's HD pack files into the file cache ahead of the loader (docs/mods.md); this run only
+//   --distant-scenery off|high|ultra   farther model detail and draw distance, display only (SNAP_DISTANT_SCENERY, docs/draw-distance.md); this run only
 //   --update-check on|off  --update-channel stable|testing                            the launcher's update rows; this run only
 //   --backup on|off  --backup-folder <folder>  --backup-keep <n>  --backup-include <saves,settings,photos>
 //                                 the profile backups to a sync folder (docs/sync-backups.md): after the game closes, and with --backups now; this run only
@@ -162,6 +163,11 @@ inline Parsed parse(const std::vector<std::string>& args) {
       if (v == "0" || v == "no") v = "off";
       if (v != "auto" && v != "on" && v != "off") { p.error = a + " needs auto, on or off, got \"" + v + "\""; break; }
       p.env.push_back({"SNAP_GPL", v});
+    } else if (a == "--distant-scenery") {
+      if (!value(i, &v)) break;
+      if (v == "0" || v == "original" || v == "no") v = "off";
+      if (v != "off" && v != "high" && v != "ultra") { p.error = a + " needs off, high or ultra, got \"" + v + "\""; break; }
+      p.env.push_back({"SNAP_DISTANT_SCENERY", v});
     } else if (a == "--aniso") {
       if (!value(i, &v)) break;
       if (v == "off") v = "0";
@@ -275,6 +281,7 @@ inline const char* help_text() {
          "  --aniso off|2|4|8|16         anisotropic texture filtering, off = the game's own 1x\n"
          "  --hdr-photos on|off          also save <name>.hdr.png (HDR) beside HD photo copies and screenshots; needs HDR output\n"
          "  --mods-readahead on|off      read the HD texture files of the course that is loading ahead of the game\n"
+         "  --distant-scenery off|high|ultra  farther model detail and draw distance (display only), off = the game's own\n"
          "  --update-check on|off        check for updates at launcher start\n"
          "  --update-channel stable|testing\n"
          "                               which update channel the check follows\n"

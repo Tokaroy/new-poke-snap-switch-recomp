@@ -344,6 +344,14 @@ void lodmods_init() {
     };
     mul2("SNAP_LOD_DIST", &g_lod_mul2);
     mul2("SNAP_DRAW_DIST", &g_cull_mul2);
+    // SNAP_DISTANT_SCENERY=off|high|ultra (docs/draw-distance.md): one step for both display-only distances, detail 3x / draw 2x (high) or
+    // 8x / 4x (ultra). The separate switches above can only raise a step further (the larger multiplier wins).
+    if (const char *e = getenv("SNAP_DISTANT_SCENERY")) {
+        const bool hi = !_stricmp(e, "high") || !strcmp(e, "1"), ul = !_stricmp(e, "ultra") || !strcmp(e, "2");
+        const float lod = ul ? 8.0f : hi ? 3.0f : 1.0f, cull = ul ? 4.0f : hi ? 2.0f : 1.0f;
+        if (lod * lod > g_lod_mul2) g_lod_mul2 = lod * lod;
+        if (cull * cull > g_cull_mul2) g_cull_mul2 = cull * cull;
+    }
     { const char *f0 = getenv("SNAP_LOD_FORCE0"); g_lod_force0 = f0 && f0[0] && f0[0] != '0'; }
     g_lod_split = g_lod_mul2 != 1.0f || g_cull_mul2 != 1.0f || g_lod_force0;
     if (const char *e = getenv("SNAP_DRAW_DISTANCE_AB")) g_dd_ab = strtoull(e, nullptr, 0);
@@ -381,6 +389,19 @@ float ratio_mul() { return mod_active() ? g_dd_ratio_mul : 1.0f; }
 float get_s0(Cpu *c) { uint32_t b = (uint32_t)c->v[0]; float f; memcpy(&f, &b, 4); return f; }
 void set_s0(Cpu *c, float f) { uint32_t b; memcpy(&b, &f, 4); c->v[0] = (__uint128_t)b; }
 
+// SNAP_TRACE_LODSEL: one line per present in which a photo Evaluation kept the game's picks (docs/draw-distance.md "Scoring"): how many picks
+// the Evaluation window left alone and how many the mod changed in that present (must be 0). Compare with the "[eval] p<N>" scoring draws (NVN_EVAL_LOG=1).
+std::atomic<uint64_t> g_tally_p{~0ull}, g_tally_mod{0}, g_tally_kept{0}, g_mod_total{0};
+void tally(bool changed, bool kept) {
+    const uint64_t p = snap_present_count();
+    uint64_t prev = g_tally_p.load(std::memory_order_relaxed);
+    if (p != prev && g_tally_p.compare_exchange_strong(prev, p)) {
+        const uint64_t m = g_tally_mod.exchange(0), k = g_tally_kept.exchange(0);
+        if (k) trace("lodanim: present %llu: %llu picks kept the game's (photo Evaluation), %llu changed by the mod", (unsigned long long)prev, (unsigned long long)k, (unsigned long long)m);
+    }
+    if (changed) { g_tally_mod++; g_mod_total++; }
+    if (kept) g_tally_kept++;
+}
 void lod_trace(Cpu *c, float ratio, int path) {
     // threshold table pointer at [sp+0x28]; group index in w22 (main path) or w25 (sub-model path)
     uint64_t sp = c->sp;
@@ -397,10 +418,10 @@ void lod_trace(Cpu *c, float ratio, int path) {
     }
     g_lod_hist[path][lod]++;
     if (++g_lod_calls % 20000 == 0)
-        trace("lodanim: LOD picks (x%g) main lod0-3 %llu %llu %llu %llu, sub %llu %llu %llu %llu; anim rebuilds forced %llu of %llu", g_dd_ratio_mul,
+        trace("lodanim: LOD picks (x%g) main lod0-3 %llu %llu %llu %llu, sub %llu %llu %llu %llu; anim rebuilds forced %llu of %llu; picks changed by the mod %llu", g_dd_ratio_mul,
               (unsigned long long)g_lod_hist[0][0], (unsigned long long)g_lod_hist[0][1], (unsigned long long)g_lod_hist[0][2], (unsigned long long)g_lod_hist[0][3],
               (unsigned long long)g_lod_hist[1][0], (unsigned long long)g_lod_hist[1][1], (unsigned long long)g_lod_hist[1][2], (unsigned long long)g_lod_hist[1][3],
-              (unsigned long long)g_anim_forced, (unsigned long long)g_anim_seen);
+              (unsigned long long)g_anim_forced, (unsigned long long)g_anim_seen, (unsigned long long)g_mod_total.load());
 }
 }  // namespace
 
@@ -442,7 +463,10 @@ static void lod_apply(Cpu *c, int path) {
             set_s0(c, r);
         }
     }
-    if (g_lodsel_trace) lod_trace(c, r, path);
+    if (g_lodsel_trace) {
+        tally(r != r0, !act && in_photo_eval());
+        lod_trace(c, r, path);
+    }
 }
 extern "C" void rt_gm_lod_ratio(Cpu *c) { lod_apply(c, 0); }
 extern "C" void rt_gm_lod_ratio_sub(Cpu *c) { lod_apply(c, 1); }

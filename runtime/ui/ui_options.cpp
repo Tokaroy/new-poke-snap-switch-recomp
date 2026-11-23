@@ -608,6 +608,10 @@ std::vector<Opt>& graphics_opts() {
       {"", "View", kSection, kLive, "", ""},
       // Field of view row removed (owner 2026-11-12: "turn off fov, hide the option, stop working on it for now"; it changes photo
       // scores). SNAP_FOV still works as a developer env switch, off by default.
+      {"gfx_distant_scenery", "Distant scenery", kChoice, kLive,
+       "Sharper far-away scenery and Pokemon: models keep their detailed versions farther out and are drawn farther out. High is 3 times the game's detail distance and 2 times its "
+       "draw distance, Ultra 8 and 4 times. Display only: spawns, Pokemon behavior and photo scoring keep the game's own picks. Costs some speed. The two rows below can push either one further.",
+       "off", {{"off", "Original"}, {"high", "High"}, {"ultra", "Ultra"}}, 0, 0, "", "SNAP_DISTANT_SCENERY"},
       {"gfx_lod_dist", "Detail distance", kChoice, kLive,
        "How far out scenery and Pokemon keep their detailed models. High is 3 times the game's distance, Max 8 times. Display only: photo scoring "
        "keeps the game's own models. Costs some speed.",

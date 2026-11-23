@@ -90,6 +90,10 @@ int main() {
     { auto g = snap_cli::parse({"--gpl", "0"}); CHECK(g.error.empty() && g.env.size() == 1 && g.env[0].second == "off"); }
     { auto g = snap_cli::parse({"--gpl", "auto"}); CHECK(g.error.empty() && g.env.size() == 1 && g.env[0].second == "auto"); }
     CHECK(!snap_cli::parse({"--gpl", "maybe"}).error.empty());
+    { auto g = snap_cli::parse({"--distant-scenery", "ultra"}); CHECK(g.error.empty() && g.env.size() == 1 && g.env[0].first == "SNAP_DISTANT_SCENERY" && g.env[0].second == "ultra"); }
+    { auto g = snap_cli::parse({"--distant-scenery", "original"}); CHECK(g.error.empty() && g.env.size() == 1 && g.env[0].second == "off"); }
+    CHECK(!snap_cli::parse({"--distant-scenery", "huge"}).error.empty());
+    CHECK(!snap_cli::parse({"--distant-scenery"}).error.empty());
     CHECK(!snap_cli::parse({"--gpl"}).error.empty());
     { auto r = snap_cli::parse({"--play", "--resume", "--crash-prompt", "off"}); CHECK(r.error.empty() && r.rest.empty() && r.play);
       CHECK(env_of(r, "SNAP_CRASH_RESUME") == "resume" && env_of(r, "SNAP_CRASH_PROMPT") == "0"); }

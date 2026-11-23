@@ -137,7 +137,7 @@ const struct { const char* key; const char* env; } kEnvKeys[] = {
     {"gfx_aa", "SNAP_AA"},                     {"gfx_smaa_quality", "SNAP_SMAA_QUALITY"}, {"return_to_launcher", "SNAP_RETURN_TO_LAUNCHER"}, {"gfx_sharpen", "SNAP_SHARPEN"},       {"gfx_upscaler", "SNAP_UPSCALER"},
     {"gfx_upscale_quality", "SNAP_UPSCALE_QUALITY"}, {"gfx_hdr", "SNAP_HDR"},        {"gfx_hdr_peak", "SNAP_HDR_PEAK"},
     {"gfx_hdr_paper", "SNAP_HDR_PAPER"},       {"gfx_draw_dist", "SNAP_DRAW_DIST"}, {"gfx_lod_dist", "SNAP_LOD_DIST"}, {"gfx_lod_force0", "SNAP_LOD_FORCE0"},   // gfx_fov removed (owner 2026-11-12): a saved value is ignored
-    {"gfx_full_rate_anim", "SNAP_FULL_RATE_ANIM"}, {"gfx_ui_font", "SNAP_UI_FONT_SCALE"}, {"fast_boot", "SNAP_FAST_BOOT"},
+    {"gfx_distant_scenery", "SNAP_DISTANT_SCENERY"}, {"gfx_full_rate_anim", "SNAP_FULL_RATE_ANIM"}, {"gfx_ui_font", "SNAP_UI_FONT_SCALE"}, {"fast_boot", "SNAP_FAST_BOOT"},
     {"gfx_ssao_samples", "SNAP_SSAO_SAMPLES"}, {"gfx_ssao_hbao", "SNAP_SSAO_HBAO"},
     {"gfx_shadow_dist", "SNAP_SHADOW_DISTANCE"}, {"gfx_hdr_expand", "SNAP_HDR_EXPAND"},   // 2026-11-14, docs/advanced-graphics-options.md
     {"gfx_ultrawide", "SNAP_ULTRAWIDE"},   // auto (default) | off (docs/ultrawide.md)
@@ -186,7 +186,7 @@ const char* const kLiveKeys[] = {
     "foliage_aa", "leaf_translucency", "gfx_pom",                                                // nvn_foliage.cpp, nvn_pom.cpp
     "specular_aa",                                                                               // nvn_motionaa.cpp
     "gfx_lod_bias", "gfx_aniso",                                                                 // nvn_gfx.cpp (samplers are made again)
-    "gfx_lod_dist", "gfx_lod_force0", "gfx_draw_dist", "gfx_full_rate_anim",                     // host/mods/lodanim.cpp
+    "gfx_distant_scenery", "gfx_lod_dist", "gfx_lod_force0", "gfx_draw_dist", "gfx_full_rate_anim",                     // host/mods/lodanim.cpp
     "fps_target",                                                                                // host/mods/highfps.cpp
     "gfx_render_scale", "gfx_aa", "gfx_shadow_res", "gfx_ultrawide", "gfx_hd_effects",           // nvn_retarget.cpp (render targets are made again at a present)
     "gfx_hdr_expand", "gfx_hdr", "gfx_hdr_peak", "gfx_hdr_paper",                                                                            // nvn_hdr.cpp
