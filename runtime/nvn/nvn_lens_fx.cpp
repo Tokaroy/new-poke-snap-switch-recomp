@@ -255,6 +255,7 @@ void TrackFrame(const FxCam* cam) {
   }
   memcpy(T.prevVp, cam->vp, sizeof T.prevVp); memcpy(T.prevEye, cam->eye, sizeof T.prevEye); memcpy(T.prevFwd, cam->fwd, sizeof T.prevFwd);
   T.have = true; T.prevPresent = g_presentCount; T.frameNo++;
+  if (LogOn() && cut) fprintf(stderr, "lens: camera cut at p%d\n", g_presentCount);
   if (LogOn() && T.frameNo % 120 == 1) fprintf(stderr, "lens: p%d fovY %.2f deg base tan %.4f zoom %.2fx dt %.2f ms cut %d\n", g_presentCount, cam->fovY * 57.29578f, T.baseTan, T.zoom, T.dt * 1000.0, (int)cut);
 }
 

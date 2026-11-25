@@ -1,0 +1,5 @@
+# fixture: new_game
+# Intro camera-cut timing (introcut worker, 2026-11-25): title, name entry and the lab intro cutscene with slow A taps on wall seconds (same
+# presses at 60 and 144), ends before the yard tutorial. Run with -ShotAt 100000 and SNAP_PERF_SHARED=<prefix> / SNAP_PACE_LOG=<csv>.
+repeat 20 250 0.83 0.2 A
+end 260

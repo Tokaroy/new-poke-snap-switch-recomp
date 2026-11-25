@@ -7,6 +7,7 @@
 #include <cctype>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -1309,6 +1310,25 @@ static bool commit_locked_env() {
   return v;
 }
 
+namespace {
+// The calling thread's name (guest threads are named "guest:<name>" by the OS layer), for log lines.
+std::string caller_name() {
+#ifdef _WIN32
+  using Fn = HRESULT(WINAPI*)(HANDLE, PWSTR*);
+  static const Fn gd = (Fn)(void*)GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "GetThreadDescription");
+  PWSTR w = nullptr;
+  std::string out;
+  if (gd && SUCCEEDED(gd(GetCurrentThread(), &w)) && w) {
+    for (const wchar_t* c = w; *c && out.size() < 48; c++) out += (*c >= 32 && *c < 127) ? (char)*c : '?';
+    LocalFree(w);
+  }
+  return out.empty() ? "thread " + std::to_string(GetCurrentThreadId()) : out;
+#else
+  return "thread";
+#endif
+}
+}  // namespace
+
 uint32_t Fs::commit(const std::string& mount) {
   const bool locked = commit_locked_env();
   struct Io {   // the core is released for the whole commit, waits for the locks included
@@ -1326,7 +1346,18 @@ uint32_t Fs::commit(const std::string& mount) {
   Save& s = *m->save;
   for (auto& kv : p_->files) if (kv.second->mount == mount && kv.second->writable) to_flush.push_back(kv.second);
   const Pending pd{s.dirty, s.deleted, s.dirs};
-  auto hook = p_->hook;
+  const auto test_hook = p_->hook;
+  // stage times for the log line (a slow commit report says where the time went); the test fault hook still sees every stage first
+  std::string stages;
+  int files = 0;
+  const std::function<void(const char*)> hook = [&](const char* st) {
+    if (test_hook) test_hook(st);
+    if (!std::strcmp(st, "commit:file")) { files++; return; }
+    char b[64];
+    snprintf(b, sizeof b, "%s%s %.1f", stages.empty() ? "" : ", ", std::strncmp(st, "commit:", 7) ? st : st + 7,
+             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    stages += b;
+  };
   s.journal = Pending{};
   s.committing = !locked;
   struct EndJournal {   // a failed (or thrown-through) commit drops the journal; the live sets still hold every change
@@ -1360,8 +1391,11 @@ uint32_t Fs::commit(const std::string& mount) {
     }
   });
   const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-  // always logged (a handful per session): how long the disk kept the game waiting is part of a "the game froze when it saved" report
-  log("fs: commit %s -> generation %llu in %.1f ms (result %#x)", mount.c_str(), (unsigned long long)s.cur, ms, rc);
+  // always logged (a handful per session): how long the disk kept the game waiting is part of a "the game froze when it saved" report. The
+  // stage list gives the ms since the start at which each step ended (files: the flushed copies of the changed files); the thread is the
+  // guest thread that called it and waited for all of it.
+  log("fs: commit %s -> generation %llu in %.1f ms (result %#x) [%s; %d file(s); %s]", mount.c_str(), (unsigned long long)s.cur, ms, rc,
+      caller_name().c_str(), files, stages.c_str());
   if (snap_perf::on) {
     char det[96];
     snprintf(det, sizeof det, "%s gen=%llu files=%zu rc=%#x", mount.c_str(), (unsigned long long)s.cur, pd.dirty.size(), rc);

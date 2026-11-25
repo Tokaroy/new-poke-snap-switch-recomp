@@ -68,12 +68,25 @@ const uint8_t* GuestData(const TextureImpl* t) {
   return src;
 }
 constexpr uint64_t kKeyMax = 65536;   // a sprite larger than this is not keyed (its bytes would cost a hash per texture)
+// Whether a sprite of the table has this size. KeyOf runs on the replay thread for every new small texture at its first UI-pass draw, and the
+// byte-wise hash of up to 64 KB cost about 10 ms of the frame at the intro's first demo cut (500 new textures); the table's sizes rule out most.
+bool SpriteSize(int w, int h) {
+  static const std::vector<uint32_t> sizes = [] {
+    std::vector<uint32_t> v;
+    for (const BtnSprite& s : kBtnSprites) v.push_back((uint32_t)s.w << 16 | s.h);
+    return v;
+  }();
+  const uint32_t k = (uint32_t)w << 16 | (uint32_t)h;
+  for (uint32_t v : sizes) if (v == k) return true;
+  return false;
+}
 // Key of a candidate texture (small 2D color texture), 0 when it is not one.
 uint64_t KeyOf(const TextureImpl* t) {
   const TextureBuilder& b = t->b;
   if (t->scale != 1.0f || b.samples > 1 || b.target != TT_2D || b.width < 8 || b.height < 8 || b.width > 512 || b.height > 512) return 0;
   const FormatInfo* fi = LookupFormat(b.format);
   if (!fi || fi->astcW || fi->aspect != VK_IMAGE_ASPECT_COLOR_BIT) return 0;
+  if (!C().trace && !SpriteSize(b.width, b.height)) return 0;   // no sprite of the table has this size: skip the hash (the trace keys all)
   const uint8_t* src = GuestData(t);
   if (!src) return 0;
   const SurfaceLayout l = ComputeSurfaceLayout((uint32_t)b.width, (uint32_t)b.height, 1, 1, (uint32_t)std::max(b.levels, 1), fi->bytes, fi->bw, fi->bh);
